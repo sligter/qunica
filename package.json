@@ -1,0 +1,20 @@
+{
+  "name": "ag-swarmer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AgentChat 群式多 Agent 协作工作台",
+  "scripts": {
+    "dev": "pnpm --filter @ag-swarmer/frontend dev",
+    "build": "pnpm --filter @ag-swarmer/frontend build",
+    "lint": "pnpm --filter @ag-swarmer/frontend lint",
+    "type-check": "pnpm -r type-check",
+    "sync-api": "openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.5.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  }
+}

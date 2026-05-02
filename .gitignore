@@ -1,0 +1,45 @@
+# Node
+node_modules/
+dist/
+build/
+*.log
+.pnpm-debug.log*
+*.tsbuildinfo
+.trellis/
+.claude/
+docs/
+llm_config-for-test.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data
+workspaces/
+uploads/
+data/

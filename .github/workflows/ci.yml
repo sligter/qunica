@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: agentchat
+          POSTGRES_PASSWORD: agentchat
+          POSTGRES_DB: agentchat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentchat"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --all-extras --dev
+
+      - name: Lint (ruff)
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Type check (mypy)
+        working-directory: backend
+        run: uv run mypy app
+
+      - name: Run migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://agentchat:agentchat@localhost:5432/agentchat
+        run: uv run alembic upgrade head
+
+      - name: Tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://agentchat:agentchat@localhost:5432/agentchat
+          # Fake key so app.llm.chat_model.make_chat_model passes its
+          # "no api key configured" guard during test process startup; the
+          # actual LLM call is monkey-patched in tests/conftest.py and
+          # never hits the network.
+          LLM_API_KEY: ci-fake-key
+        run: uv run pytest -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm type-check
+
+      - name: Build
+        run: pnpm build
