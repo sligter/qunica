@@ -1,15 +1,18 @@
 /**
  * Stream-send a message to a group.
  *
- * Returns `{ send, isStreaming, error }`. `send(content)` opens an SSE
- * connection to `/groups/{id}/messages/stream`, dispatches every event into
- * the messageStore (user_message → token → agent_message → done), and
+ * Returns `{ send, cancel, isStreaming, error }`. `send(content)` opens an
+ * SSE connection to `/groups/{id}/messages/stream`, dispatches every event
+ * into the messageStore (user_message → token → agent_message → done), and
  * resolves when the `done` event arrives or the stream errors.
  *
- * Cancels any in-flight stream when the component unmounts.
+ * Cancels any in-flight stream when the component unmounts. After cancel,
+ * invalidates the messages query so the persisted "interrupted" state from
+ * the backend's `finally` block becomes visible after the next refetch.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { openSseStream } from '@/lib/sse'
 import { useAuthStore } from '@/stores/authStore'
@@ -36,6 +39,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const finalizeInFlight = useMessageStore((s) => s.finalizeInFlight)
   const clearInFlight = useMessageStore((s) => s.clearInFlight)
   const pushWarning = useMessageStore((s) => s.pushWarning)
+  const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +50,11 @@ export function useSendMessageStream(groupId: string | undefined) {
       ctrlRef.current?.abort()
     }
   }, [])
+
+  const invalidate = useCallback(() => {
+    if (!groupId) return
+    void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+  }, [groupId, qc])
 
   const send = useCallback(
     (content: string) => {
@@ -83,6 +92,7 @@ export function useSendMessageStream(groupId: string | undefined) {
             if (event === 'done') {
               setIsStreaming(false)
               ctrlRef.current = null
+              invalidate()
             }
           },
           onError: (err) => {
@@ -90,10 +100,12 @@ export function useSendMessageStream(groupId: string | undefined) {
             setIsStreaming(false)
             clearInFlight(groupId)
             ctrlRef.current = null
+            invalidate()
           },
           onClose: () => {
             setIsStreaming(false)
             ctrlRef.current = null
+            invalidate()
           },
         },
       })
@@ -104,6 +116,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       clearInFlight,
       finalizeInFlight,
       groupId,
+      invalidate,
       isStreaming,
       patchInFlight,
       pushWarning,
@@ -116,7 +129,12 @@ export function useSendMessageStream(groupId: string | undefined) {
     ctrlRef.current = null
     setIsStreaming(false)
     if (groupId) clearInFlight(groupId)
-  }, [clearInFlight, groupId])
+    // Backend persists the interrupted message and commits inside an
+    // asyncio.shield block after CancelledError. Give it a moment to
+    // land before we refetch — otherwise the refetch hits the DB before
+    // the shielded commit and the bubble appears to vanish.
+    window.setTimeout(invalidate, 700)
+  }, [clearInFlight, groupId, invalidate])
 
   return { send, cancel, isStreaming, error }
 }

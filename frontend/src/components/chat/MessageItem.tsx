@@ -1,8 +1,10 @@
 import { useMemo } from 'react'
 
+import { InterruptedMessageActions } from '@/components/chat/InterruptedMessageActions'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useAuthStore } from '@/stores/authStore'
+import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 import { cn } from '@/lib/utils'
 
@@ -24,6 +26,7 @@ function initials(name: string): string {
 export function MessageItem({ message, groupId, isStreaming }: MessageItemProps) {
   const groupAgents = useGroupAgents(groupId)
   const currentUser = useAuthStore((s) => s.user)
+  const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
 
   const senderName = useMemo(() => {
     if (message.sender_type === 'user') {
@@ -46,6 +49,8 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
   }
 
   const isUser = message.sender_type === 'user'
+  const isInterrupted = message.status === 'interrupted'
+  const showStreamingDot = isStreaming || isResuming
   const time = new Date(message.created_at).toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
@@ -69,11 +74,17 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{senderName}</span>
-          {!isStreaming && <span>{time}</span>}
-          {isStreaming && (
+          {!showStreamingDot && !isInterrupted && <span>{time}</span>}
+          {showStreamingDot && (
             <span className="inline-flex items-center gap-1 text-amber-600">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
               streaming
+            </span>
+          )}
+          {isInterrupted && !isResuming && (
+            <span className="inline-flex items-center gap-1 text-amber-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              interrupted
             </span>
           )}
         </div>
@@ -82,11 +93,19 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
             'whitespace-pre-wrap rounded-lg px-3 py-2 text-sm',
             isUser
               ? 'bg-primary text-primary-foreground'
-              : 'border border-border bg-muted/40 text-foreground',
+              : 'border border-border bg-card text-foreground',
+            isInterrupted && !isResuming && 'border-amber-300/70',
           )}
         >
           {message.content || ' '}
         </div>
+        {isInterrupted && !isResuming && message.thread_id && (
+          <InterruptedMessageActions
+            groupId={groupId}
+            threadId={message.thread_id}
+            messageId={message.id}
+          />
+        )}
       </div>
     </div>
   )

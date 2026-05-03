@@ -73,6 +73,7 @@ export interface Message {
   sender_id: string | null
   message_type: string
   content: string | null
+  status: string
   refs: Record<string, unknown> | null
   reply_to_message_id: string | null
   created_at: string

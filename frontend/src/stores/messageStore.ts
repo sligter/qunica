@@ -22,6 +22,7 @@ interface MessageState {
   byGroup: Record<string, Message[]>
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
   warningsByGroup: Record<string, string[]>
+  resumingMessageIds: Set<string>
 
   setHistory: (groupId: string, messages: Message[]) => void
   appendMessage: (groupId: string, message: Message) => void
@@ -30,12 +31,17 @@ interface MessageState {
   clearInFlight: (groupId: string) => void
   pushWarning: (groupId: string, warning: string) => void
   clearWarnings: (groupId: string) => void
+  appendToMessage: (groupId: string, messageId: string, delta: string) => void
+  replaceMessage: (groupId: string, message: Message) => void
+  startResume: (messageId: string) => void
+  endResume: (messageId: string) => void
 }
 
 export const useMessageStore = create<MessageState>((set) => ({
   byGroup: {},
   inFlightByGroup: {},
   warningsByGroup: {},
+  resumingMessageIds: new Set(),
 
   setHistory: (groupId, messages) =>
     set((s) => ({
@@ -102,4 +108,34 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => ({
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
     })),
+
+  appendToMessage: (groupId, messageId, delta) =>
+    set((s) => {
+      const list = s.byGroup[groupId] ?? []
+      const next = list.map((m) =>
+        m.id === messageId ? { ...m, content: (m.content ?? '') + delta } : m,
+      )
+      return { byGroup: { ...s.byGroup, [groupId]: next } }
+    }),
+
+  replaceMessage: (groupId, message) =>
+    set((s) => {
+      const list = s.byGroup[groupId] ?? []
+      const next = list.map((m) => (m.id === message.id ? message : m))
+      return { byGroup: { ...s.byGroup, [groupId]: next } }
+    }),
+
+  startResume: (messageId) =>
+    set((s) => {
+      const next = new Set(s.resumingMessageIds)
+      next.add(messageId)
+      return { resumingMessageIds: next }
+    }),
+
+  endResume: (messageId) =>
+    set((s) => {
+      const next = new Set(s.resumingMessageIds)
+      next.delete(messageId)
+      return { resumingMessageIds: next }
+    }),
 }))

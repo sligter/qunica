@@ -68,3 +68,12 @@ async def mark_failed(db: AsyncSession, thread: Thread) -> None:
     thread.status = "failed"
     thread.completed_at = datetime.now(UTC)
     await db.flush()
+
+
+async def mark_paused(db: AsyncSession, thread: Thread) -> None:
+    """Set thread.status='paused'. Used when an in-flight agent reply is
+    interrupted by the user. Does NOT set completed_at — the thread is not
+    done; resume can flip it back to running.
+    """
+    thread.status = "paused"
+    await db.flush()

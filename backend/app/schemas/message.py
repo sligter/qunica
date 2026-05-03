@@ -19,6 +19,7 @@ class MessageRead(BaseModel):
     sender_id: UUID | None
     message_type: str
     content: str | None
+    status: str
     refs: dict[str, Any] | None
     reply_to_message_id: UUID | None
     created_at: datetime

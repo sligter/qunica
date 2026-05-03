@@ -8,10 +8,18 @@ interface MessageListProps {
   groupId: string
 }
 
+const EMPTY_MESSAGES: readonly Message[] = []
+const EMPTY_INFLIGHT: Record<string, never> = {}
+const EMPTY_WARNINGS: readonly string[] = []
+
 export function MessageList({ groupId }: MessageListProps) {
-  const messages = useMessageStore((s) => s.byGroup[groupId] ?? [])
-  const inFlight = useMessageStore((s) => s.inFlightByGroup[groupId] ?? {})
-  const warnings = useMessageStore((s) => s.warningsByGroup[groupId] ?? [])
+  const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
+  const inFlight = useMessageStore(
+    (s) => s.inFlightByGroup[groupId] ?? EMPTY_INFLIGHT,
+  )
+  const warnings = useMessageStore(
+    (s) => s.warningsByGroup[groupId] ?? EMPTY_WARNINGS,
+  )
   const endRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -26,6 +34,7 @@ export function MessageList({ groupId }: MessageListProps) {
     sender_id: bubble.agent_id,
     message_type: 'text',
     content: bubble.content,
+    status: 'visible',
     refs: null,
     reply_to_message_id: null,
     created_at: new Date().toISOString(),

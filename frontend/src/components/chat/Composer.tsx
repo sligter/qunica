@@ -45,7 +45,7 @@ export function Composer({ isStreaming, onSend, onCancel, hint }: ComposerProps)
           <div className="flex gap-2">
             {isStreaming && (
               <Button variant="outline" size="sm" onClick={onCancel}>
-                Cancel
+                Stop
               </Button>
             )}
             <Button size="sm" onClick={submit} disabled={isStreaming || !value.trim()}>
