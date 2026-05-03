@@ -1,9 +1,14 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { File, NotebookPen, Settings } from 'lucide-react'
 
 import { AddAgentToGroupForm } from '@/components/chat/AddAgentToGroupForm'
 import { Composer } from '@/components/chat/Composer'
+import { GroupFilesPanel } from '@/components/chat/GroupFilesPanel'
+import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
+import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
 import { MessageList } from '@/components/chat/MessageList'
+import { Button } from '@/components/ui/button'
 import { useGroup } from '@/hooks/useGroups'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useGroupMessages } from '@/hooks/useGroupMessages'
@@ -17,6 +22,9 @@ export function GroupChatPage() {
   const groupAgents = useGroupAgents(groupId)
   const stream = useSendMessageStream(groupId)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [notesOpen, setNotesOpen] = useState(false)
 
   useEffect(() => {
     if (groupId) clearWarnings(groupId)
@@ -54,8 +62,32 @@ export function GroupChatPage() {
             {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
           </span>
         </div>
-        <div className="shrink-0">
+        <div className="flex shrink-0 items-center gap-1">
           <AddAgentToGroupForm groupId={groupId} />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setFilesOpen(true)}
+            aria-label="Group files"
+          >
+            <File className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setNotesOpen(true)}
+            aria-label="Group notes"
+          >
+            <NotebookPen className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Group settings"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
         </div>
       </header>
 
@@ -78,6 +110,28 @@ export function GroupChatPage() {
         onSend={stream.send}
         onCancel={stream.cancel}
         hint={hint}
+        groupAgents={agents}
+      />
+
+      {group.data && (
+        <GroupSettingsDialog
+          group={group.data}
+          agents={agents}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+        />
+      )}
+
+      <GroupFilesPanel
+        groupId={groupId}
+        open={filesOpen}
+        onOpenChange={setFilesOpen}
+      />
+
+      <GroupNotesPanel
+        groupId={groupId}
+        open={notesOpen}
+        onOpenChange={setNotesOpen}
       />
     </div>
   )

@@ -18,6 +18,11 @@ class SkillImport(BaseModel):
     raw: str = Field(min_length=1)
 
 
+class SkillFileInfo(BaseModel):
+    path: str
+    size: int
+
+
 class SkillRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -26,5 +31,7 @@ class SkillRead(BaseModel):
     description: str | None
     body_markdown: str
     source: str
+    files: list[SkillFileInfo] | None = None
+    storage_path: str | None = None
     status: str
     created_at: datetime

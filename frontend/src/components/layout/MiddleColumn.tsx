@@ -1,21 +1,13 @@
 import { useLocation } from 'react-router-dom'
 
-import { AgentsList } from '@/components/layout/AgentsList'
 import { GroupsList } from '@/components/layout/GroupsList'
-import { ProvidersList } from '@/components/layout/ProvidersList'
-import { SkillsList } from '@/components/layout/SkillsList'
 
 /**
- * Decides which middle-column list to mount based on the current route.
- *
- * Not implemented as a nested `<Outlet />` because there is exactly one
- * middle-column variant per top-level section, and dispatching by pathname
- * keeps the route table flat.
+ * Middle column shows the groups list for group routes only.
+ * Agents, Providers, and Skills use full-page card layouts with dialogs.
  */
 export function MiddleColumn() {
   const { pathname } = useLocation()
-  if (pathname.startsWith('/agents')) return <AgentsList />
-  if (pathname.startsWith('/providers')) return <ProvidersList />
-  if (pathname.startsWith('/skills')) return <SkillsList />
-  return <GroupsList />
+  if (pathname.startsWith('/groups')) return <GroupsList />
+  return null
 }

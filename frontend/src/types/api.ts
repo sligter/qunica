@@ -36,6 +36,7 @@ export interface AgentCreate {
   name: string
   description?: string
   system_prompt: string
+  llm_config?: Record<string, unknown> | null
   llm_provider_id?: string | null
   skill_ids?: string[]
 }
@@ -44,11 +45,12 @@ export interface AgentUpdate {
   name?: string
   description?: string | null
   system_prompt?: string
+  llm_config?: Record<string, unknown> | null
   llm_provider_id?: string | null
   skill_ids?: string[]
 }
 
-export type ProviderKind = 'openai-compatible' | 'anthropic'
+export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini'
 
 export interface LLMProviderRead {
   id: string
@@ -96,6 +98,10 @@ export interface GroupRead {
   name: string
   description: string | null
   announcement: string | null
+  free_speech: boolean
+  allow_agent_free_mention: boolean
+  muted_agent_ids: string[]
+  admin_agent_ids: string[]
   status: string
   created_at: string
 }
@@ -105,6 +111,16 @@ export interface GroupCreate {
   description?: string | null
   announcement?: string | null
   initial_agents?: string[]
+}
+
+export interface GroupUpdate {
+  name?: string
+  description?: string | null
+  announcement?: string | null
+  free_speech?: boolean
+  allow_agent_free_mention?: boolean
+  muted_agent_ids?: string[]
+  admin_agent_ids?: string[]
 }
 
 export interface GroupAgentRead {
@@ -146,4 +162,37 @@ export interface ApiErrorEnvelope {
     message: string
     details?: Record<string, unknown>
   }
+}
+
+export interface ModelInfo {
+  id: string
+  name: string
+}
+
+export interface GroupFileRead {
+  id: string
+  group_id: string
+  filename: string
+  file_size: number
+  mime_type: string | null
+  created_at: string
+}
+
+export interface GroupNoteRead {
+  id: string
+  group_id: string
+  title: string
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+export interface GroupNoteCreate {
+  title: string
+  content: string
+}
+
+export interface GroupNoteUpdate {
+  title?: string
+  content?: string
 }

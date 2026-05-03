@@ -11,6 +11,16 @@ class GroupCreate(BaseModel):
     initial_agents: list[UUID] | None = None
 
 
+class GroupUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    announcement: str | None = None
+    free_speech: bool | None = None
+    allow_agent_free_mention: bool | None = None
+    muted_agent_ids: list[UUID] | None = None
+    admin_agent_ids: list[UUID] | None = None
+
+
 class GroupRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -18,6 +28,10 @@ class GroupRead(BaseModel):
     name: str
     description: str | None
     announcement: str | None
+    free_speech: bool
+    allow_agent_free_mention: bool
+    muted_agent_ids: list[UUID] | None
+    admin_agent_ids: list[UUID] | None
     status: str
     created_at: datetime
 

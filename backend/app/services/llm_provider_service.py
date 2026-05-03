@@ -19,7 +19,7 @@ from app.models.llm_provider import LLMProvider
 from app.models.user import User
 from app.schemas.llm_provider import LLMProviderCreate, LLMProviderUpdate
 
-VALID_KINDS = ("openai-compatible", "anthropic")
+VALID_KINDS = ("openai-compatible", "anthropic", "gemini")
 
 
 def mask_api_key(api_key: str) -> str:
@@ -121,3 +121,59 @@ async def delete_provider(
     # api_key to make calls. Acceptable for V1.
     provider.status = "deleted"
     await db.flush()
+
+
+async def list_models(
+    db: AsyncSession, provider_id: UUID, owner: User
+) -> list[dict[str, str]]:
+    """Fetch available models from the provider's API."""
+    import httpx
+
+    provider = await get_provider(db, provider_id, owner)
+    models: list[dict[str, str]] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if provider.kind == "openai-compatible":
+                base = (provider.base_url or "https://api.openai.com/v1").rstrip("/")
+                resp = await client.get(
+                    f"{base}/models",
+                    headers={"Authorization": f"Bearer {provider.api_key}"},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                models = [{"id": m["id"], "name": m.get("id", "")} for m in data]
+
+            elif provider.kind == "anthropic":
+                base = (provider.base_url or "https://api.anthropic.com").rstrip("/")
+                resp = await client.get(
+                    f"{base}/v1/models",
+                    headers={
+                        "x-api-key": provider.api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                models = [{"id": m["id"], "name": m.get("display_name", m["id"])} for m in data]
+
+            elif provider.kind == "gemini":
+                base = (provider.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+                resp = await client.get(
+                    f"{base}/models",
+                    params={"key": provider.api_key},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("models", [])
+                models = [
+                    {
+                        "id": m.get("name", "").replace("models/", ""),
+                        "name": m.get("displayName", m.get("name", "")),
+                    }
+                    for m in data
+                ]
+    except Exception:
+        # Return empty list on failure — frontend handles gracefully
+        pass
+
+    return models

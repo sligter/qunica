@@ -76,6 +76,15 @@ async def update_provider(
     return _to_read(provider)
 
 
+@router.get("/{provider_id}/models")
+async def list_provider_models(
+    provider_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict[str, str]]:
+    return await llm_provider_service.list_models(db, provider_id, current_user)
+
+
 @router.delete("/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_provider(
     provider_id: UUID,

@@ -9,7 +9,7 @@ from app.models.group import Group
 from app.models.group_agent import GroupAgent
 from app.models.group_member import GroupMember
 from app.models.user import User
-from app.schemas.group import GroupCreate
+from app.schemas.group import GroupCreate, GroupUpdate
 
 
 async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Group:
@@ -67,6 +67,40 @@ async def get_group(db: AsyncSession, group_id: UUID, user: User) -> Group:
     )
     if membership is None:
         raise PermissionDeniedError("not a member of this group")
+    return group
+
+
+async def update_group(
+    db: AsyncSession, group_id: UUID, data: GroupUpdate, user: User
+) -> Group:
+    group = await get_group(db, group_id, user)
+    # Only owner can update settings
+    membership = await db.scalar(
+        select(GroupMember).where(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == user.id,
+        )
+    )
+    if membership is None or membership.role != "owner":
+        raise PermissionDeniedError("only group owner can update settings")
+
+    if data.name is not None:
+        group.name = data.name
+    if data.description is not None:
+        group.description = data.description
+    if data.announcement is not None:
+        group.announcement = data.announcement
+    if data.free_speech is not None:
+        group.free_speech = data.free_speech
+    if data.allow_agent_free_mention is not None:
+        group.allow_agent_free_mention = data.allow_agent_free_mention
+    if data.muted_agent_ids is not None:
+        group.muted_agent_ids = [str(uid) for uid in data.muted_agent_ids]
+    if data.admin_agent_ids is not None:
+        group.admin_agent_ids = [str(uid) for uid in data.admin_agent_ids]
+
+    await db.flush()
+    await db.refresh(group)
     return group
 
 

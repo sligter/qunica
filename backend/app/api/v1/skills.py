@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user
@@ -31,6 +31,19 @@ async def import_skill(
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
     skill = await skill_service.import_skill_from_md(db, data.raw, current_user)
+    return SkillRead.model_validate(skill)
+
+
+@router.post(
+    "/import-package", response_model=SkillRead, status_code=status.HTTP_201_CREATED
+)
+async def import_skill_package(
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SkillRead:
+    content = await file.read()
+    skill = await skill_service.import_skill_from_zip(db, content, current_user)
     return SkillRead.model_validate(skill)
 
 

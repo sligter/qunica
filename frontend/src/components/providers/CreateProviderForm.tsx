@@ -14,7 +14,7 @@ import type { ProviderKind } from '@/types/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
-  kind: z.enum(['openai-compatible', 'anthropic']),
+  kind: z.enum(['openai-compatible', 'anthropic', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().min(1, 'Required'),
   default_model: z.string().min(1, 'Required'),
@@ -31,12 +31,17 @@ const KIND_OPTIONS: { value: ProviderKind; label: string; hint: string }[] = [
   {
     value: 'openai-compatible',
     label: 'OpenAI-compatible',
-    hint: 'OpenAI · DeepSeek · Qwen · MiMo · Gemini (compat) · Together · OpenRouter',
+    hint: 'OpenAI · DeepSeek · Qwen · MiMo · Together · OpenRouter',
   },
   {
     value: 'anthropic',
     label: 'Anthropic',
     hint: 'Claude (api.anthropic.com)',
+  },
+  {
+    value: 'gemini',
+    label: 'Gemini',
+    hint: 'Google Gemini (generativelanguage.googleapis.com)',
   },
 ]
 
@@ -115,20 +120,27 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         </div>
       </div>
 
-      {kind === 'openai-compatible' && (
-        <div className="space-y-1.5">
-          <Label htmlFor="provider-base-url">Base URL</Label>
-          <Input
-            id="provider-base-url"
-            placeholder="https://api.openai.com/v1"
-            {...form.register('base_url')}
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Optional. Examples: <code>https://api.deepseek.com/v1</code>,{' '}
-            <code>https://token-plan-cn.xiaomimimo.com/v1</code>.
-          </p>
-        </div>
-      )}
+      <div className="space-y-1.5">
+        <Label htmlFor="provider-base-url">Base URL (optional)</Label>
+        <Input
+          id="provider-base-url"
+          placeholder={
+            kind === 'anthropic'
+              ? 'https://api.anthropic.com'
+              : kind === 'gemini'
+                ? 'https://generativelanguage.googleapis.com/v1beta'
+                : 'https://api.openai.com/v1'
+          }
+          {...form.register('base_url')}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          {kind === 'openai-compatible' && (
+            <>Examples: <code>https://api.deepseek.com/v1</code>, <code>https://token-plan-cn.xiaomimimo.com/v1</code>.</>
+          )}
+          {kind === 'anthropic' && 'Leave empty for default api.anthropic.com.'}
+          {kind === 'gemini' && 'Leave empty for default Google AI endpoint.'}
+        </p>
+      </div>
 
       <div className="space-y-1.5">
         <Label htmlFor="provider-api-key">API key</Label>
@@ -152,7 +164,9 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
           placeholder={
             kind === 'anthropic'
               ? 'claude-sonnet-4-5'
-              : 'gpt-4o-mini · mimo-v2.5-pro · deepseek-chat'
+              : kind === 'gemini'
+                ? 'gemini-2.5-pro · gemini-2.5-flash'
+                : 'gpt-4o-mini · mimo-v2.5-pro · deepseek-chat'
           }
           {...form.register('default_model')}
         />

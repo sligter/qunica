@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -14,9 +14,12 @@ from app.schemas.group import (
     GroupAgentRead,
     GroupCreate,
     GroupRead,
+    GroupUpdate,
 )
+from app.schemas.group_file import GroupFileRead
+from app.schemas.group_note import GroupNoteCreate, GroupNoteRead, GroupNoteUpdate
 from app.schemas.message import MessageCreate, MessageRead, MessageSendResponse
-from app.services import group_service, message_service
+from app.services import group_file_service, group_note_service, group_service, message_service
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
@@ -48,6 +51,16 @@ async def get_group(
     current_user: User = Depends(get_current_user),
 ) -> Group:
     return await group_service.get_group(db, group_id, current_user)
+
+
+@router.patch("/{group_id}", response_model=GroupRead)
+async def update_group(
+    group_id: UUID,
+    data: GroupUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Group:
+    return await group_service.update_group(db, group_id, data, current_user)
 
 
 # --- agents in group ---
@@ -139,3 +152,97 @@ async def list_messages(
     limit: int = 50,
 ) -> list[Message]:
     return await message_service.list_messages(db, group_id, current_user, limit=limit)
+
+
+# --- files in group ---
+
+
+@router.post(
+    "/{group_id}/files",
+    response_model=GroupFileRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_group_file(
+    group_id: UUID,
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupFileRead:
+    content = await file.read()
+    gf = await group_file_service.upload_file(
+        db, group_id, current_user,
+        filename=file.filename or "untitled",
+        file_bytes=content,
+        mime_type=file.content_type,
+    )
+    return GroupFileRead.model_validate(gf)
+
+
+@router.get("/{group_id}/files", response_model=list[GroupFileRead])
+async def list_group_files(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[GroupFileRead]:
+    rows = await group_file_service.list_files(db, group_id, current_user)
+    return [GroupFileRead.model_validate(f) for f in rows]
+
+
+@router.delete("/{group_id}/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group_file(
+    group_id: UUID,
+    file_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_file_service.delete_file(db, group_id, file_id, current_user)
+
+
+# --- notes in group ---
+
+
+@router.post(
+    "/{group_id}/notes",
+    response_model=GroupNoteRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_group_note(
+    group_id: UUID,
+    data: GroupNoteCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupNoteRead:
+    note = await group_note_service.create_note(db, group_id, data, current_user)
+    return GroupNoteRead.model_validate(note)
+
+
+@router.get("/{group_id}/notes", response_model=list[GroupNoteRead])
+async def list_group_notes(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[GroupNoteRead]:
+    rows = await group_note_service.list_notes(db, group_id, current_user)
+    return [GroupNoteRead.model_validate(n) for n in rows]
+
+
+@router.patch("/{group_id}/notes/{note_id}", response_model=GroupNoteRead)
+async def update_group_note(
+    group_id: UUID,
+    note_id: UUID,
+    data: GroupNoteUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupNoteRead:
+    note = await group_note_service.update_note(db, group_id, note_id, data, current_user)
+    return GroupNoteRead.model_validate(note)
+
+
+@router.delete("/{group_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group_note(
+    group_id: UUID,
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_note_service.delete_note(db, group_id, note_id, current_user)

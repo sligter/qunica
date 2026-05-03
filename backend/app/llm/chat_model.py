@@ -9,20 +9,18 @@ Two construction paths:
    right ChatModel based on the agent's `llm_provider_id`. Falls back to
    `make_chat_model` when the agent has no provider attached.
 
-Supported provider kinds (V1):
+Supported provider kinds:
 - 'openai-compatible' — ChatOpenAI with a custom base_url. Covers OpenAI,
-  DeepSeek, Qwen, MiMo, Together, OpenRouter, Gemini's OpenAI-compat mode.
-- 'anthropic' — ChatAnthropic for Claude.
-
-Other vendors route through 'openai-compatible' by setting their custom
-base_url (e.g. https://generativelanguage.googleapis.com/v1beta/openai for
-Gemini).
+  DeepSeek, Qwen, MiMo, Together, OpenRouter.
+- 'anthropic' — ChatAnthropic for Claude, supports custom base_url.
+- 'gemini' — ChatGoogleGenerativeAI for Google Gemini models.
 """
 
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +28,18 @@ from app.core.config import settings
 from app.core.exceptions import LLMProviderError
 from app.models.agent import Agent
 from app.services import llm_provider_service
+
+
+def _extract_common_params(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Extract common model parameters from llm_config."""
+    params: dict[str, Any] = {}
+    if "temperature" in cfg:
+        params["temperature"] = float(cfg["temperature"])
+    if "top_p" in cfg:
+        params["top_p"] = float(cfg["top_p"])
+    if "max_tokens" in cfg:
+        params["max_tokens"] = int(cfg["max_tokens"])
+    return params
 
 
 def make_chat_model(
@@ -44,12 +54,18 @@ def make_chat_model(
     if not api_key:
         raise LLMProviderError("no LLM api_key configured")
 
-    return ChatOpenAI(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=temperature,
-    )
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "temperature": temperature,
+    }
+    if "top_p" in cfg:
+        kwargs["top_p"] = float(cfg["top_p"])
+    if "max_tokens" in cfg:
+        kwargs["max_tokens"] = int(cfg["max_tokens"])
+
+    return ChatOpenAI(**kwargs)
 
 
 async def resolve_chat_model(
@@ -63,8 +79,6 @@ async def resolve_chat_model(
     """
     overrides = agent.llm_config or {}
     if agent.llm_provider_id is None:
-        # Env default; honour streaming via wrapper since make_chat_model
-        # doesn't accept streaming param yet.
         cm = make_chat_model(overrides)
         if streaming and hasattr(cm, "streaming"):
             cm.streaming = True
@@ -73,14 +87,31 @@ async def resolve_chat_model(
     provider = await llm_provider_service.get_for_use(db, agent.llm_provider_id)
     model_name = overrides.get("model") or provider.default_model
     temperature = float(overrides.get("temperature", 0.7))
+    extra = _extract_common_params(overrides)
+    extra.pop("temperature", None)  # handled explicitly
 
     if provider.kind == "anthropic":
-        return ChatAnthropic(
-            model=model_name,
-            api_key=provider.api_key,
-            temperature=temperature,
-            streaming=streaming,
-        )
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "api_key": provider.api_key,
+            "temperature": temperature,
+            "streaming": streaming,
+            **extra,
+        }
+        if provider.base_url:
+            kwargs["anthropic_api_url"] = provider.base_url
+        return ChatAnthropic(**kwargs)
+
+    if provider.kind == "gemini":
+        kwargs = {
+            "model": model_name,
+            "google_api_key": provider.api_key,
+            "temperature": temperature,
+            "streaming": streaming,
+            **extra,
+        }
+        return ChatGoogleGenerativeAI(**kwargs)
+
     # 'openai-compatible' covers everything else
     base_url = provider.base_url or settings.llm_base_url
     return ChatOpenAI(
@@ -89,4 +120,5 @@ async def resolve_chat_model(
         base_url=base_url,
         temperature=temperature,
         streaming=streaming,
+        **extra,
     )

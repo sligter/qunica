@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { fetchJson } from '@/lib/api'
+import { fetchFormData, fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import type { SkillCreate, SkillImport, SkillRead } from '@/types/api'
 
@@ -60,6 +60,21 @@ export function useDeleteSkill() {
   return useMutation({
     mutationFn: (id: string) =>
       fetchJson<void>(`/skills/${id}`, { token, method: 'DELETE' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+}
+
+export function useImportSkillPackage() {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      return fetchFormData<SkillRead>('/skills/import-package', fd, { token })
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['skills'] })
     },

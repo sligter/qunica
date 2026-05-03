@@ -79,3 +79,45 @@ export async function fetchJson<T>(path: string, opts: FetchOptions = {}): Promi
 
   return parsed as T
 }
+
+export async function fetchFormData<T>(
+  path: string,
+  formData: FormData,
+  opts: { token?: string | null; method?: string } = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  }
+  if (opts.token) {
+    headers['Authorization'] = `Bearer ${opts.token}`
+  }
+
+  const res = await fetch(`${BASE}${path}`, {
+    method: opts.method ?? 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (res.status === 204) {
+    return undefined as T
+  }
+
+  let parsed: unknown = null
+  const text = await res.text()
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      // fall through
+    }
+  }
+
+  if (!res.ok) {
+    if (isApiErrorEnvelope(parsed)) {
+      throw new ApiError(res.status, parsed.error.code, parsed.error.message)
+    }
+    throw new ApiError(res.status, 'http_error', `HTTP ${res.status}`)
+  }
+
+  return parsed as T
+}

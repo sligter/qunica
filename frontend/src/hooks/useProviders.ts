@@ -52,3 +52,16 @@ export function useDeleteProvider() {
     },
   })
 }
+
+export function useProviderModels(providerId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: ['llm-providers', providerId, 'models'],
+    queryFn: () =>
+      fetchJson<{ id: string; name: string }[]>(`/llm-providers/${providerId}/models`, {
+        token,
+      }),
+    enabled: token !== null && !!providerId,
+    staleTime: 5 * 60 * 1000,
+  })
+}
