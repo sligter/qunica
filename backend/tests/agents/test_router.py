@@ -123,3 +123,68 @@ async def test_resolve_all_mentions_case_insensitive(
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
     result = await resolve_all_mentions(db_session, group.id, "@ECHO say hi")
     assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_with_spaces_in_name(
+    db_session: AsyncSession,
+) -> None:
+    """Regression test for the @tree man bug — display names with spaces."""
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "tree man"])
+    result = await resolve_all_mentions(
+        db_session, group.id, "@Echo @tree man say something brief."
+    )
+    names = [a.name for _, a in result]
+    assert names == ["Echo", "tree man"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_longest_match_wins(
+    db_session: AsyncSession,
+) -> None:
+    """Two agents `tree` and `tree man`: @tree man picks `tree man` (longer)."""
+    group, _ = await _seed_group_with_agents(db_session, ["tree", "tree man"])
+    result = await resolve_all_mentions(db_session, group.id, "@tree man hi")
+    assert [a.name for _, a in result] == ["tree man"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_short_name_still_matches(
+    db_session: AsyncSession,
+) -> None:
+    """Same setup as above but `@tree x` — only `tree` matches because `man` is missing."""
+    group, _ = await _seed_group_with_agents(db_session, ["tree", "tree man"])
+    result = await resolve_all_mentions(db_session, group.id, "@tree x")
+    assert [a.name for _, a in result] == ["tree"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_no_substring_match(
+    db_session: AsyncSession,
+) -> None:
+    """`@echolike` does NOT match agent `Echo` (boundary check)."""
+    group, _ = await _seed_group_with_agents(db_session, ["Echo"])
+    result = await resolve_all_mentions(db_session, group.id, "@echolike hi")
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_trailing_punctuation(
+    db_session: AsyncSession,
+) -> None:
+    """`@Echo,` should match Echo (comma is a non-name boundary)."""
+    group, _ = await _seed_group_with_agents(db_session, ["Echo"])
+    result = await resolve_all_mentions(db_session, group.id, "@Echo, please reply")
+    assert [a.name for _, a in result] == ["Echo"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_dedupes_multiword_too(
+    db_session: AsyncSession,
+) -> None:
+    group, _ = await _seed_group_with_agents(db_session, ["tree man"])
+    result = await resolve_all_mentions(
+        db_session, group.id, "@tree man hi @tree man again"
+    )
+    assert len(result) == 1
+    assert result[0][1].name == "tree man"
