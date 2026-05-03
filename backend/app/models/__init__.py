@@ -3,7 +3,9 @@ from app.models.base import Base
 from app.models.group import Group
 from app.models.group_agent import GroupAgent
 from app.models.group_member import GroupMember
+from app.models.llm_provider import LLMProvider
 from app.models.message import Message
+from app.models.skill import Skill
 from app.models.thread import Thread
 from app.models.user import User
 
@@ -13,7 +15,9 @@ __all__ = [
     "Group",
     "GroupAgent",
     "GroupMember",
+    "LLMProvider",
     "Message",
+    "Skill",
     "Thread",
     "User",
 ]

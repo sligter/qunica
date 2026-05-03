@@ -2,6 +2,8 @@ import { useLocation } from 'react-router-dom'
 
 import { AgentsList } from '@/components/layout/AgentsList'
 import { GroupsList } from '@/components/layout/GroupsList'
+import { ProvidersList } from '@/components/layout/ProvidersList'
+import { SkillsList } from '@/components/layout/SkillsList'
 
 /**
  * Decides which middle-column list to mount based on the current route.
@@ -13,5 +15,7 @@ import { GroupsList } from '@/components/layout/GroupsList'
 export function MiddleColumn() {
   const { pathname } = useLocation()
   if (pathname.startsWith('/agents')) return <AgentsList />
+  if (pathname.startsWith('/providers')) return <ProvidersList />
+  if (pathname.startsWith('/skills')) return <SkillsList />
   return <GroupsList />
 }

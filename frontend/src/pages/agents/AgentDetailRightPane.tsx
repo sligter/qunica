@@ -1,10 +1,19 @@
-import { useParams } from 'react-router-dom'
+import { useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 
+import { EditAgentForm } from '@/components/agents/EditAgentForm'
+import { Button } from '@/components/ui/button'
 import { useAgent } from '@/hooks/useAgents'
+import { useProviders } from '@/hooks/useProviders'
+import { useSkills } from '@/hooks/useSkills'
 
 export function AgentDetailRightPane() {
   const { agentId } = useParams<{ agentId: string }>()
   const agent = useAgent(agentId)
+  const providers = useProviders()
+  const skills = useSkills()
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
 
   if (agent.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading agent…</div>
@@ -21,14 +30,48 @@ export function AgentDetailRightPane() {
   }
 
   const a = agent.data
+  const provider = a.llm_provider_id
+    ? providers.data?.find((p) => p.id === a.llm_provider_id)
+    : null
+  const mountedSkills = (skills.data ?? []).filter((s) =>
+    a.skill_ids.includes(s.id),
+  )
+
+  if (editing) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
+        <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
+          <header className="flex items-baseline justify-between gap-4">
+            <h1 className="text-xl font-semibold tracking-tight">Edit {a.name}</h1>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+          </header>
+          <EditAgentForm
+            agent={a}
+            onSaved={() => {
+              setEditing(false)
+              void navigate(`/agents/${a.id}`)
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
       <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
-        <header className="space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight">{a.name}</h1>
-          {a.description && (
-            <p className="text-sm text-muted-foreground">{a.description}</p>
-          )}
+        <header className="flex items-baseline justify-between gap-4">
+          <div className="space-y-1">
+            <h1 className="text-xl font-semibold tracking-tight">{a.name}</h1>
+            {a.description && (
+              <p className="text-sm text-muted-foreground">{a.description}</p>
+            )}
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
         </header>
 
         <section className="space-y-2">
@@ -43,9 +86,13 @@ export function AgentDetailRightPane() {
         <section className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Visibility
+              LLM provider
             </h3>
-            <p>{a.visibility}</p>
+            <p>
+              {provider
+                ? `${provider.name} — ${provider.kind} · ${provider.default_model}`
+                : 'Default (env settings)'}
+            </p>
           </div>
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -53,15 +100,25 @@ export function AgentDetailRightPane() {
             </h3>
             <p>{a.status}</p>
           </div>
-          <div className="col-span-2">
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Provider
-            </h3>
-            <p className="text-muted-foreground">
-              Inherits the backend default. Per-agent provider config is not yet
-              available in the UI.
-            </p>
-          </div>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Mounted skills
+          </h3>
+          {mountedSkills.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No skills mounted.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {mountedSkills.map((s) => (
+                <li key={s.id}>
+                  <span className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs">
+                    <span className="font-medium">{s.name}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </div>
     </div>

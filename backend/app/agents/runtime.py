@@ -3,14 +3,16 @@
 - One compiled graph per process, cached on `app.state.graph`.
 - Graph shape: `START → agent → END` (room to grow: tool node, approval node,
   router node — all added without changing this surface).
-- Per-agent `llm_config` is passed via LangGraph `configurable` so the same
-  compiled graph serves every agent without recompilation.
+- The chat-model used by the node is constructed by the caller
+  (`message_service` via `resolve_chat_model`) and injected through
+  LangGraph's `RunnableConfig.configurable["chat_model"]`. This keeps the
+  runtime stateless and the service layer in charge of provider routing.
 - `thread_id` (LangGraph) maps 1:1 to our `threads.id`, so the checkpointer
   rows can be joined to our business thread row by ID.
 
 Two public entrypoints:
-- `run(thread_id, llm_config, input_messages) -> AIMessage` — non-streaming.
-- `run_with_stream(thread_id, llm_config, input_messages)` — yields
+- `run(graph, thread_id, chat_model, input_messages) -> AIMessage` — non-streaming.
+- `run_with_stream(graph, thread_id, chat_model, input_messages)` — yields
   `("token", str)` events as the LLM emits chunks, then a final
   `("done", AIMessage)`.
 """
@@ -18,6 +20,7 @@ Two public entrypoints:
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -26,9 +29,8 @@ from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.state import GroupState
 from app.core.exceptions import LLMProviderError
-from app.llm.chat_model import make_chat_model
 
-_AGENT_LLM_CONFIG_KEY = "agent_llm_config"
+_CHAT_MODEL_KEY = "chat_model"
 
 # StateGraph and CompiledStateGraph are highly generic in langgraph 1.x; we
 # pin the state type and let the rest fall to Any to avoid leaking internal
@@ -38,12 +40,12 @@ _Graph = CompiledStateGraph[GroupState, Any, GroupState, GroupState]
 
 async def _agent_node(state: GroupState, config: RunnableConfig) -> dict[str, Any]:
     configurable = config.get("configurable") or {}
-    llm_config = configurable.get(_AGENT_LLM_CONFIG_KEY)
-    model = make_chat_model(llm_config)
+    chat_model = configurable.get(_CHAT_MODEL_KEY)
+    if chat_model is None:
+        raise LLMProviderError("agent_node received no chat_model in configurable")
     messages = state.get("input_messages") or []
-    response = await model.ainvoke(messages)
+    response = await chat_model.ainvoke(messages)
     if not isinstance(response, AIMessage):
-        # ChatOpenAI returns AIMessage; this guard is for type narrowing.
         response = AIMessage(content=str(response.content))
     return {"last_response": response}
 
@@ -60,11 +62,11 @@ def compile_graph(checkpointer: BaseCheckpointSaver[Any]) -> _Graph:
     return build_graph().compile(checkpointer=checkpointer)
 
 
-def _config_for(thread_id: str, llm_config: dict[str, Any] | None) -> RunnableConfig:
+def _config_for(thread_id: str, chat_model: BaseChatModel) -> RunnableConfig:
     return {
         "configurable": {
             "thread_id": thread_id,
-            _AGENT_LLM_CONFIG_KEY: llm_config,
+            _CHAT_MODEL_KEY: chat_model,
         }
     }
 
@@ -72,10 +74,10 @@ def _config_for(thread_id: str, llm_config: dict[str, Any] | None) -> RunnableCo
 async def run(
     graph: _Graph,
     thread_id: str,
-    llm_config: dict[str, Any] | None,
+    chat_model: BaseChatModel,
     input_messages: list[BaseMessage],
 ) -> AIMessage:
-    config = _config_for(thread_id, llm_config)
+    config = _config_for(thread_id, chat_model)
     state_input: GroupState = {
         "input_messages": list(input_messages),
         "last_response": None,
@@ -92,11 +94,11 @@ async def run(
 async def run_with_stream(
     graph: _Graph,
     thread_id: str,
-    llm_config: dict[str, Any] | None,
+    chat_model: BaseChatModel,
     input_messages: list[BaseMessage],
 ) -> AsyncIterator[tuple[str, Any]]:
     """Yield ('token', str) chunks during inference, then ('done', AIMessage)."""
-    config = _config_for(thread_id, llm_config)
+    config = _config_for(thread_id, chat_model)
     state_input: GroupState = {
         "input_messages": list(input_messages),
         "last_response": None,

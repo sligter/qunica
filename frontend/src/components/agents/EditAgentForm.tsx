@@ -7,11 +7,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { useCreateAgent } from '@/hooks/useCreateAgent'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
+import { useUpdateAgent } from '@/hooks/useUpdateAgent'
 import { ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import type { AgentRead } from '@/types/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
@@ -22,25 +23,25 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
-interface CreateAgentFormProps {
-  onCreated?: (newAgentId: string) => void
+interface EditAgentFormProps {
+  agent: AgentRead
+  onSaved?: () => void
 }
 
-export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
-  const createAgent = useCreateAgent()
+export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
+  const update = useUpdateAgent(agent.id)
   const providers = useProviders()
   const skills = useSkills()
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [submittedName, setSubmittedName] = useState<string | null>(null)
-  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
-      name: '',
-      description: '',
-      system_prompt: '',
-      llm_provider_id: '',
+      name: agent.name,
+      description: agent.description ?? '',
+      system_prompt: agent.system_prompt,
+      llm_provider_id: agent.llm_provider_id ?? '',
     },
   })
 
@@ -52,19 +53,15 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
-    setSubmittedName(null)
     try {
-      const created = await createAgent.mutateAsync({
+      await update.mutateAsync({
         name: values.name,
-        description: values.description,
+        description: values.description ?? null,
         system_prompt: values.system_prompt,
         llm_provider_id: values.llm_provider_id || null,
         skill_ids: selectedSkillIds,
       })
-      form.reset()
-      setSelectedSkillIds([])
-      setSubmittedName(created.name)
-      onCreated?.(created.id)
+      onSaved?.()
     } catch (err) {
       setSubmitError(err instanceof ApiError ? err.message : 'Network error')
     }
@@ -73,28 +70,19 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="agent-name">Name</Label>
-        <Input id="agent-name" placeholder="Echo" {...form.register('name')} />
+        <Label htmlFor="ea-name">Name</Label>
+        <Input id="ea-name" {...form.register('name')} />
         {form.formState.errors.name && (
           <p className="text-xs text-red-600">{form.formState.errors.name.message}</p>
         )}
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="agent-description">Description (optional)</Label>
-        <Input
-          id="agent-description"
-          placeholder="What this agent is for"
-          {...form.register('description')}
-        />
+        <Label htmlFor="ea-description">Description (optional)</Label>
+        <Input id="ea-description" {...form.register('description')} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="agent-system-prompt">System prompt</Label>
-        <Textarea
-          id="agent-system-prompt"
-          rows={5}
-          placeholder="You are a concise assistant. Always end with the word DONE."
-          {...form.register('system_prompt')}
-        />
+        <Label htmlFor="ea-prompt">System prompt</Label>
+        <Textarea id="ea-prompt" rows={6} {...form.register('system_prompt')} />
         {form.formState.errors.system_prompt && (
           <p className="text-xs text-red-600">
             {form.formState.errors.system_prompt.message}
@@ -103,9 +91,9 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="agent-provider">LLM provider</Label>
+        <Label htmlFor="ea-provider">LLM provider</Label>
         <select
-          id="agent-provider"
+          id="ea-provider"
           className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           {...form.register('llm_provider_id')}
         >
@@ -116,22 +104,13 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
             </option>
           ))}
         </select>
-        {providers.data && providers.data.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">
-            No providers registered. Go to <strong>Providers</strong> to add one,
-            or leave this as Default.
-          </p>
-        )}
       </div>
 
       <div className="space-y-1.5">
-        <Label>Mount skills (optional)</Label>
-        {skills.isLoading && (
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        )}
+        <Label>Mounted skills</Label>
         {skills.data && skills.data.length === 0 && (
           <p className="text-[11px] text-muted-foreground">
-            No skills yet. Go to <strong>Skills</strong> to import a SKILL.md.
+            No skills available. Import one in <strong>Skills</strong>.
           </p>
         )}
         {skills.data && skills.data.length > 0 && (
@@ -164,11 +143,8 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
           {submitError}
         </p>
       )}
-      {submittedName && (
-        <p className="text-sm text-green-700">Created agent: {submittedName}</p>
-      )}
-      <Button type="submit" disabled={createAgent.isPending}>
-        {createAgent.isPending ? 'Creating…' : 'Create agent'}
+      <Button type="submit" disabled={update.isPending}>
+        {update.isPending ? 'Saving…' : 'Save'}
       </Button>
     </form>
   )

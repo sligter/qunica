@@ -46,12 +46,13 @@ from app.agents import runtime
 from app.agents.router import resolve_all_mentions
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db import SessionLocal
+from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.group import Group
 from app.models.message import Message
 from app.models.thread import Thread
 from app.models.user import User
-from app.services import group_service, thread_service
+from app.services import group_service, skill_service, thread_service
 
 CONTEXT_WINDOW = 20
 
@@ -143,6 +144,13 @@ async def _build_lc_input(
     system_parts: list[str] = [agent.system_prompt]
     if group.announcement:
         system_parts.append(f"Group announcement:\n{group.announcement}")
+    if agent.skill_ids:
+        skill_uuids = [
+            UUID(s) if isinstance(s, str) else s for s in agent.skill_ids
+        ]
+        skills = await skill_service.list_by_ids(db, skill_uuids)
+        for s in skills:
+            system_parts.append(f"# Skill: {s.name}\n{s.body_markdown}")
     system = "\n\n".join(system_parts)
 
     history_stmt = (
@@ -215,10 +223,11 @@ async def send_message(
         await thread_service.mark_running(db, chat_thread)
         try:
             input_messages = await _build_lc_input(db, group, agent)
+            chat_model = await resolve_chat_model(db, agent, streaming=False)
             response: AIMessage = await runtime.run(
                 graph=graph,
                 thread_id=str(chat_thread.id),
-                llm_config=agent.llm_config,
+                chat_model=chat_model,
                 input_messages=input_messages,
             )
             text = (
@@ -258,10 +267,11 @@ async def _stream_one_agent(
     cancelled = False
     try:
         input_messages = await _build_lc_input(db, group, agent)
+        chat_model = await resolve_chat_model(db, agent, streaming=True)
         async for kind, payload in runtime.run_with_stream(
             graph=graph,
             thread_id=str(chat_thread.id),
-            llm_config=agent.llm_config,
+            chat_model=chat_model,
             input_messages=input_messages,
         ):
             if kind == "token":
@@ -409,10 +419,11 @@ async def resume_thread_stream(
         input_messages = await _build_lc_input(
             db, group, agent, extra_user_text=RESUME_CONTINUATION_PROMPT
         )
+        chat_model = await resolve_chat_model(db, agent, streaming=True)
         async for kind, payload in runtime.run_with_stream(
             graph=graph,
             thread_id=str(thread.id),
-            llm_config=agent.llm_config,
+            chat_model=chat_model,
             input_messages=input_messages,
         ):
             if kind == "token":

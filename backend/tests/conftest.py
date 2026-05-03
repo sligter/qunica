@@ -92,7 +92,8 @@ def _make_fake_chat_model(messages: list[str] | None = None) -> Any:
 
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
-    """Patch every `make_chat_model` import site with a deterministic fake.
+    """Patch every `make_chat_model` and `resolve_chat_model` import site
+    with a deterministic fake.
 
     Tests that need a custom script can mutate `state["messages"]` before
     triggering the LLM call.
@@ -102,9 +103,17 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     def _factory(_llm_config: dict[str, Any] | None = None) -> Any:
         return _make_fake_chat_model(list(state["messages"]))
 
+    async def _resolve_factory(
+        _db: Any, _agent: Any, *, streaming: bool = False
+    ) -> Any:
+        return _make_fake_chat_model(list(state["messages"]))
+
     monkeypatch.setattr("app.llm.chat_model.make_chat_model", _factory)
-    monkeypatch.setattr("app.api.v1.agents.make_chat_model", _factory)
-    monkeypatch.setattr("app.agents.runtime.make_chat_model", _factory)
+    monkeypatch.setattr("app.llm.chat_model.resolve_chat_model", _resolve_factory)
+    monkeypatch.setattr("app.api.v1.agents.resolve_chat_model", _resolve_factory)
+    monkeypatch.setattr(
+        "app.services.message_service.resolve_chat_model", _resolve_factory
+    )
     yield state
 
 

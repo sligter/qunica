@@ -17,8 +17,10 @@ dependencies = [
     "langgraph>=0.2.50",
     "langgraph-checkpoint-postgres>=2.0.0",
     "langchain-openai>=0.2.10",
+    "langchain-anthropic>=0.3.0",
     "psycopg[binary,pool]>=3.2.0",
     "sse-starlette>=2.2.0",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]

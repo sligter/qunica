@@ -25,6 +25,8 @@ export interface AgentRead {
   description: string | null
   system_prompt: string
   llm_config: Record<string, unknown> | null
+  llm_provider_id: string | null
+  skill_ids: string[]
   visibility: string
   status: string
   created_at: string
@@ -34,6 +36,59 @@ export interface AgentCreate {
   name: string
   description?: string
   system_prompt: string
+  llm_provider_id?: string | null
+  skill_ids?: string[]
+}
+
+export interface AgentUpdate {
+  name?: string
+  description?: string | null
+  system_prompt?: string
+  llm_provider_id?: string | null
+  skill_ids?: string[]
+}
+
+export type ProviderKind = 'openai-compatible' | 'anthropic'
+
+export interface LLMProviderRead {
+  id: string
+  name: string
+  kind: ProviderKind
+  base_url: string | null
+  api_key_masked: string
+  default_model: string
+  description: string | null
+  status: string
+  created_at: string
+}
+
+export interface LLMProviderCreate {
+  name: string
+  kind: ProviderKind
+  base_url?: string | null
+  api_key: string
+  default_model: string
+  description?: string | null
+}
+
+export interface SkillRead {
+  id: string
+  name: string
+  description: string | null
+  body_markdown: string
+  source: string
+  status: string
+  created_at: string
+}
+
+export interface SkillCreate {
+  name: string
+  description?: string
+  body_markdown: string
+}
+
+export interface SkillImport {
+  raw: string
 }
 
 export interface GroupRead {

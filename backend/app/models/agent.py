@@ -27,3 +27,9 @@ class Agent(Base, UUIDPkMixin, TimestampMixin):
     memory_policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     visibility: Mapped[str] = mapped_column(String(30), default="private", nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)
+    llm_provider_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    skill_ids: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )

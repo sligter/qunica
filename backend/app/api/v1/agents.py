@@ -9,19 +9,19 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
-from openai import OpenAIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.deps import get_current_user
 from app.core.exceptions import LLMProviderError
 from app.db import get_db
-from app.llm import make_chat_model
+from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.agent import (
     AgentCreate,
     AgentRead,
+    AgentUpdate,
     InvokeRequest,
     InvokeResponse,
 )
@@ -67,6 +67,16 @@ async def get_agent(
     return await agent_service.get_agent(db, agent_id, current_user)
 
 
+@router.patch("/{agent_id}", response_model=AgentRead)
+async def update_agent(
+    agent_id: UUID,
+    data: AgentUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Agent:
+    return await agent_service.update_agent(db, agent_id, data, current_user)
+
+
 @router.post("/{agent_id}/invoke", response_model=InvokeResponse)
 async def invoke_agent(
     agent_id: UUID,
@@ -75,10 +85,10 @@ async def invoke_agent(
     current_user: User = Depends(get_current_user),
 ) -> InvokeResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
-    model = make_chat_model(agent.llm_config)
+    chat_model = await resolve_chat_model(db, agent, streaming=False)
     try:
-        response = await model.ainvoke(_build_messages(agent, data.message))
-    except OpenAIError as exc:
+        response = await chat_model.ainvoke(_build_messages(agent, data.message))
+    except Exception as exc:
         raise LLMProviderError(f"chat_complete failed: {exc}") from exc
     content = response.content if isinstance(response, AIMessage) else str(response.content)
     return InvokeResponse(content=cast(str, content))
@@ -92,15 +102,15 @@ async def invoke_agent_stream(
     current_user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
-    model = make_chat_model(agent.llm_config)
+    chat_model = await resolve_chat_model(db, agent, streaming=True)
 
     async def event_gen() -> AsyncIterator[dict[str, str]]:
         try:
-            async for chunk in model.astream(_build_messages(agent, data.message)):
+            async for chunk in chat_model.astream(_build_messages(agent, data.message)):
                 content = getattr(chunk, "content", None)
                 if isinstance(content, str) and content:
                     yield {"event": "token", "data": content}
-        except OpenAIError as exc:
+        except Exception as exc:
             yield {"event": "error", "data": f"chat_stream failed: {exc}"}
             return
         yield {"event": "done", "data": ""}
