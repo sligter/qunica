@@ -12,3 +12,12 @@ export function useAgents() {
     enabled: token !== null,
   })
 }
+
+export function useAgent(agentId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: ['agents', agentId],
+    queryFn: () => fetchJson<AgentRead>(`/agents/${agentId}`, { token }),
+    enabled: token !== null && !!agentId,
+  })
+}

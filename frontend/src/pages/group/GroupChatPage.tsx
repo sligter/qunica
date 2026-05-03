@@ -39,36 +39,36 @@ export function GroupChatPage() {
     return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
   }
 
-  const agentNames = (groupAgents.data ?? [])
-    .map((g) => `@${g.display_name}`)
-    .join(' · ')
-  const hint = agentNames || 'No agents in this group yet — add one below.'
+  const agents = groupAgents.data ?? []
+  const agentNames = agents.map((g) => `@${g.display_name}`).join(' · ')
+  const hint = agentNames || 'No agents in this group yet — add one above.'
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border px-4 py-2">
-        <div className="flex items-baseline justify-between gap-3">
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-base font-semibold tracking-tight">{group.data?.name}</h1>
-            {group.data?.description && (
-              <span className="text-xs text-muted-foreground">
-                {group.data.description}
-              </span>
-            )}
-          </div>
+      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background px-6">
+        <div className="flex min-w-0 items-baseline gap-3">
+          <h1 className="truncate text-base font-semibold tracking-tight">
+            {group.data?.name}
+          </h1>
+          <span className="text-xs text-muted-foreground">
+            {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
+          </span>
         </div>
-        {group.data?.announcement && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            📣 {group.data.announcement}
-          </p>
-        )}
-        <AddAgentToGroupForm groupId={groupId} />
-      </div>
+        <div className="shrink-0">
+          <AddAgentToGroupForm groupId={groupId} />
+        </div>
+      </header>
+
+      {group.data?.announcement && (
+        <div className="shrink-0 border-b border-border bg-card px-6 py-2 text-xs text-muted-foreground">
+          📣 {group.data.announcement}
+        </div>
+      )}
 
       <MessageList groupId={groupId} />
 
       {stream.error && (
-        <div className="border-t border-border bg-red-50 px-4 py-2 text-xs text-red-700">
+        <div className="border-t border-border bg-red-50 px-6 py-2 text-xs text-red-700">
           Stream error: {stream.error}
         </div>
       )}

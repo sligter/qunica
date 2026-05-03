@@ -38,7 +38,7 @@ export function AddAgentToGroupForm({ groupId }: AddAgentToGroupFormProps) {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-xs">
+    <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="text-muted-foreground">Add agent:</span>
       {candidates.map((a) => (
         <Button

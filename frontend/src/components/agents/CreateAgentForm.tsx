@@ -18,7 +18,11 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
-export function CreateAgentForm() {
+interface CreateAgentFormProps {
+  onCreated?: (newAgentId: string) => void
+}
+
+export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
   const createAgent = useCreateAgent()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submittedName, setSubmittedName] = useState<string | null>(null)
@@ -39,6 +43,7 @@ export function CreateAgentForm() {
       })
       form.reset()
       setSubmittedName(created.name)
+      onCreated?.(created.id)
     } catch (err) {
       setSubmitError(err instanceof ApiError ? err.message : 'Network error')
     }

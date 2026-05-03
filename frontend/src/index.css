@@ -5,11 +5,13 @@
   --color-foreground: hsl(240 10% 3.9%);
   --color-muted: hsl(240 4.8% 95.9%);
   --color-muted-foreground: hsl(240 3.8% 46.1%);
-  --color-primary: hsl(240 5.9% 10%);
-  --color-primary-foreground: hsl(0 0% 98%);
+  --color-primary: hsl(217 91% 50%);
+  --color-primary-foreground: hsl(0 0% 100%);
+  --color-card: hsl(240 5% 98.5%);
+  --color-card-hover: hsl(240 6% 95%);
   --color-border: hsl(240 5.9% 90%);
   --color-input: hsl(240 5.9% 90%);
-  --color-ring: hsl(240 5.9% 10%);
+  --color-ring: hsl(217 91% 50%);
   --radius: 0.5rem;
 }
 
