@@ -29,7 +29,7 @@ async def _create_group_with_owner(db: AsyncSession, owner: User) -> Group:
     return group
 
 
-async def test_owner_and_member_can_load_group_members_endpoint(
+async def test_standalone_member_page_blocking_endpoints_load_for_owner_and_member(
     client: AsyncClient,
     db_session: AsyncSession,
     auth_headers: dict[str, str],
@@ -43,15 +43,30 @@ async def test_owner_and_member_can_load_group_members_endpoint(
     db_session.add(GroupMember(group_id=group.id, user_id=member.id, role="member"))
     await db_session.flush()
 
-    owner_response = await client.get(
+    owner_paths = [
+        f"/api/v1/groups/{group.id}",
+        f"/api/v1/groups/{group.id}/members",
+        f"/api/v1/groups/{group.id}/agents",
+    ]
+    for path in owner_paths:
+        response = await client.get(path, headers=auth_headers)
+        assert response.status_code == 200, f"{path}: {response.text}"
+
+    owner_members_response = await client.get(
         f"/api/v1/groups/{group.id}/members",
         headers=auth_headers,
     )
-    assert owner_response.status_code == 200, owner_response.text
-    assert {row["user_id"] for row in owner_response.json()} == {
+    assert {row["user_id"] for row in owner_members_response.json()} == {
         str(owner.id),
         str(member.id),
     }
+
+    candidates_response = await client.get(
+        f"/api/v1/groups/{group.id}/member-candidates?q=Load",
+        headers=auth_headers,
+    )
+    assert candidates_response.status_code == 200, candidates_response.text
+    assert any(row["id"] == str(member.id) for row in candidates_response.json())
 
     login = await client.post(
         "/api/v1/auth/login",
@@ -59,12 +74,20 @@ async def test_owner_and_member_can_load_group_members_endpoint(
     )
     assert login.status_code == 200, login.text
     member_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-    member_response = await client.get(
+    member_paths = [
+        f"/api/v1/groups/{group.id}",
+        f"/api/v1/groups/{group.id}/members",
+        f"/api/v1/groups/{group.id}/agents",
+    ]
+    for path in member_paths:
+        response = await client.get(path, headers=member_headers)
+        assert response.status_code == 200, f"{path}: {response.text}"
+
+    member_members_response = await client.get(
         f"/api/v1/groups/{group.id}/members",
         headers=member_headers,
     )
-    assert member_response.status_code == 200, member_response.text
-    assert {row["user_id"] for row in member_response.json()} == {
+    assert {row["user_id"] for row in member_members_response.json()} == {
         str(owner.id),
         str(member.id),
     }
