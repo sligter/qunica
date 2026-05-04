@@ -26,7 +26,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
 
   const resourceRows = resources.data ?? skill.files?.map((file) => ({
     ...file,
-    is_text: false,
+    is_text: isLikelyTextResource(file.path, file.size),
     content: null,
   })) ?? []
   const firstResourcePath = resourceRows[0]?.path
@@ -47,6 +47,12 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
   }, [selected.data])
 
   const selectedInfo = selected.data ?? resourceRows.find((row) => row.path === selectedPath)
+  const canEditSelected =
+    !selected.isLoading &&
+    !selected.error &&
+    selected.data?.is_text === true &&
+    selected.data.content !== null &&
+    selected.data.content !== undefined
 
   const onSave = async () => {
     setSaveError(null)
@@ -140,12 +146,13 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                 <p className="text-sm text-muted-foreground">Loading file…</p>
               )}
               {selected.error && (
-                <p className="text-sm text-red-600">Failed to load file.</p>
+                <p className="text-sm text-red-600">
+                  {selected.error instanceof ApiError
+                    ? selected.error.message
+                    : 'Failed to load file.'}
+                </p>
               )}
-              {!selected.isLoading &&
-                selectedInfo.is_text &&
-                selected.data?.content !== null &&
-                selected.data?.content !== undefined && (
+              {canEditSelected && (
                   <div className="space-y-2">
                     <textarea
                       value={draft}
@@ -158,7 +165,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                         {saveError}
                       </p>
                     )}
-                    <Button size="sm" onClick={onSave} disabled={update.isPending}>
+                    <Button size="sm" onClick={onSave} disabled={update.isPending || !canEditSelected}>
                       {update.isPending ? 'Saving…' : 'Save file'}
                     </Button>
                   </div>
@@ -174,6 +181,43 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
       </div>
     </section>
   )
+}
+
+const TEXT_RESOURCE_EXTENSIONS = new Set([
+  '.md',
+  '.markdown',
+  '.txt',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.xml',
+  '.html',
+  '.css',
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.py',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.fish',
+  '.ps1',
+  '.sql',
+  '.csv',
+  '.ini',
+  '.cfg',
+])
+
+const MAX_TEXT_RESOURCE_BYTES = 1_000_000
+
+function isLikelyTextResource(path: string, size: number) {
+  if (size > MAX_TEXT_RESOURCE_BYTES) return false
+  const fileName = path.split('/').pop() ?? path
+  const dotIndex = fileName.lastIndexOf('.')
+  if (dotIndex < 0) return false
+  return TEXT_RESOURCE_EXTENSIONS.has(fileName.slice(dotIndex).toLowerCase())
 }
 
 function formatSize(bytes: number) {

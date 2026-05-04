@@ -26,6 +26,9 @@ dependencies = [
     "python-multipart>=0.0.27",
 ]
 
+[project.scripts]
+dev-server = "app.dev_server:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",

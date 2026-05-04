@@ -30,12 +30,50 @@ interface FetchOptions {
 }
 
 function isApiErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
+  if (typeof value !== 'object' || value === null || !('error' in value)) {
+    return false
+  }
+  const error = (value as { error: unknown }).error
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    'error' in value &&
-    typeof (value as { error: unknown }).error === 'object'
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    'message' in error &&
+    typeof (error as { code: unknown }).code === 'string' &&
+    typeof (error as { message: unknown }).message === 'string'
   )
+}
+
+function extractErrorMessage(value: unknown): string | null {
+  if (isApiErrorEnvelope(value)) {
+    return value.error.message
+  }
+  if (typeof value === 'object' && value !== null && 'detail' in value) {
+    const detail = (value as { detail: unknown }).detail
+    if (typeof detail === 'string') {
+      return detail
+    }
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item) => {
+          if (typeof item === 'object' && item !== null && 'msg' in item) {
+            return String((item as { msg: unknown }).msg)
+          }
+          return null
+        })
+        .filter((message): message is string => message !== null)
+        .join('; ') || null
+    }
+  }
+  return null
+}
+
+function apiErrorFromResponse(status: number, parsed: unknown, fallbackText: string) {
+  if (isApiErrorEnvelope(parsed)) {
+    return new ApiError(status, parsed.error.code, parsed.error.message)
+  }
+  const message = extractErrorMessage(parsed) ?? (fallbackText.trim() || `HTTP ${status}`)
+  return new ApiError(status, 'http_error', message)
 }
 
 export async function fetchJson<T>(path: string, opts: FetchOptions = {}): Promise<T> {
@@ -71,10 +109,7 @@ export async function fetchJson<T>(path: string, opts: FetchOptions = {}): Promi
   }
 
   if (!res.ok) {
-    if (isApiErrorEnvelope(parsed)) {
-      throw new ApiError(res.status, parsed.error.code, parsed.error.message)
-    }
-    throw new ApiError(res.status, 'http_error', `HTTP ${res.status}`)
+    throw apiErrorFromResponse(res.status, parsed, text)
   }
 
   return parsed as T
@@ -113,10 +148,7 @@ export async function fetchFormData<T>(
   }
 
   if (!res.ok) {
-    if (isApiErrorEnvelope(parsed)) {
-      throw new ApiError(res.status, parsed.error.code, parsed.error.message)
-    }
-    throw new ApiError(res.status, 'http_error', `HTTP ${res.status}`)
+    throw apiErrorFromResponse(res.status, parsed, text)
   }
 
   return parsed as T

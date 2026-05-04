@@ -13,6 +13,7 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import PROJECT_ROOT
 from app.core.exceptions import (
     AgentChatError,
     NotFoundError,
@@ -177,7 +178,10 @@ def _file_info_for_path(skill: Skill, rel_path: str) -> dict[str, object]:
 def _skill_storage_dir(skill: Skill) -> Path:
     if not skill.storage_path:
         raise NotFoundError(f"skill resources {skill.id}")
-    return Path(skill.storage_path).resolve()
+    path = Path(skill.storage_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
 
 
 def _resource_file_path(skill: Skill, rel_path: str) -> Path:
@@ -194,7 +198,13 @@ def _resource_file_path(skill: Skill, rel_path: str) -> Path:
 
 
 def _is_text_resource(path: Path, size: int) -> bool:
-    return size <= _MAX_TEXT_FILE_BYTES and path.suffix.lower() in _TEXT_EXTENSIONS
+    if size > _MAX_TEXT_FILE_BYTES or path.suffix.lower() not in _TEXT_EXTENSIONS:
+        return False
+    try:
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 async def create_skill(
@@ -304,7 +314,7 @@ async def import_skill_from_zip(
     await db.flush()
     await db.refresh(skill)
 
-    storage_dir = Path("uploads") / "skills" / str(skill.id)
+    storage_dir = PROJECT_ROOT / "uploads" / "skills" / str(skill.id)
     storage_dir.mkdir(parents=True, exist_ok=True)
     for rel, payload in file_payloads:
         target = storage_dir / rel

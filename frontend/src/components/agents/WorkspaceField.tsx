@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import type { WorkspaceBackendType } from '@/types/api'
 
 interface WorkspaceFieldProps {
@@ -24,6 +25,11 @@ function directoryLabel(files: FileList | null) {
   const relativePath = first?.webkitRelativePath
   if (!relativePath) return ''
   return relativePath.split('/')[0] ?? ''
+}
+
+function localPathLooksAbsolute(path: string) {
+  const trimmed = path.trim()
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
 }
 
 export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) {
@@ -56,6 +62,12 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
   }
 
   const onCreate = async () => {
+    if (!localPathLooksAbsolute(localPath)) {
+      setCreateError(
+        'Enter an absolute path that exists on the backend host, for example D:/file/learn/AIGC/ag-swarmer or /home/me/project.',
+      )
+      return
+    }
     setCreateError(null)
     try {
       const created = await createWorkspace.mutateAsync({
@@ -125,10 +137,11 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
               id="workspace-path"
               value={localPath}
               onChange={(event) => onManualPathChange(event.target.value)}
-              placeholder="/absolute/path/to/project"
+              placeholder="D:/absolute/path/to/project or /absolute/path/to/project"
+              className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-red-500')}
             />
             <p className="text-[11px] text-muted-foreground">
-              Enter a path the backend process can access. Browser folder picking cannot reliably expose backend-accessible absolute OS paths, and no files are uploaded.
+              Enter an absolute path the backend process can access. Browser folder picking cannot reliably expose backend-accessible absolute OS paths, and no files are uploaded.
             </p>
           </div>
           <div className="space-y-1.5">
