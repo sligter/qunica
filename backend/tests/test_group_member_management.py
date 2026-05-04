@@ -29,6 +29,47 @@ async def _create_group_with_owner(db: AsyncSession, owner: User) -> Group:
     return group
 
 
+async def test_owner_and_member_can_load_group_members_endpoint(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    auth_headers: dict[str, str],
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    owner_id = me.json()["id"]
+    owner = await db_session.scalar(select(User).where(User.id == owner_id))
+    assert owner is not None
+    member = await _create_user(db_session, "load-member@example.com", "Load Member")
+    group = await _create_group_with_owner(db_session, owner)
+    db_session.add(GroupMember(group_id=group.id, user_id=member.id, role="member"))
+    await db_session.flush()
+
+    owner_response = await client.get(
+        f"/api/v1/groups/{group.id}/members",
+        headers=auth_headers,
+    )
+    assert owner_response.status_code == 200, owner_response.text
+    assert {row["user_id"] for row in owner_response.json()} == {
+        str(owner.id),
+        str(member.id),
+    }
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": member.email, "password": "test-password-123"},
+    )
+    assert login.status_code == 200, login.text
+    member_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    member_response = await client.get(
+        f"/api/v1/groups/{group.id}/members",
+        headers=member_headers,
+    )
+    assert member_response.status_code == 200, member_response.text
+    assert {row["user_id"] for row in member_response.json()} == {
+        str(owner.id),
+        str(member.id),
+    }
+
+
 async def test_owner_can_add_mute_unmute_and_remove_human_member(
     client: AsyncClient,
     db_session: AsyncSession,

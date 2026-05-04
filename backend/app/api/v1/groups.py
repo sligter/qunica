@@ -52,34 +52,6 @@ async def list_groups(
     return await group_service.list_groups_for_user(db, current_user)
 
 
-@router.get("/{group_id}", response_model=GroupRead)
-async def get_group(
-    group_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Group:
-    return await group_service.get_group(db, group_id, current_user)
-
-
-@router.patch("/{group_id}", response_model=GroupRead)
-async def update_group(
-    group_id: UUID,
-    data: GroupUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Group:
-    return await group_service.update_group(db, group_id, data, current_user)
-
-
-@router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_group(
-    group_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> None:
-    await group_service.delete_group(db, group_id, current_user)
-
-
 # --- agents in group ---
 
 
@@ -158,6 +130,16 @@ async def set_group_agent_muted(
     return _to_group_agent_read(ga, agent)
 
 
+@router.get("/{group_id}/member-candidates", response_model=list[UserRead])
+async def search_group_member_candidates(
+    group_id: UUID,
+    q: str = "",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[User]:
+    return await group_service.search_users_for_group(db, group_id, q, current_user)
+
+
 # --- members in group ---
 
 
@@ -170,16 +152,6 @@ async def list_group_members(
     group = await group_service.get_group(db, group_id, current_user)
     rows = await group_service.list_members_in_group(db, group_id, current_user)
     return [_to_group_member_read(gm, user, group) for gm, user in rows]
-
-
-@router.get("/{group_id}/member-candidates", response_model=list[UserRead])
-async def search_group_member_candidates(
-    group_id: UUID,
-    q: str = "",
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> list[User]:
-    return await group_service.search_users_for_group(db, group_id, q, current_user)
 
 
 @router.post(
@@ -364,3 +336,31 @@ async def delete_group_note(
     current_user: User = Depends(get_current_user),
 ) -> None:
     await group_note_service.delete_note(db, group_id, note_id, current_user)
+
+
+@router.get("/{group_id}", response_model=GroupRead)
+async def get_group(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Group:
+    return await group_service.get_group(db, group_id, current_user)
+
+
+@router.patch("/{group_id}", response_model=GroupRead)
+async def update_group(
+    group_id: UUID,
+    data: GroupUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Group:
+    return await group_service.update_group(db, group_id, data, current_user)
+
+
+@router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_service.delete_group(db, group_id, current_user)
