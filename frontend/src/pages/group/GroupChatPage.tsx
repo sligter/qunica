@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { File, NotebookPen, Settings } from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+import { File, NotebookPen, Settings, UsersRound } from 'lucide-react'
 
-import { AddAgentToGroupForm } from '@/components/chat/AddAgentToGroupForm'
 import { Composer } from '@/components/chat/Composer'
 import { GroupFilesPanel } from '@/components/chat/GroupFilesPanel'
 import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
@@ -63,7 +62,11 @@ export function GroupChatPage() {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <AddAgentToGroupForm groupId={groupId} />
+          <Button variant="ghost" size="icon" asChild aria-label="Manage group members">
+            <Link to={`/groups/${groupId}/members`}>
+              <UsersRound className="h-4 w-4" />
+            </Link>
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -116,7 +119,6 @@ export function GroupChatPage() {
       {group.data && (
         <GroupSettingsDialog
           group={group.data}
-          agents={agents}
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
         />

@@ -200,8 +200,9 @@ export interface GroupRead {
   announcement: string | null
   free_speech: boolean
   allow_agent_free_mention: boolean
-  muted_agent_ids: string[]
-  admin_agent_ids: string[]
+  muted_agent_ids: string[] | null
+  admin_agent_ids: string[] | null
+  muted_member_ids: string[] | null
   status: string
   created_at: string
 }
@@ -219,8 +220,25 @@ export interface GroupUpdate {
   announcement?: string | null
   free_speech?: boolean
   allow_agent_free_mention?: boolean
-  muted_agent_ids?: string[]
-  admin_agent_ids?: string[]
+}
+
+export interface GroupMemberRead {
+  id: string
+  group_id: string
+  user_id: string
+  display_name: string
+  role: string
+  status: string
+  is_muted: boolean
+  joined_at: string
+}
+
+export interface GroupMemberAdd {
+  user_id: string
+}
+
+export interface GroupMuteUpdate {
+  muted: boolean
 }
 
 export interface GroupAgentRead {

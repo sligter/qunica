@@ -204,7 +204,7 @@ async def send_message(
     group = await group_service.get_group(db, group_id, sender)
     user_msg = await _persist_user_message(db, group_id, sender, content)
 
-    resolved = await resolve_all_mentions(db, group_id, content)
+    resolved = await resolve_all_mentions(db, group, content)
     if not resolved:
         return MessageSendResult(
             user_message=user_msg,
@@ -355,7 +355,7 @@ async def send_message_stream(
     user_msg = await _persist_user_message(db, group_id, sender, content)
     yield {"event": "user_message", "data": json.dumps(_serialize_msg(user_msg))}
 
-    resolved = await resolve_all_mentions(db, group_id, content)
+    resolved = await resolve_all_mentions(db, group, content)
     if not resolved:
         yield {"event": "warning", "data": "no agent mentioned in this group"}
         yield {"event": "done", "data": ""}

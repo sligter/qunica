@@ -68,8 +68,8 @@ async def _seed_group_with_agents(
 async def test_resolve_first_mention_returns_first_match(
     db_session: AsyncSession,
 ) -> None:
-    group, agents = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
-    result = await resolve_first_mention(db_session, group.id, "@Mirror @Echo")
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+    result = await resolve_first_mention(db_session, group, "@Mirror @Echo")
     assert result is not None
     _, agent = result
     assert agent.name == "Mirror"
@@ -80,7 +80,7 @@ async def test_resolve_first_mention_returns_none_when_unmatched(
     db_session: AsyncSession,
 ) -> None:
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
-    result = await resolve_first_mention(db_session, group.id, "@NotInGroup hi")
+    result = await resolve_first_mention(db_session, group, "@NotInGroup hi")
     assert result is None
 
 
@@ -88,8 +88,8 @@ async def test_resolve_first_mention_returns_none_when_unmatched(
 async def test_resolve_all_mentions_preserves_textual_order(
     db_session: AsyncSession,
 ) -> None:
-    group, agents = await _seed_group_with_agents(db_session, ["Echo", "Mirror", "Nova"])
-    result = await resolve_all_mentions(db_session, group.id, "@Nova @Echo @Mirror go")
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "Mirror", "Nova"])
+    result = await resolve_all_mentions(db_session, group, "@Nova @Echo @Mirror go")
     names = [a.name for _, a in result]
     assert names == ["Nova", "Echo", "Mirror"]
 
@@ -99,7 +99,7 @@ async def test_resolve_all_mentions_dedupes_repeated_agent(
     db_session: AsyncSession,
 ) -> None:
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
-    result = await resolve_all_mentions(db_session, group.id, "@Echo @Echo @Echo")
+    result = await resolve_all_mentions(db_session, group, "@Echo @Echo @Echo")
     assert len(result) == 1
     assert result[0][1].name == "Echo"
 
@@ -110,10 +110,37 @@ async def test_resolve_all_mentions_drops_unmatched_silently(
 ) -> None:
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
     result = await resolve_all_mentions(
-        db_session, group.id, "@NotInGroup @Echo @AlsoMissing"
+        db_session, group, "@NotInGroup @Echo @AlsoMissing"
     )
     assert len(result) == 1
     assert result[0][1].name == "Echo"
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_mentions_skips_muted_agents(
+    db_session: AsyncSession,
+) -> None:
+    group, agents = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+    group.muted_agent_ids = [str(agents[0].id)]
+    await db_session.flush()
+
+    result = await resolve_all_mentions(db_session, group, "@Echo @Mirror")
+
+    assert [agent.name for _, agent in result] == ["Mirror"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_first_mention_skips_muted_agents(
+    db_session: AsyncSession,
+) -> None:
+    group, agents = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+    group.muted_agent_ids = [str(agents[0].id)]
+    await db_session.flush()
+
+    result = await resolve_first_mention(db_session, group, "@Echo @Mirror")
+
+    assert result is not None
+    assert result[1].name == "Mirror"
 
 
 @pytest.mark.asyncio
@@ -121,7 +148,7 @@ async def test_resolve_all_mentions_case_insensitive(
     db_session: AsyncSession,
 ) -> None:
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
-    result = await resolve_all_mentions(db_session, group.id, "@ECHO say hi")
+    result = await resolve_all_mentions(db_session, group, "@ECHO say hi")
     assert len(result) == 1
 
 
@@ -132,7 +159,7 @@ async def test_resolve_all_mentions_with_spaces_in_name(
     """Regression test for the @tree man bug — display names with spaces."""
     group, _ = await _seed_group_with_agents(db_session, ["Echo", "tree man"])
     result = await resolve_all_mentions(
-        db_session, group.id, "@Echo @tree man say something brief."
+        db_session, group, "@Echo @tree man say something brief."
     )
     names = [a.name for _, a in result]
     assert names == ["Echo", "tree man"]
@@ -144,7 +171,7 @@ async def test_resolve_all_mentions_longest_match_wins(
 ) -> None:
     """Two agents `tree` and `tree man`: @tree man picks `tree man` (longer)."""
     group, _ = await _seed_group_with_agents(db_session, ["tree", "tree man"])
-    result = await resolve_all_mentions(db_session, group.id, "@tree man hi")
+    result = await resolve_all_mentions(db_session, group, "@tree man hi")
     assert [a.name for _, a in result] == ["tree man"]
 
 
@@ -154,7 +181,7 @@ async def test_resolve_all_mentions_short_name_still_matches(
 ) -> None:
     """Same setup as above but `@tree x` — only `tree` matches because `man` is missing."""
     group, _ = await _seed_group_with_agents(db_session, ["tree", "tree man"])
-    result = await resolve_all_mentions(db_session, group.id, "@tree x")
+    result = await resolve_all_mentions(db_session, group, "@tree x")
     assert [a.name for _, a in result] == ["tree"]
 
 
@@ -164,7 +191,7 @@ async def test_resolve_all_mentions_no_substring_match(
 ) -> None:
     """`@echolike` does NOT match agent `Echo` (boundary check)."""
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
-    result = await resolve_all_mentions(db_session, group.id, "@echolike hi")
+    result = await resolve_all_mentions(db_session, group, "@echolike hi")
     assert result == []
 
 
@@ -174,7 +201,7 @@ async def test_resolve_all_mentions_trailing_punctuation(
 ) -> None:
     """`@Echo,` should match Echo (comma is a non-name boundary)."""
     group, _ = await _seed_group_with_agents(db_session, ["Echo"])
-    result = await resolve_all_mentions(db_session, group.id, "@Echo, please reply")
+    result = await resolve_all_mentions(db_session, group, "@Echo, please reply")
     assert [a.name for _, a in result] == ["Echo"]
 
 
@@ -184,7 +211,7 @@ async def test_resolve_all_mentions_dedupes_multiword_too(
 ) -> None:
     group, _ = await _seed_group_with_agents(db_session, ["tree man"])
     result = await resolve_all_mentions(
-        db_session, group.id, "@tree man hi @tree man again"
+        db_session, group, "@tree man hi @tree man again"
     )
     assert len(result) == 1
     assert result[0][1].name == "tree man"

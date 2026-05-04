@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
+from app.models.group import Group
 from app.models.group_agent import GroupAgent
 
 # Coarse single-word heuristic. Does NOT understand multi-word display names;
@@ -62,22 +63,25 @@ def _is_name_char(ch: str) -> bool:
 
 
 async def _candidate_agents(
-    db: AsyncSession, group_id: UUID
+    db: AsyncSession, group: Group
 ) -> list[tuple[str, tuple[GroupAgent, Agent]]]:
-    """Active (display_name_lower, (group_agent, agent)) pairs, longest first.
+    """Active unmuted (display_name_lower, (group_agent, agent)) pairs, longest first.
 
     First-match-wins is enforced when two agents share the same effective
     display name (rare; the API allows it but the UI discourages).
     """
+    muted_agent_ids = set(group.muted_agent_ids or [])
     stmt = (
         select(GroupAgent, Agent)
         .join(Agent, Agent.id == GroupAgent.agent_id)
-        .where(GroupAgent.group_id == group_id, GroupAgent.status == "active")
+        .where(GroupAgent.group_id == group.id, GroupAgent.status == "active")
     )
     rows = (await db.execute(stmt)).all()
     seen_names: set[str] = set()
     candidates: list[tuple[str, tuple[GroupAgent, Agent]]] = []
     for ga, agent in rows:
+        if str(agent.id) in muted_agent_ids:
+            continue
         name = (ga.display_name or agent.name).lower()
         if name in seen_names:
             continue
@@ -122,7 +126,7 @@ def _scan_mentions(
 
 
 async def resolve_all_mentions(
-    db: AsyncSession, group_id: UUID, text: str
+    db: AsyncSession, group: Group, text: str
 ) -> list[tuple[GroupAgent, Agent]]:
     """All matching agents in textual order, deduplicated by agent_id.
 
@@ -130,17 +134,18 @@ async def resolve_all_mentions(
     fan-out runs sequentially; later agents see earlier agents' replies via
     the rolling group history window.
 
-    Multi-word display names are supported via longest-match scanning, so
-    `@tree man` correctly resolves to an agent named `tree man`.
+    Muted agents are skipped. Multi-word display names are supported via
+    longest-match scanning, so `@tree man` correctly resolves to an agent named
+    `tree man`.
     """
     if "@" not in text:
         return []
-    candidates = await _candidate_agents(db, group_id)
+    candidates = await _candidate_agents(db, group)
     return _scan_mentions(text, candidates)
 
 
 async def resolve_first_mention(
-    db: AsyncSession, group_id: UUID, text: str
+    db: AsyncSession, group: Group, text: str
 ) -> tuple[GroupAgent, Agent] | None:
-    matches = await resolve_all_mentions(db, group_id, text)
+    matches = await resolve_all_mentions(db, group, text)
     return matches[0] if matches else None

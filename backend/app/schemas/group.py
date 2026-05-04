@@ -17,8 +17,29 @@ class GroupUpdate(BaseModel):
     announcement: str | None = None
     free_speech: bool | None = None
     allow_agent_free_mention: bool | None = None
-    muted_agent_ids: list[UUID] | None = None
-    admin_agent_ids: list[UUID] | None = None
+
+
+class GroupMemberAdd(BaseModel):
+    user_id: UUID
+
+
+class GroupMemberRead(BaseModel):
+    id: UUID
+    group_id: UUID
+    user_id: UUID
+    display_name: str
+    role: str
+    status: str
+    is_muted: bool
+    joined_at: datetime
+
+
+class GroupMemberMuteUpdate(BaseModel):
+    muted: bool
+
+
+class GroupAgentMuteUpdate(BaseModel):
+    muted: bool
 
 
 class GroupRead(BaseModel):
@@ -32,6 +53,7 @@ class GroupRead(BaseModel):
     allow_agent_free_mention: bool
     muted_agent_ids: list[UUID] | None
     admin_agent_ids: list[UUID] | None
+    muted_member_ids: list[UUID] | None
     status: str
     created_at: datetime
 

@@ -1,4 +1,4 @@
-"""Add skill metadata column.
+"""Add skill metadata and group muted member tracking.
 
 Revision ID: 0006
 Revises: 0005
@@ -20,7 +20,9 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("skills", sa.Column("metadata", postgresql.JSONB(), nullable=True))
+    op.add_column("groups", sa.Column("muted_member_ids", postgresql.JSONB(), nullable=True))
 
 
 def downgrade() -> None:
+    op.drop_column("groups", "muted_member_ids")
     op.drop_column("skills", "metadata")

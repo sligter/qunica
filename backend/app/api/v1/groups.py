@@ -6,19 +6,27 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.deps import get_current_user
 from app.db import get_db
+from app.models.agent import Agent
 from app.models.group import Group
+from app.models.group_agent import GroupAgent
+from app.models.group_member import GroupMember
 from app.models.message import Message
 from app.models.user import User
 from app.schemas.group import (
     GroupAgentAdd,
+    GroupAgentMuteUpdate,
     GroupAgentRead,
     GroupCreate,
+    GroupMemberAdd,
+    GroupMemberMuteUpdate,
+    GroupMemberRead,
     GroupRead,
     GroupUpdate,
 )
 from app.schemas.group_file import GroupFileRead
 from app.schemas.group_note import GroupNoteCreate, GroupNoteRead, GroupNoteUpdate
 from app.schemas.message import MessageCreate, MessageRead, MessageSendResponse
+from app.schemas.user import UserRead
 from app.services import group_file_service, group_note_service, group_service, message_service
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -75,7 +83,7 @@ async def delete_group(
 # --- agents in group ---
 
 
-def _to_group_agent_read(ga, agent) -> GroupAgentRead:  # type: ignore[no-untyped-def]
+def _to_group_agent_read(ga: GroupAgent, agent: Agent) -> GroupAgentRead:
     return GroupAgentRead(
         id=ga.id,
         group_id=ga.group_id,
@@ -85,6 +93,19 @@ def _to_group_agent_read(ga, agent) -> GroupAgentRead:  # type: ignore[no-untype
         response_mode=ga.response_mode,
         status=ga.status,
         joined_at=ga.joined_at,
+    )
+
+
+def _to_group_member_read(gm: GroupMember, user: User, group: Group) -> GroupMemberRead:
+    return GroupMemberRead(
+        id=gm.id,
+        group_id=gm.group_id,
+        user_id=gm.user_id,
+        display_name=user.name,
+        role=gm.role,
+        status=gm.status,
+        is_muted=str(gm.user_id) in (group.muted_member_ids or []),
+        joined_at=gm.joined_at,
     )
 
 
@@ -111,6 +132,94 @@ async def list_group_agents(
 ) -> list[GroupAgentRead]:
     rows = await group_service.list_agents_in_group(db, group_id, current_user)
     return [_to_group_agent_read(ga, agent) for ga, agent in rows]
+
+
+@router.delete("/{group_id}/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_agent_from_group(
+    group_id: UUID,
+    agent_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_service.remove_agent(db, group_id, agent_id, current_user)
+
+
+@router.patch("/{group_id}/agents/{agent_id}/mute", response_model=GroupAgentRead)
+async def set_group_agent_muted(
+    group_id: UUID,
+    agent_id: UUID,
+    data: GroupAgentMuteUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupAgentRead:
+    ga, agent, _group = await group_service.set_agent_muted(
+        db, group_id, agent_id, data.muted, current_user
+    )
+    return _to_group_agent_read(ga, agent)
+
+
+# --- members in group ---
+
+
+@router.get("/{group_id}/members", response_model=list[GroupMemberRead])
+async def list_group_members(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[GroupMemberRead]:
+    group = await group_service.get_group(db, group_id, current_user)
+    rows = await group_service.list_members_in_group(db, group_id, current_user)
+    return [_to_group_member_read(gm, user, group) for gm, user in rows]
+
+
+@router.get("/{group_id}/member-candidates", response_model=list[UserRead])
+async def search_group_member_candidates(
+    group_id: UUID,
+    q: str = "",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[User]:
+    return await group_service.search_users_for_group(db, group_id, q, current_user)
+
+
+@router.post(
+    "/{group_id}/members",
+    response_model=GroupMemberRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_group_member(
+    group_id: UUID,
+    body: GroupMemberAdd,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupMemberRead:
+    gm, user = await group_service.add_member(db, group_id, body.user_id, current_user)
+    group = await group_service.get_group(db, group_id, current_user)
+    return _to_group_member_read(gm, user, group)
+
+
+@router.delete("/{group_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_group_member(
+    group_id: UUID,
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_service.remove_member(db, group_id, user_id, current_user)
+
+
+@router.patch("/{group_id}/members/{user_id}/mute", response_model=GroupMemberRead)
+async def set_group_member_muted(
+    group_id: UUID,
+    user_id: UUID,
+    data: GroupMemberMuteUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupMemberRead:
+    gm, user, group = await group_service.set_member_muted(
+        db, group_id, user_id, data.muted, current_user
+    )
+    return _to_group_member_read(gm, user, group)
 
 
 # --- messages in group ---

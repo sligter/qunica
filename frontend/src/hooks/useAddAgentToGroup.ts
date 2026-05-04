@@ -21,6 +21,8 @@ export function useAddAgentToGroup() {
       }),
     onSuccess: (_data, { groupId }) => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+      void qc.invalidateQueries({ queryKey: ['groups', groupId] })
+      void qc.invalidateQueries({ queryKey: ['groups'] })
     },
   })
 }

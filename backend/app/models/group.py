@@ -34,4 +34,5 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     )
     muted_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     admin_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    muted_member_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)

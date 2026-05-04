@@ -9,7 +9,16 @@ export function useCreateGroup() {
   const token = useAuthStore((s) => s.token)
   return useMutation({
     mutationFn: (input: GroupCreate) =>
-      fetchJson<GroupRead>('/groups', { method: 'POST', body: input, token }),
+      fetchJson<GroupRead>('/groups', {
+        method: 'POST',
+        body: {
+          name: input.name,
+          description: input.description,
+          announcement: input.announcement,
+          initial_agents: input.initial_agents,
+        },
+        token,
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['groups'] })
     },
