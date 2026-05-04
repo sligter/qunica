@@ -1,33 +1,53 @@
 import contextlib
 import json
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, cast
 
 from httpx import AsyncClient
 
 
 async def _setup(
-    client: AsyncClient, auth_headers: dict[str, str], extra_agents: list[str] = ()
+    client: AsyncClient, auth_headers: dict[str, str], extra_agents: Sequence[str] = ()
 ) -> tuple[str, list[tuple[str, str]]]:
     """Create a group with `Echo` and any additional agents; return
     (group_id, [(agent_id, name), ...])."""
+    workspace = await client.post(
+        "/api/v1/workspaces",
+        headers=auth_headers,
+        json={
+            "name": "Message repo",
+            "backend_type": "local",
+            "local_path": str(Path.cwd()),
+        },
+    )
+    assert workspace.status_code == 201, workspace.text
+    workspace_id = cast(str, workspace.json()["id"])
     agents: list[tuple[str, str]] = []
     for name in ("Echo", *extra_agents):
         r = await client.post(
             "/api/v1/agents",
             headers=auth_headers,
-            json={"name": name, "system_prompt": f"You are {name}. End with DONE."},
+            json={
+                "name": name,
+                "system_prompt": f"You are {name}. End with DONE.",
+                "workspace_id": workspace_id,
+            },
         )
-        agents.append((r.json()["id"], name))
+        assert r.status_code == 201, r.text
+        agents.append((cast(str, r.json()["id"]), name))
 
     r = await client.post(
         "/api/v1/groups",
         headers=auth_headers,
         json={"name": "MsgGroup", "initial_agents": [a[0] for a in agents]},
     )
-    return r.json()["id"], agents
+    assert r.status_code == 201, r.text
+    return cast(str, r.json()["id"]), agents
 
 
 async def test_send_with_mention_triggers_fake_reply_with_thread_id(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     fake_llm["messages"] = ["sup DONE"]
     group_id, agents = await _setup(client, auth_headers)
@@ -63,7 +83,7 @@ async def test_send_without_mention_returns_warning(
 
 
 async def test_send_to_same_agent_twice_reuses_thread(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     fake_llm["messages"] = ["one"]
     group_id, _ = await _setup(client, auth_headers)
@@ -84,7 +104,7 @@ async def test_send_to_same_agent_twice_reuses_thread(
 
 
 async def test_multi_mention_fans_out_in_order_with_distinct_threads(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     fake_llm["messages"] = ["echo says", "mirror says"]
     group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
@@ -108,7 +128,7 @@ async def test_multi_mention_fans_out_in_order_with_distinct_threads(
 
 
 async def test_stream_emits_per_agent_attribution(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     fake_llm["messages"] = ["e1", "m1"]
     group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
@@ -150,7 +170,7 @@ async def test_stream_emits_per_agent_attribution(
 
 
 async def test_history_lists_persisted_messages_in_order(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     fake_llm["messages"] = ["one", "two"]
     group_id, _ = await _setup(client, auth_headers)

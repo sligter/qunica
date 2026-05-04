@@ -48,7 +48,11 @@ async def list_groups_for_user(db: AsyncSession, user: User) -> list[Group]:
     stmt = (
         select(Group)
         .join(GroupMember, GroupMember.group_id == Group.id)
-        .where(GroupMember.user_id == user.id, GroupMember.status == "active")
+        .where(
+            GroupMember.user_id == user.id,
+            GroupMember.status == "active",
+            Group.status == "active",
+        )
         .order_by(Group.created_at.desc())
     )
     return list(await db.scalars(stmt))
@@ -113,6 +117,14 @@ async def assert_owner(db: AsyncSession, group_id: UUID, user: User) -> None:
     )
     if membership is None or membership.role != "owner":
         raise PermissionDeniedError("only group owner can perform this action")
+
+
+async def delete_group(db: AsyncSession, group_id: UUID, user: User) -> None:
+    """Soft-delete: flip status to 'deleted'. Membership rows preserved."""
+    group = await get_group(db, group_id, user)
+    await assert_owner(db, group_id, user)
+    group.status = "deleted"
+    await db.flush()
 
 
 async def add_agent(

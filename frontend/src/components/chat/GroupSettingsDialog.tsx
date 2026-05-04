@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -13,6 +14,7 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { cn } from '@/lib/utils'
 import type { GroupAgentRead, GroupRead } from '@/types/api'
@@ -31,6 +33,8 @@ export function GroupSettingsDialog({
   onOpenChange,
 }: GroupSettingsDialogProps) {
   const update = useUpdateGroup(group.id)
+  const del = useDeleteGroup()
+  const navigate = useNavigate()
 
   const [name, setName] = useState(group.name)
   const [announcement, setAnnouncement] = useState(group.announcement ?? '')
@@ -68,6 +72,19 @@ export function GroupSettingsDialog({
       admin_agent_ids: adminIds,
     })
     onOpenChange(false)
+  }
+
+  const onDelete = async () => {
+    if (
+      !confirm(
+        `Delete group "${group.name}"? This is a soft-delete; messages and threads stay in the database but the group won't appear in your list anymore.`,
+      )
+    ) {
+      return
+    }
+    await del.mutateAsync(group.id)
+    onOpenChange(false)
+    void navigate('/groups')
   }
 
   return (
@@ -170,13 +187,23 @@ export function GroupSettingsDialog({
           )}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+        <DialogFooter className="flex sm:justify-between">
+          <Button
+            variant="outline"
+            onClick={onDelete}
+            disabled={del.isPending || update.isPending}
+            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+          >
+            {del.isPending ? 'Deleting…' : 'Delete group'}
           </Button>
-          <Button onClick={onSave} disabled={update.isPending}>
-            {update.isPending ? 'Saving…' : 'Save'}
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button onClick={onSave} disabled={update.isPending}>
+              {update.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

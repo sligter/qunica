@@ -1,4 +1,6 @@
 import secrets
+from pathlib import Path
+from typing import cast
 
 from httpx import AsyncClient
 
@@ -17,13 +19,33 @@ async def _new_user_headers(client: AsyncClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+async def _create_workspace(client: AsyncClient, headers: dict[str, str]) -> str:
+    r = await client.post(
+        "/api/v1/workspaces",
+        headers=headers,
+        json={
+            "name": "Test repo",
+            "backend_type": "local",
+            "local_path": str(Path.cwd()),
+        },
+    )
+    assert r.status_code == 201, r.text
+    return cast(str, r.json()["id"])
+
+
 async def _create_agent(client: AsyncClient, headers: dict[str, str], name: str) -> str:
+    workspace_id = await _create_workspace(client, headers)
     r = await client.post(
         "/api/v1/agents",
         headers=headers,
-        json={"name": name, "system_prompt": f"You are {name}."},
+        json={
+            "name": name,
+            "system_prompt": f"You are {name}.",
+            "workspace_id": workspace_id,
+        },
     )
-    return r.json()["id"]
+    assert r.status_code == 201, r.text
+    return cast(str, r.json()["id"])
 
 
 async def test_create_group_with_initial_agents(

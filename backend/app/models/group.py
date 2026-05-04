@@ -1,7 +1,8 @@
 from uuid import UUID
 
 from sqlalchemy import Boolean, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDPkMixin
@@ -31,6 +32,6 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     allow_agent_free_mention: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
-    muted_agent_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    admin_agent_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    muted_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    admin_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)

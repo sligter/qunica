@@ -1,4 +1,6 @@
 import secrets
+from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from httpx import AsyncClient
@@ -10,34 +12,51 @@ from app.models.thread import Thread
 
 
 async def _setup_group_with_thread(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> tuple[str, str]:
     """Create a group with one agent, send one message to lazily create the
     chat_thread, return (group_id, thread_id)."""
     fake_llm["messages"] = ["x"]
+    workspace = await client.post(
+        "/api/v1/workspaces",
+        headers=auth_headers,
+        json={
+            "name": "Thread repo",
+            "backend_type": "local",
+            "local_path": str(Path.cwd()),
+        },
+    )
+    assert workspace.status_code == 201, workspace.text
     r = await client.post(
         "/api/v1/agents",
         headers=auth_headers,
-        json={"name": "Echo", "system_prompt": "be brief"},
+        json={
+            "name": "Echo",
+            "system_prompt": "be brief",
+            "workspace_id": workspace.json()["id"],
+        },
     )
-    agent_id = r.json()["id"]
+    assert r.status_code == 201, r.text
+    agent_id = cast(str, r.json()["id"])
     r = await client.post(
         "/api/v1/groups",
         headers=auth_headers,
         json={"name": "G", "initial_agents": [agent_id]},
     )
-    group_id = r.json()["id"]
+    assert r.status_code == 201, r.text
+    group_id = cast(str, r.json()["id"])
     r = await client.post(
         f"/api/v1/groups/{group_id}/messages",
         headers=auth_headers,
         json={"content": "@Echo hi"},
     )
-    thread_id = r.json()["agent_replies"][0]["thread_id"]
+    assert r.status_code == 201, r.text
+    thread_id = cast(str, r.json()["agent_replies"][0]["thread_id"])
     return group_id, thread_id
 
 
 async def test_get_thread_as_member_returns_metadata(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     _, thread_id = await _setup_group_with_thread(client, auth_headers, fake_llm)
     r = await client.get(f"/api/v1/threads/{thread_id}", headers=auth_headers)
@@ -55,7 +74,7 @@ async def test_get_thread_missing_returns_404(
 
 
 async def test_get_thread_as_non_member_forbidden(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     _, thread_id = await _setup_group_with_thread(client, auth_headers, fake_llm)
 
@@ -79,7 +98,7 @@ async def test_get_thread_as_non_member_forbidden(
 
 
 async def test_resume_thread_when_not_paused_returns_409(
-    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
     _, thread_id = await _setup_group_with_thread(client, auth_headers, fake_llm)
     # The thread is `completed` after _setup, not paused.
@@ -100,7 +119,7 @@ async def test_resume_thread_missing_returns_404(
 async def test_resume_thread_paused_streams_continuation(
     client: AsyncClient,
     auth_headers: dict[str, str],
-    fake_llm: dict,
+    fake_llm: dict[str, Any],
     db_session: AsyncSession,
 ) -> None:
     """End-to-end: simulate Stop (flip statuses) → call resume → verify."""

@@ -1,9 +1,29 @@
+from pathlib import Path
+from typing import Any, cast
+
 from httpx import AsyncClient
+
+JsonObject = dict[str, Any]
+
+
+async def _create_workspace(client: AsyncClient, headers: dict[str, str]) -> JsonObject:
+    r = await client.post(
+        "/api/v1/workspaces",
+        headers=headers,
+        json={
+            "name": "Repo",
+            "backend_type": "local",
+            "local_path": str(Path.cwd()),
+        },
+    )
+    assert r.status_code == 201, r.text
+    return cast(JsonObject, r.json())
 
 
 async def _create_agent(
     client: AsyncClient, headers: dict[str, str], name: str = "Echo"
-) -> dict:
+) -> JsonObject:
+    workspace = await _create_workspace(client, headers)
     r = await client.post(
         "/api/v1/agents",
         headers=headers,
@@ -11,10 +31,11 @@ async def _create_agent(
             "name": name,
             "description": f"{name} description",
             "system_prompt": f"You are {name}. End with DONE.",
+            "workspace_id": workspace["id"],
         },
     )
     assert r.status_code == 201, r.text
-    return r.json()
+    return cast(JsonObject, r.json())
 
 
 async def test_create_agent_returns_201(
@@ -24,6 +45,65 @@ async def test_create_agent_returns_201(
     assert a["name"] == "Nova"
     assert a["visibility"] == "private"
     assert a["status"] == "active"
+    assert a["workspace_id"] is not None
+    assert a["tool_config"]["tools"]["read"]["enabled"] is True
+
+
+async def test_tool_catalog_returns_builtin_tools(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    r = await client.get("/api/v1/agents/tool-catalog", headers=auth_headers)
+    assert r.status_code == 200
+    tool_ids = {tool["id"] for tool in r.json()["tools"]}
+    expected = {
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "bash",
+        "ask_user",
+        "web_search",
+        "fetch",
+        "run_sub_agent",
+        "generate_image",
+        "generate_video",
+        "skill_manager",
+        "todo_write",
+        "exit_plan_mode",
+    }
+    assert expected == tool_ids
+
+
+async def test_create_agent_requires_workspace(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "NoWorkspace",
+            "system_prompt": "You are missing a workspace.",
+        },
+    )
+    assert r.status_code == 422
+
+
+async def test_create_agent_rejects_unknown_tool(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "BadTool",
+            "system_prompt": "You are BadTool.",
+            "workspace_id": workspace["id"],
+            "tool_config": {"tools": {"made_up": {"enabled": True}}},
+        },
+    )
+    assert r.status_code == 400
 
 
 async def test_list_agents_only_returns_own(client: AsyncClient) -> None:
@@ -100,7 +180,7 @@ async def test_get_other_users_agent_forbidden(client: AsyncClient) -> None:
 async def test_invoke_uses_fake_llm(
     client: AsyncClient,
     auth_headers: dict[str, str],
-    fake_llm: dict,
+    fake_llm: dict[str, Any],
 ) -> None:
     fake_llm["messages"] = ["hello from fake"]
     a = await _create_agent(client, auth_headers, name="Fakeable")
@@ -116,7 +196,7 @@ async def test_invoke_uses_fake_llm(
 async def test_invoke_stream_emits_token_and_done(
     client: AsyncClient,
     auth_headers: dict[str, str],
-    fake_llm: dict,
+    fake_llm: dict[str, Any],
 ) -> None:
     fake_llm["messages"] = ["streamed reply"]
     a = await _create_agent(client, auth_headers, name="Streamable")

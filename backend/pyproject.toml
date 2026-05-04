@@ -23,6 +23,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2.0",
     "sse-starlette>=2.2.0",
     "pyyaml>=6.0",
+    "python-multipart>=0.0.27",
 ]
 
 [dependency-groups]
@@ -60,7 +61,7 @@ known-first-party = ["app"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-exclude = ["alembic/versions/.*\\.py$"]
+exclude = ["alembic/versions/.*\\.py$", "^uploads/skills/.*"]
 
 [[tool.mypy.overrides]]
 module = "alembic.*"

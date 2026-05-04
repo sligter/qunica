@@ -63,6 +63,15 @@ async def update_group(
     return await group_service.update_group(db, group_id, data, current_user)
 
 
+@router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_service.delete_group(db, group_id, current_user)
+
+
 # --- agents in group ---
 
 

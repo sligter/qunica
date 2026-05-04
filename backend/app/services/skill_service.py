@@ -1,13 +1,11 @@
-"""Skill service — owner-scoped CRUD plus SKILL.md import.
+"""Skill service — owner-scoped CRUD plus SKILL.md/package import."""
 
-Anthropic skill format (V1 subset): a SKILL.md file beginning with YAML
-frontmatter `{name, description}`, followed by the markdown body. Scripts,
-references, and other files are not yet supported.
-
-The body is appended verbatim to an agent's system prompt when the skill is
-mounted on the agent — see `message_service._build_lc_input`.
-"""
-
+import io
+import re
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 from uuid import UUID
 
 import yaml  # type: ignore[import-untyped]
@@ -23,44 +21,115 @@ from app.models.skill import Skill
 from app.models.user import User
 from app.schemas.skill import SkillCreate
 
+_FRONTMATTER_RE = re.compile(
+    r"\A(?:﻿)?[ \t]*---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)",
+    re.DOTALL,
+)
+_CLASSIFIED_DIRS = {"references", "scripts", "assets", "tools"}
 
-def _parse_skill_md(raw: str) -> tuple[str, str | None, str]:
-    """Return `(name, description, body_markdown)`.
 
-    Raises `AgentChatError` if the input doesn't look like a valid SKILL.md.
+@dataclass(frozen=True, slots=True)
+class ParsedSkillMarkdown:
+    name: str
+    description: str | None
+    body_markdown: str
+    metadata: dict[str, Any]
+
+
+def _parse_skill_md(raw: str) -> ParsedSkillMarkdown:
+    """Parse SKILL.md, preserving frontmatter metadata and body separately.
+
+    Frontmatter is required for imported skills because it provides the stable
+    skill name. When present, all metadata keys are preserved as JSON-compatible
+    values while the markdown instructions remain in `body_markdown` only.
     """
-    text = raw.lstrip()
-    if not text.startswith("---\n") and not text.startswith("---\r\n"):
+
+    match = _FRONTMATTER_RE.match(raw)
+    if match is None:
         raise AgentChatError("SKILL.md must start with YAML frontmatter (---)")
-    # Tolerant to CRLF.
-    body_open = text.find("\n", 4)
-    end = text.find("\n---\n", body_open)
-    if end == -1:
-        end = text.find("\n---\r\n", body_open)
-    if end == -1:
-        raise AgentChatError("SKILL.md frontmatter is not closed (missing `---`)")
-    fm_text = text[4:end]
+    fm_text = match.group(1)
     try:
         fm = yaml.safe_load(fm_text) or {}
     except yaml.YAMLError as exc:
         raise AgentChatError(f"SKILL.md frontmatter is not valid YAML: {exc}") from exc
     if not isinstance(fm, dict):
         raise AgentChatError("SKILL.md frontmatter must be a YAML mapping")
-    name = fm.get("name")
+
+    metadata = _json_safe_metadata(fm)
+    name = metadata.get("name")
     if not name or not isinstance(name, str):
         raise AgentChatError("SKILL.md frontmatter must include `name` (string)")
-    description_raw = fm.get("description")
-    description = (
-        str(description_raw) if description_raw is not None else None
+    description_raw = metadata.get("description")
+    description = str(description_raw) if description_raw is not None else None
+    body = raw[match.end() :].lstrip("\r\n")
+    return ParsedSkillMarkdown(
+        name=name,
+        description=description,
+        body_markdown=body,
+        metadata=metadata,
     )
-    # Skip past the closing `---\n` line.
-    after = text[end:].lstrip("\n")
-    if after.startswith("---"):
-        # Drop the literal `---` line + any trailing newline.
-        nl = after.find("\n")
-        after = after[nl + 1 :] if nl != -1 else ""
-    body = after.lstrip("\n")
-    return name, description, body
+
+
+def _json_safe_metadata(metadata: dict[Any, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if not isinstance(key, str):
+            continue
+        out[key] = _json_safe_value(value)
+    return out
+
+
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _zip_entry_is_unsafe(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("//"):
+        return True
+    if PureWindowsPath(name).drive:
+        return True
+    parts = PurePosixPath(normalized).parts
+    return any(part == ".." for part in parts)
+
+
+def _validate_zip_names(names: list[str]) -> None:
+    unsafe = [name for name in names if _zip_entry_is_unsafe(name)]
+    if unsafe:
+        raise AgentChatError(f"zip package contains unsafe path: {unsafe[0]}")
+
+
+def _classify_zip_entry(rel_path: str) -> str:
+    if rel_path == "SKILL.md":
+        return "SKILL.md"
+    first = rel_path.split("/", 1)[0]
+    if first in _CLASSIFIED_DIRS:
+        return first
+    return "other"
+
+
+def _find_skill_md_path(names: list[str]) -> tuple[str, str]:
+    for name in names:
+        if name.endswith("/"):
+            continue
+        parts = PurePosixPath(name.replace("\\", "/")).parts
+        if not parts or parts[-1] != "SKILL.md":
+            continue
+        if len(parts) <= 2:
+            prefix = "" if len(parts) == 1 else f"{parts[0]}/"
+            return name, prefix
+    raise AgentChatError("zip package must contain a SKILL.md file at root or one level deep")
+
+
+def _relative_zip_path(name: str, prefix: str) -> str:
+    normalized = name.replace("\\", "/")
+    return normalized[len(prefix) :] if prefix and normalized.startswith(prefix) else normalized
 
 
 async def create_skill(
@@ -71,6 +140,10 @@ async def create_skill(
         name=data.name,
         description=data.description,
         body_markdown=data.body_markdown,
+        metadata_={
+            "name": data.name,
+            "description": data.description,
+        },
         source=source,
     )
     db.add(skill)
@@ -79,16 +152,20 @@ async def create_skill(
     return skill
 
 
-async def import_skill_from_md(
-    db: AsyncSession, raw: str, owner: User
-) -> Skill:
-    name, description, body = _parse_skill_md(raw)
-    return await create_skill(
-        db,
-        SkillCreate(name=name, description=description, body_markdown=body),
-        owner,
+async def import_skill_from_md(db: AsyncSession, raw: str, owner: User) -> Skill:
+    parsed = _parse_skill_md(raw)
+    skill = Skill(
+        owner_id=owner.id,
+        name=parsed.name,
+        description=parsed.description,
+        body_markdown=parsed.body_markdown,
+        metadata_=parsed.metadata,
         source="imported",
     )
+    db.add(skill)
+    await db.flush()
+    await db.refresh(skill)
+    return skill
 
 
 async def list_skills(db: AsyncSession, owner: User) -> list[Skill]:
@@ -109,23 +186,12 @@ async def get_skill(db: AsyncSession, skill_id: UUID, owner: User) -> Skill:
     return skill
 
 
-async def list_by_ids(
-    db: AsyncSession, skill_ids: list[UUID]
-) -> list[Skill]:
-    """Internal: fetch skills referenced by an agent for prompt assembly.
-
-    Skips owner check — caller (message_service) has already validated agent
-    ownership; the agent's skill_ids list is itself authoritative because
-    only the owner can mount skills. Soft-deleted skills (`status='deleted'`)
-    are excluded so the prompt doesn't leak revoked content.
-    """
+async def list_by_ids(db: AsyncSession, skill_ids: list[UUID]) -> list[Skill]:
+    """Internal: fetch skills referenced by an agent for prompt assembly."""
     if not skill_ids:
         return []
-    stmt = select(Skill).where(
-        Skill.id.in_(skill_ids), Skill.status == "active"
-    )
+    stmt = select(Skill).where(Skill.id.in_(skill_ids), Skill.status == "active")
     rows = list(await db.scalars(stmt))
-    # Preserve order from skill_ids for determinism.
     by_id = {s.id: s for s in rows}
     return [by_id[i] for i in skill_ids if i in by_id]
 
@@ -133,56 +199,39 @@ async def list_by_ids(
 async def import_skill_from_zip(
     db: AsyncSession, file_bytes: bytes, owner: User
 ) -> Skill:
-    """Import a skill from a .zip package.
-
-    The zip must contain a SKILL.md at the root (or one level deep).
-    Optional directories: scripts/, references/, assets/.
-    """
-    import io
-    import os
-    import zipfile
-    from pathlib import Path
+    """Import a skill from a .zip package with safe path handling."""
 
     if not zipfile.is_zipfile(io.BytesIO(file_bytes)):
         raise AgentChatError("uploaded file is not a valid zip archive")
 
-    zf = zipfile.ZipFile(io.BytesIO(file_bytes))
-    names = zf.namelist()
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        names = zf.namelist()
+        _validate_zip_names(names)
+        skill_md_path, prefix = _find_skill_md_path(names)
+        parsed = _parse_skill_md(zf.read(skill_md_path).decode("utf-8"))
 
-    # Find SKILL.md — could be at root or inside a single top-level directory
-    skill_md_path = None
-    prefix = ""
-    for n in names:
-        basename = n.split("/")[-1]
-        if basename == "SKILL.md":
-            skill_md_path = n
-            # prefix is everything before SKILL.md
-            prefix = n[: -len("SKILL.md")]
-            break
+        file_list: list[dict[str, object]] = []
+        file_payloads: list[tuple[str, bytes]] = []
+        for name in names:
+            if name.endswith("/"):
+                continue
+            rel = _relative_zip_path(name, prefix)
+            info = zf.getinfo(name)
+            file_list.append(
+                {
+                    "path": rel,
+                    "size": info.file_size,
+                    "category": _classify_zip_entry(rel),
+                }
+            )
+            file_payloads.append((rel, zf.read(name)))
 
-    if skill_md_path is None:
-        raise AgentChatError("zip package must contain a SKILL.md file")
-
-    raw = zf.read(skill_md_path).decode("utf-8")
-    name, description, body = _parse_skill_md(raw)
-
-    # Catalogue files
-    file_list = []
-    for n in names:
-        if n.endswith("/"):
-            continue  # skip directories
-        rel = n[len(prefix) :] if n.startswith(prefix) else n
-        info = zf.getinfo(n)
-        file_list.append(
-            {"path": rel, "size": info.file_size}
-        )
-
-    # Create skill record first to get ID
     skill = Skill(
         owner_id=owner.id,
-        name=name,
-        description=description,
-        body_markdown=body,
+        name=parsed.name,
+        description=parsed.description,
+        body_markdown=parsed.body_markdown,
+        metadata_=parsed.metadata,
         source="package",
         files=file_list,
     )
@@ -190,17 +239,12 @@ async def import_skill_from_zip(
     await db.flush()
     await db.refresh(skill)
 
-    # Extract to uploads/skills/{skill_id}/
     storage_dir = Path("uploads") / "skills" / str(skill.id)
     storage_dir.mkdir(parents=True, exist_ok=True)
-
-    for n in names:
-        if n.endswith("/"):
-            continue
-        rel = n[len(prefix) :] if n.startswith(prefix) else n
+    for rel, payload in file_payloads:
         target = storage_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(zf.read(n))
+        target.write_bytes(payload)
 
     skill.storage_path = str(storage_dir)
     await db.flush()

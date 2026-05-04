@@ -10,6 +10,7 @@ from app.models.message import Message
 from app.models.skill import Skill
 from app.models.thread import Thread
 from app.models.user import User
+from app.models.workspace import Workspace
 
 __all__ = [
     "Agent",
@@ -24,4 +25,5 @@ __all__ = [
     "Skill",
     "Thread",
     "User",
+    "Workspace",
 ]

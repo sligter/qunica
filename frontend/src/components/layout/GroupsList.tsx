@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 
-import { CreateGroupForm } from '@/components/groups/CreateGroupForm'
+import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { useGroups } from '@/hooks/useGroups'
@@ -40,7 +40,7 @@ export function GroupsList() {
   const groups = useGroups()
   const { groupId: activeId } = useParams<{ groupId: string }>()
   const navigate = useNavigate()
-  const [showForm, setShowForm] = useState(false)
+  const [dialogOpen, setDialogOpen] = useState(false)
 
   return (
     <div className="flex h-full w-72 shrink-0 flex-col border-r border-border bg-background">
@@ -49,23 +49,14 @@ export function GroupsList() {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => setShowForm((v) => !v)}
+          onClick={() => setDialogOpen(true)}
           aria-label="New group"
         >
           <Plus className="h-4 w-4" />
         </Button>
       </div>
 
-      {showForm && (
-        <div className="border-b border-border bg-card px-3 py-3">
-          <CreateGroupForm
-            onCreated={(id) => {
-              setShowForm(false)
-              void navigate(`/groups/${id}`)
-            }}
-          />
-        </div>
-      )}
+      <GroupFormDialog open={dialogOpen} onOpenChange={setDialogOpen} />
 
       <div className="flex-1 overflow-y-auto py-2">
         {groups.isLoading && (

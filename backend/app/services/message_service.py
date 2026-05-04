@@ -36,13 +36,13 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
 )
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import runtime
+from app.agents.context import DEFAULT_RUNTIME_LIMITS, build_agent_system_message
 from app.agents.router import resolve_all_mentions
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db import SessionLocal
@@ -52,7 +52,7 @@ from app.models.group import Group
 from app.models.message import Message
 from app.models.thread import Thread
 from app.models.user import User
-from app.services import group_service, skill_service, thread_service
+from app.services import group_service, thread_service
 
 CONTEXT_WINDOW = 20
 
@@ -134,24 +134,23 @@ async def _build_lc_input(
 ) -> list[BaseMessage]:
     """Build the LangChain message list for an agent invocation.
 
-    - system = agent.system_prompt + (group.announcement if any).
+    - system = shared agent context (prompt, group, workspace, tools, skills).
     - history = last `CONTEXT_WINDOW` group messages (visible OR interrupted)
       in chronological order, mapped to AIMessage / HumanMessage by sender_type.
     - If `extra_user_text` is provided, it's appended as a HumanMessage at the
       end (used by the resume flow to inject a continuation cue without
       persisting it as a real message).
     """
-    system_parts: list[str] = [agent.system_prompt]
-    if group.announcement:
-        system_parts.append(f"Group announcement:\n{group.announcement}")
-    if agent.skill_ids:
-        skill_uuids = [
-            UUID(s) if isinstance(s, str) else s for s in agent.skill_ids
-        ]
-        skills = await skill_service.list_by_ids(db, skill_uuids)
-        for s in skills:
-            system_parts.append(f"# Skill: {s.name}\n{s.body_markdown}")
-    system = "\n\n".join(system_parts)
+    owner = await db.scalar(select(User).where(User.id == agent.owner_id))
+    if owner is None:
+        raise NotFoundError(f"user {agent.owner_id}")
+    system_message = await build_agent_system_message(
+        db,
+        agent,
+        owner,
+        group=group,
+        runtime_limits={**DEFAULT_RUNTIME_LIMITS, "context_history_messages": CONTEXT_WINDOW},
+    )
 
     history_stmt = (
         select(Message)
@@ -165,7 +164,7 @@ async def _build_lc_input(
     history = list(await db.scalars(history_stmt))
     history.reverse()
 
-    out: list[BaseMessage] = [SystemMessage(content=system)]
+    out: list[BaseMessage] = [system_message]
     for m in history:
         if m.content is None:
             continue

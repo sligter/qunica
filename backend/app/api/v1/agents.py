@@ -3,15 +3,12 @@ from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-)
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app.agents.builtin_tools import list_builtin_tools
+from app.agents.context import build_agent_system_message
 from app.core.deps import get_current_user
 from app.core.exceptions import LLMProviderError
 from app.db import get_db
@@ -24,17 +21,20 @@ from app.schemas.agent import (
     AgentUpdate,
     InvokeRequest,
     InvokeResponse,
+    ToolCatalogResponse,
 )
 from app.services import agent_service
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-def _build_messages(agent: Agent, user_message: str) -> list[BaseMessage]:
-    return [
-        SystemMessage(content=agent.system_prompt),
-        HumanMessage(content=user_message),
-    ]
+def _build_messages(system_message: BaseMessage, user_message: str) -> list[BaseMessage]:
+    return [system_message, HumanMessage(content=user_message)]
+
+
+@router.get("/tool-catalog", response_model=ToolCatalogResponse)
+async def get_tool_catalog() -> ToolCatalogResponse:
+    return ToolCatalogResponse(tools=list_builtin_tools())
 
 
 @router.post(
@@ -85,9 +85,10 @@ async def invoke_agent(
     current_user: User = Depends(get_current_user),
 ) -> InvokeResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
+    system_message = await build_agent_system_message(db, agent, current_user)
     chat_model = await resolve_chat_model(db, agent, streaming=False)
     try:
-        response = await chat_model.ainvoke(_build_messages(agent, data.message))
+        response = await chat_model.ainvoke(_build_messages(system_message, data.message))
     except Exception as exc:
         raise LLMProviderError(f"chat_complete failed: {exc}") from exc
     content = response.content if isinstance(response, AIMessage) else str(response.content)
@@ -102,11 +103,12 @@ async def invoke_agent_stream(
     current_user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
+    system_message = await build_agent_system_message(db, agent, current_user)
     chat_model = await resolve_chat_model(db, agent, streaming=True)
 
     async def event_gen() -> AsyncIterator[dict[str, str]]:
         try:
-            async for chunk in chat_model.astream(_build_messages(agent, data.message)):
+            async for chunk in chat_model.astream(_build_messages(system_message, data.message)):
                 content = getattr(chunk, "content", None)
                 if isinstance(content, str) and content:
                     yield {"event": "token", "data": content}

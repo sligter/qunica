@@ -21,6 +21,7 @@ class SkillImport(BaseModel):
 class SkillFileInfo(BaseModel):
     path: str
     size: int
+    category: str = "other"
 
 
 class SkillRead(BaseModel):
@@ -30,6 +31,11 @@ class SkillRead(BaseModel):
     name: str
     description: str | None
     body_markdown: str
+    metadata_: dict[str, object] | None = Field(
+        default=None,
+        validation_alias="metadata_",
+        serialization_alias="metadata",
+    )
     source: str
     files: list[SkillFileInfo] | None = None
     storage_path: str | None = None

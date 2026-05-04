@@ -4,22 +4,29 @@ import { useForm } from 'react-hook-form'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { z } from 'zod'
 
+import { ToolSelector } from '@/components/agents/ToolSelector'
+import { createDefaultToolConfig } from '@/components/agents/toolConfig'
+import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
 import { Textarea } from '@/components/ui/textarea'
+import { useBuiltinTools } from '@/hooks/useBuiltinTools'
 import { useCreateAgent } from '@/hooks/useCreateAgent'
 import { useProviders } from '@/hooks/useProviders'
+import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { useSkills } from '@/hooks/useSkills'
 import { ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import type { AgentToolConfig } from '@/types/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
   description: z.string().optional(),
   system_prompt: z.string().min(1, 'Required'),
   llm_provider_id: z.string().optional(),
+  workspace_id: z.string().min(1, 'Workspace is required'),
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),
   max_tokens: z.number().int().min(1).optional(),
@@ -35,9 +42,12 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
   const createAgent = useCreateAgent()
   const providers = useProviders()
   const skills = useSkills()
+  const workspaces = useWorkspaces()
+  const builtinTools = useBuiltinTools()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submittedName, setSubmittedName] = useState<string | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
+  const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const form = useForm<FormValues>({
@@ -47,6 +57,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       description: '',
       system_prompt: '',
       llm_provider_id: '',
+      workspace_id: '',
       temperature: 0.7,
       top_p: 1,
       max_tokens: undefined,
@@ -58,6 +69,12 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )
   }
+
+  const tools = builtinTools.data?.tools ?? []
+  const selectedWorkspace = (workspaces.data ?? []).find(
+    (workspace) => workspace.id === form.watch('workspace_id'),
+  )
+  const currentToolConfig = toolConfig ?? createDefaultToolConfig(tools)
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
@@ -73,11 +90,14 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
         description: values.description,
         system_prompt: values.system_prompt,
         llm_config: Object.keys(llm_config).length > 0 ? llm_config : null,
+        tool_config: currentToolConfig,
+        workspace_id: values.workspace_id,
         llm_provider_id: values.llm_provider_id || null,
         skill_ids: selectedSkillIds,
       })
       form.reset()
       setSelectedSkillIds([])
+      setToolConfig(null)
       setSubmittedName(created.name)
       onCreated?.(created.id)
     } catch (err) {
@@ -116,6 +136,20 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
           </p>
         )}
       </div>
+
+      <section className="space-y-2 rounded-md border border-border bg-card p-3">
+        <div>
+          <h3 className="text-sm font-medium">Workspace</h3>
+          <p className="text-[11px] text-muted-foreground">
+            Bind this agent to a backend-visible project folder.
+          </p>
+        </div>
+        <WorkspaceField
+          value={form.watch('workspace_id')}
+          onChange={(workspaceId) => form.setValue('workspace_id', workspaceId, { shouldValidate: true })}
+          error={form.formState.errors.workspace_id?.message}
+        />
+      </section>
 
       <div className="space-y-1.5">
         <Label htmlFor="agent-provider">LLM provider</Label>
@@ -189,8 +223,31 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
         )}
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Mount skills (optional)</Label>
+      <section className="space-y-2 rounded-md border border-border bg-card p-3">
+        <div>
+          <h3 className="text-sm font-medium">Built-in tools</h3>
+          <p className="text-[11px] text-muted-foreground">
+            Select tool permissions to include in the agent context. Risky tools are saved only and are not executed by this runtime.
+          </p>
+        </div>
+        {builtinTools.isLoading && <p className="text-xs text-muted-foreground">Loading tools…</p>}
+        {tools.length > 0 && (
+          <ToolSelector
+            tools={tools}
+            value={currentToolConfig}
+            workspaceBackendType={selectedWorkspace?.backend_type ?? 'local'}
+            onChange={setToolConfig}
+          />
+        )}
+      </section>
+
+      <section className="space-y-2 rounded-md border border-border bg-card p-3">
+        <div>
+          <h3 className="text-sm font-medium">Skills</h3>
+          <p className="text-[11px] text-muted-foreground">
+            Enabled skills are mounted into the prompt through <code>skill_ids</code>.
+          </p>
+        </div>
         {skills.isLoading && (
           <p className="text-xs text-muted-foreground">Loading…</p>
         )}
@@ -208,21 +265,25 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                   <button
                     type="button"
                     onClick={() => toggleSkill(s.id)}
+                    title={s.description ?? undefined}
                     className={cn(
-                      'rounded-md border px-3 py-1 text-xs transition-colors',
+                      'rounded-md border px-3 py-1 text-left text-xs transition-colors',
                       checked
                         ? 'border-primary bg-primary text-primary-foreground'
                         : 'border-border bg-background hover:bg-muted',
                     )}
                   >
-                    {s.name}
+                    <span className="block font-medium">{s.name}</span>
+                    {s.description && (
+                      <span className="block max-w-48 truncate opacity-75">{s.description}</span>
+                    )}
                   </button>
                 </li>
               )
             })}
           </ul>
         )}
-      </div>
+      </section>
 
       {submitError && (
         <p className="text-sm text-red-600" role="alert">

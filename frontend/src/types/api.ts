@@ -19,12 +19,78 @@ export interface Token {
   token_type: 'bearer'
 }
 
+export type WorkspaceBackendType = 'local' | 'cloud_sandbox'
+
+export interface WorkspaceRead {
+  id: string
+  name: string
+  backend_type: WorkspaceBackendType
+  local_path: string | null
+  sandbox_ref: string | null
+  config: Record<string, unknown> | null
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceCreate {
+  name: string
+  backend_type?: WorkspaceBackendType
+  local_path?: string | null
+  sandbox_ref?: string | null
+  config?: Record<string, unknown> | null
+}
+
+export interface WorkspaceUpdate {
+  name?: string
+  backend_type?: WorkspaceBackendType
+  local_path?: string | null
+  sandbox_ref?: string | null
+  config?: Record<string, unknown> | null
+}
+
+export type ToolPolicy =
+  | 'read'
+  | 'write'
+  | 'execute'
+  | 'network'
+  | 'media'
+  | 'planning'
+  | 'orchestration'
+
+export type ToolRuntimeStatus = 'available' | 'planned' | 'sandbox_required' | 'disabled'
+
+export interface BuiltinToolRead {
+  id: string
+  name: string
+  description: string
+  policy: ToolPolicy
+  requires_workspace: boolean
+  requires_sandbox: boolean
+  runtime_status: ToolRuntimeStatus
+}
+
+export interface ToolCatalogResponse {
+  tools: BuiltinToolRead[]
+}
+
+export interface AgentToolSelection {
+  enabled: boolean
+  policy?: ToolPolicy | null
+}
+
+export interface AgentToolConfig {
+  tools: Record<string, AgentToolSelection>
+}
+
 export interface AgentRead {
   id: string
   name: string
   description: string | null
   system_prompt: string
   llm_config: Record<string, unknown> | null
+  tool_config: AgentToolConfig | null
+  workspace_id: string | null
   llm_provider_id: string | null
   skill_ids: string[]
   visibility: string
@@ -37,6 +103,8 @@ export interface AgentCreate {
   description?: string
   system_prompt: string
   llm_config?: Record<string, unknown> | null
+  tool_config?: AgentToolConfig | null
+  workspace_id: string
   llm_provider_id?: string | null
   skill_ids?: string[]
 }
@@ -46,6 +114,8 @@ export interface AgentUpdate {
   description?: string | null
   system_prompt?: string
   llm_config?: Record<string, unknown> | null
+  tool_config?: AgentToolConfig | null
+  workspace_id?: string | null
   llm_provider_id?: string | null
   skill_ids?: string[]
 }
@@ -73,12 +143,21 @@ export interface LLMProviderCreate {
   description?: string | null
 }
 
+export interface SkillFileInfo {
+  path: string
+  size: number
+  category: string
+}
+
 export interface SkillRead {
   id: string
   name: string
   description: string | null
   body_markdown: string
+  metadata: Record<string, unknown> | null
   source: string
+  files: SkillFileInfo[] | null
+  storage_path: string | null
   status: string
   created_at: string
 }

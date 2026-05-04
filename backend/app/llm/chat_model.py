@@ -22,6 +22,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -116,7 +117,7 @@ async def resolve_chat_model(
     base_url = provider.base_url or settings.llm_base_url
     return ChatOpenAI(
         model=model_name,
-        api_key=provider.api_key,
+        api_key=SecretStr(provider.api_key),
         base_url=base_url,
         temperature=temperature,
         streaming=streaming,

@@ -3,11 +3,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.builtin_tools import normalize_tool_config
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.agent import AgentCreate, AgentUpdate
-from app.services import llm_provider_service, skill_service
+from app.services import llm_provider_service, skill_service, workspace_service
 
 
 async def _validate_provider_and_skills(
@@ -35,12 +36,15 @@ async def create_agent(db: AsyncSession, data: AgentCreate, owner: User) -> Agen
         llm_provider_id=data.llm_provider_id,
         skill_ids=data.skill_ids,
     )
+    await workspace_service.get_active_workspace(db, data.workspace_id, owner)
     agent = Agent(
         owner_id=owner.id,
         name=data.name,
         description=data.description,
         system_prompt=data.system_prompt,
         llm_config=data.llm_config,
+        tool_config=normalize_tool_config(data.tool_config),
+        workspace_id=data.workspace_id,
         llm_provider_id=data.llm_provider_id,
         skill_ids=[str(s) for s in data.skill_ids],
     )
@@ -89,6 +93,11 @@ async def update_agent(
         agent.system_prompt = data.system_prompt
     if data.llm_config is not None:
         agent.llm_config = data.llm_config
+    if data.tool_config is not None:
+        agent.tool_config = normalize_tool_config(data.tool_config)
+    if data.workspace_id is not None:
+        await workspace_service.get_active_workspace(db, data.workspace_id, owner)
+        agent.workspace_id = data.workspace_id
     # llm_provider_id: explicit None means "clear it"; we use a sentinel
     # check via the model_fields_set machinery.
     if "llm_provider_id" in data.model_fields_set:
