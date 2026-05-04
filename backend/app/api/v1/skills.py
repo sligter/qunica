@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user
 from app.db import get_db
 from app.models.user import User
-from app.schemas.skill import SkillCreate, SkillImport, SkillRead
+from app.schemas.skill import (
+    SkillCreate,
+    SkillImport,
+    SkillRead,
+    SkillResourceRead,
+    SkillResourceUpdate,
+)
 from app.services import skill_service
 
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -64,6 +70,41 @@ async def get_skill(
 ) -> SkillRead:
     skill = await skill_service.get_skill(db, skill_id, current_user)
     return SkillRead.model_validate(skill)
+
+
+@router.get("/{skill_id}/resources", response_model=list[SkillResourceRead])
+async def list_skill_resources(
+    skill_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[SkillResourceRead]:
+    rows = await skill_service.list_skill_resources(db, skill_id, current_user)
+    return [SkillResourceRead.model_validate(row) for row in rows]
+
+
+@router.get("/{skill_id}/resources/{resource_path:path}", response_model=SkillResourceRead)
+async def read_skill_resource(
+    skill_id: UUID,
+    resource_path: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SkillResourceRead:
+    row = await skill_service.read_skill_resource(db, skill_id, resource_path, current_user)
+    return SkillResourceRead.model_validate(row)
+
+
+@router.patch("/{skill_id}/resources/{resource_path:path}", response_model=SkillResourceRead)
+async def update_skill_resource(
+    skill_id: UUID,
+    resource_path: str,
+    data: SkillResourceUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SkillResourceRead:
+    row = await skill_service.update_skill_resource(
+        db, skill_id, resource_path, data.content, current_user
+    )
+    return SkillResourceRead.model_validate(row)
 
 
 @router.delete("/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)

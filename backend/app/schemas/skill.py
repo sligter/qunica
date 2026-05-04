@@ -24,6 +24,18 @@ class SkillFileInfo(BaseModel):
     category: str = "other"
 
 
+class SkillResourceRead(BaseModel):
+    path: str
+    size: int
+    category: str = "other"
+    is_text: bool
+    content: str | None = None
+
+
+class SkillResourceUpdate(BaseModel):
+    content: str
+
+
 class SkillRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

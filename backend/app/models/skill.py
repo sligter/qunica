@@ -20,7 +20,7 @@ class Skill(Base, UUIDPkMixin):
         "metadata", JSONB, nullable=True
     )
     source: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
-    files: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB, nullable=True)
+    files: Mapped[list[dict[str, object]] | None] = mapped_column(JSONB, nullable=True)
     storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)
     created_at: Mapped[datetime] = mapped_column(

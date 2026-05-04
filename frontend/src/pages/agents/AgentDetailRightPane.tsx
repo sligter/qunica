@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { EditAgentForm } from '@/components/agents/EditAgentForm'
 import { Button } from '@/components/ui/button'
 import { useAgent } from '@/hooks/useAgents'
+import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 
@@ -13,6 +14,7 @@ export function AgentDetailRightPane() {
   const providers = useProviders()
   const skills = useSkills()
   const navigate = useNavigate()
+  const del = useDeleteAgent()
   const [editing, setEditing] = useState(false)
 
   if (agent.isLoading) {
@@ -36,6 +38,14 @@ export function AgentDetailRightPane() {
   const mountedSkills = (skills.data ?? []).filter((s) =>
     a.skill_ids.includes(s.id),
   )
+
+  const onDelete = async () => {
+    if (!confirm(`Delete agent "${a.name}"? This will remove it from active agent lists.`)) {
+      return
+    }
+    await del.mutateAsync(a.id)
+    void navigate('/agents')
+  }
 
   if (editing) {
     return (
@@ -69,9 +79,19 @@ export function AgentDetailRightPane() {
               <p className="text-sm text-muted-foreground">{a.description}</p>
             )}
           </div>
-          <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-            Edit
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onDelete}
+              disabled={del.isPending}
+            >
+              {del.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
         </header>
 
         <section className="space-y-2">

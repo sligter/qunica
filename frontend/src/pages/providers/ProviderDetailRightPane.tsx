@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import { EditProviderForm } from '@/components/providers/EditProviderForm'
 import { Button } from '@/components/ui/button'
 import { useDeleteProvider, useProvider } from '@/hooks/useProviders'
 
@@ -8,6 +10,7 @@ export function ProviderDetailRightPane() {
   const provider = useProvider(providerId)
   const del = useDeleteProvider()
   const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
 
   if (provider.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
@@ -33,6 +36,28 @@ export function ProviderDetailRightPane() {
     void navigate('/providers')
   }
 
+  if (editing) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
+        <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
+          <header className="flex items-baseline justify-between gap-4">
+            <h1 className="text-xl font-semibold tracking-tight">Edit {p.name}</h1>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+          </header>
+          <EditProviderForm
+            provider={p}
+            onSaved={() => {
+              setEditing(false)
+              void navigate(`/providers/${p.id}`)
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
       <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
@@ -43,14 +68,19 @@ export function ProviderDetailRightPane() {
               {p.kind} · {p.default_model}
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onDelete}
-            disabled={del.isPending}
-          >
-            {del.isPending ? 'Deleting…' : 'Delete'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onDelete}
+              disabled={del.isPending}
+            >
+              {del.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
         </header>
 
         <section className="grid grid-cols-2 gap-4 text-sm">

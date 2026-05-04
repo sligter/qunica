@@ -1,5 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom'
 
+import { SkillResourcesPanel } from '@/components/skills/SkillResourcesPanel'
 import { Button } from '@/components/ui/button'
 import { useDeleteSkill, useSkill } from '@/hooks/useSkills'
 
@@ -64,6 +65,8 @@ export function SkillDetailRightPane() {
             {s.body_markdown}
           </pre>
         </section>
+
+        <SkillResourcesPanel skill={s} />
       </div>
     </div>
   )

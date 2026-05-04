@@ -57,7 +57,7 @@ async def create_agent(db: AsyncSession, data: AgentCreate, owner: User) -> Agen
 async def list_agents(db: AsyncSession, owner: User) -> list[Agent]:
     result = await db.scalars(
         select(Agent)
-        .where(Agent.owner_id == owner.id)
+        .where(Agent.owner_id == owner.id, Agent.status == "active")
         .order_by(Agent.created_at.desc())
     )
     return list(result)
@@ -65,7 +65,7 @@ async def list_agents(db: AsyncSession, owner: User) -> list[Agent]:
 
 async def get_agent(db: AsyncSession, agent_id: UUID, owner: User) -> Agent:
     agent = await db.scalar(select(Agent).where(Agent.id == agent_id))
-    if agent is None:
+    if agent is None or agent.status == "deleted":
         raise NotFoundError(f"agent {agent_id}")
     if agent.owner_id != owner.id:
         raise PermissionDeniedError("agent not accessible")
@@ -107,3 +107,9 @@ async def update_agent(
     await db.flush()
     await db.refresh(agent)
     return agent
+
+
+async def delete_agent(db: AsyncSession, agent_id: UUID, owner: User) -> None:
+    agent = await get_agent(db, agent_id, owner)
+    agent.status = "deleted"
+    await db.flush()

@@ -1,3 +1,6 @@
+import { useState } from 'react'
+
+import { EditProviderForm } from '@/components/providers/EditProviderForm'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -21,6 +24,7 @@ export function ProviderDetailDialog({
   open,
   onOpenChange,
 }: ProviderDetailDialogProps) {
+  const [editing, setEditing] = useState(false)
   const del = useDeleteProvider()
 
   if (!provider) return null
@@ -33,20 +37,43 @@ export function ProviderDetailDialog({
     onOpenChange(false)
   }
 
+  const handleOpenChange = (value: boolean) => {
+    if (!value) setEditing(false)
+    onOpenChange(value)
+  }
+
+  if (editing) {
+    return (
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit {provider.name}</DialogTitle>
+          </DialogHeader>
+          <EditProviderForm provider={provider} onSaved={() => setEditing(false)} />
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <div className="flex items-center justify-between pr-8">
             <DialogTitle>{provider.name}</DialogTitle>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={onDelete}
-              disabled={del.isPending}
-            >
-              {del.isPending ? 'Deleting…' : 'Delete'}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={onDelete}
+                disabled={del.isPending}
+              >
+                {del.isPending ? 'Deleting…' : 'Delete'}
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 

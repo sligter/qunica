@@ -1,6 +1,7 @@
 """Skill service — owner-scoped CRUD plus SKILL.md/package import."""
 
 import io
+import os
 import re
 import zipfile
 from dataclasses import dataclass
@@ -26,6 +27,33 @@ _FRONTMATTER_RE = re.compile(
     re.DOTALL,
 )
 _CLASSIFIED_DIRS = {"references", "scripts", "assets", "tools"}
+_TEXT_EXTENSIONS = {
+    ".md",
+    ".markdown",
+    ".txt",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".xml",
+    ".html",
+    ".css",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".py",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".fish",
+    ".ps1",
+    ".sql",
+    ".csv",
+    ".ini",
+    ".cfg",
+}
+_MAX_TEXT_FILE_BYTES = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +158,43 @@ def _find_skill_md_path(names: list[str]) -> tuple[str, str]:
 def _relative_zip_path(name: str, prefix: str) -> str:
     normalized = name.replace("\\", "/")
     return normalized[len(prefix) :] if prefix and normalized.startswith(prefix) else normalized
+
+
+def _normalize_resource_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    if _zip_entry_is_unsafe(normalized) or normalized.endswith("/") or not normalized:
+        raise AgentChatError("resource path is not allowed")
+    return normalized
+
+
+def _file_info_for_path(skill: Skill, rel_path: str) -> dict[str, object]:
+    for info in skill.files or []:
+        if info.get("path") == rel_path:
+            return dict(info)
+    raise NotFoundError(f"skill resource {rel_path}")
+
+
+def _skill_storage_dir(skill: Skill) -> Path:
+    if not skill.storage_path:
+        raise NotFoundError(f"skill resources {skill.id}")
+    return Path(skill.storage_path).resolve()
+
+
+def _resource_file_path(skill: Skill, rel_path: str) -> Path:
+    storage_dir = _skill_storage_dir(skill)
+    target = (storage_dir / rel_path).resolve()
+    try:
+        if os.path.commonpath([str(storage_dir), str(target)]) != str(storage_dir):
+            raise AgentChatError("resource path is not allowed")
+    except ValueError as exc:
+        raise AgentChatError("resource path is not allowed") from exc
+    if not target.is_file():
+        raise NotFoundError(f"skill resource {rel_path}")
+    return target
+
+
+def _is_text_resource(path: Path, size: int) -> bool:
+    return size <= _MAX_TEXT_FILE_BYTES and path.suffix.lower() in _TEXT_EXTENSIONS
 
 
 async def create_skill(
@@ -250,6 +315,87 @@ async def import_skill_from_zip(
     await db.flush()
     await db.refresh(skill)
     return skill
+
+
+async def list_skill_resources(
+    db: AsyncSession, skill_id: UUID, owner: User
+) -> list[dict[str, object]]:
+    skill = await get_skill(db, skill_id, owner)
+    resources: list[dict[str, object]] = []
+    for info in skill.files or []:
+        rel_path = str(info.get("path", ""))
+        if not rel_path:
+            continue
+        try:
+            path = _resource_file_path(skill, _normalize_resource_path(rel_path))
+        except (AgentChatError, NotFoundError):
+            continue
+        size = path.stat().st_size
+        resources.append(
+            {
+                "path": rel_path,
+                "size": size,
+                "category": str(info.get("category", "other")),
+                "is_text": _is_text_resource(path, size),
+                "content": None,
+            }
+        )
+    return resources
+
+
+async def read_skill_resource(
+    db: AsyncSession, skill_id: UUID, rel_path: str, owner: User
+) -> dict[str, object]:
+    skill = await get_skill(db, skill_id, owner)
+    normalized = _normalize_resource_path(rel_path)
+    info = _file_info_for_path(skill, normalized)
+    path = _resource_file_path(skill, normalized)
+    size = path.stat().st_size
+    is_text = _is_text_resource(path, size)
+    content: str | None = None
+    if is_text:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            is_text = False
+    return {
+        "path": normalized,
+        "size": size,
+        "category": str(info.get("category", "other")),
+        "is_text": is_text,
+        "content": content,
+    }
+
+
+async def update_skill_resource(
+    db: AsyncSession, skill_id: UUID, rel_path: str, content: str, owner: User
+) -> dict[str, object]:
+    skill = await get_skill(db, skill_id, owner)
+    normalized = _normalize_resource_path(rel_path)
+    info = _file_info_for_path(skill, normalized)
+    path = _resource_file_path(skill, normalized)
+    current_size = path.stat().st_size
+    if not _is_text_resource(path, current_size):
+        raise AgentChatError("resource is not editable as text")
+    try:
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise AgentChatError("resource is not editable as text") from exc
+    path.write_text(content, encoding="utf-8")
+    new_size = path.stat().st_size
+    for item in skill.files or []:
+        if item.get("path") == normalized:
+            item["size"] = new_size
+            break
+    skill.files = list(skill.files or [])
+    await db.flush()
+    return {
+        "path": normalized,
+        "size": new_size,
+        "category": str(info.get("category", "other")),
+        "is_text": True,
+        "content": content,
+    }
 
 
 async def delete_skill(db: AsyncSession, skill_id: UUID, owner: User) -> None:

@@ -2,7 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchFormData, fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
-import type { SkillCreate, SkillImport, SkillRead } from '@/types/api'
+import type { SkillCreate, SkillImport, SkillRead, SkillResourceRead } from '@/types/api'
+
+function encodeResourcePath(path: string) {
+  return path.split('/').map(encodeURIComponent).join('/')
+}
 
 export function useSkills() {
   const token = useAuthStore((s) => s.token)
@@ -50,6 +54,46 @@ export function useCreateSkill() {
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+}
+
+export function useSkillResources(skillId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: ['skills', skillId, 'resources'],
+    queryFn: () => fetchJson<SkillResourceRead[]>(`/skills/${skillId}/resources`, { token }),
+    enabled: token !== null && !!skillId,
+  })
+}
+
+export function useSkillResource(skillId: string | undefined, path: string | null) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: ['skills', skillId, 'resources', path],
+    queryFn: () =>
+      fetchJson<SkillResourceRead>(
+        `/skills/${skillId}/resources/${encodeResourcePath(path ?? '')}`,
+        { token },
+      ),
+    enabled: token !== null && !!skillId && !!path,
+  })
+}
+
+export function useUpdateSkillResource(skillId: string | undefined, path: string | null) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (content: string) =>
+      fetchJson<SkillResourceRead>(
+        `/skills/${skillId}/resources/${encodeResourcePath(path ?? '')}`,
+        { token, method: 'PATCH', body: { content } },
+      ),
+    onSuccess: (updated) => {
+      void qc.invalidateQueries({ queryKey: ['skills', skillId, 'resources'] })
+      qc.setQueryData(['skills', skillId, 'resources', updated.path], updated)
+      void qc.invalidateQueries({ queryKey: ['skills'] })
+      void qc.invalidateQueries({ queryKey: ['skills', skillId] })
     },
   })
 }

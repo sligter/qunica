@@ -77,6 +77,15 @@ async def update_agent(
     return await agent_service.update_agent(db, agent_id, data, current_user)
 
 
+@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_agent(
+    agent_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await agent_service.delete_agent(db, agent_id, current_user)
+
+
 @router.post("/{agent_id}/invoke", response_model=InvokeResponse)
 async def invoke_agent(
     agent_id: UUID,

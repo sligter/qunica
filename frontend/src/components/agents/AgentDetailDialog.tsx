@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
+import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import type { AgentRead } from '@/types/api'
@@ -24,6 +25,7 @@ export function AgentDetailDialog({ agent, open, onOpenChange }: AgentDetailDial
   const [editing, setEditing] = useState(false)
   const providers = useProviders()
   const skills = useSkills()
+  const del = useDeleteAgent()
 
   if (!agent) return null
 
@@ -35,6 +37,14 @@ export function AgentDetailDialog({ agent, open, onOpenChange }: AgentDetailDial
   const handleClose = (v: boolean) => {
     if (!v) setEditing(false)
     onOpenChange(v)
+  }
+
+  const onDelete = async () => {
+    if (!confirm(`Delete agent "${agent.name}"? This will remove it from active agent lists.`)) {
+      return
+    }
+    await del.mutateAsync(agent.id)
+    handleClose(false)
   }
 
   if (editing) {
@@ -66,9 +76,19 @@ export function AgentDetailDialog({ agent, open, onOpenChange }: AgentDetailDial
                 <p className="text-sm text-muted-foreground">{agent.description}</p>
               )}
             </div>
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={onDelete}
+                disabled={del.isPending}
+              >
+                {del.isPending ? 'Deleting…' : 'Delete'}
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 

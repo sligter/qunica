@@ -1,3 +1,4 @@
+import { SkillResourcesPanel } from '@/components/skills/SkillResourcesPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -70,6 +71,10 @@ export function SkillDetailDialog({ skill, open, onOpenChange }: SkillDetailDial
             {skill.body_markdown}
           </pre>
         </section>
+
+        <Separator />
+
+        <SkillResourcesPanel skill={skill} />
       </DialogContent>
     </Dialog>
   )

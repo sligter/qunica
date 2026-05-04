@@ -143,10 +143,31 @@ export interface LLMProviderCreate {
   description?: string | null
 }
 
+export interface LLMProviderUpdate {
+  name?: string
+  kind?: ProviderKind
+  base_url?: string | null
+  api_key?: string | null
+  default_model?: string | null
+  description?: string | null
+}
+
 export interface SkillFileInfo {
   path: string
   size: number
   category: string
+}
+
+export interface SkillResourceRead {
+  path: string
+  size: number
+  category: string
+  is_text: boolean
+  content: string | null
+}
+
+export interface SkillResourceUpdate {
+  content: string
 }
 
 export interface SkillRead {

@@ -98,13 +98,13 @@ async def update_provider(
 
             raise AgentChatError(f"unsupported provider kind: {data.kind}")
         provider.kind = data.kind
-    if data.base_url is not None:
+    if "base_url" in data.model_fields_set:
         provider.base_url = data.base_url
-    if data.api_key is not None:
+    if data.api_key:
         provider.api_key = data.api_key
     if data.default_model is not None:
         provider.default_model = data.default_model
-    if data.description is not None:
+    if "description" in data.model_fields_set:
         provider.description = data.description
     await db.flush()
     await db.refresh(provider)

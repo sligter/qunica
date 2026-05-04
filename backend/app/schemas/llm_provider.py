@@ -17,8 +17,8 @@ class LLMProviderUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     kind: str | None = None
     base_url: str | None = None
-    api_key: str | None = None
-    default_model: str | None = None
+    api_key: str | None = Field(default=None, min_length=1)
+    default_model: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
 
 
