@@ -210,7 +210,7 @@ export interface GroupRead {
 
 export interface GroupCreate {
   name: string
-  workspace_id: string
+  workspace_id?: string | null
   description?: string | null
   announcement?: string | null
   initial_agents?: string[]
@@ -266,6 +266,18 @@ export interface GroupAgentWorkspaceSharingUpdate {
 
 export interface ClearGroupMessagesResponse {
   cleared_count: number
+}
+
+export interface SystemSettingsRead {
+  id: string
+  owner_id: string
+  group_workspace_root: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SystemSettingsUpdate {
+  group_workspace_root?: string | null
 }
 
 export type SenderType = 'user' | 'agent' | 'system'

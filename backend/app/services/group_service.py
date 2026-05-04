@@ -1,16 +1,23 @@
+from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from app.core.exceptions import (
+    AgentChatError,
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from app.models.agent import Agent
 from app.models.group import Group
 from app.models.group_agent import GroupAgent
 from app.models.group_member import GroupMember
 from app.models.user import User
+from app.models.workspace import Workspace
 from app.schemas.group import GroupCreate, GroupUpdate
-from app.services import workspace_service
+from app.services import system_settings_service, workspace_service
 
 
 async def _get_membership(
@@ -67,17 +74,57 @@ def is_group_workspace_shared(ga: GroupAgent | None) -> bool:
     return context_scope.get("share_group_workspace") is True
 
 
+async def _bind_or_create_group_workspace(
+    db: AsyncSession, group: Group, owner: User, requested_workspace_id: UUID | None
+) -> Workspace:
+    """Bind the group to a dedicated workspace.
+
+    Default flow auto-creates a workspace under the user's configured
+    `group_workspace_root` in system settings. Callers may pass
+    `requested_workspace_id` to bind an existing workspace they own; this is an
+    escape hatch and not the standard path.
+    """
+    if requested_workspace_id is not None:
+        workspace = await workspace_service.get_active_workspace(
+            db, requested_workspace_id, owner
+        )
+        return workspace
+
+    root = await system_settings_service.require_group_workspace_root(db, owner)
+    storage_dir = Path(root) / str(group.id)
+    try:
+        storage_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise AgentChatError(
+            f"failed to create group workspace directory: {exc}"
+        ) from exc
+    resolved = storage_dir.resolve()
+    workspace = Workspace(
+        owner_id=owner.id,
+        name=f"group:{group.name}",
+        backend_type="local",
+        local_path=str(resolved),
+    )
+    db.add(workspace)
+    await db.flush()
+    await db.refresh(workspace)
+    return workspace
+
+
 async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Group:
-    workspace = await workspace_service.get_active_workspace(db, data.workspace_id, owner)
     group = Group(
         owner_id=owner.id,
-        workspace_id=data.workspace_id,
         name=data.name,
         description=data.description,
         announcement=data.announcement,
     )
     db.add(group)
-    await db.flush()  # need group.id for membership + agents
+    await db.flush()  # need group.id for workspace path + membership + agents
+
+    workspace = await _bind_or_create_group_workspace(
+        db, group, owner, data.workspace_id
+    )
+    group.workspace_id = workspace.id
 
     db.add(GroupMember(group_id=group.id, user_id=owner.id, role="owner"))
 

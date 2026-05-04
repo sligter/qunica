@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Bot, MessagesSquare, Plug, Sparkles } from 'lucide-react'
+import { Bot, MessagesSquare, Plug, Settings, Sparkles } from 'lucide-react'
 
 import { RailUserMenu } from '@/components/layout/RailUserMenu'
 import { cn } from '@/lib/utils'
@@ -15,6 +15,7 @@ const items: RailItem[] = [
   { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/providers', label: 'Providers', icon: Plug },
   { to: '/skills', label: 'Skills', icon: Sparkles },
+  { to: '/settings/system', label: 'Settings', icon: Settings },
 ]
 
 export function SidebarRail() {

@@ -13,7 +13,7 @@ export function useCreateGroup() {
         method: 'POST',
         body: {
           name: input.name,
-          workspace_id: input.workspace_id,
+          ...(input.workspace_id ? { workspace_id: input.workspace_id } : {}),
           description: input.description,
           announcement: input.announcement,
           initial_agents: input.initial_agents,

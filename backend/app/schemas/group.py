@@ -6,10 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class GroupCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    workspace_id: UUID
     description: str | None = None
     announcement: str | None = None
     initial_agents: list[UUID] | None = None
+    # Optional escape hatch: callers may pass an existing workspace to bind
+    # instead of letting the service auto-create a dedicated one. The standard
+    # path is omit-and-auto-create using the user's configured group workspace
+    # root in system settings.
+    workspace_id: UUID | None = None
 
 
 class GroupUpdate(BaseModel):

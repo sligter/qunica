@@ -7,6 +7,7 @@ from app.api.v1 import (
     health,
     llm_providers,
     skills,
+    system_settings,
     threads,
     workspaces,
 )
@@ -20,3 +21,4 @@ api_router.include_router(groups.router)
 api_router.include_router(threads.router)
 api_router.include_router(llm_providers.router)
 api_router.include_router(skills.router)
+api_router.include_router(system_settings.router)

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
@@ -18,13 +18,12 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useAgents } from '@/hooks/useAgents'
 import { useCreateGroup } from '@/hooks/useCreateGroup'
-import { useWorkspaces } from '@/hooks/useWorkspaces'
+import { useSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
-  workspace_id: z.string().min(1, 'Select a workspace'),
   description: z.string().optional(),
   announcement: z.string().optional(),
   free_speech: z.boolean(),
@@ -46,7 +45,7 @@ interface GroupFormDialogProps {
 export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
   const navigate = useNavigate()
   const agents = useAgents()
-  const workspaces = useWorkspaces()
+  const settings = useSystemSettings()
   const createGroup = useCreateGroup()
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -67,7 +66,6 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
     if (open) {
       form.reset({
         name: '',
-        workspace_id: '',
         description: '',
         announcement: '',
         free_speech: false,
@@ -84,12 +82,13 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
     )
   }
 
+  const rootConfigured = Boolean(settings.data?.group_workspace_root)
+
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
     try {
       const created = await createGroup.mutateAsync({
         name: values.name,
-        workspace_id: values.workspace_id,
         description: values.description ?? null,
         announcement: values.announcement ?? null,
         initial_agents: selectedAgentIds.length ? selectedAgentIds : undefined,
@@ -108,7 +107,8 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
           <DialogTitle>Create a new group</DialogTitle>
           <DialogDescription>
             A group is the shared context where users and agents collaborate.
-            Behavior toggles can be tweaked later from the group's settings.
+            A dedicated workspace is auto-created under your configured group
+            workspace root.
           </DialogDescription>
         </DialogHeader>
 
@@ -123,30 +123,28 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             )}
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="gd-workspace">Workspace</Label>
-            <select
-              id="gd-workspace"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-              {...form.register('workspace_id')}
-            >
-              <option value="">Select workspace</option>
-              {(workspaces.data ?? []).map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name} ({workspace.backend_type})
-                </option>
-              ))}
-            </select>
-            {form.formState.errors.workspace_id ? (
-              <p className="text-xs text-red-600">
-                {form.formState.errors.workspace_id.message}
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
+            <p className="font-medium">Group workspace</p>
+            {settings.isLoading ? (
+              <p className="text-muted-foreground">Loading system settings…</p>
+            ) : rootConfigured ? (
+              <p className="text-muted-foreground">
+                A new dedicated workspace will be created under{' '}
+                <code>{settings.data?.group_workspace_root}</code>.
               </p>
-            ) : null}
-            {workspaces.data?.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Create a workspace before creating a group.
+            ) : (
+              <p className="text-red-600">
+                Group workspace root is not configured.{' '}
+                <Link
+                  className="underline"
+                  to="/settings/system"
+                  onClick={() => onOpenChange(false)}
+                >
+                  Set it in system settings
+                </Link>{' '}
+                before creating a group.
               </p>
-            ) : null}
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -211,7 +209,12 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={createGroup.isPending || workspaces.isLoading}>
+            <Button
+              type="submit"
+              disabled={
+                createGroup.isPending || settings.isLoading || !rootConfigured
+              }
+            >
               {createGroup.isPending ? 'Creating…' : 'Create group'}
             </Button>
           </DialogFooter>
@@ -220,4 +223,3 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
     </Dialog>
   )
 }
-

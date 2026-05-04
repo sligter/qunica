@@ -12,6 +12,8 @@ import { GroupMembersPage } from '@/pages/group/GroupMembersPage'
 import { GroupNotesPage } from '@/pages/group/GroupNotesPage'
 import { GroupsRightPane } from '@/pages/groups/GroupsRightPane'
 import { ProvidersPage } from '@/pages/providers/ProvidersPage'
+import { SettingsRedirectPage } from '@/pages/settings/SettingsRedirectPage'
+import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
 import { SkillsPage } from '@/pages/skills/SkillsPage'
 
 export const router = createBrowserRouter([
@@ -32,6 +34,8 @@ export const router = createBrowserRouter([
           { path: '/agents', element: <AgentsPage /> },
           { path: '/providers', element: <ProvidersPage /> },
           { path: '/skills', element: <SkillsPage /> },
+          { path: '/settings', element: <SettingsRedirectPage /> },
+          { path: '/settings/system', element: <SystemSettingsPage /> },
         ],
       },
     ],

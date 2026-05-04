@@ -110,7 +110,9 @@ export function GroupSettingsDialog({
               {workspace ? `${workspace.name} (${workspace.backend_type})` : group.workspace_id ?? 'Legacy group without workspace'}
             </div>
             <p className="text-xs text-muted-foreground">
-              Group files are stored under this workspace. Rebinding is disabled in this version.
+              Each group gets a dedicated workspace auto-created from your group
+              workspace root. Group files live under this workspace; rebinding
+              is not supported.
             </p>
           </div>
 
