@@ -13,6 +13,10 @@ interface AgentMuteVars extends AgentMutationVars {
   muted: boolean
 }
 
+interface AgentWorkspaceSharingVars extends AgentMutationVars {
+  shareGroupWorkspace: boolean
+}
+
 export function useRemoveGroupAgent() {
   const qc = useQueryClient()
   const token = useAuthStore((s) => s.token)
@@ -26,6 +30,22 @@ export function useRemoveGroupAgent() {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
       void qc.invalidateQueries({ queryKey: ['groups', groupId] })
       void qc.invalidateQueries({ queryKey: ['groups'] })
+    },
+  })
+}
+
+export function useSetGroupAgentWorkspaceSharing() {
+  const qc = useQueryClient()
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: ({ groupId, agentId, shareGroupWorkspace }: AgentWorkspaceSharingVars) =>
+      fetchJson<GroupAgentRead>(`/groups/${groupId}/agents/${agentId}/workspace-sharing`, {
+        token,
+        method: 'PATCH',
+        body: { share_group_workspace: shareGroupWorkspace },
+      }),
+    onSuccess: (_data, { groupId }) => {
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
     },
   })
 }

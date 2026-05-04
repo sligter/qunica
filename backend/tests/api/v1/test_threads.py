@@ -27,13 +27,14 @@ async def _setup_group_with_thread(
         },
     )
     assert workspace.status_code == 201, workspace.text
+    workspace_id = cast(str, workspace.json()["id"])
     r = await client.post(
         "/api/v1/agents",
         headers=auth_headers,
         json={
             "name": "Echo",
             "system_prompt": "be brief",
-            "workspace_id": workspace.json()["id"],
+            "workspace_id": workspace_id,
         },
     )
     assert r.status_code == 201, r.text
@@ -41,7 +42,7 @@ async def _setup_group_with_thread(
     r = await client.post(
         "/api/v1/groups",
         headers=auth_headers,
-        json={"name": "G", "initial_agents": [agent_id]},
+        json={"name": "G", "workspace_id": workspace_id, "initial_agents": [agent_id]},
     )
     assert r.status_code == 201, r.text
     group_id = cast(str, r.json()["id"])

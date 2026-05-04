@@ -16,6 +16,8 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
+import { useClearGroupMessages } from '@/hooks/useGroupMessages'
+import { useWorkspaces } from '@/hooks/useWorkspaces'
 import type { GroupRead } from '@/types/api'
 
 interface GroupSettingsDialogProps {
@@ -31,6 +33,8 @@ export function GroupSettingsDialog({
 }: GroupSettingsDialogProps) {
   const update = useUpdateGroup(group.id)
   const del = useDeleteGroup()
+  const clearMessages = useClearGroupMessages(group.id)
+  const workspaces = useWorkspaces()
   const navigate = useNavigate()
 
   const [name, setName] = useState(group.name)
@@ -54,6 +58,15 @@ export function GroupSettingsDialog({
     })
     onOpenChange(false)
   }
+
+  const onClearMessages = async () => {
+    if (!confirm('Clear all visible chat records for this group? This cannot be undone.')) {
+      return
+    }
+    await clearMessages.mutateAsync()
+  }
+
+  const workspace = workspaces.data?.find((item) => item.id === group.workspace_id)
 
   const onDelete = async () => {
     if (
@@ -91,6 +104,16 @@ export function GroupSettingsDialog({
             />
           </div>
 
+          <div className="space-y-1.5">
+            <Label>Workspace</Label>
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+              {workspace ? `${workspace.name} (${workspace.backend_type})` : group.workspace_id ?? 'Legacy group without workspace'}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Group files are stored under this workspace. Rebinding is disabled in this version.
+            </p>
+          </div>
+
           <Separator />
 
           <div className="flex items-center justify-between gap-4">
@@ -115,16 +138,40 @@ export function GroupSettingsDialog({
 
           <Separator />
 
+          <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+            {[
+              ['Members and agents', 'Add, mute, and remove group participants.', `/groups/${group.id}/members`],
+              ['Files', 'Upload and delete group workspace files.', `/groups/${group.id}/files`],
+              ['Notes', 'Create and edit shared group notes.', `/groups/${group.id}/notes`],
+            ].map(([title, description, href]) => (
+              <div key={href} className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{title}</p>
+                  <p className="text-xs text-muted-foreground">{description}</p>
+                </div>
+                <Button variant="outline" size="sm" asChild onClick={() => onOpenChange(false)}>
+                  <Link to={href}>Manage</Link>
+                </Button>
+              </div>
+            ))}
+          </div>
+
           <div className="rounded-lg border border-border bg-muted/30 p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">Members and agents</p>
+                <p className="text-sm font-medium">Chat history</p>
                 <p className="text-xs text-muted-foreground">
-                  Add, mute, and remove group participants on the dedicated management page.
+                  Clear visible chat records for this group.
                 </p>
               </div>
-              <Button variant="outline" size="sm" asChild onClick={() => onOpenChange(false)}>
-                <Link to={`/groups/${group.id}/members`}>Manage</Link>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onClearMessages}
+                disabled={clearMessages.isPending}
+                className="text-red-600 hover:bg-red-50 hover:text-red-700"
+              >
+                {clearMessages.isPending ? 'Clearing…' : 'Clear'}
               </Button>
             </div>
           </div>
@@ -134,7 +181,7 @@ export function GroupSettingsDialog({
           <Button
             variant="outline"
             onClick={onDelete}
-            disabled={del.isPending || update.isPending}
+            disabled={del.isPending || update.isPending || clearMessages.isPending}
             className="text-red-600 hover:bg-red-50 hover:text-red-700"
           >
             {del.isPending ? 'Deleting…' : 'Delete group'}

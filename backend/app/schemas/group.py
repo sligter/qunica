@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class GroupCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    workspace_id: UUID
     description: str | None = None
     announcement: str | None = None
     initial_agents: list[UUID] | None = None
@@ -46,6 +47,7 @@ class GroupRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    workspace_id: UUID | None
     name: str
     description: str | None
     announcement: str | None
@@ -60,6 +62,15 @@ class GroupRead(BaseModel):
 
 class GroupAgentAdd(BaseModel):
     agent_id: UUID
+    share_group_workspace: bool = False
+
+
+class GroupAgentWorkspaceSharingUpdate(BaseModel):
+    share_group_workspace: bool
+
+
+class ClearGroupMessagesResponse(BaseModel):
+    cleared_count: int
 
 
 class GroupAgentRead(BaseModel):
@@ -75,5 +86,6 @@ class GroupAgentRead(BaseModel):
     display_name: str
     role: str | None
     response_mode: str
+    share_group_workspace: bool
     status: str
     joined_at: datetime

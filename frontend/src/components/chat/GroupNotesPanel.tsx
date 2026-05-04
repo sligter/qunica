@@ -22,11 +22,12 @@ import type { GroupNoteRead } from '@/types/api'
 
 interface GroupNotesPanelProps {
   groupId: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  embedded?: boolean
 }
 
-export function GroupNotesPanel({ groupId, open, onOpenChange }: GroupNotesPanelProps) {
+export function GroupNotesPanel({ groupId, open = true, onOpenChange, embedded = false }: GroupNotesPanelProps) {
   const notes = useGroupNotes(groupId)
   const create = useCreateGroupNote(groupId)
   const update = useUpdateGroupNote(groupId)
@@ -34,29 +35,29 @@ export function GroupNotesPanel({ groupId, open, onOpenChange }: GroupNotesPanel
   const [editing, setEditing] = useState<GroupNoteRead | null>(null)
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
-  const [content, setContent] = useState('')
+  const [noteContent, setNoteContent] = useState('')
 
   const openCreate = () => {
     setEditing(null)
     setCreating(true)
     setTitle('')
-    setContent('')
+    setNoteContent('')
   }
 
   const openEdit = (note: GroupNoteRead) => {
     setCreating(false)
     setEditing(note)
     setTitle(note.title)
-    setContent(note.content)
+    setNoteContent(note.content)
   }
 
   const onSave = async () => {
     if (creating) {
-      await create.mutateAsync({ title, content })
+      await create.mutateAsync({ title, content: noteContent })
     } else if (editing) {
       await update.mutateAsync({
         noteId: editing.id,
-        data: { title, content },
+        data: { title, content: noteContent },
       })
     }
     setCreating(false)
@@ -66,22 +67,19 @@ export function GroupNotesPanel({ groupId, open, onOpenChange }: GroupNotesPanel
   const isForm = creating || editing !== null
   const isPending = create.isPending || update.isPending
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <div className="flex items-center justify-between pr-8">
-            <DialogTitle>Group Notes</DialogTitle>
+  const content = (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Group Notes</h2>
             {!isForm && (
               <Button size="sm" variant="outline" onClick={openCreate}>
                 <Plus className="mr-1 h-3.5 w-3.5" />
                 New Note
               </Button>
             )}
-          </div>
-        </DialogHeader>
+      </div>
 
-        {isForm ? (
+      {isForm ? (
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="note-title">Title</Label>
@@ -97,8 +95,8 @@ export function GroupNotesPanel({ groupId, open, onOpenChange }: GroupNotesPanel
               <Textarea
                 id="note-content"
                 rows={10}
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
+                value={noteContent}
+                onChange={(e) => setNoteContent(e.target.value)}
                 placeholder="Write your note…"
               />
             </div>
@@ -159,6 +157,20 @@ export function GroupNotesPanel({ groupId, open, onOpenChange }: GroupNotesPanel
             )}
           </>
         )}
+    </>
+  )
+
+  if (embedded) {
+    return <div className="space-y-4">{content}</div>
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="sr-only">Group Notes</DialogTitle>
+        </DialogHeader>
+        {content}
       </DialogContent>
     </Dialog>
   )

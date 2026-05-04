@@ -12,11 +12,12 @@ import { useDeleteGroupFile, useGroupFiles, useUploadGroupFile } from '@/hooks/u
 
 interface GroupFilesPanelProps {
   groupId: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  embedded?: boolean
 }
 
-export function GroupFilesPanel({ groupId, open, onOpenChange }: GroupFilesPanelProps) {
+export function GroupFilesPanel({ groupId, open = true, onOpenChange, embedded = false }: GroupFilesPanelProps) {
   const files = useGroupFiles(groupId)
   const upload = useUploadGroupFile(groupId)
   const del = useDeleteGroupFile(groupId)
@@ -29,12 +30,10 @@ export function GroupFilesPanel({ groupId, open, onOpenChange }: GroupFilesPanel
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <div className="flex items-center justify-between pr-8">
-            <DialogTitle>Group Files</DialogTitle>
+  const content = (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Group Files</h2>
             <Button
               size="sm"
               variant="outline"
@@ -44,10 +43,9 @@ export function GroupFilesPanel({ groupId, open, onOpenChange }: GroupFilesPanel
               <Upload className="mr-1 h-3.5 w-3.5" />
               {upload.isPending ? 'Uploading…' : 'Upload'}
             </Button>
-          </div>
-        </DialogHeader>
+      </div>
 
-        <input
+      <input
           ref={fileInputRef}
           type="file"
           className="hidden"
@@ -92,6 +90,20 @@ export function GroupFilesPanel({ groupId, open, onOpenChange }: GroupFilesPanel
             ))}
           </ul>
         )}
+    </>
+  )
+
+  if (embedded) {
+    return <div className="space-y-4">{content}</div>
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="sr-only">Group Files</DialogTitle>
+        </DialogHeader>
+        {content}
       </DialogContent>
     </Dialog>
   )

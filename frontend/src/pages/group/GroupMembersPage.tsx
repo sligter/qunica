@@ -16,7 +16,11 @@ import {
   useRemoveGroupMember,
 } from '@/hooks/useGroupMembers'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
-import { useMuteGroupAgent, useRemoveGroupAgent } from '@/hooks/useGroupAgentActions'
+import {
+  useMuteGroupAgent,
+  useRemoveGroupAgent,
+  useSetGroupAgentWorkspaceSharing,
+} from '@/hooks/useGroupAgentActions'
 import { ApiError } from '@/lib/api'
 import type { AgentRead, GroupAgentRead, GroupMemberRead, UserRead } from '@/types/api'
 
@@ -105,6 +109,7 @@ interface AgentRowProps {
 function AgentRow({ agent, groupId, isMuted }: AgentRowProps) {
   const muteAgent = useMuteGroupAgent()
   const removeAgent = useRemoveGroupAgent()
+  const setSharing = useSetGroupAgentWorkspaceSharing()
   const [error, setError] = useState<string | null>(null)
 
   const onMute = () => {
@@ -112,6 +117,18 @@ function AgentRow({ agent, groupId, isMuted }: AgentRowProps) {
     muteAgent.mutate(
       { groupId, agentId: agent.agent_id, muted: !isMuted },
       { onError: (err) => setError(errorMessage(err, 'Failed to update agent mute')) },
+    )
+  }
+
+  const onToggleSharing = () => {
+    setError(null)
+    setSharing.mutate(
+      {
+        groupId,
+        agentId: agent.agent_id,
+        shareGroupWorkspace: !agent.share_group_workspace,
+      },
+      { onError: (err) => setError(errorMessage(err, 'Failed to update workspace sharing')) },
     )
   }
 
@@ -136,11 +153,20 @@ function AgentRow({ agent, groupId, isMuted }: AgentRowProps) {
               <p className="truncate text-sm font-medium">{agent.display_name}</p>
               <Badge variant="outline">{formatRole(agent.role)}</Badge>
               {isMuted ? <Badge variant="secondary">Muted</Badge> : null}
+              {agent.share_group_workspace ? <Badge variant="secondary">Group workspace</Badge> : null}
             </div>
             <p className="text-xs text-muted-foreground">Agent ID: {agent.agent_id}</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onToggleSharing}
+            disabled={setSharing.isPending}
+          >
+            {agent.share_group_workspace ? 'Unshare workspace' : 'Share workspace'}
+          </Button>
           <Button size="sm" variant="outline" onClick={onMute} disabled={muteAgent.isPending}>
             {isMuted ? 'Unmute' : 'Mute'}
           </Button>
@@ -198,12 +224,13 @@ interface AddAgentRowProps {
 
 function AddAgentRow({ agent, groupId }: AddAgentRowProps) {
   const addAgent = useAddAgentToGroup()
+  const [shareGroupWorkspace, setShareGroupWorkspace] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const onAdd = () => {
     setError(null)
     addAgent.mutate(
-      { groupId, agentId: agent.id },
+      { groupId, agentId: agent.id, shareGroupWorkspace },
       { onError: (err) => setError(errorMessage(err, 'Failed to add agent')) },
     )
   }
@@ -213,9 +240,22 @@ function AddAgentRow({ agent, groupId }: AddAgentRowProps) {
       <div className="min-w-0">
         <p className="truncate text-sm font-medium">{agent.name}</p>
         <p className="truncate text-xs text-muted-foreground">{agent.description || 'No description.'}</p>
+        <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={shareGroupWorkspace}
+            onChange={(event) => setShareGroupWorkspace(event.target.checked)}
+          />
+          Allow group workspace
+        </label>
         {error ? <p className="text-xs text-red-600">{error}</p> : null}
       </div>
-      <Button size="sm" onClick={onAdd} disabled={addAgent.isPending}>
+      <Button
+        size="sm"
+        onClick={onAdd}
+        disabled={addAgent.isPending}
+        className="self-start"
+      >
         Add
       </Button>
     </li>

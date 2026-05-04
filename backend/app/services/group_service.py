@@ -10,6 +10,7 @@ from app.models.group_agent import GroupAgent
 from app.models.group_member import GroupMember
 from app.models.user import User
 from app.schemas.group import GroupCreate, GroupUpdate
+from app.services import workspace_service
 
 
 async def _get_membership(
@@ -46,9 +47,31 @@ def _remove_uuid_from_json_list(values: list[str] | None, item_id: UUID) -> list
     return [value for value in values or [] if value != item]
 
 
+def _set_group_workspace_sharing(ga: GroupAgent, share: bool) -> None:
+    context_scope = dict(ga.context_scope or {})
+    file_scope = dict(ga.file_scope or {})
+    if share:
+        context_scope["share_group_workspace"] = True
+        file_scope["group_workspace"] = "read"
+    else:
+        context_scope.pop("share_group_workspace", None)
+        file_scope.pop("group_workspace", None)
+    ga.context_scope = context_scope or None
+    ga.file_scope = file_scope or None
+
+
+def is_group_workspace_shared(ga: GroupAgent | None) -> bool:
+    if ga is None:
+        return False
+    context_scope = ga.context_scope or {}
+    return context_scope.get("share_group_workspace") is True
+
+
 async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Group:
+    workspace = await workspace_service.get_active_workspace(db, data.workspace_id, owner)
     group = Group(
         owner_id=owner.id,
+        workspace_id=data.workspace_id,
         name=data.name,
         description=data.description,
         announcement=data.announcement,
@@ -65,13 +88,14 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
                 raise NotFoundError(f"agent {agent_id}")
             if agent.owner_id != owner.id:
                 raise PermissionDeniedError("agent not accessible")
-            db.add(
-                GroupAgent(
-                    group_id=group.id,
-                    agent_id=agent_id,
-                    response_mode="mentioned_only",
-                )
+            ga = GroupAgent(
+                group_id=group.id,
+                agent_id=agent_id,
+                response_mode="mentioned_only",
             )
+            if agent.workspace_id == workspace.id:
+                _set_group_workspace_sharing(ga, True)
+            db.add(ga)
 
     await db.flush()
     await db.refresh(group)
@@ -145,7 +169,12 @@ async def delete_group(db: AsyncSession, group_id: UUID, user: User) -> None:
 
 
 async def add_agent(
-    db: AsyncSession, group_id: UUID, agent_id: UUID, owner: User
+    db: AsyncSession,
+    group_id: UUID,
+    agent_id: UUID,
+    owner: User,
+    *,
+    share_group_workspace: bool = False,
 ) -> tuple[GroupAgent, Agent]:
     await assert_owner(db, group_id, owner)
 
@@ -171,6 +200,7 @@ async def add_agent(
             group_id=group_id, agent_id=agent_id, response_mode="mentioned_only"
         )
         db.add(ga)
+    _set_group_workspace_sharing(ga, share_group_workspace)
     await db.flush()
     await db.refresh(ga)
     return ga, agent
@@ -188,6 +218,32 @@ async def list_agents_in_group(
     )
     rows = (await db.execute(stmt)).all()
     return [(row[0], row[1]) for row in rows]
+
+
+async def set_agent_workspace_sharing(
+    db: AsyncSession,
+    group_id: UUID,
+    agent_id: UUID,
+    share_group_workspace: bool,
+    user: User,
+) -> tuple[GroupAgent, Agent]:
+    await assert_owner(db, group_id, user)
+    row = await db.execute(
+        select(GroupAgent, Agent)
+        .join(Agent, Agent.id == GroupAgent.agent_id)
+        .where(
+            GroupAgent.group_id == group_id,
+            GroupAgent.agent_id == agent_id,
+            GroupAgent.status == "active",
+        )
+    )
+    result = row.one_or_none()
+    if result is None:
+        raise NotFoundError(f"group agent {agent_id}")
+    _set_group_workspace_sharing(result[0], share_group_workspace)
+    await db.flush()
+    await db.refresh(result[0])
+    return result[0], result[1]
 
 
 async def remove_agent(db: AsyncSession, group_id: UUID, agent_id: UUID, user: User) -> None:

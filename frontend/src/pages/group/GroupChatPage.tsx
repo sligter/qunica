@@ -3,8 +3,6 @@ import { Link, useParams } from 'react-router-dom'
 import { File, NotebookPen, Settings, UsersRound } from 'lucide-react'
 
 import { Composer } from '@/components/chat/Composer'
-import { GroupFilesPanel } from '@/components/chat/GroupFilesPanel'
-import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
 import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
 import { MessageList } from '@/components/chat/MessageList'
 import { Button } from '@/components/ui/button'
@@ -22,8 +20,6 @@ export function GroupChatPage() {
   const stream = useSendMessageStream(groupId)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [filesOpen, setFilesOpen] = useState(false)
-  const [notesOpen, setNotesOpen] = useState(false)
 
   useEffect(() => {
     if (groupId) clearWarnings(groupId)
@@ -67,21 +63,15 @@ export function GroupChatPage() {
               <UsersRound className="h-4 w-4" />
             </Link>
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setFilesOpen(true)}
-            aria-label="Group files"
-          >
-            <File className="h-4 w-4" />
+          <Button variant="ghost" size="icon" asChild aria-label="Group files">
+            <Link to={`/groups/${groupId}/files`}>
+              <File className="h-4 w-4" />
+            </Link>
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setNotesOpen(true)}
-            aria-label="Group notes"
-          >
-            <NotebookPen className="h-4 w-4" />
+          <Button variant="ghost" size="icon" asChild aria-label="Group notes">
+            <Link to={`/groups/${groupId}/notes`}>
+              <NotebookPen className="h-4 w-4" />
+            </Link>
           </Button>
           <Button
             variant="ghost"
@@ -124,17 +114,6 @@ export function GroupChatPage() {
         />
       )}
 
-      <GroupFilesPanel
-        groupId={groupId}
-        open={filesOpen}
-        onOpenChange={setFilesOpen}
-      />
-
-      <GroupNotesPanel
-        groupId={groupId}
-        open={notesOpen}
-        onOpenChange={setNotesOpen}
-      />
     </div>
   )
 }

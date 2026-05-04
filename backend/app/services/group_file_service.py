@@ -1,18 +1,23 @@
 """Group file service — upload, list, delete files attached to a group."""
 
-from pathlib import Path
-from uuid import UUID
+from pathlib import Path, PurePath
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.core.exceptions import AgentChatError, NotFoundError, PermissionDeniedError
+from app.models.group import Group
 from app.models.group_file import GroupFile
 from app.models.group_member import GroupMember
 from app.models.user import User
+from app.services import workspace_service
 
 
-async def _assert_member(db: AsyncSession, group_id: UUID, user: User) -> None:
+async def _assert_member(db: AsyncSession, group_id: UUID, user: User) -> Group:
+    group = await db.scalar(select(Group).where(Group.id == group_id, Group.status == "active"))
+    if group is None:
+        raise NotFoundError(f"group {group_id}")
     membership = await db.scalar(
         select(GroupMember).where(
             GroupMember.group_id == group_id,
@@ -22,6 +27,22 @@ async def _assert_member(db: AsyncSession, group_id: UUID, user: User) -> None:
     )
     if membership is None:
         raise PermissionDeniedError("not a member of this group")
+    return group
+
+
+def _safe_display_filename(filename: str) -> str:
+    candidate = filename.strip() or "untitled"
+    path = PurePath(candidate)
+    if (
+        path.is_absolute()
+        or path.name != candidate
+        or ".." in path.parts
+        or "/" in candidate
+        or "\\" in candidate
+        or ":" in candidate
+    ):
+        raise AgentChatError("unsafe filename")
+    return candidate
 
 
 async def upload_file(
@@ -32,18 +53,26 @@ async def upload_file(
     file_bytes: bytes,
     mime_type: str | None,
 ) -> GroupFile:
-    await _assert_member(db, group_id, user)
+    group = await _assert_member(db, group_id, user)
+    if group.workspace_id is None:
+        raise AgentChatError("group has no bound workspace")
+    workspace = await workspace_service.get_active_workspace(db, group.workspace_id, user)
+    if workspace.backend_type == "cloud_sandbox":
+        raise AgentChatError("group file storage is not supported for cloud sandbox workspaces")
+    if workspace.local_path is None:
+        raise AgentChatError("local workspace has no local_path")
 
-    storage_dir = Path("uploads") / "groups" / str(group_id) / "files"
+    display_filename = _safe_display_filename(filename)
+    storage_dir = Path(workspace.local_path) / ".ag-swarmer" / "groups" / str(group_id) / "files"
     storage_dir.mkdir(parents=True, exist_ok=True)
-    file_path = storage_dir / filename
+    file_path = storage_dir / f"{uuid4().hex}_{display_filename}"
     file_path.write_bytes(file_bytes)
 
     gf = GroupFile(
         group_id=group_id,
         uploader_id=user.id,
-        filename=filename,
-        file_path=str(file_path),
+        filename=display_filename,
+        file_path=str(file_path.resolve()),
         file_size=len(file_bytes),
         mime_type=mime_type,
     )

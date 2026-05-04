@@ -49,6 +49,7 @@ from app.db import SessionLocal
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.group import Group
+from app.models.group_agent import GroupAgent
 from app.models.message import Message
 from app.models.thread import Thread
 from app.models.user import User
@@ -83,6 +84,44 @@ async def list_messages(
         .limit(limit)
     )
     return list(await db.scalars(stmt))
+
+
+async def clear_group_history(db: AsyncSession, group_id: UUID, user: User) -> int:
+    await group_service.assert_owner(db, group_id, user)
+    running = await db.scalar(
+        select(Thread).where(Thread.group_id == group_id, Thread.status == "running").limit(1)
+    )
+    if running is not None:
+        raise ConflictError("cannot clear group history while a thread is running")
+
+    messages = list(
+        await db.scalars(
+            select(Message).where(
+                Message.group_id == group_id,
+                Message.status.in_(("visible", "interrupted")),
+            )
+        )
+    )
+    interrupted_thread_ids = {
+        m.thread_id
+        for m in messages
+        if m.thread_id is not None and m.status == "interrupted"
+    }
+    for message in messages:
+        message.status = "cleared"
+    if interrupted_thread_ids:
+        paused_threads = list(
+            await db.scalars(
+                select(Thread).where(
+                    Thread.id.in_(interrupted_thread_ids),
+                    Thread.status == "paused",
+                )
+            )
+        )
+        for thread in paused_threads:
+            thread.status = "cleared"
+    await db.flush()
+    return len(messages)
 
 
 async def _persist_user_message(
@@ -129,6 +168,7 @@ async def _persist_agent_message(
 async def _build_lc_input(
     db: AsyncSession,
     group: Group,
+    group_agent: GroupAgent,
     agent: Agent,
     extra_user_text: str | None = None,
 ) -> list[BaseMessage]:
@@ -149,6 +189,7 @@ async def _build_lc_input(
         agent,
         owner,
         group=group,
+        group_agent=group_agent,
         runtime_limits={**DEFAULT_RUNTIME_LIMITS, "context_history_messages": CONTEXT_WINDOW},
     )
 
@@ -215,13 +256,13 @@ async def send_message(
     graph = request.app.state.graph
 
     agent_replies: list[Message] = []
-    for _, agent in resolved:
+    for group_agent, agent in resolved:
         chat_thread = await thread_service.get_or_create_chat_thread(
             db, group_id, agent.id, sender.id
         )
         await thread_service.mark_running(db, chat_thread)
         try:
-            input_messages = await _build_lc_input(db, group, agent)
+            input_messages = await _build_lc_input(db, group, group_agent, agent)
             chat_model = await resolve_chat_model(db, agent, streaming=False)
             response: AIMessage = await runtime.run(
                 graph=graph,
@@ -252,6 +293,7 @@ async def _stream_one_agent(
     db: AsyncSession,
     graph: CompiledStateGraph[Any, Any, Any, Any],
     group: Group,
+    group_agent: GroupAgent,
     agent: Agent,
     chat_thread: Thread,
     reply_to: UUID,
@@ -265,7 +307,7 @@ async def _stream_one_agent(
     chunks: list[str] = []
     cancelled = False
     try:
-        input_messages = await _build_lc_input(db, group, agent)
+        input_messages = await _build_lc_input(db, group, group_agent, agent)
         chat_model = await resolve_chat_model(db, agent, streaming=True)
         async for kind, payload in runtime.run_with_stream(
             graph=graph,
@@ -363,13 +405,13 @@ async def send_message_stream(
 
     graph = request.app.state.graph
 
-    for _, agent in resolved:
+    for group_agent, agent in resolved:
         chat_thread = await thread_service.get_or_create_chat_thread(
             db, group_id, agent.id, sender.id
         )
         await thread_service.mark_running(db, chat_thread)
         async for event in _stream_one_agent(
-            db, graph, group, agent, chat_thread, reply_to=user_msg.id
+            db, graph, group, group_agent, agent, chat_thread, reply_to=user_msg.id
         ):
             yield event
 
@@ -393,6 +435,7 @@ async def resume_thread_stream(
     db: AsyncSession,
     request: Request,
     thread: Thread,
+    group_agent: GroupAgent,
     agent: Agent,
     group: Group,
     interrupted_msg: Message,
@@ -416,7 +459,7 @@ async def resume_thread_stream(
     agent_id_str = str(agent.id)
     try:
         input_messages = await _build_lc_input(
-            db, group, agent, extra_user_text=RESUME_CONTINUATION_PROMPT
+            db, group, group_agent, agent, extra_user_text=RESUME_CONTINUATION_PROMPT
         )
         chat_model = await resolve_chat_model(db, agent, streaming=True)
         async for kind, payload in runtime.run_with_stream(
@@ -475,7 +518,7 @@ async def resume_thread_stream(
 
 async def resolve_resume_target(
     db: AsyncSession, thread_id: UUID, user: User
-) -> tuple[Thread, Agent, Group, Message]:
+) -> tuple[Thread, GroupAgent, Agent, Group, Message]:
     """Pre-flight validation for the resume endpoint.
 
     Raises NotFoundError / ConflictError / PermissionDeniedError so that
@@ -488,12 +531,22 @@ async def resolve_resume_target(
     if thread.agent_id is None:
         raise ConflictError(f"thread {thread_id} has no agent")
     group = await group_service.get_group(db, thread.group_id, user)
-    agent = await db.scalar(select(Agent).where(Agent.id == thread.agent_id))
-    if agent is None:
+    row = await db.execute(
+        select(GroupAgent, Agent)
+        .join(Agent, Agent.id == GroupAgent.agent_id)
+        .where(
+            GroupAgent.group_id == group.id,
+            GroupAgent.agent_id == thread.agent_id,
+            GroupAgent.status == "active",
+        )
+    )
+    result = row.one_or_none()
+    if result is None:
         raise NotFoundError(f"agent {thread.agent_id}")
+    group_agent, agent = result
     interrupted_msg = await _latest_interrupted_message(db, thread.id)
     if interrupted_msg is None:
         raise ConflictError(
             f"thread {thread_id} has no interrupted message to resume"
         )
-    return thread, agent, group, interrupted_msg
+    return thread, group_agent, agent, group, interrupted_msg

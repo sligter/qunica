@@ -1,15 +1,34 @@
 import { useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
-import type { Message } from '@/types/api'
+import type { ClearGroupMessagesResponse, Message } from '@/types/api'
 
 /**
  * Fetches the historical message list and primes the messageStore. Realtime
  * updates flow through the SSE hook, not through this query.
  */
+export function useClearGroupMessages(groupId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  const setHistory = useMessageStore((s) => s.setHistory)
+  return useMutation({
+    mutationFn: () =>
+      fetchJson<ClearGroupMessagesResponse>(`/groups/${groupId}/messages/clear`, {
+        method: 'POST',
+        token,
+      }),
+    onSuccess: () => {
+      if (groupId) {
+        setHistory(groupId, [])
+        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+      }
+    },
+  })
+}
+
 export function useGroupMessages(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const setHistory = useMessageStore((s) => s.setHistory)

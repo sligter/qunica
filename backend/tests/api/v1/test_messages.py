@@ -40,7 +40,11 @@ async def _setup(
     r = await client.post(
         "/api/v1/groups",
         headers=auth_headers,
-        json={"name": "MsgGroup", "initial_agents": [a[0] for a in agents]},
+        json={
+            "name": "MsgGroup",
+            "workspace_id": workspace_id,
+            "initial_agents": [a[0] for a in agents],
+        },
     )
     assert r.status_code == 201, r.text
     return cast(str, r.json()["id"]), agents
@@ -167,6 +171,63 @@ async def test_stream_emits_per_agent_attribution(
     assert echo_id in token_agent_ids
     assert mirror_id in token_agent_ids
     assert agent_message_senders == [echo_id, mirror_id]
+
+
+async def test_clear_group_history_hides_messages_and_allows_new_send(
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
+) -> None:
+    fake_llm["messages"] = ["one", "two"]
+    group_id, _ = await _setup(client, auth_headers)
+    await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo round 1"},
+    )
+
+    r = await client.post(f"/api/v1/groups/{group_id}/messages/clear", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["cleared_count"] == 2
+
+    r = await client.get(f"/api/v1/groups/{group_id}/messages", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json() == []
+
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo round 2"},
+    )
+    assert r.status_code == 201
+    assert len(r.json()["agent_replies"]) == 1
+
+
+async def test_non_owner_cannot_clear_group_history(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    group_id, _ = await _setup(client, auth_headers)
+    r = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "member-clear@example.com",
+            "password": "valid-password-1",
+            "name": "Member",
+        },
+    )
+    assert r.status_code == 201
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "member-clear@example.com", "password": "valid-password-1"},
+    )
+    member_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    me = await client.get("/api/v1/auth/me", headers=member_headers)
+    await client.post(
+        f"/api/v1/groups/{group_id}/members",
+        headers=auth_headers,
+        json={"user_id": me.json()["id"]},
+    )
+
+    r = await client.post(f"/api/v1/groups/{group_id}/messages/clear", headers=member_headers)
+    assert r.status_code == 403
 
 
 async def test_history_lists_persisted_messages_in_order(

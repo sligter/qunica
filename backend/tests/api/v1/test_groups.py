@@ -52,11 +52,13 @@ async def test_create_group_with_initial_agents(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
     agent_id = await _create_agent(client, auth_headers, "Echo")
+    workspace_id = await _create_workspace(client, auth_headers)
     r = await client.post(
         "/api/v1/groups",
         headers=auth_headers,
         json={
             "name": "Project A",
+            "workspace_id": workspace_id,
             "description": "Test group",
             "announcement": "Be brief.",
             "initial_agents": [agent_id],
@@ -65,6 +67,7 @@ async def test_create_group_with_initial_agents(
     assert r.status_code == 201
     body = r.json()
     assert body["name"] == "Project A"
+    assert body["workspace_id"] == workspace_id
     group_id = body["id"]
 
     # Group agents endpoint should show Echo
@@ -80,7 +83,7 @@ async def test_list_groups_only_returns_owned(
     r = await client.post(
         "/api/v1/groups",
         headers=auth_headers,
-        json={"name": "OwnedGroup"},
+        json={"workspace_id": await _create_workspace(client, auth_headers), "name": "OwnedGroup"},
     )
     assert r.status_code == 201
     owned_id = r.json()["id"]
@@ -88,7 +91,12 @@ async def test_list_groups_only_returns_owned(
     # Another user
     other_headers = await _new_user_headers(client)
     r = await client.post(
-        "/api/v1/groups", headers=other_headers, json={"name": "OtherGroup"}
+        "/api/v1/groups",
+        headers=other_headers,
+        json={
+            "workspace_id": await _create_workspace(client, other_headers),
+            "name": "OtherGroup",
+        },
     )
     other_id = r.json()["id"]
 
@@ -101,7 +109,11 @@ async def test_list_groups_only_returns_owned(
 async def test_get_group_as_non_member_forbidden(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
-    r = await client.post("/api/v1/groups", headers=auth_headers, json={"name": "P"})
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"workspace_id": await _create_workspace(client, auth_headers), "name": "P"},
+    )
     group_id = r.json()["id"]
 
     other_headers = await _new_user_headers(client)
@@ -109,16 +121,49 @@ async def test_get_group_as_non_member_forbidden(
     assert r.status_code == 403
 
 
+async def test_create_group_requires_workspace(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    r = await client.post("/api/v1/groups", headers=auth_headers, json={"name": "No workspace"})
+    assert r.status_code == 422
+
+
+async def test_create_group_rejects_other_owner_workspace(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    other_headers = await _new_user_headers(client)
+    other_workspace_id = await _create_workspace(client, other_headers)
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"name": "Bad workspace", "workspace_id": other_workspace_id},
+    )
+    assert r.status_code == 403
+
+
 async def test_add_agent_to_group_uses_display_name_fallback(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
-    r = await client.post("/api/v1/groups", headers=auth_headers, json={"name": "G"})
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"workspace_id": await _create_workspace(client, auth_headers), "name": "G"},
+    )
     group_id = r.json()["id"]
     agent_id = await _create_agent(client, auth_headers, "Helper")
     r = await client.post(
         f"/api/v1/groups/{group_id}/agents",
         headers=auth_headers,
-        json={"agent_id": agent_id},
+        json={"agent_id": agent_id, "share_group_workspace": True},
     )
     assert r.status_code == 201
     assert r.json()["display_name"] == "Helper"
+    assert r.json()["share_group_workspace"] is True
+
+    r = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_id}/workspace-sharing",
+        headers=auth_headers,
+        json={"share_group_workspace": False},
+    )
+    assert r.status_code == 200
+    assert r.json()["share_group_workspace"] is False

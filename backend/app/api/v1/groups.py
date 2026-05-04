@@ -13,9 +13,11 @@ from app.models.group_member import GroupMember
 from app.models.message import Message
 from app.models.user import User
 from app.schemas.group import (
+    ClearGroupMessagesResponse,
     GroupAgentAdd,
     GroupAgentMuteUpdate,
     GroupAgentRead,
+    GroupAgentWorkspaceSharingUpdate,
     GroupCreate,
     GroupMemberAdd,
     GroupMemberMuteUpdate,
@@ -63,6 +65,7 @@ def _to_group_agent_read(ga: GroupAgent, agent: Agent) -> GroupAgentRead:
         display_name=ga.display_name or agent.name,
         role=ga.role,
         response_mode=ga.response_mode,
+        share_group_workspace=group_service.is_group_workspace_shared(ga),
         status=ga.status,
         joined_at=ga.joined_at,
     )
@@ -92,7 +95,13 @@ async def add_agent_to_group(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> GroupAgentRead:
-    ga, agent = await group_service.add_agent(db, group_id, body.agent_id, current_user)
+    ga, agent = await group_service.add_agent(
+        db,
+        group_id,
+        body.agent_id,
+        current_user,
+        share_group_workspace=body.share_group_workspace,
+    )
     return _to_group_agent_read(ga, agent)
 
 
@@ -104,6 +113,23 @@ async def list_group_agents(
 ) -> list[GroupAgentRead]:
     rows = await group_service.list_agents_in_group(db, group_id, current_user)
     return [_to_group_agent_read(ga, agent) for ga, agent in rows]
+
+
+@router.patch(
+    "/{group_id}/agents/{agent_id}/workspace-sharing",
+    response_model=GroupAgentRead,
+)
+async def set_group_agent_workspace_sharing(
+    group_id: UUID,
+    agent_id: UUID,
+    data: GroupAgentWorkspaceSharingUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupAgentRead:
+    ga, agent = await group_service.set_agent_workspace_sharing(
+        db, group_id, agent_id, data.share_group_workspace, current_user
+    )
+    return _to_group_agent_read(ga, agent)
 
 
 @router.delete("/{group_id}/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -234,6 +260,16 @@ async def send_message_stream(
     )
 
 
+@router.post("/{group_id}/messages/clear", response_model=ClearGroupMessagesResponse)
+async def clear_messages(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ClearGroupMessagesResponse:
+    cleared_count = await message_service.clear_group_history(db, group_id, current_user)
+    return ClearGroupMessagesResponse(cleared_count=cleared_count)
+
+
 @router.get("/{group_id}/messages", response_model=list[MessageRead])
 async def list_messages(
     group_id: UUID,
@@ -260,7 +296,9 @@ async def upload_group_file(
 ) -> GroupFileRead:
     content = await file.read()
     gf = await group_file_service.upload_file(
-        db, group_id, current_user,
+        db,
+        group_id,
+        current_user,
         filename=file.filename or "untitled",
         file_bytes=content,
         mime_type=file.content_type,

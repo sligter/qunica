@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.builtin_tools import enabled_tool_names
 from app.models.agent import Agent
 from app.models.group import Group
+from app.models.group_agent import GroupAgent
 from app.models.skill import Skill
 from app.models.user import User
 from app.models.workspace import Workspace
@@ -35,6 +36,7 @@ class AgentInvocationContext:
     enabled_tools: list[str]
     mounted_skills: list[Skill]
     runtime_limits: dict[str, int]
+    workspace_source: str
 
     def to_system_message(self) -> SystemMessage:
         return SystemMessage(content=self.system_prompt)
@@ -46,6 +48,7 @@ async def build_agent_invocation_context(
     user: User,
     *,
     group: Group | None = None,
+    group_agent: GroupAgent | None = None,
     runtime_limits: dict[str, int] | None = None,
 ) -> AgentInvocationContext:
     """Build the shared prompt context for an agent invocation.
@@ -61,14 +64,24 @@ async def build_agent_invocation_context(
         limits.update(runtime_limits)
 
     workspace = None
-    if agent.workspace_id is not None:
+    workspace_source = "none"
+    share_group_workspace = bool(
+        group_agent is not None
+        and (group_agent.context_scope or {}).get("share_group_workspace") is True
+    )
+    if share_group_workspace and group is not None and group.workspace_id is not None:
+        workspace = await workspace_service.get_active_workspace(db, group.workspace_id, user)
+        workspace_source = "group"
+    elif agent.workspace_id is not None:
         workspace = await workspace_service.get_active_workspace(db, agent.workspace_id, user)
+        workspace_source = "agent"
 
     skills = await _mounted_skills(db, agent)
     system_prompt = _render_system_prompt(
         agent=agent,
         group=group,
         workspace=workspace,
+        workspace_source=workspace_source,
         enabled_tools=enabled_tool_names(agent.tool_config),
         skills=skills,
         runtime_limits=limits,
@@ -79,6 +92,7 @@ async def build_agent_invocation_context(
         enabled_tools=enabled_tool_names(agent.tool_config),
         mounted_skills=skills,
         runtime_limits=limits,
+        workspace_source=workspace_source,
     )
 
 
@@ -88,6 +102,7 @@ async def build_agent_system_message(
     user: User,
     *,
     group: Group | None = None,
+    group_agent: GroupAgent | None = None,
     runtime_limits: dict[str, int] | None = None,
 ) -> BaseMessage:
     """Convenience wrapper for callers that only need a LangChain message."""
@@ -97,6 +112,7 @@ async def build_agent_system_message(
         agent,
         user,
         group=group,
+        group_agent=group_agent,
         runtime_limits=runtime_limits,
     )
     return context.to_system_message()
@@ -114,6 +130,7 @@ def _render_system_prompt(
     agent: Agent,
     group: Group | None,
     workspace: Workspace | None,
+    workspace_source: str,
     enabled_tools: list[str],
     skills: list[Skill],
     runtime_limits: dict[str, int],
@@ -122,7 +139,7 @@ def _render_system_prompt(
 
     if group is not None:
         parts.append(_render_group_context(group))
-    parts.append(_render_workspace_context(workspace, enabled_tools))
+    parts.append(_render_workspace_context(workspace, workspace_source, enabled_tools))
     parts.append(_render_runtime_limits(runtime_limits))
     if skills:
         parts.append(_render_skills(skills))
@@ -141,7 +158,9 @@ def _render_group_context(group: Group) -> str:
     return "\n".join(lines)
 
 
-def _render_workspace_context(workspace: Workspace | None, enabled_tools: list[str]) -> str:
+def _render_workspace_context(
+    workspace: Workspace | None, workspace_source: str, enabled_tools: list[str]
+) -> str:
     tools = ", ".join(enabled_tools) if enabled_tools else "none"
     location: str | None
     if workspace is None:
@@ -158,6 +177,7 @@ def _render_workspace_context(workspace: Workspace | None, enabled_tools: list[s
         name = workspace.name
     return (
         "Agent workspace context:\n"
+        f"- source: {workspace_source}\n"
         f"- name: {name}\n"
         f"- backend_type: {backend_type}\n"
         f"- location: {location or 'not configured'}\n"

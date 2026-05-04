@@ -9,10 +9,12 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useAgents } from '@/hooks/useAgents'
 import { useCreateGroup } from '@/hooks/useCreateGroup'
+import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
+  workspace_id: z.string().min(1, 'Select a workspace'),
   description: z.string().optional(),
   announcement: z.string().optional(),
 })
@@ -25,13 +27,14 @@ interface CreateGroupFormProps {
 
 export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
   const agents = useAgents()
+  const workspaces = useWorkspaces()
   const createGroup = useCreateGroup()
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { name: '', description: '', announcement: '' },
+    defaultValues: { name: '', workspace_id: '', description: '', announcement: '' },
   })
 
   const toggleAgent = (id: string) => {
@@ -45,6 +48,7 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
     try {
       const created = await createGroup.mutateAsync({
         name: values.name,
+        workspace_id: values.workspace_id,
         description: values.description || null,
         announcement: values.announcement || null,
         initial_agents: selectedAgentIds.length ? selectedAgentIds : undefined,
@@ -65,6 +69,26 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
         {form.formState.errors.name && (
           <p className="text-xs text-red-600">{form.formState.errors.name.message}</p>
         )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="group-workspace">Workspace</Label>
+        <select
+          id="group-workspace"
+          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          {...form.register('workspace_id')}
+        >
+          <option value="">Select workspace</option>
+          {(workspaces.data ?? []).map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name} ({workspace.backend_type})
+            </option>
+          ))}
+        </select>
+        {form.formState.errors.workspace_id ? (
+          <p className="text-xs text-red-600">
+            {form.formState.errors.workspace_id.message}
+          </p>
+        ) : null}
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="group-description">Description (optional)</Label>
@@ -117,7 +141,7 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
           {submitError}
         </p>
       )}
-      <Button type="submit" disabled={createGroup.isPending}>
+      <Button type="submit" disabled={createGroup.isPending || workspaces.isLoading}>
         {createGroup.isPending ? 'Creating…' : 'Create group'}
       </Button>
     </form>

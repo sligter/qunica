@@ -45,11 +45,15 @@ async def resume_thread(
     `POST /groups/{id}/messages/stream` endpoint, except no `user_message`
     event is emitted (this isn't a new user turn).
     """
-    thread, agent, group, interrupted_msg = await message_service.resolve_resume_target(
-        db, thread_id, current_user
-    )
+    (
+        thread,
+        group_agent,
+        agent,
+        group,
+        interrupted_msg,
+    ) = await message_service.resolve_resume_target(db, thread_id, current_user)
     return EventSourceResponse(
         message_service.resume_thread_stream(
-            db, request, thread, agent, group, interrupted_msg
+            db, request, thread, group_agent, agent, group, interrupted_msg
         )
     )

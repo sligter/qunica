@@ -64,7 +64,7 @@ known-first-party = ["app"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-exclude = ["alembic/versions/.*\\.py$", "^uploads/skills/.*"]
+exclude = ["alembic/versions/.*\\.py$", "^uploads/skills/.*", "^scripts/"]
 
 [[tool.mypy.overrides]]
 module = "alembic.*"

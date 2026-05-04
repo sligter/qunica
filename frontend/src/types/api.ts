@@ -195,6 +195,7 @@ export interface SkillImport {
 
 export interface GroupRead {
   id: string
+  workspace_id: string | null
   name: string
   description: string | null
   announcement: string | null
@@ -209,6 +210,7 @@ export interface GroupRead {
 
 export interface GroupCreate {
   name: string
+  workspace_id: string
   description?: string | null
   announcement?: string | null
   initial_agents?: string[]
@@ -248,8 +250,22 @@ export interface GroupAgentRead {
   display_name: string
   role: string | null
   response_mode: string
+  share_group_workspace: boolean
   status: string
   joined_at: string
+}
+
+export interface GroupAgentAdd {
+  agent_id: string
+  share_group_workspace?: boolean
+}
+
+export interface GroupAgentWorkspaceSharingUpdate {
+  share_group_workspace: boolean
+}
+
+export interface ClearGroupMessagesResponse {
+  cleared_count: number
 }
 
 export type SenderType = 'user' | 'agent' | 'system'

@@ -12,6 +12,9 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     __tablename__ = "groups"
 
     owner_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    workspace_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True, index=True
+    )
     org_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
