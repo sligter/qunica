@@ -17,6 +17,7 @@ export function MessageList({ groupId }: MessageListProps) {
   const inFlight = useMessageStore(
     (s) => s.inFlightByGroup[groupId] ?? EMPTY_INFLIGHT,
   )
+  const activeAgent = useMessageStore((s) => s.activeAgentByGroup[groupId] ?? null)
   const warnings = useMessageStore(
     (s) => s.warningsByGroup[groupId] ?? EMPTY_WARNINGS,
   )
@@ -24,7 +25,7 @@ export function MessageList({ groupId }: MessageListProps) {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages, inFlight, warnings])
+  }, [messages, inFlight, activeAgent, warnings])
 
   const inFlightBubbles: Message[] = Object.values(inFlight).map((bubble) => ({
     id: `inflight:${bubble.agent_id}`,
@@ -40,9 +41,18 @@ export function MessageList({ groupId }: MessageListProps) {
     created_at: new Date().toISOString(),
   }))
 
+  const showThinking =
+    activeAgent !== null &&
+    Object.keys(inFlight).length === 0
+
+  const progressLabel =
+    activeAgent && activeAgent.total > 1
+      ? ` (${activeAgent.index + 1}/${activeAgent.total})`
+      : ''
+
   return (
     <div className="flex flex-1 flex-col overflow-y-auto py-4">
-      {messages.length === 0 && inFlightBubbles.length === 0 && (
+      {messages.length === 0 && inFlightBubbles.length === 0 && !showThinking && (
         <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
           No messages yet. Try sending <code>@AgentName hello</code> to start.
         </div>
@@ -53,6 +63,15 @@ export function MessageList({ groupId }: MessageListProps) {
       {inFlightBubbles.map((m) => (
         <MessageItem key={m.id} message={m} groupId={groupId} isStreaming />
       ))}
+      {showThinking && (
+        <div className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+            <span className="font-medium text-foreground">{activeAgent.display_name}</span>
+            is thinking{progressLabel}…
+          </span>
+        </div>
+      )}
       {warnings.length > 0 && (
         <div className="mt-2 px-4 text-center text-xs text-amber-600">
           {warnings[warnings.length - 1]}

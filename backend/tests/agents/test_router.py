@@ -215,3 +215,57 @@ async def test_resolve_all_mentions_dedupes_multiword_too(
     )
     assert len(result) == 1
     assert result[0][1].name == "tree man"
+
+
+@pytest.mark.asyncio
+async def test_free_speech_all_agents_respond_without_mention(
+    db_session: AsyncSession,
+) -> None:
+    """free_speech=True → all agents respond even without @mentions."""
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "Mirror", "Nova"])
+    group.free_speech = True
+    await db_session.flush()
+
+    result = await resolve_all_mentions(db_session, group, "hello everyone")
+    names = [a.name for _, a in result]
+    assert len(names) == 3
+    assert set(names) == {"Echo", "Mirror", "Nova"}
+
+
+@pytest.mark.asyncio
+async def test_free_speech_with_mention_only_mentioned_respond(
+    db_session: AsyncSession,
+) -> None:
+    """free_speech=True + explicit @mention → only mentioned agents respond."""
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "Mirror", "Nova"])
+    group.free_speech = True
+    await db_session.flush()
+
+    result = await resolve_all_mentions(db_session, group, "@Nova what do you think?")
+    names = [a.name for _, a in result]
+    assert names == ["Nova"]
+
+
+@pytest.mark.asyncio
+async def test_free_speech_skips_muted_agents(
+    db_session: AsyncSession,
+) -> None:
+    """free_speech=True still respects mute list."""
+    group, agents = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+    group.free_speech = True
+    group.muted_agent_ids = [str(agents[0].id)]
+    await db_session.flush()
+
+    result = await resolve_all_mentions(db_session, group, "hi all")
+    assert [a.name for _, a in result] == ["Mirror"]
+
+
+@pytest.mark.asyncio
+async def test_no_mention_no_free_speech_returns_empty(
+    db_session: AsyncSession,
+) -> None:
+    """free_speech=False + no @mention → empty list."""
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+
+    result = await resolve_all_mentions(db_session, group, "hello everyone")
+    assert result == []

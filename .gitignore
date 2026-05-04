@@ -9,6 +9,7 @@ build/
 .claude/
 docs/
 llm_config-for-test.txt
+*.html
 
 # Python
 __pycache__/

@@ -18,9 +18,17 @@ export interface StreamingBubble {
   content: string
 }
 
+export interface ActiveAgent {
+  agent_id: string
+  display_name: string
+  index: number
+  total: number
+}
+
 interface MessageState {
   byGroup: Record<string, Message[]>
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
+  activeAgentByGroup: Record<string, ActiveAgent | null>
   warningsByGroup: Record<string, string[]>
   resumingMessageIds: Set<string>
 
@@ -29,6 +37,8 @@ interface MessageState {
   patchInFlight: (groupId: string, agentId: string, delta: string) => void
   finalizeInFlight: (groupId: string, message: Message) => void
   clearInFlight: (groupId: string) => void
+  setActiveAgent: (groupId: string, agent: ActiveAgent) => void
+  clearActiveAgent: (groupId: string) => void
   pushWarning: (groupId: string, warning: string) => void
   clearWarnings: (groupId: string) => void
   appendToMessage: (groupId: string, messageId: string, delta: string) => void
@@ -40,6 +50,7 @@ interface MessageState {
 export const useMessageStore = create<MessageState>((set) => ({
   byGroup: {},
   inFlightByGroup: {},
+  activeAgentByGroup: {},
   warningsByGroup: {},
   resumingMessageIds: new Set(),
 
@@ -94,6 +105,17 @@ export const useMessageStore = create<MessageState>((set) => ({
   clearInFlight: (groupId) =>
     set((s) => ({
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
+      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
+    })),
+
+  setActiveAgent: (groupId, agent) =>
+    set((s) => ({
+      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: agent },
+    })),
+
+  clearActiveAgent: (groupId) =>
+    set((s) => ({
+      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
     })),
 
   pushWarning: (groupId, warning) =>

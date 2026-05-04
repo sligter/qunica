@@ -128,20 +128,34 @@ def _scan_mentions(
 async def resolve_all_mentions(
     db: AsyncSession, group: Group, text: str
 ) -> list[tuple[GroupAgent, Agent]]:
-    """All matching agents in textual order, deduplicated by agent_id.
+    """Determine which agents should respond to a message.
 
-    Unmatched @-tokens are silently dropped. The order matters because the
+    Routing rules (evaluated in order):
+    1. Explicit @-mentions always take priority: only the mentioned agents
+       respond, regardless of free_speech mode.
+    2. If no explicit @-mentions AND `group.free_speech` is True, ALL
+       active unmuted agents respond (joined-at order).
+    3. If no explicit @-mentions AND free_speech is off, no agents respond.
+
+    Muted agents are always skipped. The returned order matters because the
     fan-out runs sequentially; later agents see earlier agents' replies via
     the rolling group history window.
-
-    Muted agents are skipped. Multi-word display names are supported via
-    longest-match scanning, so `@tree man` correctly resolves to an agent named
-    `tree man`.
     """
-    if "@" not in text:
-        return []
     candidates = await _candidate_agents(db, group)
-    return _scan_mentions(text, candidates)
+    if not candidates:
+        return []
+
+    # Resolve explicit @-mentions first (in textual order, deduped)
+    if "@" in text:
+        mentioned = _scan_mentions(text, candidates)
+        if mentioned:
+            return mentioned
+
+    # No explicit @-mentions: free_speech → all agents; otherwise none
+    if group.free_speech:
+        return [(ga, agent) for _name, (ga, agent) in candidates]
+
+    return []
 
 
 async def resolve_first_mention(

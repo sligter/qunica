@@ -42,7 +42,6 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
   const [showCreate, setShowCreate] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [localPath, setLocalPath] = useState('')
-  const [pickerHint, setPickerHint] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
 
   const selected = (workspaces.data ?? []).find((workspace) => workspace.id === value)
@@ -65,28 +64,13 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     if (!workspaceName) {
       setWorkspaceName(folderName)
     }
-    setPickerHint(
-      remembered
-        ? `Picked "${folderName}". Combined with your remembered prefix into "${composed}". Edit if the absolute prefix is different.`
-        : `Picked "${folderName}". Browsers cannot return an absolute path; please prepend the absolute backend prefix (e.g. D:/file/learn/...).`,
-    )
     requestAnimationFrame(() => {
-      const input = pathInputRef.current
-      if (input) {
-        input.focus()
-        const slashIdx = Math.max(
-          composed.lastIndexOf('/'),
-          composed.lastIndexOf('\\'),
-        )
-        const selectionEnd = slashIdx >= 0 ? slashIdx : composed.length
-        input.setSelectionRange(0, selectionEnd)
-      }
+      pathInputRef.current?.focus()
     })
   }
 
   const onPickFolder = async () => {
     setCreateError(null)
-    setPickerHint(null)
     const result: FolderPickResult = await pickFolder()
     if (result.kind === 'native') {
       applyPick(result.name)
@@ -127,7 +111,6 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
       onChange(created.id)
       setWorkspaceName('')
       setLocalPath('')
-      setPickerHint(null)
       setShowCreate(false)
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : 'Network error')
@@ -200,15 +183,6 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
                 Pick folder
               </Button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Browsers cannot return absolute filesystem paths for security. The
-              picker fills in the folder name; we remember the absolute prefix
-              you saved last time and prepend it on the next pick. Nothing is
-              uploaded; the backend reads/writes this directory directly.
-            </p>
-            {pickerHint ? (
-              <p className="text-[11px] text-muted-foreground">{pickerHint}</p>
-            ) : null}
             <input
               ref={fallbackInputRef}
               type="file"

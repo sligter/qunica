@@ -26,6 +26,7 @@ Phase 1 Week 6 (interrupt + resume):
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -50,10 +51,13 @@ from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.group import Group
 from app.models.group_agent import GroupAgent
+from app.models.group_member import GroupMember
 from app.models.message import Message
 from app.models.thread import Thread
 from app.models.user import User
 from app.services import group_service, thread_service
+
+logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW = 20
 
@@ -165,6 +169,40 @@ async def _persist_agent_message(
     return msg
 
 
+async def _build_sender_names(
+    db: AsyncSession, group_id: UUID
+) -> dict[str, str]:
+    """Build a {str(sender_id): display_name} lookup for all group participants.
+
+    Covers both agents (via GroupAgent.display_name / Agent.name) and
+    human members (via User.name). Used to attribute shared chat history
+    so each agent can tell who said what.
+    """
+    names: dict[str, str] = {}
+
+    agent_rows = (
+        await db.execute(
+            select(GroupAgent, Agent)
+            .join(Agent, Agent.id == GroupAgent.agent_id)
+            .where(GroupAgent.group_id == group_id)
+        )
+    ).all()
+    for ga, a in agent_rows:
+        names[str(a.id)] = ga.display_name or a.name
+
+    member_rows = (
+        await db.execute(
+            select(GroupMember, User)
+            .join(User, User.id == GroupMember.user_id)
+            .where(GroupMember.group_id == group_id)
+        )
+    ).all()
+    for _gm, u in member_rows:
+        names[str(u.id)] = u.name
+
+    return names
+
+
 async def _build_lc_input(
     db: AsyncSession,
     group: Group,
@@ -176,7 +214,11 @@ async def _build_lc_input(
 
     - system = shared agent context (prompt, group, workspace, tools, skills).
     - history = last `CONTEXT_WINDOW` group messages (visible OR interrupted)
-      in chronological order, mapped to AIMessage / HumanMessage by sender_type.
+      in chronological order. All group members share the same history.
+      - Current agent's own messages → AIMessage (so the LLM sees them as
+        its own prior turns).
+      - Other agents' / users' messages → HumanMessage with a `[Name]: `
+        prefix so the agent can distinguish participants.
     - If `extra_user_text` is provided, it's appended as a HumanMessage at the
       end (used by the resume flow to inject a continuation cue without
       persisting it as a real message).
@@ -192,6 +234,9 @@ async def _build_lc_input(
         group_agent=group_agent,
         runtime_limits={**DEFAULT_RUNTIME_LIMITS, "context_history_messages": CONTEXT_WINDOW},
     )
+
+    sender_names = await _build_sender_names(db, group.id)
+    my_id = str(agent.id)
 
     history_stmt = (
         select(Message)
@@ -209,10 +254,13 @@ async def _build_lc_input(
     for m in history:
         if m.content is None:
             continue
-        if m.sender_type == "agent":
+        sid = str(m.sender_id) if m.sender_id else None
+        if m.sender_type == "agent" and sid == my_id:
             out.append(AIMessage(content=m.content))
         else:
-            out.append(HumanMessage(content=m.content))
+            name = sender_names.get(sid or "", None) if sid else None
+            prefix = f"[{name}]: " if name else ""
+            out.append(HumanMessage(content=f"{prefix}{m.content}"))
     if extra_user_text:
         out.append(HumanMessage(content=extra_user_text))
     return out
@@ -250,12 +298,13 @@ async def send_message(
         return MessageSendResult(
             user_message=user_msg,
             agent_replies=[],
-            warnings=["no agent mentioned in this group"],
+            warnings=["no agent matched in this group"],
         )
 
     graph = request.app.state.graph
 
     agent_replies: list[Message] = []
+    warnings: list[str] = []
     for group_agent, agent in resolved:
         chat_thread = await thread_service.get_or_create_chat_thread(
             db, group_id, agent.id, sender.id
@@ -280,12 +329,14 @@ async def send_message(
             )
             agent_replies.append(agent_msg)
             await thread_service.mark_completed(db, chat_thread)
-        except Exception:
+        except Exception as exc:
+            logger.exception("agent %s failed in group %s", agent.id, group_id)
             await thread_service.mark_failed(db, chat_thread)
-            raise
+            display = group_agent.display_name or agent.name
+            warnings.append(f"agent '{display}' failed: {exc!s}")
 
     return MessageSendResult(
-        user_message=user_msg, agent_replies=agent_replies, warnings=[]
+        user_message=user_msg, agent_replies=agent_replies, warnings=warnings
     )
 
 
@@ -384,14 +435,21 @@ async def send_message_stream(
     sender: User,
     content: str,
 ) -> AsyncIterator[dict[str, str]]:
-    """Yield SSE events: user_message → (token×N + agent_message) per agent → done.
+    """Yield SSE events: user_message → (agent_start + token×N + agent_message) per agent → done.
 
     Token events carry JSON `{"agent_id": ..., "delta": ...}` so the client
     knows which agent in the fan-out is currently speaking.
 
+    An `agent_start` event is emitted before each agent begins streaming,
+    carrying `{"agent_id": ..., "display_name": ...}` so the frontend can
+    show a typing indicator.
+
     On client disconnect mid-stream: the currently streaming agent's partial
     reply is persisted with `status='interrupted'`, the chat_thread is
     marked `paused`, and the rest of the fan-out (if any) is skipped.
+
+    Individual agent errors are caught and emitted as `agent_error` events;
+    the fan-out continues with the next agent.
     """
     group = await group_service.get_group(db, group_id, sender)
     user_msg = await _persist_user_message(db, group_id, sender, content)
@@ -399,21 +457,44 @@ async def send_message_stream(
 
     resolved = await resolve_all_mentions(db, group, content)
     if not resolved:
-        yield {"event": "warning", "data": "no agent mentioned in this group"}
+        yield {"event": "warning", "data": "no agent matched in this group"}
         yield {"event": "done", "data": ""}
         return
 
     graph = request.app.state.graph
 
-    for group_agent, agent in resolved:
+    for idx, (group_agent, agent) in enumerate(resolved):
+        display = group_agent.display_name or agent.name
+        yield {
+            "event": "agent_start",
+            "data": json.dumps({
+                "agent_id": str(agent.id),
+                "display_name": display,
+                "index": idx,
+                "total": len(resolved),
+            }),
+        }
         chat_thread = await thread_service.get_or_create_chat_thread(
             db, group_id, agent.id, sender.id
         )
         await thread_service.mark_running(db, chat_thread)
-        async for event in _stream_one_agent(
-            db, graph, group, group_agent, agent, chat_thread, reply_to=user_msg.id
-        ):
-            yield event
+        try:
+            async for event in _stream_one_agent(
+                db, graph, group, group_agent, agent, chat_thread, reply_to=user_msg.id
+            ):
+                yield event
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("agent %s failed in group %s stream", agent.id, group_id)
+            yield {
+                "event": "agent_error",
+                "data": json.dumps({
+                    "agent_id": str(agent.id),
+                    "display_name": display,
+                    "error": str(exc),
+                }),
+            }
 
     yield {"event": "done", "data": ""}
 

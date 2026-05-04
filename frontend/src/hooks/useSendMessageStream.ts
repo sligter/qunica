@@ -17,11 +17,18 @@ import { useQueryClient } from '@tanstack/react-query'
 import { openSseStream } from '@/lib/sse'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
+import type { ActiveAgent } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 interface TokenPayload {
   agent_id: string
   delta: string
+}
+
+interface AgentErrorPayload {
+  agent_id: string
+  display_name: string
+  error: string
 }
 
 function safeJson<T>(raw: string): T | null {
@@ -38,6 +45,8 @@ export function useSendMessageStream(groupId: string | undefined) {
   const patchInFlight = useMessageStore((s) => s.patchInFlight)
   const finalizeInFlight = useMessageStore((s) => s.finalizeInFlight)
   const clearInFlight = useMessageStore((s) => s.clearInFlight)
+  const setActiveAgent = useMessageStore((s) => s.setActiveAgent)
+  const clearActiveAgent = useMessageStore((s) => s.clearActiveAgent)
   const pushWarning = useMessageStore((s) => s.pushWarning)
   const qc = useQueryClient()
 
@@ -73,6 +82,11 @@ export function useSendMessageStream(groupId: string | undefined) {
               if (msg) appendMessage(groupId, msg)
               return
             }
+            if (event === 'agent_start') {
+              const info = safeJson<ActiveAgent>(data)
+              if (info) setActiveAgent(groupId, info)
+              return
+            }
             if (event === 'token') {
               const payload = safeJson<TokenPayload>(data)
               if (payload?.agent_id && payload.delta) {
@@ -85,11 +99,19 @@ export function useSendMessageStream(groupId: string | undefined) {
               if (msg) finalizeInFlight(groupId, msg)
               return
             }
+            if (event === 'agent_error') {
+              const err = safeJson<AgentErrorPayload>(data)
+              if (err) {
+                pushWarning(groupId, `Agent "${err.display_name}" failed: ${err.error}`)
+              }
+              return
+            }
             if (event === 'warning') {
               pushWarning(groupId, data)
               return
             }
             if (event === 'done') {
+              clearActiveAgent(groupId)
               setIsStreaming(false)
               ctrlRef.current = null
               invalidate()
@@ -113,6 +135,7 @@ export function useSendMessageStream(groupId: string | undefined) {
     },
     [
       appendMessage,
+      clearActiveAgent,
       clearInFlight,
       finalizeInFlight,
       groupId,
@@ -120,6 +143,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       isStreaming,
       patchInFlight,
       pushWarning,
+      setActiveAgent,
       token,
     ],
   )
