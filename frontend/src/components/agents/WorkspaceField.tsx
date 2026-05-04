@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api'
+import { pickFolder, type FolderPickResult } from '@/lib/folderPicker'
 import { cn } from '@/lib/utils'
 import type { WorkspaceBackendType } from '@/types/api'
 
@@ -28,9 +29,12 @@ function localPathLooksAbsolute(path: string) {
 export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) {
   const workspaces = useWorkspaces()
   const createWorkspace = useCreateWorkspace()
+  const fallbackInputRef = useRef<HTMLInputElement | null>(null)
+  const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [localPath, setLocalPath] = useState('')
+  const [pickerHint, setPickerHint] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
 
   const selected = (workspaces.data ?? []).find((workspace) => workspace.id === value)
@@ -40,6 +44,50 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     setLocalPath(nextPath)
     if (!workspaceName) {
       setWorkspaceName(inferWorkspaceName(nextPath))
+    }
+  }
+
+  const applyPick = (folderName: string) => {
+    if (!folderName) return
+    setLocalPath(folderName)
+    if (!workspaceName) {
+      setWorkspaceName(folderName)
+    }
+    setPickerHint(
+      `Picked folder "${folderName}". Browsers cannot expose absolute paths — edit this field to the absolute backend path.`,
+    )
+    requestAnimationFrame(() => {
+      const input = pathInputRef.current
+      if (input) {
+        input.focus()
+        input.setSelectionRange(0, input.value.length)
+      }
+    })
+  }
+
+  const onPickFolder = async () => {
+    setCreateError(null)
+    setPickerHint(null)
+    const result: FolderPickResult = await pickFolder()
+    if (result.kind === 'native') {
+      applyPick(result.name)
+      return
+    }
+    if (result.kind === 'cancelled') {
+      return
+    }
+    fallbackInputRef.current?.click()
+  }
+
+  const onFallbackChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    const relative = file?.webkitRelativePath
+    if (relative) {
+      const folderName = relative.split('/')[0] ?? ''
+      applyPick(folderName)
+    }
+    if (fallbackInputRef.current) {
+      fallbackInputRef.current.value = ''
     }
   }
 
@@ -60,6 +108,7 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
       onChange(created.id)
       setWorkspaceName('')
       setLocalPath('')
+      setPickerHint(null)
       setShowCreate(false)
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : 'Network error')
@@ -114,17 +163,43 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="workspace-path">Backend local path</Label>
-            <Input
-              id="workspace-path"
-              value={localPath}
-              onChange={(event) => onManualPathChange(event.target.value)}
-              placeholder="D:/absolute/path/to/project or /absolute/path/to/project"
-              className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-red-500')}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="workspace-path"
+                ref={pathInputRef}
+                value={localPath}
+                onChange={(event) => onManualPathChange(event.target.value)}
+                placeholder="D:/absolute/path/to/project or /absolute/path/to/project"
+                className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-red-500')}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void onPickFolder()}
+              >
+                Pick folder
+              </Button>
+            </div>
             <p className="text-[11px] text-muted-foreground">
               Enter an absolute path on the machine running the backend. Nothing
-              is uploaded; the backend reads/writes this directory directly.
+              is uploaded; the backend reads/writes this directory directly. The
+              picker only fills in the folder name as a starting point.
             </p>
+            {pickerHint ? (
+              <p className="text-[11px] text-muted-foreground">{pickerHint}</p>
+            ) : null}
+            <input
+              ref={fallbackInputRef}
+              type="file"
+              className="hidden"
+              multiple
+              {...({
+                webkitdirectory: '',
+                directory: '',
+              } as Record<string, string>)}
+              onChange={onFallbackChange}
+            />
           </div>
           {createError && <p className="text-xs text-red-600">{createError}</p>}
           <Button

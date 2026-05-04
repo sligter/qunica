@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,19 +8,65 @@ import {
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api'
+import { pickFolder, type FolderPickResult } from '@/lib/folderPicker'
 
 export function SystemSettingsPage() {
   const settings = useSystemSettings()
   const update = useUpdateSystemSettings()
+  const fallbackInputRef = useRef<HTMLInputElement | null>(null)
+  const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [root, setRoot] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
+  const [pickerHint, setPickerHint] = useState<string | null>(null)
 
   useEffect(() => {
     if (settings.data) {
       setRoot(settings.data.group_workspace_root ?? '')
     }
   }, [settings.data])
+
+  const applyPick = (folderName: string) => {
+    if (!folderName) return
+    setRoot(folderName)
+    setPickerHint(
+      `Picked folder "${folderName}". Browsers cannot expose absolute paths — edit this field to the absolute backend path.`,
+    )
+    requestAnimationFrame(() => {
+      const input = pathInputRef.current
+      if (input) {
+        input.focus()
+        input.setSelectionRange(0, input.value.length)
+      }
+    })
+  }
+
+  const onPickFolder = async () => {
+    setError(null)
+    setInfo(null)
+    setPickerHint(null)
+    const result: FolderPickResult = await pickFolder()
+    if (result.kind === 'native') {
+      applyPick(result.name)
+      return
+    }
+    if (result.kind === 'cancelled') {
+      return
+    }
+    fallbackInputRef.current?.click()
+  }
+
+  const onFallbackChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    const relative = file?.webkitRelativePath
+    if (relative) {
+      const folderName = relative.split('/')[0] ?? ''
+      applyPick(folderName)
+    }
+    if (fallbackInputRef.current) {
+      fallbackInputRef.current.value = ''
+    }
+  }
 
   const onSave = async () => {
     setError(null)
@@ -41,6 +87,7 @@ export function SystemSettingsPage() {
     try {
       await update.mutateAsync({ group_workspace_root: null })
       setRoot('')
+      setPickerHint(null)
       setInfo('Group workspace root cleared.')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Network error')
@@ -65,17 +112,42 @@ export function SystemSettingsPage() {
 
             <div className="mt-4 space-y-2">
               <Label htmlFor="ss-root">Local directory</Label>
-              <Input
-                id="ss-root"
-                value={root}
-                onChange={(event) => setRoot(event.target.value)}
-                placeholder="D:/workspaces/groups or /home/me/workspaces"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="ss-root"
+                  ref={pathInputRef}
+                  value={root}
+                  onChange={(event) => setRoot(event.target.value)}
+                  placeholder="D:/workspaces/groups or /home/me/workspaces"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void onPickFolder()}
+                >
+                  Pick folder
+                </Button>
+              </div>
               <p className="text-[11px] text-muted-foreground">
                 Enter an absolute path on the machine running the backend.
                 Nothing is uploaded; the backend reads/writes this directory
-                directly.
+                directly. The picker only fills in the folder name as a starting
+                point.
               </p>
+              {pickerHint ? (
+                <p className="text-[11px] text-muted-foreground">{pickerHint}</p>
+              ) : null}
+              <input
+                ref={fallbackInputRef}
+                type="file"
+                className="hidden"
+                multiple
+                {...({
+                  webkitdirectory: '',
+                  directory: '',
+                } as Record<string, string>)}
+                onChange={onFallbackChange}
+              />
             </div>
 
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
