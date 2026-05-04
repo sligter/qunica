@@ -5,7 +5,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api'
-import { pickFolder, type FolderPickResult } from '@/lib/folderPicker'
+import {
+  composePickedPath,
+  pickFolder,
+  readRememberedPrefix,
+  saveRememberedPrefix,
+  type FolderPickResult,
+} from '@/lib/folderPicker'
 import { cn } from '@/lib/utils'
 import type { WorkspaceBackendType } from '@/types/api'
 
@@ -14,6 +20,8 @@ interface WorkspaceFieldProps {
   onChange: (workspaceId: string) => void
   error?: string
 }
+
+const PICKER_SCOPE = 'workspace-root'
 
 function inferWorkspaceName(path: string) {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -45,22 +53,33 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     if (!workspaceName) {
       setWorkspaceName(inferWorkspaceName(nextPath))
     }
+    saveRememberedPrefix(PICKER_SCOPE, nextPath)
   }
 
   const applyPick = (folderName: string) => {
     if (!folderName) return
-    setLocalPath(folderName)
+    const remembered = readRememberedPrefix(PICKER_SCOPE)
+    const composed = composePickedPath(localPath, folderName, remembered)
+    setLocalPath(composed)
+    saveRememberedPrefix(PICKER_SCOPE, composed)
     if (!workspaceName) {
       setWorkspaceName(folderName)
     }
     setPickerHint(
-      `Picked folder "${folderName}". Browsers cannot expose absolute paths — edit this field to the absolute backend path.`,
+      remembered
+        ? `Picked "${folderName}". Combined with your remembered prefix into "${composed}". Edit if the absolute prefix is different.`
+        : `Picked "${folderName}". Browsers cannot return an absolute path; please prepend the absolute backend prefix (e.g. D:/file/learn/...).`,
     )
     requestAnimationFrame(() => {
       const input = pathInputRef.current
       if (input) {
         input.focus()
-        input.setSelectionRange(0, input.value.length)
+        const slashIdx = Math.max(
+          composed.lastIndexOf('/'),
+          composed.lastIndexOf('\\'),
+        )
+        const selectionEnd = slashIdx >= 0 ? slashIdx : composed.length
+        input.setSelectionRange(0, selectionEnd)
       }
     })
   }
@@ -182,9 +201,10 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
               </Button>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Enter an absolute path on the machine running the backend. Nothing
-              is uploaded; the backend reads/writes this directory directly. The
-              picker only fills in the folder name as a starting point.
+              Browsers cannot return absolute filesystem paths for security. The
+              picker fills in the folder name; we remember the absolute prefix
+              you saved last time and prepend it on the next pick. Nothing is
+              uploaded; the backend reads/writes this directory directly.
             </p>
             {pickerHint ? (
               <p className="text-[11px] text-muted-foreground">{pickerHint}</p>

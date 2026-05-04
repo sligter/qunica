@@ -8,7 +8,15 @@ import {
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api'
-import { pickFolder, type FolderPickResult } from '@/lib/folderPicker'
+import {
+  composePickedPath,
+  pickFolder,
+  readRememberedPrefix,
+  saveRememberedPrefix,
+  type FolderPickResult,
+} from '@/lib/folderPicker'
+
+const PICKER_SCOPE = 'group-workspace-root'
 
 export function SystemSettingsPage() {
   const settings = useSystemSettings()
@@ -26,17 +34,32 @@ export function SystemSettingsPage() {
     }
   }, [settings.data])
 
+  const onRootChange = (next: string) => {
+    setRoot(next)
+    saveRememberedPrefix(PICKER_SCOPE, next)
+  }
+
   const applyPick = (folderName: string) => {
     if (!folderName) return
-    setRoot(folderName)
+    const remembered = readRememberedPrefix(PICKER_SCOPE)
+    const composed = composePickedPath(root, folderName, remembered)
+    setRoot(composed)
+    saveRememberedPrefix(PICKER_SCOPE, composed)
     setPickerHint(
-      `Picked folder "${folderName}". Browsers cannot expose absolute paths — edit this field to the absolute backend path.`,
+      remembered
+        ? `Picked "${folderName}". Combined with your remembered prefix into "${composed}". Edit if the absolute prefix is different.`
+        : `Picked "${folderName}". Browsers cannot return an absolute path; please prepend the absolute backend prefix (e.g. D:/file/learn/...).`,
     )
     requestAnimationFrame(() => {
       const input = pathInputRef.current
       if (input) {
         input.focus()
-        input.setSelectionRange(0, input.value.length)
+        const slashIdx = Math.max(
+          composed.lastIndexOf('/'),
+          composed.lastIndexOf('\\'),
+        )
+        const selectionEnd = slashIdx >= 0 ? slashIdx : composed.length
+        input.setSelectionRange(0, selectionEnd)
       }
     })
   }
@@ -72,9 +95,9 @@ export function SystemSettingsPage() {
     setError(null)
     setInfo(null)
     try {
-      await update.mutateAsync({
-        group_workspace_root: root.trim() ? root.trim() : null,
-      })
+      const value = root.trim() ? root.trim() : null
+      await update.mutateAsync({ group_workspace_root: value })
+      if (value) saveRememberedPrefix(PICKER_SCOPE, value)
       setInfo('Saved system settings.')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Network error')
@@ -117,7 +140,7 @@ export function SystemSettingsPage() {
                   id="ss-root"
                   ref={pathInputRef}
                   value={root}
-                  onChange={(event) => setRoot(event.target.value)}
+                  onChange={(event) => onRootChange(event.target.value)}
                   placeholder="D:/workspaces/groups or /home/me/workspaces"
                 />
                 <Button
@@ -129,10 +152,11 @@ export function SystemSettingsPage() {
                 </Button>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Enter an absolute path on the machine running the backend.
+                Browsers cannot return absolute filesystem paths for security.
+                The picker fills in the folder name; we remember the absolute
+                prefix you saved last time and prepend it on the next pick.
                 Nothing is uploaded; the backend reads/writes this directory
-                directly. The picker only fills in the folder name as a starting
-                point.
+                directly.
               </p>
               {pickerHint ? (
                 <p className="text-[11px] text-muted-foreground">{pickerHint}</p>
