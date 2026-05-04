@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,13 +20,6 @@ function inferWorkspaceName(path: string) {
   return last ?? ''
 }
 
-function directoryLabel(files: FileList | null) {
-  const first = files?.[0]
-  const relativePath = first?.webkitRelativePath
-  if (!relativePath) return ''
-  return relativePath.split('/')[0] ?? ''
-}
-
 function localPathLooksAbsolute(path: string) {
   const trimmed = path.trim()
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
@@ -35,11 +28,9 @@ function localPathLooksAbsolute(path: string) {
 export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) {
   const workspaces = useWorkspaces()
   const createWorkspace = useCreateWorkspace()
-  const directoryInputRef = useRef<HTMLInputElement | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [localPath, setLocalPath] = useState('')
-  const [pickedFolderLabel, setPickedFolderLabel] = useState('')
   const [createError, setCreateError] = useState<string | null>(null)
 
   const selected = (workspaces.data ?? []).find((workspace) => workspace.id === value)
@@ -49,15 +40,6 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     setLocalPath(nextPath)
     if (!workspaceName) {
       setWorkspaceName(inferWorkspaceName(nextPath))
-    }
-  }
-
-  const onDirectoryPicked = (files: FileList | null) => {
-    const label = directoryLabel(files)
-    if (!label) return
-    setPickedFolderLabel(label)
-    if (!workspaceName) {
-      setWorkspaceName(label)
     }
   }
 
@@ -78,7 +60,6 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
       onChange(created.id)
       setWorkspaceName('')
       setLocalPath('')
-      setPickedFolderLabel('')
       setShowCreate(false)
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : 'Network error')
@@ -141,34 +122,9 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
               className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-red-500')}
             />
             <p className="text-[11px] text-muted-foreground">
-              Enter an absolute path the backend process can access. Browser folder picking cannot reliably expose backend-accessible absolute OS paths, and no files are uploaded.
+              Enter an absolute path on the machine running the backend. Nothing
+              is uploaded; the backend reads/writes this directory directly.
             </p>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Browser folder hint</Label>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => directoryInputRef.current?.click()}
-              >
-                Pick folder label
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                {pickedFolderLabel ? `Selected label: ${pickedFolderLabel}` : 'Optional: helps infer a friendly name only.'}
-              </span>
-            </div>
-            <input
-              ref={directoryInputRef}
-              type="file"
-              className="hidden"
-              multiple
-              // @ts-expect-error Browser-specific directory picker affordances.
-              webkitdirectory=""
-              directory=""
-              onChange={(event) => onDirectoryPicked(event.target.files)}
-            />
           </div>
           {createError && <p className="text-xs text-red-600">{createError}</p>}
           <Button

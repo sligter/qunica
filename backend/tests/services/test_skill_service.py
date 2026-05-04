@@ -1,11 +1,13 @@
 import io
 import zipfile
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AgentChatError
+from app.models.system_settings import SystemSettings
 from app.models.user import User
 from app.services import skill_service
 
@@ -104,3 +106,31 @@ async def test_import_skill_zip_rejects_unsafe_paths(
 
     with pytest.raises(AgentChatError, match="unsafe path"):
         await skill_service.import_skill_from_zip(db_session, payload, owner)
+
+
+async def test_import_skill_zip_stores_under_skillshub_when_root_set(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    owner = await _user(db_session)
+    db_session.add(
+        SystemSettings(
+            owner_id=owner.id,
+            group_workspace_root=str(tmp_path.resolve()),
+        )
+    )
+    await db_session.flush()
+
+    payload = _zip_bytes(
+        {
+            "SKILL.md": b"---\nname: Hub Skill\ndescription: Demo\n---\nBody\n",
+            "references/guide.md": b"guide",
+        }
+    )
+
+    skill = await skill_service.import_skill_from_zip(db_session, payload, owner)
+
+    expected_dir = tmp_path / "skillshub" / str(skill.id)
+    assert expected_dir.is_dir()
+    assert skill.storage_path == str(expected_dir.resolve())
+    assert (expected_dir / "SKILL.md").is_file()
+    assert (expected_dir / "references" / "guide.md").is_file()

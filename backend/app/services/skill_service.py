@@ -22,6 +22,7 @@ from app.core.exceptions import (
 from app.models.skill import Skill
 from app.models.user import User
 from app.schemas.skill import SkillCreate
+from app.services import system_settings_service
 
 _FRONTMATTER_RE = re.compile(
     r"\A(?:﻿)?[ \t]*---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)",
@@ -271,6 +272,26 @@ async def list_by_ids(db: AsyncSession, skill_ids: list[UUID]) -> list[Skill]:
     return [by_id[i] for i in skill_ids if i in by_id]
 
 
+async def _resolve_skill_storage_dir(
+    db: AsyncSession, owner: User, skill_id: UUID
+) -> Path:
+    """Resolve the on-disk storage location for a skill package.
+
+    Preference order:
+    1. `<system_settings.group_workspace_root>/skillshub/<skill_id>` so users
+       can keep skill packages alongside their group workspaces.
+    2. `<backend_project_root>/uploads/skills/<skill_id>` as a fallback when no
+       global root is configured yet.
+    """
+    settings = await system_settings_service.get_or_create(db, owner)
+    if settings.group_workspace_root:
+        base = Path(settings.group_workspace_root) / "skillshub" / str(skill_id)
+    else:
+        base = PROJECT_ROOT / "uploads" / "skills" / str(skill_id)
+    base.mkdir(parents=True, exist_ok=True)
+    return base.resolve()
+
+
 async def import_skill_from_zip(
     db: AsyncSession, file_bytes: bytes, owner: User
 ) -> Skill:
@@ -314,8 +335,7 @@ async def import_skill_from_zip(
     await db.flush()
     await db.refresh(skill)
 
-    storage_dir = PROJECT_ROOT / "uploads" / "skills" / str(skill.id)
-    storage_dir.mkdir(parents=True, exist_ok=True)
+    storage_dir = await _resolve_skill_storage_dir(db, owner, skill.id)
     for rel, payload in file_payloads:
         target = storage_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)

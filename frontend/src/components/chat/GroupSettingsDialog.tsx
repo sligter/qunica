@@ -83,103 +83,105 @@ export function GroupSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] w-[95vw] flex-col gap-4 overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Group Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="gs-name">Group name</Label>
-            <Input id="gs-name" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="gs-announce">Announcement</Label>
-            <Textarea
-              id="gs-announce"
-              rows={2}
-              value={announcement}
-              onChange={(e) => setAnnouncement(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label>Workspace</Label>
-            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-              {workspace ? `${workspace.name} (${workspace.backend_type})` : group.workspace_id ?? 'Legacy group without workspace'}
+        <div className="flex-1 overflow-y-auto pr-1">
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="gs-name">Group name</Label>
+              <Input id="gs-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            <p className="text-xs text-muted-foreground">
-              Each group gets a dedicated workspace auto-created from your group
-              workspace root. Group files live under this workspace; rebinding
-              is not supported.
-            </p>
-          </div>
 
-          <Separator />
-
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label>Free speech</Label>
-              <p className="text-xs text-muted-foreground">
-                When enabled, all agents respond freely without needing @mention.
-              </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="gs-announce">Announcement</Label>
+              <Textarea
+                id="gs-announce"
+                rows={2}
+                value={announcement}
+                onChange={(e) => setAnnouncement(e.target.value)}
+              />
             </div>
-            <Switch checked={freeSpeech} onCheckedChange={setFreeSpeech} />
-          </div>
 
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label>Allow agent free @mention</Label>
-              <p className="text-xs text-muted-foreground">
-                Allow agents to freely @ any group member in replies.
-              </p>
-            </div>
-            <Switch checked={allowFreeMention} onCheckedChange={setAllowFreeMention} />
-          </div>
-
-          <Separator />
-
-          <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
-            {[
-              ['Members and agents', 'Add, mute, and remove group participants.', `/groups/${group.id}/members`],
-              ['Files', 'Upload and delete group workspace files.', `/groups/${group.id}/files`],
-              ['Notes', 'Create and edit shared group notes.', `/groups/${group.id}/notes`],
-            ].map(([title, description, href]) => (
-              <div key={href} className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">{title}</p>
-                  <p className="text-xs text-muted-foreground">{description}</p>
-                </div>
-                <Button variant="outline" size="sm" asChild onClick={() => onOpenChange(false)}>
-                  <Link to={href}>Manage</Link>
-                </Button>
+            <div className="space-y-1.5">
+              <Label>Workspace</Label>
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+                {workspace ? `${workspace.name} (${workspace.backend_type})` : group.workspace_id ?? 'Legacy group without workspace'}
               </div>
-            ))}
-          </div>
+              <p className="text-xs text-muted-foreground">
+                Each group gets a dedicated workspace auto-created from your group
+                workspace root. Group files live under this workspace; rebinding
+                is not supported.
+              </p>
+            </div>
 
-          <div className="rounded-lg border border-border bg-muted/30 p-3">
-            <div className="flex items-center justify-between gap-3">
+            <Separator />
+
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-medium">Chat history</p>
+                <Label>Free speech</Label>
                 <p className="text-xs text-muted-foreground">
-                  Clear visible chat records for this group.
+                  When enabled, all agents respond freely without needing @mention.
                 </p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onClearMessages}
-                disabled={clearMessages.isPending}
-                className="text-red-600 hover:bg-red-50 hover:text-red-700"
-              >
-                {clearMessages.isPending ? 'Clearing…' : 'Clear'}
-              </Button>
+              <Switch checked={freeSpeech} onCheckedChange={setFreeSpeech} />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label>Allow agent free @mention</Label>
+                <p className="text-xs text-muted-foreground">
+                  Allow agents to freely @ any group member in replies.
+                </p>
+              </div>
+              <Switch checked={allowFreeMention} onCheckedChange={setAllowFreeMention} />
+            </div>
+
+            <Separator />
+
+            <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+              {[
+                ['Members and agents', 'Add, mute, and remove group participants.', `/groups/${group.id}/members`],
+                ['Files', 'Upload and delete group workspace files.', `/groups/${group.id}/files`],
+                ['Notes', 'Create and edit shared group notes.', `/groups/${group.id}/notes`],
+              ].map(([title, description, href]) => (
+                <div key={href} className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{title}</p>
+                    <p className="text-xs text-muted-foreground">{description}</p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild onClick={() => onOpenChange(false)}>
+                    <Link to={href}>Manage</Link>
+                  </Button>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-lg border border-border bg-muted/30 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Chat history</p>
+                  <p className="text-xs text-muted-foreground">
+                    Clear visible chat records for this group.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onClearMessages}
+                  disabled={clearMessages.isPending}
+                  className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                >
+                  {clearMessages.isPending ? 'Clearing…' : 'Clear'}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
 
-        <DialogFooter className="flex sm:justify-between">
+        <DialogFooter className="shrink-0 flex sm:justify-between">
           <Button
             variant="outline"
             onClick={onDelete}

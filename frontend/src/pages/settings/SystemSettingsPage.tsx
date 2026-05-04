@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,7 +12,6 @@ import { ApiError } from '@/lib/api'
 export function SystemSettingsPage() {
   const settings = useSystemSettings()
   const update = useUpdateSystemSettings()
-  const folderInputRef = useRef<HTMLInputElement>(null)
   const [root, setRoot] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
@@ -22,26 +21,6 @@ export function SystemSettingsPage() {
       setRoot(settings.data.group_workspace_root ?? '')
     }
   }, [settings.data])
-
-  const onPickFolder = () => {
-    folderInputRef.current?.click()
-  }
-
-  const onFolderChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    const relative = (file as File & { webkitRelativePath?: string })
-      .webkitRelativePath
-    if (relative) {
-      const folderName = relative.split('/')[0]
-      setInfo(
-        `Selected folder "${folderName}". Browsers cannot return the absolute path; please paste it manually below.`,
-      )
-    }
-    if (folderInputRef.current) {
-      folderInputRef.current.value = ''
-    }
-  }
 
   const onSave = async () => {
     setError(null)
@@ -80,38 +59,23 @@ export function SystemSettingsPage() {
             <p className="mt-1 text-xs text-muted-foreground">
               Each group you create gets its own dedicated workspace under this
               directory. The backend creates a subfolder named after the group ID
-              and stores group files there.
+              and stores group files there. Imported skills are also stored under
+              <code className="px-1">{'<root>/skillshub/'}</code>.
             </p>
 
             <div className="mt-4 space-y-2">
               <Label htmlFor="ss-root">Local directory</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="ss-root"
-                  value={root}
-                  onChange={(event) => setRoot(event.target.value)}
-                  placeholder="C:\\workspaces\\groups"
-                />
-                <Button type="button" variant="outline" onClick={onPickFolder}>
-                  Browse
-                </Button>
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                Browsers cannot expose absolute filesystem paths. Use the picker
-                to confirm a folder name, then paste the absolute path the
-                backend can reach.
-              </p>
-              <input
-                ref={folderInputRef}
-                type="file"
-                className="hidden"
-                onChange={onFolderChange}
-                {...({
-                  webkitdirectory: '',
-                  directory: '',
-                } as Record<string, string>)}
-                multiple
+              <Input
+                id="ss-root"
+                value={root}
+                onChange={(event) => setRoot(event.target.value)}
+                placeholder="D:/workspaces/groups or /home/me/workspaces"
               />
+              <p className="text-[11px] text-muted-foreground">
+                Enter an absolute path on the machine running the backend.
+                Nothing is uploaded; the backend reads/writes this directory
+                directly.
+              </p>
             </div>
 
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
