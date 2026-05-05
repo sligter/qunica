@@ -25,6 +25,10 @@ class Message(Base, UUIDPkMixin):
     refs: Mapped[dict[str, Any] | None] = mapped_column("references", JSONB, nullable=True)
     reply_to_message_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="visible", nullable=False)
+    # Use clock_timestamp() (statement-time) instead of now() (transaction-start)
+    # so that user_msg + agent_msg persisted in the same `send_message_stream`
+    # request transaction get distinct created_at values. See PRD
+    # `05-05-fix-message-ordering-when-user-message-and-agent-reply-share-transaction-timestamp`.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
     )

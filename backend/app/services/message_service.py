@@ -84,7 +84,12 @@ async def list_messages(
             Message.group_id == group_id,
             Message.status.in_(("visible", "interrupted")),
         )
-        .order_by(Message.created_at.asc())
+        # Secondary sort by id is a tie-breaker for legacy rows that share
+        # a created_at value (pre-0009 migration, all messages within one
+        # request transaction collided on `now()`). New rows get distinct
+        # timestamps via `clock_timestamp()`, but the tie-breaker keeps
+        # ordering stable for old data and as defense-in-depth.
+        .order_by(Message.created_at.asc(), Message.id.asc())
         .limit(limit)
     )
     return list(await db.scalars(stmt))
@@ -244,7 +249,11 @@ async def _build_lc_input(
             Message.group_id == group.id,
             Message.status.in_(("visible", "interrupted")),
         )
-        .order_by(Message.created_at.desc())
+        # `Message.id` is a tie-breaker for legacy rows that share a
+        # `created_at` (see `list_messages` for the full rationale). We
+        # sort DESC + LIMIT then `.reverse()`, so both keys must be DESC
+        # here to keep the post-reverse ASC ordering self-consistent.
+        .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(CONTEXT_WINDOW)
     )
     history = list(await db.scalars(history_stmt))
