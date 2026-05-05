@@ -127,37 +127,69 @@ async def list_messages(
 
 async def clear_group_history(db: AsyncSession, group_id: UUID, user: User) -> int:
     await group_service.assert_owner(db, group_id, user)
-    running = await db.scalar(
-        select(Thread).where(Thread.group_id == group_id, Thread.status == "running").limit(1)
+    visible_statuses = ("visible", "interrupted")
+    visible_message_thread_ids = (
+        select(Message.thread_id)
+        .where(
+            Message.group_id == group_id,
+            Message.thread_id.is_not(None),
+            Message.status.in_(visible_statuses),
+        )
+        .distinct()
     )
-    if running is not None:
+    previously_cleared_thread_ids = (
+        select(Message.thread_id)
+        .where(
+            Message.group_id == group_id,
+            Message.thread_id.is_not(None),
+            Message.status == "cleared",
+        )
+        .distinct()
+    )
+    running_visible_thread = await db.scalar(
+        select(Thread)
+        .where(
+            Thread.group_id == group_id,
+            Thread.status == "running",
+            Thread.id.in_(visible_message_thread_ids),
+            Thread.id.not_in(previously_cleared_thread_ids),
+        )
+        .limit(1)
+    )
+    if running_visible_thread is not None:
         raise ConflictError("cannot clear group history while a thread is running")
 
     messages = list(
         await db.scalars(
             select(Message).where(
                 Message.group_id == group_id,
-                Message.status.in_(("visible", "interrupted")),
+                Message.status.in_(visible_statuses),
             )
         )
     )
-    interrupted_thread_ids = {
-        m.thread_id
-        for m in messages
-        if m.thread_id is not None and m.status == "interrupted"
-    }
+    thread_ids = {m.thread_id for m in messages if m.thread_id is not None}
     for message in messages:
         message.status = "cleared"
-    if interrupted_thread_ids:
-        paused_threads = list(
+    if thread_ids:
+        threads_with_remaining_visible_messages = (
+            select(Message.thread_id)
+            .where(
+                Message.group_id == group_id,
+                Message.thread_id.in_(thread_ids),
+                Message.status.in_(visible_statuses),
+            )
+            .distinct()
+        )
+        clearable_threads = list(
             await db.scalars(
                 select(Thread).where(
-                    Thread.id.in_(interrupted_thread_ids),
-                    Thread.status == "paused",
+                    Thread.id.in_(thread_ids),
+                    Thread.status.in_(("running", "paused", "completed", "failed", "created")),
+                    Thread.id.not_in(threads_with_remaining_visible_messages),
                 )
             )
         )
-        for thread in paused_threads:
+        for thread in clearable_threads:
             thread.status = "cleared"
     await db.flush()
     return len(messages)

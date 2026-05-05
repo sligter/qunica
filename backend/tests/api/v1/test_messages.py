@@ -216,7 +216,7 @@ async def test_clear_group_history_hides_messages_and_allows_new_send(
     assert len(r.json()["agent_replies"]) == 1
 
 
-async def test_clear_group_history_refuses_when_thread_is_running(
+async def test_clear_group_history_refuses_when_visible_thread_is_running(
     client: AsyncClient,
     auth_headers: dict[str, str],
     fake_llm: dict[str, Any],
@@ -230,7 +230,7 @@ async def test_clear_group_history_refuses_when_thread_is_running(
         json={"content": "@Echo round 1"},
     )
     message = await db_session.scalar(
-        select(Message).where(Message.group_id == group_id, Message.sender_type == "agent")
+        select(Message).where(Message.group_id == UUID(group_id), Message.sender_type == "agent")
     )
     assert message is not None
     thread = await db_session.scalar(select(Thread).where(Thread.id == message.thread_id))
@@ -244,6 +244,49 @@ async def test_clear_group_history_refuses_when_thread_is_running(
     r = await client.get(f"/api/v1/groups/{group_id}/messages", headers=auth_headers)
     assert r.status_code == 200
     assert len(r.json()) == 2
+
+
+async def test_clear_group_history_clears_stale_running_threads_with_visible_messages(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    fake_llm: dict[str, Any],
+    db_session: AsyncSession,
+) -> None:
+    fake_llm["messages"] = ["one"]
+    group_id, _ = await _setup(client, auth_headers)
+    await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo round 1"},
+    )
+    message = await db_session.scalar(
+        select(Message).where(Message.group_id == UUID(group_id), Message.sender_type == "agent")
+    )
+    assert message is not None
+    assert message.thread_id is not None
+    thread = await db_session.scalar(select(Thread).where(Thread.id == message.thread_id))
+    assert thread is not None
+    message.status = "cleared"
+    thread.status = "running"
+    await db_session.flush()
+
+    fake_llm["messages"] = ["two"]
+    await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo round 2"},
+    )
+
+    r = await client.post(f"/api/v1/groups/{group_id}/messages/clear", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared_count"] == 3
+    await db_session.flush()
+
+    r = await client.get(f"/api/v1/groups/{group_id}/messages", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json() == []
+    await db_session.refresh(thread)
+    assert thread.status == "cleared"
 
 
 async def test_clear_group_history_marks_paused_interrupted_threads_cleared(
