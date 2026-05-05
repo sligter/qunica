@@ -302,10 +302,18 @@ export interface Message {
   created_at: string
 }
 
+export interface SilentAgentTurn {
+  agent_id: string
+  display_name: string
+}
+
 export interface MessageSendResponse {
   user_message: Message
   agent_replies: Message[]
   warnings: string[]
+  silent_turns: SilentAgentTurn[]
+  all_silent: boolean
+  waiting_for_user: boolean
 }
 
 export interface ApiErrorEnvelope {

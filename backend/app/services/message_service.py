@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -62,6 +63,15 @@ logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW = 20
 SILENT_MARKER = "<SILENT>"
+PSEUDO_TOOL_PLACEHOLDER = (
+    "[Non-executed tool markup removed: this runtime did not execute a tool call.]"
+)
+WAITING_FOR_USER_WARNING = "Waiting for your input"
+
+_REASONING_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
+_PSEUDO_TOOL_BLOCK_RE = re.compile(
+    r"<(tool_call|tool_code)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL
+)
 
 RESUME_CONTINUATION_PROMPT = (
     "Continue from your last reply. Pick up exactly where you left off; "
@@ -82,6 +92,7 @@ class MessageSendResult:
     warnings: list[str]
     silent_turns: list[SilentAgentTurn]
     all_silent: bool
+    waiting_for_user: bool = False
 
 
 async def list_messages(
@@ -216,6 +227,96 @@ async def _build_sender_names(
         names[str(u.id)] = u.name
 
     return names
+
+
+async def _human_mention_names(db: AsyncSession, group_id: UUID) -> set[str]:
+    rows = (
+        await db.execute(
+            select(GroupMember, User)
+            .join(User, User.id == GroupMember.user_id)
+            .where(GroupMember.group_id == group_id, GroupMember.status == "active")
+        )
+    ).all()
+    names: set[str] = set()
+    for _gm, user in rows:
+        if user.name:
+            names.add(user.name.casefold())
+    return names
+
+
+def _strip_incomplete_internal_markup(text: str) -> str:
+    lowered = text.casefold()
+    cut_positions = [
+        pos
+        for marker in ("<think", "<tool_call", "<tool_code")
+        if (pos := lowered.rfind(marker)) != -1
+        and lowered.find(">", pos) != -1
+        and not re.search(rf"</{marker[1:]}>", lowered[pos:])
+    ]
+    if not cut_positions:
+        return text
+    return text[: min(cut_positions)]
+
+
+def _sanitize_agent_visible_content(text: str) -> str:
+    sanitized = _REASONING_BLOCK_RE.sub("", text)
+    sanitized = _PSEUDO_TOOL_BLOCK_RE.sub(PSEUDO_TOOL_PLACEHOLDER, sanitized)
+    sanitized = _strip_incomplete_internal_markup(sanitized)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+    return sanitized
+
+
+def _sanitize_streaming_visible_content(text: str) -> str:
+    sanitized = _REASONING_BLOCK_RE.sub("", text)
+    sanitized = _PSEUDO_TOOL_BLOCK_RE.sub(PSEUDO_TOOL_PLACEHOLDER, sanitized)
+
+    lowered = sanitized.casefold()
+    cut_positions = [
+        pos
+        for marker in ("<think", "<tool_call", "<tool_code")
+        if (pos := lowered.rfind(marker)) != -1
+    ]
+    if cut_positions:
+        sanitized = sanitized[: min(cut_positions)]
+
+    # Hold back a possible partial opening tag at the end of a token chunk so
+    # streamed UI never flashes raw internal markup such as "<thi".
+    for index in range(len(sanitized) - 1, -1, -1):
+        if sanitized[index] == "<":
+            fragment = sanitized[index:].casefold()
+            if any(
+                marker.startswith(fragment)
+                for marker in ("<think", "<tool_call", "<tool_code")
+            ):
+                sanitized = sanitized[:index]
+            break
+    return sanitized
+
+
+def _mention_matches_name(text: str, name: str) -> bool:
+    if not name:
+        return False
+    pattern = re.compile(
+        rf"@{re.escape(name)}(?=$|[\s,.;:!?，。！？、])",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(text))
+
+
+def _requests_human_input(text: str, human_names: set[str], sender_name: str) -> bool:
+    visible = text.casefold()
+    target_names = {name for name in human_names if name}
+    if sender_name:
+        target_names.add(sender_name.casefold())
+    if any(_mention_matches_name(text, name) for name in human_names if name):
+        return True
+    input_verbs = ("provide", "upload", "paste", "send", "share", "attach")
+    input_objects = ("content", "draft", "file", "input", "material", "details", "requirements")
+    if any(name in visible for name in target_names):
+        return any(verb in visible for verb in input_verbs) and any(
+            obj in visible for obj in input_objects
+        )
+    return False
 
 
 async def _build_lc_input(
@@ -355,9 +456,12 @@ async def send_message(
 
     graph = request.app.state.graph
 
+    human_names = await _human_mention_names(db, group_id)
+    sender_name = sender.name or ""
     agent_replies: list[Message] = []
     warnings: list[str] = []
     silent_turns: list[SilentAgentTurn] = []
+    waiting_for_user = False
     proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
     visible_replies_used = 0
     spoke_previous_round = True
@@ -407,20 +511,28 @@ async def send_message(
                     )
                     await thread_service.mark_completed(db, chat_thread)
                     continue
+                visible_text = _sanitize_agent_visible_content(text)
                 agent_msg = await _persist_agent_message(
-                    db, group_id, agent, text, chat_thread.id, reply_to=user_msg.id
+                    db, group_id, agent, visible_text, chat_thread.id, reply_to=user_msg.id
                 )
                 agent_replies.append(agent_msg)
                 visible_replies_used += 1
                 spoke_this_round = True
                 last_visible_agent_id = agent.id
+                waiting_for_user = _requests_human_input(
+                    visible_text, human_names, sender_name
+                )
+                if waiting_for_user:
+                    warnings.append(WAITING_FOR_USER_WARNING)
                 await thread_service.mark_completed(db, chat_thread)
+                if waiting_for_user:
+                    break
             except Exception as exc:
                 logger.exception("agent %s failed in group %s", agent.id, group_id)
                 await thread_service.mark_failed(db, chat_thread)
                 display = group_agent.display_name or agent.name
                 warnings.append(f"agent '{display}' failed: {exc!s}")
-        if not group.proactive_mode:
+        if waiting_for_user or not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
 
@@ -433,6 +545,7 @@ async def send_message(
         warnings=warnings,
         silent_turns=silent_turns,
         all_silent=group.proactive_mode and bool(silent_turns) and not agent_replies,
+        waiting_for_user=waiting_for_user,
     )
 
 
@@ -444,6 +557,8 @@ async def _stream_one_agent(
     agent: Agent,
     chat_thread: Thread,
     reply_to: UUID,
+    human_names: set[str],
+    sender_name: str,
 ) -> AsyncIterator[dict[str, str]]:
     """Stream one agent's reply, persisting on graceful done OR on cancel.
 
@@ -452,6 +567,7 @@ async def _stream_one_agent(
     """
     agent_id_str = str(agent.id)
     chunks: list[str] = []
+    emitted_visible_len = 0
     cancelled = False
     try:
         input_messages = await _build_lc_input(db, group, group_agent, agent)
@@ -464,10 +580,15 @@ async def _stream_one_agent(
         ):
             if kind == "token":
                 chunks.append(payload)
+                visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
+                if len(visible_so_far) <= emitted_visible_len:
+                    continue
+                delta = visible_so_far[emitted_visible_len:]
+                emitted_visible_len = len(visible_so_far)
                 yield {
                     "event": "token",
                     "data": json.dumps(
-                        {"agent_id": agent_id_str, "delta": payload}
+                        {"agent_id": agent_id_str, "delta": delta}
                     ),
                 }
             elif kind == "done":
@@ -483,17 +604,33 @@ async def _stream_one_agent(
                         "data": json.dumps(_agent_identity_payload(agent, group_agent)),
                     }
                 else:
+                    visible_text = _sanitize_agent_visible_content(text)
+                    if len(visible_text) > emitted_visible_len:
+                        yield {
+                            "event": "token",
+                            "data": json.dumps(
+                                {
+                                    "agent_id": agent_id_str,
+                                    "delta": visible_text[emitted_visible_len:],
+                                }
+                            ),
+                        }
                     agent_msg = await _persist_agent_message(
-                        db, group.id, agent, text, chat_thread.id, reply_to=reply_to
+                        db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
                     )
                     yield {
                         "event": "agent_message",
                         "data": json.dumps(_serialize_msg(agent_msg)),
                     }
+                    if _requests_human_input(visible_text, human_names, sender_name):
+                        yield {
+                            "event": "waiting_for_user",
+                            "data": json.dumps({"message": WAITING_FOR_USER_WARNING}),
+                        }
         await thread_service.mark_completed(db, chat_thread)
     except asyncio.CancelledError:
         cancelled = True
-        partial = "".join(chunks)
+        partial = _sanitize_agent_visible_content("".join(chunks))
         # The original `db` session is bound to the request whose task is
         # being torn down — committing on it is unreliable (asyncpg
         # connection state is in flux during cancellation, and `get_db`'s
@@ -564,11 +701,14 @@ async def send_message_stream(
         return
 
     graph = request.app.state.graph
+    human_names = await _human_mention_names(db, group_id)
+    sender_name = sender.name or ""
     emitted_agent_messages = 0
     proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
     spoke_previous_round = True
     round_idx = 0
     last_visible_agent_id: UUID | None = None
+    waiting_for_user = False
 
     while (not group.proactive_mode and round_idx < 1) or (
         group.proactive_mode
@@ -604,13 +744,25 @@ async def send_message_stream(
             await thread_service.mark_running(db, chat_thread)
             try:
                 async for event in _stream_one_agent(
-                    db, graph, group, group_agent, agent, chat_thread, reply_to=user_msg.id
+                    db,
+                    graph,
+                    group,
+                    group_agent,
+                    agent,
+                    chat_thread,
+                    reply_to=user_msg.id,
+                    human_names=human_names,
+                    sender_name=sender_name,
                 ):
                     if event["event"] == "agent_message":
                         emitted_agent_messages += 1
                         spoke_this_round = True
                         last_visible_agent_id = agent.id
+                    elif event["event"] == "waiting_for_user":
+                        waiting_for_user = True
                     yield event
+                    if waiting_for_user:
+                        break
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -623,7 +775,9 @@ async def send_message_stream(
                         "error": str(exc),
                     }),
                 }
-        if not group.proactive_mode:
+            if waiting_for_user:
+                break
+        if waiting_for_user or not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
 

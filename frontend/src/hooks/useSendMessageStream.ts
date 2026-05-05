@@ -31,6 +31,10 @@ interface AgentErrorPayload {
   error: string
 }
 
+interface WaitingForUserPayload {
+  message?: string
+}
+
 function safeJson<T>(raw: string): T | null {
   try {
     return JSON.parse(raw) as T
@@ -109,6 +113,12 @@ export function useSendMessageStream(groupId: string | undefined) {
             }
             if (event === 'silence') {
               pushWarning(groupId, 'No one replied')
+              return
+            }
+            if (event === 'waiting_for_user') {
+              const payload = safeJson<WaitingForUserPayload>(data)
+              pushWarning(groupId, payload?.message || 'Waiting for your input')
+              clearActiveAgent(groupId)
               return
             }
             if (event === 'agent_error') {

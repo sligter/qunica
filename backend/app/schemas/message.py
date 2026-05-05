@@ -38,3 +38,4 @@ class MessageSendResponse(BaseModel):
     warnings: list[str]
     silent_turns: list[SilentAgentTurnRead] = []
     all_silent: bool = False
+    waiting_for_user: bool = False

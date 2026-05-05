@@ -244,6 +244,7 @@ async def send_message(
         warnings=result.warnings,
         silent_turns=result.silent_turns,
         all_silent=result.all_silent,
+        waiting_for_user=result.waiting_for_user,
     )
 
 

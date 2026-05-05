@@ -470,6 +470,141 @@ async def test_silent_turns_do_not_consume_visible_reply_budget(
     assert [message["content"] for message in agent_messages] == ["E1", "M2", "E2", "M3"]
 
 
+async def test_agent_visible_content_strips_reasoning_and_pseudo_tool_markup(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    _patch_llm_script(
+        monkeypatch,
+        ["<think>private reasoning</think>Before <tool_call>{}</tool_call> after"],
+    )
+    group_id, _agents = await _setup(client, auth_headers)
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo hi"},
+    )
+
+    assert response.status_code == 201, response.text
+    content = response.json()["agent_replies"][0]["content"]
+    assert "private reasoning" not in content
+    assert "<think" not in content
+    assert "<tool_call" not in content
+    assert "Non-executed tool markup removed" in content
+
+
+async def test_stream_sanitization_resumes_after_internal_blocks(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    _patch_llm_script(
+        monkeypatch,
+        ["Before <think>private reasoning</think> middle <tool_call>{}</tool_call> after"],
+    )
+    group_id, _agents = await _setup(client, auth_headers)
+
+    events = await _stream_events(client, auth_headers, group_id, "@Echo hi")
+    tokens = [data for event, data in events if event == "token"]
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+    content = agent_messages[0]["content"]
+
+    assert "private reasoning" not in "".join(tokens)
+    assert "<think" not in "".join(tokens)
+    assert "<tool_call" not in "".join(tokens)
+    assert "after" in "".join(tokens)
+    assert content == (
+        "Before  middle "
+        "[Non-executed tool markup removed: this runtime did not execute a tool call.]"
+        " after"
+    )
+
+
+async def test_proactive_stream_waiting_for_user_stops_fanout(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    sender_name = cast(str, me.json()["name"])
+    _patch_llm_script(monkeypatch, [f"@{sender_name} please provide the draft", "SHOULD NOT CALL"])
+    group_id, _agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=3,
+    )
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    event_names = [event for event, _data in events]
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+
+    assert event_names.count("agent_message") == 1
+    assert "waiting_for_user" in event_names
+    assert event_names.index("waiting_for_user") < event_names.index("done")
+    assert [message["content"] for message in agent_messages] == [
+        f"@{sender_name} please provide the draft"
+    ]
+
+
+async def test_non_stream_waiting_for_user_stops_fanout(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    sender_name = cast(str, me.json()["name"])
+    _patch_llm_script(
+        monkeypatch,
+        [f"{sender_name}, please upload the missing content", "SHOULD NOT CALL"],
+    )
+    group_id, _agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=3,
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["waiting_for_user"] is True
+    assert body["warnings"] == ["Waiting for your input"]
+    assert len(body["agent_replies"]) == 1
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+    assert [message["content"] for message in agent_messages] == [
+        f"{sender_name}, please upload the missing content"
+    ]
+
+
+async def test_agent_mentions_do_not_trigger_waiting_for_user(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    _patch_llm_script(monkeypatch, ["@Mirror can you review this?", "mirror replies"])
+    group_id, _agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=1,
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["waiting_for_user"] is False
+    assert len(body["agent_replies"]) == 2
+
+
 async def test_stream_visible_reply_budget_caps_replies(
     client: AsyncClient,
     auth_headers: dict[str, str],
