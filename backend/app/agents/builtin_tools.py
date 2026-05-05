@@ -15,7 +15,23 @@ ToolPolicy = Literal[
 ]
 ToolRuntimeStatus = Literal["available", "planned", "sandbox_required", "disabled"]
 EXECUTABLE_TOOL_IDS: frozenset[str] = frozenset(
-    {"read", "write", "edit", "glob", "grep", "bash", "fetch"}
+    {
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "bash",
+        "ask_user",
+        "web_search",
+        "fetch",
+        "run_sub_agent",
+        "generate_image",
+        "generate_video",
+        "skill_manager",
+        "todo_write",
+        "exit_plan_mode",
+    }
 )
 
 
@@ -92,14 +108,14 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
         name="AskUser",
         description="Ask the user for clarification or approval.",
         policy="planning",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="web_search",
         name="WebSearch",
         description="Search the web for current information.",
         policy="network",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="fetch",
@@ -113,42 +129,42 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
         name="RunSubAgent",
         description="Delegate read-only exploration to a sub-agent.",
         policy="orchestration",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="generate_image",
         name="GenerateImage",
         description="Generate images through a media provider.",
         policy="media",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="generate_video",
         name="GenerateVideo",
         description="Generate videos through a media provider.",
         policy="media",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="skill_manager",
         name="SkillManager",
         description="Inspect and activate mounted skills.",
         policy="orchestration",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="todo_write",
         name="TodoWrite",
         description="Track multi-step agent tasks.",
         policy="planning",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="exit_plan_mode",
         name="ExitPlanMode",
         description="Request user approval after planning.",
         policy="planning",
-        runtime_status="planned",
+        runtime_status="available",
     ),
 )
 
@@ -218,7 +234,10 @@ def saved_only_tool_names(tool_config: dict[str, object] | None) -> list[str]:
         for tool_id, selection in config.tools.items()
         if selection.enabled
         and tool_id in _TOOL_BY_ID
-        and tool_id not in EXECUTABLE_TOOL_IDS
+        and (
+            tool_id not in EXECUTABLE_TOOL_IDS
+            or _TOOL_BY_ID[tool_id].runtime_status != "available"
+        )
     ]
 
 

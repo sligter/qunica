@@ -17,8 +17,10 @@ Two public entrypoints:
   `("done", AIMessage)`.
 """
 
+from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import json
 from typing import Any, Literal, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -33,7 +35,7 @@ from app.agents.workspace_tools import bind_workspace_tools, execute_workspace_t
 from app.core.exceptions import LLMProviderError
 
 _CHAT_MODEL_KEY = "chat_model"
-MAX_TOOL_ITERATIONS = 5
+TOOL_LOOP_REPEATED_CALL_LIMIT = 8
 ToolEventStatus = Literal["started", "completed", "failed", "unavailable"]
 
 
@@ -132,7 +134,35 @@ def _result_status(name: str | None, result: str) -> ToolEventStatus:
         return "unavailable"
     if result.startswith("Tool ") and " failed: " in result:
         return "failed"
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return "completed"
+    if isinstance(payload, dict):
+        status = str(payload.get("status") or "").upper()
+        if status in {"SETUP_REQUIRED", "WORKSPACE_REQUIRED", "NOT_FOUND"}:
+            return "unavailable"
+        if status in {"FAILED", "ERROR"}:
+            return "failed"
     return "completed"
+
+
+def _tool_call_signature(tool_call: dict[str, Any]) -> tuple[str | None, str]:
+    args = _tool_call_args(tool_call)
+    try:
+        args_signature = repr(sorted(args.items()))
+    except TypeError:
+        args_signature = repr(args)
+    return (_tool_call_name(tool_call), args_signature)
+
+
+def _repeated_call_guard_message(name: str | None) -> str:
+    display_name = name or "unknown"
+    return (
+        f"Tool execution paused because the model repeatedly requested the same {display_name} "
+        "tool call without making progress. Summarize the completed tool results and ask the "
+        "user how to proceed."
+    )
 
 
 async def _invoke_once(
@@ -153,65 +183,74 @@ async def _invoke_once(
     return response
 
 
+async def _execute_tool_calls(
+    tool_calls: list[Any],
+    tools: dict[str, Any],
+    tool_event_callback: Any | None = None,
+) -> AsyncIterator[tuple[RuntimeToolEvent, ToolMessage | None]]:
+    for index, tool_call in enumerate(tool_calls):
+        tool_call_dict = cast(dict[str, Any], tool_call)
+        name = _tool_call_name(tool_call_dict)
+        args = _tool_call_args(tool_call_dict)
+        call_id = _tool_call_id(tool_call_dict, index)
+        display_name = name or "unknown"
+        start_event = RuntimeToolEvent(
+            tool_call_id=call_id,
+            tool_name=display_name,
+            status="started",
+            args_summary=_summarize_mapping(args),
+        )
+        if tool_event_callback is not None:
+            await tool_event_callback(start_event)
+        yield start_event, None
+        result = (
+            f"Malformed tool call at index {index}."
+            if name is None
+            else execute_workspace_tool(tools, name, args)
+        )
+        status = _result_status(name, result)
+        result_event = RuntimeToolEvent(
+            tool_call_id=call_id,
+            tool_name=display_name,
+            status=status,
+            result_summary=_result_summary(name, result),
+        )
+        if tool_event_callback is not None:
+            await tool_event_callback(result_event)
+        yield result_event, ToolMessage(content=result, tool_call_id=call_id)
+
+
 async def run(
     graph: _Graph,
     thread_id: str,
     chat_model: BaseChatModel,
     input_messages: list[BaseMessage],
     workspace_tools: dict[str, Any] | None = None,
-    max_tool_iterations: int = MAX_TOOL_ITERATIONS,
     tool_event_callback: Any | None = None,
 ) -> AIMessage:
     tools = workspace_tools or {}
     model = bind_workspace_tools(chat_model, tools)
     messages = list(input_messages)
-    iterations = 0
+    repeated_call_counts: Counter[tuple[str | None, str]] = Counter()
 
     while True:
         response = await _invoke_once(graph, thread_id, model, messages)
         tool_calls = list(response.tool_calls or [])
         if not tool_calls:
             return response
-        if iterations >= max_tool_iterations:
-            return AIMessage(
-                content=(
-                    "Tool execution stopped after reaching the bounded iteration limit. "
-                    "Please summarize the completed work and ask the user how to proceed."
-                )
-            )
-        iterations += 1
+        for tool_call in tool_calls:
+            signature = _tool_call_signature(cast(dict[str, Any], tool_call))
+            repeated_call_counts[signature] += 1
+            if repeated_call_counts[signature] > TOOL_LOOP_REPEATED_CALL_LIMIT:
+                return AIMessage(content=_repeated_call_guard_message(signature[0]))
         messages.append(response)
-        for index, tool_call in enumerate(tool_calls):
-            tool_call_dict = cast(dict[str, Any], tool_call)
-            name = _tool_call_name(tool_call_dict)
-            args = _tool_call_args(tool_call_dict)
-            call_id = _tool_call_id(tool_call_dict, index)
-            display_name = name or "unknown"
-            if tool_event_callback is not None:
-                await tool_event_callback(
-                    RuntimeToolEvent(
-                        tool_call_id=call_id,
-                        tool_name=display_name,
-                        status="started",
-                        args_summary=_summarize_mapping(args),
-                    )
-                )
-            result = (
-                f"Malformed tool call at index {index}."
-                if name is None
-                else execute_workspace_tool(tools, name, args)
-            )
-            status = _result_status(name, result)
-            if tool_event_callback is not None:
-                await tool_event_callback(
-                    RuntimeToolEvent(
-                        tool_call_id=call_id,
-                        tool_name=display_name,
-                        status=status,
-                        result_summary=_result_summary(name, result),
-                    )
-                )
-            messages.append(ToolMessage(content=result, tool_call_id=call_id))
+        async for _event, result in _execute_tool_calls(
+            tool_calls=tool_calls,
+            tools=tools,
+            tool_event_callback=tool_event_callback,
+        ):
+            if result is not None:
+                messages.append(result)
 
 
 async def run_with_stream(
@@ -220,25 +259,46 @@ async def run_with_stream(
     chat_model: BaseChatModel,
     input_messages: list[BaseMessage],
     workspace_tools: dict[str, Any] | None = None,
-    max_tool_iterations: int = MAX_TOOL_ITERATIONS,
     tool_event_callback: Any | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
-    """Yield final tokens when tools are active, otherwise stream model chunks."""
+    """Yield live tool events and final tokens when tools are active.
+
+    Provider-native tool calls are not token-streamed because each tool result
+    must feed a follow-up model invocation. Tool start/result events are yielded
+    immediately, then the final answer is emitted as a token chunk when the loop
+    completes.
+    """
     if workspace_tools:
-        final = await run(
-            graph=graph,
-            thread_id=thread_id,
-            chat_model=chat_model,
-            input_messages=input_messages,
-            workspace_tools=workspace_tools,
-            max_tool_iterations=max_tool_iterations,
-            tool_event_callback=tool_event_callback,
-        )
-        content = final.content if isinstance(final.content, str) else str(final.content)
-        if content:
-            yield ("token", content)
-        yield ("done", final)
-        return
+        tools = workspace_tools or {}
+        model = bind_workspace_tools(chat_model, tools)
+        messages = list(input_messages)
+        repeated_call_counts: Counter[tuple[str | None, str]] = Counter()
+        while True:
+            final = await _invoke_once(graph, thread_id, model, messages)
+            tool_calls = list(final.tool_calls or [])
+            if not tool_calls:
+                content = final.content if isinstance(final.content, str) else str(final.content)
+                if content:
+                    yield ("token", content)
+                yield ("done", final)
+                return
+            for tool_call in tool_calls:
+                signature = _tool_call_signature(cast(dict[str, Any], tool_call))
+                repeated_call_counts[signature] += 1
+                if repeated_call_counts[signature] > TOOL_LOOP_REPEATED_CALL_LIMIT:
+                    guarded = AIMessage(content=_repeated_call_guard_message(signature[0]))
+                    yield ("token", guarded.content)
+                    yield ("done", guarded)
+                    return
+            messages.append(final)
+            async for tool_event, result in _execute_tool_calls(
+                tool_calls=tool_calls,
+                tools=tools,
+                tool_event_callback=tool_event_callback,
+            ):
+                yield ("tool_event", tool_event)
+                if result is not None:
+                    messages.append(result)
     config = _config_for(thread_id, chat_model)
     state_input: GroupState = {
         "input_messages": list(input_messages),

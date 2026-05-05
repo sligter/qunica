@@ -43,6 +43,7 @@ class AgentInvocationContext:
     enabled_tools: list[str]
     executable_tools: list[str]
     saved_only_tools: list[str]
+    setup_required_tools: list[str]
     mounted_skills: list[Skill]
     runtime_limits: dict[str, int]
     workspace_source: str
@@ -89,6 +90,20 @@ async def build_agent_invocation_context(
     selected_tools = selected_tool_names(agent.tool_config)
     executable_tools = executable_tool_names(agent.tool_config)
     saved_only_tools = saved_only_tool_names(agent.tool_config)
+    setup_required_tools = [
+        name
+        for name in executable_tools
+        if name
+        in {
+            "AskUser",
+            "WebSearch",
+            "RunSubAgent",
+            "GenerateImage",
+            "GenerateVideo",
+            "TodoWrite",
+            "ExitPlanMode",
+        }
+    ]
     system_prompt = _render_system_prompt(
         agent=agent,
         group=group,
@@ -97,6 +112,7 @@ async def build_agent_invocation_context(
         selected_tools=selected_tools,
         executable_tools=executable_tools,
         saved_only_tools=saved_only_tools,
+        setup_required_tools=setup_required_tools,
         skills=skills,
         runtime_limits=limits,
     )
@@ -106,6 +122,7 @@ async def build_agent_invocation_context(
         enabled_tools=selected_tools,
         executable_tools=executable_tools,
         saved_only_tools=saved_only_tools,
+        setup_required_tools=setup_required_tools,
         mounted_skills=skills,
         runtime_limits=limits,
         workspace_source=workspace_source,
@@ -150,6 +167,7 @@ def _render_system_prompt(
     selected_tools: list[str],
     executable_tools: list[str],
     saved_only_tools: list[str],
+    setup_required_tools: list[str],
     skills: list[Skill],
     runtime_limits: dict[str, int],
 ) -> str:
@@ -159,7 +177,12 @@ def _render_system_prompt(
         parts.append(_render_group_context(group))
     parts.append(
         _render_workspace_context(
-            workspace, workspace_source, selected_tools, executable_tools, saved_only_tools
+            workspace,
+            workspace_source,
+            selected_tools,
+            executable_tools,
+            saved_only_tools,
+            setup_required_tools,
         )
     )
     parts.append(_render_runtime_limits(runtime_limits))
@@ -197,10 +220,12 @@ def _render_workspace_context(
     selected_tools: list[str],
     executable_tools: list[str],
     saved_only_tools: list[str],
+    setup_required_tools: list[str],
 ) -> str:
     tools = ", ".join(selected_tools) if selected_tools else "none"
     executable = ", ".join(executable_tools) if executable_tools else "none"
     saved_only = ", ".join(saved_only_tools) if saved_only_tools else "none"
+    setup_required = ", ".join(setup_required_tools) if setup_required_tools else "none"
     location: str | None
     if workspace is None:
         location = "not configured"
@@ -222,17 +247,22 @@ def _render_workspace_context(
         f"- location: {location or 'not configured'}\n"
         f"- selected built-in tools: {tools}\n"
         f"- executable built-in tools now: {executable}\n"
+        f"- executable tools that may return setup/input-required results: {setup_required}\n"
         f"- saved-only/planned selections: {saved_only}\n"
-        "Runtime tool execution: provider-native Read, Write, Edit, Glob, Grep, Bash, "
-        "and Fetch calls listed as executable above may execute with bounded safeguards. "
-        "Workspace file and shell tools are rooted at the resolved local workspace and "
-        "reject absolute paths, traversal, and root escapes. Bash commands run in the "
+        "Runtime tool execution: only provider-native tool calls listed as executable above "
+        "may execute with bounded safeguards. Literal XML-like tool markup in text is not "
+        "executed. Workspace file and shell tools are rooted at the resolved local workspace "
+        "and reject absolute paths, traversal, and root escapes. Bash commands run in the "
         "workspace with timeout/output limits and destructive command guards. Fetch is "
-        "limited to bounded text http/https GET requests. Do not claim web search, media "
-        "generation, orchestration, or skill activation unless that exact tool is listed "
-        "as executable now. Literal XML-like tool markup in text is not executed. "
-        "Saved-only/planned selections are configuration for future runtimes, not current "
-        "capabilities."
+        "limited to bounded text http/https GET requests. WebSearch uses configured Tavily "
+        "credentials or a configured Playwright-backed search service when available and "
+        "otherwise returns a controlled setup-required tool result. AskUser returns a "
+        "non-blocking WAITING_FOR_USER result. Media generation, "
+        "sub-agent orchestration, plan-exit, and transient todo tools are executable bounded "
+        "tool calls; if no provider or persistence contract is configured they return "
+        "truthful controlled tool results instead of pretending work completed. SkillManager "
+        "can inspect mounted skill metadata and records activation intent only; it does not "
+        "load arbitrary code."
     )
 
 
@@ -244,14 +274,18 @@ def _render_runtime_limits(runtime_limits: dict[str, int]) -> str:
 
 
 def _render_skills(skills: list[Skill]) -> str:
-    rendered = ["Mounted skills:"]
+    rendered = [
+        "Mounted skills:",
+        "Full skill instructions are loaded only through SkillManager inspect/activate "
+        "runtime tool calls; initial context lists metadata only.",
+    ]
     for skill in skills:
         metadata = skill.metadata_ or {}
-        rendered.append(_render_skill(skill, metadata))
+        rendered.append(_render_skill_metadata(skill, metadata))
     return "\n\n".join(rendered)
 
 
-def _render_skill(skill: Skill, metadata: dict[str, Any]) -> str:
+def _render_skill_metadata(skill: Skill, metadata: dict[str, Any]) -> str:
     lines = [f"# Skill: {skill.name}"]
     if skill.description:
         lines.append(f"Description: {skill.description}")
@@ -268,5 +302,4 @@ def _render_skill(skill: Skill, metadata: dict[str, Any]) -> str:
         value = metadata.get(key)
         if value is not None:
             lines.append(f"{key}: {value}")
-    lines.append(skill.body_markdown)
     return "\n".join(lines)

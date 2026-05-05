@@ -1,9 +1,29 @@
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from httpx import AsyncClient
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from pydantic import Field
 
 JsonObject = dict[str, Any]
+
+
+class RecordingFakeChatModel(GenericFakeChatModel):
+    shared_calls: ClassVar[list[list[BaseMessage]]] = []
+    calls: list[list[BaseMessage]] = Field(default_factory=list)
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:
+        if isinstance(input, list):
+            self.calls.append(list(input))
+            self.shared_calls.append(list(input))
+        result = await super().ainvoke(input, config=config, **kwargs)
+        assert isinstance(result, AIMessage)
+        return result
+
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> "RecordingFakeChatModel":
+        return self
 
 
 async def _create_workspace(client: AsyncClient, headers: dict[str, str]) -> JsonObject:
@@ -81,7 +101,7 @@ async def test_tool_catalog_returns_builtin_tools(
     assert status_by_id["grep"] == "available"
     assert status_by_id["bash"] == "available"
     assert status_by_id["fetch"] == "available"
-    assert status_by_id["web_search"] == "planned"
+    assert all(status == "available" for status in status_by_id.values())
 
 
 async def test_create_agent_requires_workspace(
@@ -184,6 +204,49 @@ async def test_get_other_users_agent_forbidden(client: AsyncClient) -> None:
 
     r = await client.get(f"/api/v1/agents/{a['id']}", headers=h2)
     assert r.status_code == 403
+
+
+async def test_direct_invoke_loops_until_no_tool_call(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    calls: list[list[BaseMessage]] = []
+    RecordingFakeChatModel.shared_calls = calls
+    script = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Glob", "args": {"pattern": "*"}, "id": "glob-1"}],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "Read", "args": {"file_path": "pyproject.toml"}, "id": "read-1"}
+                ],
+            ),
+            AIMessage(content="I used both tools."),
+        ]
+    )
+
+    async def _resolve_factory(_db: Any, _agent: Any, *, streaming: bool = False) -> Any:
+        _ = streaming
+        return RecordingFakeChatModel(messages=script)
+
+    monkeypatch.setattr("app.api.v1.agents.resolve_chat_model", _resolve_factory)
+    a = await _create_agent(client, auth_headers, name="Toolable")
+
+    r = await client.post(
+        f"/api/v1/agents/{a['id']}/invoke",
+        headers=auth_headers,
+        json={"message": "list files"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == "I used both tools."
+    assert len(calls) == 3
+    assert sum(isinstance(message, ToolMessage) for message in calls[1]) == 1
+    assert sum(isinstance(message, ToolMessage) for message in calls[2]) == 2
 
 
 async def test_invoke_uses_fake_llm(

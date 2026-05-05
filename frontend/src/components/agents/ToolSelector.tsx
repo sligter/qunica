@@ -28,14 +28,8 @@ interface ToolSelectorProps {
   onChange: (next: AgentToolConfig) => void
 }
 
-const EXECUTABLE_TOOL_IDS = new Set(['read', 'write', 'edit', 'glob', 'grep', 'bash', 'fetch'])
-
 function isRuntimeExecutable(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
-  return (
-    tool.runtime_status === 'available' &&
-    !(tool.requires_sandbox && workspaceBackendType === 'local') &&
-    EXECUTABLE_TOOL_IDS.has(tool.id)
-  )
+  return tool.runtime_status === 'available' && !(tool.requires_sandbox && workspaceBackendType === 'local')
 }
 
 function isToggleDisabled(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
@@ -48,7 +42,7 @@ function isToggleDisabled(tool: BuiltinToolRead, workspaceBackendType: Workspace
 function statusText(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
   if (tool.requires_sandbox && workspaceBackendType === 'local') return 'Cloud sandbox required'
   if (isRuntimeExecutable(tool, workspaceBackendType)) return 'Executable now'
-  if (tool.runtime_status === 'available') return 'Saved only'
+  if (tool.runtime_status === 'available') return 'Executable now'
   if (tool.runtime_status === 'planned') return 'Saved only'
   if (tool.runtime_status === 'sandbox_required') return 'Sandbox required'
   return 'Disabled'
@@ -77,9 +71,9 @@ export function ToolSelector({
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-        Read, Write, Edit, Glob, Grep, Bash, and Fetch can execute today with bounded
-        workspace/network safeguards when enabled. Saved-only selections are persisted for future
-        runtimes but are not current agent capabilities.
+        Selected built-ins are bound as executable provider-native tools with bounded safeguards.
+        Some tools may return setup-required or input-required results when a provider or resume
+        contract is not configured; they are still truthful runtime tool calls, not saved-only claims.
       </div>
       {POLICY_ORDER.map((policy) => {
         const policyTools = tools.filter((tool) => tool.policy === policy)
@@ -115,7 +109,7 @@ export function ToolSelector({
                     <p className="mt-1 text-xs text-muted-foreground">{tool.description}</p>
                     {!executable && checked && (
                       <p className="mt-2 text-[11px] font-medium text-amber-700">
-                        Saved in agent settings only; the runtime will not execute this tool yet.
+                        This tool is unavailable for the selected workspace backend or disabled by policy.
                       </p>
                     )}
                   </button>

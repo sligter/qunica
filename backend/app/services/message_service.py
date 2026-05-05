@@ -609,11 +609,6 @@ async def _stream_one_agent(
     chunks: list[str] = []
     emitted_visible_len = 0
     cancelled = False
-    pending_tool_events: list[RuntimeToolEvent] = []
-
-    async def _record_tool_event(tool_event: RuntimeToolEvent) -> None:
-        pending_tool_events.append(tool_event)
-
     try:
         input_messages, context = await _build_invocation(db, group, group_agent, agent)
         chat_model = await resolve_chat_model(db, agent, streaming=True)
@@ -623,19 +618,17 @@ async def _stream_one_agent(
             chat_model=chat_model,
             input_messages=input_messages,
             workspace_tools=build_workspace_tools(context),
-            tool_event_callback=_record_tool_event,
         ):
-            while pending_tool_events:
-                tool_event = pending_tool_events.pop(0)
+            if kind == "tool_event" and isinstance(payload, RuntimeToolEvent):
                 yield {
                     "event": (
                         "tool_call_start"
-                        if tool_event.status == "started"
+                        if payload.status == "started"
                         else "tool_call_result"
                     ),
-                    "data": json.dumps(_serialize_tool_event(tool_event, agent, group_agent)),
+                    "data": json.dumps(_serialize_tool_event(payload, agent, group_agent)),
                 }
-            if kind == "token":
+            elif kind == "token":
                 chunks.append(payload)
                 visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
                 if len(visible_so_far) <= emitted_visible_len:

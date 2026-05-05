@@ -39,5 +39,11 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_default_model: str = "gpt-4o-mini"
 
+    # Optional runtime tool providers. Tools remain bound without these values and
+    # return controlled setup-required results when invoked.
+    tavily_api_key: str = ""
+    tavily_search_url: str = "https://api.tavily.com/search"
+    playwright_search_url: str = ""
+
 
 settings = Settings()

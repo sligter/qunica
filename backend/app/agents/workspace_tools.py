@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import subprocess
@@ -13,6 +14,7 @@ import httpx
 from langchain_core.tools import BaseTool, tool
 
 from app.agents.context import AgentInvocationContext
+from app.core.config import settings
 
 MAX_READ_LINES = 2000
 MAX_GLOB_RESULTS = 200
@@ -23,8 +25,28 @@ MAX_BASH_TIMEOUT_SECONDS = 10
 MAX_BASH_OUTPUT_CHARS = 12_000
 MAX_FETCH_BYTES = 500_000
 MAX_FETCH_CHARS = 20_000
+MAX_SEARCH_RESULTS = 5
+MAX_SEARCH_QUERY_CHARS = 500
 FETCH_TIMEOUT_SECONDS = 10
-EXECUTABLE_TOOL_NAMES = frozenset({"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Fetch"})
+EXECUTABLE_TOOL_NAMES = frozenset(
+    {
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "AskUser",
+        "WebSearch",
+        "Fetch",
+        "RunSubAgent",
+        "GenerateImage",
+        "GenerateVideo",
+        "SkillManager",
+        "TodoWrite",
+        "ExitPlanMode",
+    }
+)
 
 
 class WorkspaceToolError(ValueError):
@@ -265,6 +287,13 @@ def _truncate_output(output: str) -> str:
     return f"{output[:MAX_BASH_OUTPUT_CHARS]}\n[output truncated]"
 
 
+def _controlled_tool_result(tool_name: str, message: str, status: str = "SETUP_REQUIRED") -> str:
+    return json.dumps(
+        {"tool": tool_name, "status": status, "message": message},
+        ensure_ascii=False,
+    )
+
+
 def _fetch_url(url: str, timeout_seconds: int = FETCH_TIMEOUT_SECONDS) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -309,12 +338,96 @@ def _fetch_url(url: str, timeout_seconds: int = FETCH_TIMEOUT_SECONDS) -> str:
     return f"{header}\n{snippet}{suffix}"
 
 
+def _web_search(query: str, max_results: int = MAX_SEARCH_RESULTS) -> str:
+    if not query.strip():
+        raise WorkspaceToolError("query must be non-empty")
+    if len(query) > MAX_SEARCH_QUERY_CHARS:
+        raise WorkspaceToolError(f"query must be at most {MAX_SEARCH_QUERY_CHARS} characters")
+    if max_results < 1 or max_results > MAX_SEARCH_RESULTS:
+        raise WorkspaceToolError(f"max_results must be between 1 and {MAX_SEARCH_RESULTS}")
+    if settings.tavily_api_key:
+        payload = {
+            "api_key": settings.tavily_api_key,
+            "query": query,
+            "max_results": max_results,
+            "include_answer": True,
+            "include_raw_content": False,
+        }
+        with httpx.Client(timeout=FETCH_TIMEOUT_SECONDS) as client:
+            response = client.post(settings.tavily_search_url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        answer = str(data.get("answer") or "")[:MAX_FETCH_CHARS]
+        results = []
+        for item in data.get("results", [])[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            results.append(
+                {
+                    "title": str(item.get("title") or "")[:300],
+                    "url": str(item.get("url") or "")[:1000],
+                    "content": str(item.get("content") or "")[:2000],
+                }
+            )
+        return json.dumps(
+            {"tool": "WebSearch", "status": "COMPLETED", "answer": answer, "results": results},
+            ensure_ascii=False,
+        )
+    if settings.playwright_search_url:
+        with httpx.Client(timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            response = client.get(
+                settings.playwright_search_url,
+                params={"q": query, "max_results": max_results},
+            )
+            response.raise_for_status()
+            text = " ".join(response.text.split())[:MAX_FETCH_CHARS]
+        return json.dumps(
+            {
+                "tool": "WebSearch",
+                "status": "COMPLETED",
+                "provider": "playwright",
+                "content": text,
+            },
+            ensure_ascii=False,
+        )
+    return _controlled_tool_result(
+        "WebSearch",
+        "No search provider is configured. Set TAVILY_API_KEY for Tavily or "
+        "PLAYWRIGHT_SEARCH_URL for a Playwright-backed search service.",
+    )
+
+
 def build_workspace_tools(context: AgentInvocationContext) -> dict[str, BaseTool]:
-    """Return executable workspace and network tools allowed by the invocation context."""
+    """Return executable provider-native tools allowed by the invocation context."""
 
     root = _workspace_root(context)
     enabled = set(context.executable_tools)
     tools: dict[str, BaseTool] = {}
+
+    if "AskUser" in enabled:
+
+        @tool("AskUser")
+        def ask_user(question: str, required: bool = True) -> str:
+            """Request bounded human input without blocking server execution."""
+
+            status = "WAITING_FOR_USER" if required else "INPUT_REQUESTED"
+            return _controlled_tool_result(
+                "AskUser",
+                f"Human input requested: {question[:1000]}",
+                status=status,
+            )
+
+        tools["AskUser"] = ask_user
+
+    if "WebSearch" in enabled:
+
+        @tool("WebSearch")
+        def web_search(query: str, max_results: int = MAX_SEARCH_RESULTS) -> str:
+            """Search the web through configured Tavily or Playwright services."""
+
+            return _web_search(query, max_results=max_results)
+
+        tools["WebSearch"] = web_search
 
     if "Fetch" in enabled:
 
@@ -326,7 +439,229 @@ def build_workspace_tools(context: AgentInvocationContext) -> dict[str, BaseTool
 
         tools["Fetch"] = fetch
 
+    if "RunSubAgent" in enabled:
+
+        @tool("RunSubAgent")
+        def run_sub_agent(task: str, instructions: str | None = None) -> str:
+            """Return a controlled result for unavailable sub-agent orchestration."""
+
+            _ = instructions
+            return _controlled_tool_result(
+                "RunSubAgent",
+                "Sub-agent orchestration is not configured for this runtime. "
+                f"Requested task: {task[:1000]}",
+            )
+
+        tools["RunSubAgent"] = run_sub_agent
+
+    if "GenerateImage" in enabled:
+
+        @tool("GenerateImage")
+        def generate_image(prompt: str, size: str | None = None) -> str:
+            """Return a controlled setup-required result unless a media provider is configured."""
+
+            _ = size
+            return _controlled_tool_result(
+                "GenerateImage",
+                f"Image generation provider is not configured. Requested prompt: {prompt[:1000]}",
+            )
+
+        tools["GenerateImage"] = generate_image
+
+    if "GenerateVideo" in enabled:
+
+        @tool("GenerateVideo")
+        def generate_video(prompt: str, duration_seconds: int | None = None) -> str:
+            """Return a controlled setup-required result unless a video provider is configured."""
+
+            _ = duration_seconds
+            return _controlled_tool_result(
+                "GenerateVideo",
+                f"Video generation provider is not configured. Requested prompt: {prompt[:1000]}",
+            )
+
+        tools["GenerateVideo"] = generate_video
+
+    if "SkillManager" in enabled:
+
+        @tool("SkillManager")
+        def skill_manager(action: str = "list", skill_name: str | None = None) -> str:
+            """Inspect mounted skill metadata without arbitrary code loading."""
+
+            skills = [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "metadata": skill.metadata_ or {},
+                }
+                for skill in context.mounted_skills
+            ]
+            if action not in {"list", "inspect", "activate"}:
+                return _controlled_tool_result(
+                    "SkillManager", f"Unsupported skill action: {action}", status="FAILED"
+                )
+            if action in {"inspect", "activate"} and skill_name:
+                matched_skills = [
+                    skill
+                    for skill in context.mounted_skills
+                    if skill.name == skill_name
+                ]
+                matched = [
+                    {
+                        "name": skill.name,
+                        "description": skill.description,
+                        "metadata": skill.metadata_ or {},
+                        "instructions": skill.body_markdown,
+                    }
+                    for skill in matched_skills
+                ]
+                return json.dumps(
+                    {
+                        "tool": "SkillManager",
+                        "status": "COMPLETED" if matched else "NOT_FOUND",
+                        "skills": matched,
+                        "message": (
+                            "Skill runtime activation records intent only; "
+                            "no arbitrary code was loaded."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "tool": "SkillManager",
+                    "status": "COMPLETED",
+                    "skills": skills,
+                    "message": (
+                        "Skill list includes metadata only; inspect or activate a skill "
+                        "to load instructions."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        tools["SkillManager"] = skill_manager
+
+    if "TodoWrite" in enabled:
+
+        @tool("TodoWrite")
+        def todo_write(todos: list[str] | str) -> str:
+            """Summarize transient task planning without persistent shared state."""
+
+            todo_list = todos if isinstance(todos, list) else [todos]
+            return json.dumps(
+                {"tool": "TodoWrite", "status": "COMPLETED", "todos": todo_list[:20]},
+                ensure_ascii=False,
+            )
+
+        tools["TodoWrite"] = todo_write
+
+    if "ExitPlanMode" in enabled:
+
+        @tool("ExitPlanMode")
+        def exit_plan_mode(plan: str) -> str:
+            """Return a controlled approval-needed planning result."""
+
+            return _controlled_tool_result(
+                "ExitPlanMode",
+                f"Plan ready for user approval: {plan[:2000]}",
+                status="APPROVAL_REQUIRED",
+            )
+
+        tools["ExitPlanMode"] = exit_plan_mode
+
     if root is None:
+        if "Read" in enabled:
+
+            @tool("Read")
+            def read_unconfigured(
+                file_path: str, start_line: int = 1, limit: int = MAX_READ_LINES
+            ) -> str:
+                """Return a workspace-required result when no local workspace is configured."""
+
+                _ = (file_path, start_line, limit)
+                return _controlled_tool_result(
+                    "Read", "No local workspace is configured for this agent.", "WORKSPACE_REQUIRED"
+                )
+
+            tools["Read"] = read_unconfigured
+
+        if "Write" in enabled:
+
+            @tool("Write")
+            def write_unconfigured(file_path: str, content: str) -> str:
+                """Return a workspace-required result when no local workspace is configured."""
+
+                _ = (file_path, content)
+                return _controlled_tool_result(
+                    "Write",
+                    "No local workspace is configured for this agent.",
+                    "WORKSPACE_REQUIRED",
+                )
+
+            tools["Write"] = write_unconfigured
+
+        if "Edit" in enabled:
+
+            @tool("Edit")
+            def edit_unconfigured(
+                file_path: str,
+                old_string: str,
+                new_string: str,
+                replace_all: bool = False,
+            ) -> str:
+                """Return a workspace-required result when no local workspace is configured."""
+
+                _ = (file_path, old_string, new_string, replace_all)
+                return _controlled_tool_result(
+                    "Edit", "No local workspace is configured for this agent.", "WORKSPACE_REQUIRED"
+                )
+
+            tools["Edit"] = edit_unconfigured
+
+        if "Glob" in enabled:
+
+            @tool("Glob")
+            def glob_unconfigured(pattern: str = "**/*", limit: int = MAX_GLOB_RESULTS) -> str:
+                """Return a workspace-required result when no local workspace is configured."""
+
+                _ = (pattern, limit)
+                return _controlled_tool_result(
+                    "Glob", "No local workspace is configured for this agent.", "WORKSPACE_REQUIRED"
+                )
+
+            tools["Glob"] = glob_unconfigured
+
+        if "Grep" in enabled:
+
+            @tool("Grep")
+            def grep_unconfigured(
+                pattern: str, path: str = "**/*", limit: int = MAX_GREP_RESULTS
+            ) -> str:
+                """Return a workspace-required result when no local workspace is configured."""
+
+                _ = (pattern, path, limit)
+                return _controlled_tool_result(
+                    "Grep", "No local workspace is configured for this agent.", "WORKSPACE_REQUIRED"
+                )
+
+            tools["Grep"] = grep_unconfigured
+
+        if "Bash" in enabled:
+
+            @tool("Bash")
+            def bash_unconfigured(
+                command: str, timeout_seconds: int = MAX_BASH_TIMEOUT_SECONDS
+            ) -> str:
+                """Return a workspace-required result when no local workspace is configured."""
+
+                _ = (command, timeout_seconds)
+                return _controlled_tool_result(
+                    "Bash", "No local workspace is configured for this agent.", "WORKSPACE_REQUIRED"
+                )
+
+            tools["Bash"] = bash_unconfigured
+
         return tools
 
     if "Read" in enabled:

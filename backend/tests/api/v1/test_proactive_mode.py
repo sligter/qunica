@@ -601,7 +601,45 @@ async def test_tool_loop_degrades_safely_when_model_bind_tools_fails(
     )
 
 
-async def test_stream_native_tool_loop_emits_final_answer_without_placeholder(
+async def test_tool_loop_allows_more_than_five_sequential_tool_calls(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    for index in range(6):
+        (tmp_path / f"file-{index}.txt").write_text(str(index), encoding="utf-8")
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            *[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "Glob",
+                            "args": {"pattern": f"file-{index}.txt"},
+                            "id": f"glob-{index}",
+                        }
+                    ],
+                )
+                for index in range(6)
+            ],
+            AIMessage(content="Finished after six tool calls."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo inspect files"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["agent_replies"][0]["content"] == "Finished after six tool calls."
+    assert len(calls) == 7
+    assert sum(isinstance(message, ToolMessage) for message in calls[-1]) == 6
+
+
+async def test_stream_native_tool_loop_emits_live_tool_events_before_final_message(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
 ) -> None:
     (tmp_path / "notes.txt").write_text("notes", encoding="utf-8")
@@ -627,6 +665,8 @@ async def test_stream_native_tool_loop_emits_final_answer_without_placeholder(
     result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
 
     assert event_names.index("tool_call_start") < event_names.index("tool_call_result")
+    assert event_names.index("tool_call_result") < event_names.index("agent_message")
+    assert event_names.index("agent_message") < event_names.index("done")
     assert start_payloads[0]["tool_name"] == "Glob"
     assert start_payloads[0]["status"] == "started"
     assert result_payloads[0]["tool_name"] == "Glob"
@@ -1003,14 +1043,14 @@ async def test_fetch_tool_fetches_bounded_text_response(
     )
 
 
-async def test_web_search_catalog_is_not_marked_available(
+async def test_web_search_catalog_is_marked_available(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
     response = await client.get("/api/v1/agents/tool-catalog", headers=auth_headers)
 
     assert response.status_code == 200, response.text
     web_search = next(tool for tool in response.json()["tools"] if tool["id"] == "web_search")
-    assert web_search["runtime_status"] != "available"
+    assert web_search["runtime_status"] == "available"
 
 
 async def test_workspace_tool_rejects_windows_absolute_paths_on_posix(
