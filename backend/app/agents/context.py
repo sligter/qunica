@@ -1,8 +1,8 @@
 """Shared context assembly for direct and group agent invocations.
 
-This module builds prompt/context metadata. Safe read-only workspace tools may
-execute in the runtime from the same resolved context; this module itself does
-not mutate files or grant risky runtime permissions.
+This module builds prompt/context metadata. Provider-native tools listed as
+executable may run in the runtime from the same resolved context with bounded
+workspace/network safeguards; this module itself only renders the contract.
 """
 
 from dataclasses import dataclass
@@ -27,8 +27,10 @@ from app.services import skill_service, workspace_service
 
 DEFAULT_RUNTIME_LIMITS: dict[str, int] = {
     "context_history_messages": 20,
-    "tool_execution": 0,
-    "file_mutations": 0,
+    "tool_iterations": 5,
+    "file_mutation_bytes": 1_000_000,
+    "bash_timeout_seconds": 10,
+    "fetch_bytes": 500_000,
 }
 
 
@@ -62,8 +64,8 @@ async def build_agent_invocation_context(
 
     Includes the agent prompt, optional group announcement/context, workspace
     metadata, enabled built-in tools, mounted skill metadata/instructions, and
-    explicit runtime limits. Safe read-only tools can execute from this resolved
-    context; risky tool execution is not implemented.
+    explicit runtime limits. Provider-native tools listed as executable can run
+    from this resolved context with bounded safeguards.
     """
 
     limits = dict(DEFAULT_RUNTIME_LIMITS)
@@ -221,10 +223,13 @@ def _render_workspace_context(
         f"- selected built-in tools: {tools}\n"
         f"- executable built-in tools now: {executable}\n"
         f"- saved-only/planned selections: {saved_only}\n"
-        "Runtime tool execution: only provider-native Read, Glob, and Grep calls listed "
-        "as executable above may execute read-only against the resolved local workspace. "
-        "Do not claim you can create, write, edit, run code, run shell commands, access "
-        "the network, generate media, or manage skills unless that exact tool is listed "
+        "Runtime tool execution: provider-native Read, Write, Edit, Glob, Grep, Bash, "
+        "and Fetch calls listed as executable above may execute with bounded safeguards. "
+        "Workspace file and shell tools are rooted at the resolved local workspace and "
+        "reject absolute paths, traversal, and root escapes. Bash commands run in the "
+        "workspace with timeout/output limits and destructive command guards. Fetch is "
+        "limited to bounded text http/https GET requests. Do not claim web search, media "
+        "generation, orchestration, or skill activation unless that exact tool is listed "
         "as executable now. Literal XML-like tool markup in text is not executed. "
         "Saved-only/planned selections are configuration for future runtimes, not current "
         "capabilities."

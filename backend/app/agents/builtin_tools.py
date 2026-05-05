@@ -14,7 +14,9 @@ ToolPolicy = Literal[
     "orchestration",
 ]
 ToolRuntimeStatus = Literal["available", "planned", "sandbox_required", "disabled"]
-EXECUTABLE_TOOL_IDS: frozenset[str] = frozenset({"read", "glob", "grep"})
+EXECUTABLE_TOOL_IDS: frozenset[str] = frozenset(
+    {"read", "write", "edit", "glob", "grep", "bash", "fetch"}
+)
 
 
 class BuiltinToolRead(BaseModel):
@@ -51,7 +53,7 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
         description="Create or replace files in the bound workspace.",
         policy="write",
         requires_workspace=True,
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="edit",
@@ -59,7 +61,7 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
         description="Patch existing files in the bound workspace.",
         policy="write",
         requires_workspace=True,
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="glob",
@@ -80,10 +82,10 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
     BuiltinToolRead(
         id="bash",
         name="Bash",
-        description="Run shell commands in the workspace runtime.",
+        description="Run guarded shell commands in the bound workspace.",
         policy="execute",
         requires_workspace=True,
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="ask_user",
@@ -104,7 +106,7 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
         name="Fetch",
         description="Fetch and inspect a specific URL.",
         policy="network",
-        runtime_status="planned",
+        runtime_status="available",
     ),
     BuiltinToolRead(
         id="run_sub_agent",

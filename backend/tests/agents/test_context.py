@@ -69,7 +69,7 @@ async def test_shared_context_includes_workspace_tools_skills_and_limits(
     assert "version: 1.0.0" in prompt
     assert "Review the diff." in prompt
     assert "Runtime limits:" in prompt
-    assert "file_mutations: 0" in prompt
+    assert "file_mutation_bytes: 1000000" in prompt
 
 
 async def test_context_distinguishes_executable_tools_from_saved_only_tools(
@@ -108,11 +108,11 @@ async def test_context_distinguishes_executable_tools_from_saved_only_tools(
 
     context = await build_agent_invocation_context(db_session, agent, user)
 
-    assert context.executable_tools == ["Read"]
+    assert context.executable_tools == ["Read", "Write", "Edit", "Bash"]
     assert "selected built-in tools: Read, Write, Edit, Bash" in context.system_prompt
-    assert "executable built-in tools now: Read" in context.system_prompt
-    assert "saved-only/planned selections: Write, Edit, Bash" in context.system_prompt
-    assert "Do not claim you can create, write, edit, run code" in context.system_prompt
+    assert "executable built-in tools now: Read, Write, Edit, Bash" in context.system_prompt
+    assert "saved-only/planned selections: none" in context.system_prompt
+    assert "Bash commands run in the workspace" in context.system_prompt
 
 
 async def test_group_workspace_sharing_switches_context_source(

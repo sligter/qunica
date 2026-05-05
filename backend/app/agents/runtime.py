@@ -120,6 +120,8 @@ def _result_summary(name: str | None, result: str) -> str:
     if name == "Read" and not result.startswith("Tool "):
         line_count = len(result.splitlines())
         return _bounded_summary(f"Read completed; returned {line_count} numbered lines.")
+    if name in {"Bash", "Fetch"} and not result.startswith("Tool "):
+        return _bounded_summary(f"{name} completed; returned bounded output to the model.")
     return _bounded_summary(result)
 
 

@@ -28,11 +28,13 @@ interface ToolSelectorProps {
   onChange: (next: AgentToolConfig) => void
 }
 
+const EXECUTABLE_TOOL_IDS = new Set(['read', 'write', 'edit', 'glob', 'grep', 'bash', 'fetch'])
+
 function isRuntimeExecutable(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
   return (
     tool.runtime_status === 'available' &&
     !(tool.requires_sandbox && workspaceBackendType === 'local') &&
-    ['read', 'glob', 'grep'].includes(tool.id)
+    EXECUTABLE_TOOL_IDS.has(tool.id)
   )
 }
 
@@ -75,8 +77,9 @@ export function ToolSelector({
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-        Only Read, Glob, and Grep can execute today, and only as read-only workspace tools.
-        Saved-only selections are persisted for future runtimes but are not current agent capabilities.
+        Read, Write, Edit, Glob, Grep, Bash, and Fetch can execute today with bounded
+        workspace/network safeguards when enabled. Saved-only selections are persisted for future
+        runtimes but are not current agent capabilities.
       </div>
       {POLICY_ORDER.map((policy) => {
         const policyTools = tools.filter((tool) => tool.policy === policy)

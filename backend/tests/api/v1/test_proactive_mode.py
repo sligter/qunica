@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
+import httpx
 from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -662,7 +663,7 @@ async def test_read_tool_result_event_does_not_leak_file_contents(
     assert "top secret brand plan" not in result_payloads[0]["result_summary"]
 
 
-async def test_selected_non_executable_tool_is_not_bound_or_executed(
+async def test_selected_write_tool_executes_under_workspace_root(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
 ) -> None:
     calls = _patch_ai_message_script(
@@ -670,9 +671,15 @@ async def test_selected_non_executable_tool_is_not_bound_or_executed(
         [
             AIMessage(
                 content="",
-                tool_calls=[{"name": "Write", "args": {"file_path": "deck.txt"}, "id": "write-1"}],
+                tool_calls=[
+                    {
+                        "name": "Write",
+                        "args": {"file_path": "nested/deck.txt", "content": "slides"},
+                        "id": "write-1",
+                    }
+                ],
             ),
-            AIMessage(content="Write is unavailable in this runtime."),
+            AIMessage(content="I wrote the deck file."),
         ],
     )
     group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
@@ -695,10 +702,54 @@ async def test_selected_non_executable_tool_is_not_bound_or_executed(
 
     events = await _stream_events(client, auth_headers, group_id, "@Echo write a file")
 
-    assert "tool_call_start" not in [event for event, _data in events]
-    assert "tool_call_result" not in [event for event, _data in events]
-    assert len(calls) == 1
-    assert not (tmp_path / "deck.txt").exists()
+    assert "tool_call_start" in [event for event, _data in events]
+    assert "tool_call_result" in [event for event, _data in events]
+    assert len(calls) == 2
+    assert (tmp_path / "nested" / "deck.txt").read_text(encoding="utf-8") == "slides"
+
+
+async def test_write_tool_rejects_traversal_and_returns_error_to_model(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Write",
+                        "args": {"file_path": "../deck.txt", "content": "slides"},
+                        "id": "write-1",
+                    }
+                ],
+            ),
+            AIMessage(content="I cannot write outside the workspace."),
+        ],
+    )
+    group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+    agent_id = agents[0][0]
+    response = await client.patch(
+        f"/api/v1/agents/{agent_id}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"write": {"enabled": True}}}},
+    )
+    assert response.status_code == 200, response.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo write outside"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage)
+        and "stay inside the workspace root" in str(message.content)
+        for message in calls[1]
+    )
+    assert not (tmp_path.parent / "deck.txt").exists()
 
 
 async def test_workspace_tool_rejects_traversal_and_returns_error_to_model(
@@ -731,6 +782,235 @@ async def test_workspace_tool_rejects_traversal_and_returns_error_to_model(
         and "stay inside the workspace root" in str(message.content)
         for message in calls[1]
     )
+
+
+async def test_edit_tool_replaces_exact_text_and_requires_replace_all_for_duplicates(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha beta beta", encoding="utf-8")
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Edit",
+                        "args": {
+                            "file_path": "notes.txt",
+                            "old_string": "alpha",
+                            "new_string": "ALPHA",
+                        },
+                        "id": "edit-1",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Edit",
+                        "args": {
+                            "file_path": "notes.txt",
+                            "old_string": "beta",
+                            "new_string": "BETA",
+                        },
+                        "id": "edit-2",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Edit",
+                        "args": {
+                            "file_path": "notes.txt",
+                            "old_string": "beta",
+                            "new_string": "BETA",
+                            "replace_all": True,
+                        },
+                        "id": "edit-3",
+                    }
+                ],
+            ),
+            AIMessage(content="Edits complete."),
+        ],
+    )
+    group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+    agent_id = agents[0][0]
+    response = await client.patch(
+        f"/api/v1/agents/{agent_id}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"edit": {"enabled": True}}}},
+    )
+    assert response.status_code == 200, response.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo edit notes"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 4
+    assert target.read_text(encoding="utf-8") == "ALPHA BETA BETA"
+    assert any(
+        isinstance(message, ToolMessage) and "old_string is not unique" in str(message.content)
+        for message in calls[2]
+    )
+
+
+async def test_bash_tool_executes_in_workspace_and_rejects_destructive_command(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Bash",
+                        "args": {"command": "python -c \"import os; print(os.getcwd())\""},
+                        "id": "bash-1",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Bash", "args": {"command": "rm -rf ."}, "id": "bash-2"}],
+            ),
+            AIMessage(content="Bash checks complete."),
+        ],
+    )
+    group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+    agent_id = agents[0][0]
+    response = await client.patch(
+        f"/api/v1/agents/{agent_id}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"bash": {"enabled": True}}}},
+    )
+    assert response.status_code == 200, response.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo run bash"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 3
+    assert any(
+        isinstance(message, ToolMessage) and str(tmp_path.resolve()) in str(message.content)
+        for message in calls[1]
+    )
+    assert any(
+        isinstance(message, ToolMessage)
+        and "blocked by workspace safety policy" in str(message.content)
+        for message in calls[2]
+    )
+
+
+async def test_bash_tool_blocks_wrapped_destructive_command(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "Bash",
+                        "args": {"command": "command rm -rf ."},
+                        "id": "bash-1",
+                    }
+                ],
+            ),
+            AIMessage(content="The wrapped destructive command was blocked."),
+        ],
+    )
+    group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+    agent_id = agents[0][0]
+    response = await client.patch(
+        f"/api/v1/agents/{agent_id}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"bash": {"enabled": True}}}},
+    )
+    assert response.status_code == 200, response.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo run wrapped bash"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage)
+        and "blocked by workspace safety policy" in str(message.content)
+        for message in calls[1]
+    )
+
+
+async def test_fetch_tool_fetches_bounded_text_response(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "Fetch", "args": {"url": "https://example.test/page"}, "id": "fetch-1"}
+                ],
+            ),
+            AIMessage(content="Fetched the page."),
+        ],
+    )
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="hello from the web", request=request)
+
+    class MockClient(httpx.Client):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(transport=httpx.MockTransport(_handler), follow_redirects=True)
+
+    monkeypatch.setattr(httpx, "Client", MockClient)
+    group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+    agent_id = agents[0][0]
+    response = await client.patch(
+        f"/api/v1/agents/{agent_id}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"fetch": {"enabled": True}}}},
+    )
+    assert response.status_code == 200, response.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo fetch URL"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage) and "hello from the web" in str(message.content)
+        for message in calls[1]
+    )
+
+
+async def test_web_search_catalog_is_not_marked_available(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    response = await client.get("/api/v1/agents/tool-catalog", headers=auth_headers)
+
+    assert response.status_code == 200, response.text
+    web_search = next(tool for tool in response.json()["tools"] if tool["id"] == "web_search")
+    assert web_search["runtime_status"] != "available"
 
 
 async def test_workspace_tool_rejects_windows_absolute_paths_on_posix(

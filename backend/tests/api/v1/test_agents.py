@@ -73,6 +73,15 @@ async def test_tool_catalog_returns_builtin_tools(
         "exit_plan_mode",
     }
     assert expected == tool_ids
+    status_by_id = {tool["id"]: tool["runtime_status"] for tool in r.json()["tools"]}
+    assert status_by_id["read"] == "available"
+    assert status_by_id["write"] == "available"
+    assert status_by_id["edit"] == "available"
+    assert status_by_id["glob"] == "available"
+    assert status_by_id["grep"] == "available"
+    assert status_by_id["bash"] == "available"
+    assert status_by_id["fetch"] == "available"
+    assert status_by_id["web_search"] == "planned"
 
 
 async def test_create_agent_requires_workspace(
