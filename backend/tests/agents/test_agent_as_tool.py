@@ -2,6 +2,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.builtin_tools import (
@@ -10,7 +11,7 @@ from app.agents.builtin_tools import (
     normalize_tool_config,
 )
 from app.agents.context import AgentInvocationContext, build_agent_invocation_context
-from app.agents.workspace_tools import build_workspace_tools
+from app.agents.workspace_tools import bind_workspace_tools, build_workspace_tools
 from app.core.exceptions import AgentChatError
 from app.models.agent import Agent
 from app.models.user import User
@@ -70,6 +71,66 @@ async def test_agent_as_tool_executes_bound_delegate() -> None:
 
     assert calls == [(str(helper_id), "summarize", "brief")]
     assert "helper answer" in str(result)
+
+
+async def test_agent_as_tool_and_run_sub_agent_bind_unique_provider_names() -> None:
+    helper_id = uuid4()
+
+    async def _executor(agent_id: str, task: str, instructions: str | None = None) -> str:
+        _ = (agent_id, task, instructions)
+        return json.dumps({"status": "COMPLETED", "content": "helper answer"})
+
+    context = object.__new__(AgentInvocationContext)
+    object.__setattr__(context, "workspace", None)
+    object.__setattr__(context, "executable_tools", ["RunSubAgent", "AgentAsTool"])
+    object.__setattr__(context, "mounted_skills", [])
+
+    tools = build_workspace_tools(context, agent_tool_executor=_executor)
+
+    assert set(tools) == {"RunSubAgent", "AgentAsTool"}
+    assert [tool.name for tool in tools.values()] == ["AgentAsTool", "RunSubAgent"]
+    assert len({tool.name for tool in tools.values()}) == len(tools)
+    assert "helper answer" in str(
+        await tools["RunSubAgent"].ainvoke(
+            {"agent_id": str(helper_id), "task": "summarize", "instructions": "brief"}
+        )
+    )
+
+
+async def test_agent_as_tool_and_run_sub_agent_bind_independently() -> None:
+    agent_context = object.__new__(AgentInvocationContext)
+    object.__setattr__(agent_context, "workspace", None)
+    object.__setattr__(agent_context, "executable_tools", ["AgentAsTool"])
+    object.__setattr__(agent_context, "mounted_skills", [])
+
+    run_context = object.__new__(AgentInvocationContext)
+    object.__setattr__(run_context, "workspace", None)
+    object.__setattr__(run_context, "executable_tools", ["RunSubAgent"])
+    object.__setattr__(run_context, "mounted_skills", [])
+
+    assert set(build_workspace_tools(agent_context)) == {"AgentAsTool"}
+    assert set(build_workspace_tools(run_context)) == {"RunSubAgent"}
+
+
+async def test_bind_workspace_tools_passes_unique_provider_tool_names() -> None:
+    class CapturingChatModel:
+        bound_names: list[str] | None = None
+
+        def bind_tools(self, bound_tools: list[BaseTool]) -> "CapturingChatModel":
+            self.bound_names = [tool.name for tool in bound_tools]
+            return self
+
+    context = object.__new__(AgentInvocationContext)
+    object.__setattr__(context, "workspace", None)
+    object.__setattr__(context, "executable_tools", ["RunSubAgent", "AgentAsTool"])
+    object.__setattr__(context, "mounted_skills", [])
+    chat_model = CapturingChatModel()
+
+    bound_model = bind_workspace_tools(chat_model, build_workspace_tools(context))
+
+    assert bound_model is chat_model
+    assert chat_model.bound_names == ["AgentAsTool", "RunSubAgent"]
+    assert len(set(chat_model.bound_names)) == len(chat_model.bound_names)
 
 
 async def test_agent_tool_config_rejects_duplicate_assistants() -> None:

@@ -443,7 +443,7 @@ def build_workspace_tools(
 
         tools["Fetch"] = fetch
 
-    if "RunSubAgent" in enabled or "AgentAsTool" in enabled:
+    if "AgentAsTool" in enabled:
 
         @tool("AgentAsTool")
         async def agent_as_tool(agent_id: str, task: str, instructions: str | None = None) -> str:
@@ -460,7 +460,24 @@ def build_workspace_tools(
             return str(result)
 
         tools["AgentAsTool"] = agent_as_tool
-        tools["RunSubAgent"] = agent_as_tool
+
+    if "RunSubAgent" in enabled:
+
+        @tool("RunSubAgent")
+        async def run_sub_agent(agent_id: str, task: str, instructions: str | None = None) -> str:
+            """Delegate a bounded task through the sub-agent runtime when configured."""
+
+            if agent_tool_executor is None:
+                return _controlled_tool_result(
+                    "RunSubAgent",
+                    "Sub-agent delegation is not configured for this invocation.",
+                )
+            result = agent_tool_executor(agent_id, task, instructions)
+            if hasattr(result, "__await__"):
+                result = await result
+            return str(result)
+
+        tools["RunSubAgent"] = run_sub_agent
 
     if "GenerateImage" in enabled:
 
