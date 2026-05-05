@@ -40,12 +40,16 @@ export function GroupSettingsDialog({
   const [name, setName] = useState(group.name)
   const [announcement, setAnnouncement] = useState(group.announcement ?? '')
   const [freeSpeech, setFreeSpeech] = useState(group.free_speech)
+  const [proactiveMode, setProactiveMode] = useState(group.proactive_mode)
+  const [proactiveMaxRounds, setProactiveMaxRounds] = useState(group.proactive_max_rounds)
   const [allowFreeMention, setAllowFreeMention] = useState(group.allow_agent_free_mention)
 
   useEffect(() => {
     setName(group.name)
     setAnnouncement(group.announcement ?? '')
     setFreeSpeech(group.free_speech)
+    setProactiveMode(group.proactive_mode)
+    setProactiveMaxRounds(group.proactive_max_rounds)
     setAllowFreeMention(group.allow_agent_free_mention)
   }, [group])
 
@@ -54,6 +58,8 @@ export function GroupSettingsDialog({
       name,
       announcement: announcement || null,
       free_speech: freeSpeech,
+      proactive_mode: proactiveMode,
+      proactive_max_rounds: proactiveMaxRounds,
       allow_agent_free_mention: allowFreeMention,
     })
     onOpenChange(false)
@@ -67,6 +73,14 @@ export function GroupSettingsDialog({
   }
 
   const workspace = workspaces.data?.find((item) => item.id === group.workspace_id)
+  const setClampedProactiveRounds = (value: string) => {
+    const next = Number.parseInt(value, 10)
+    if (Number.isNaN(next)) {
+      setProactiveMaxRounds(1)
+      return
+    }
+    setProactiveMaxRounds(Math.min(5, Math.max(1, next)))
+  }
 
   const onDelete = async () => {
     if (
@@ -127,6 +141,36 @@ export function GroupSettingsDialog({
                 </p>
               </div>
               <Switch checked={freeSpeech} onCheckedChange={setFreeSpeech} />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label>Proactive mode</Label>
+                <p className="text-xs text-muted-foreground">
+                  When enabled, agents decide for themselves whether to reply (they may stay silent if they have nothing to add).
+                </p>
+              </div>
+              <Switch checked={proactiveMode} onCheckedChange={setProactiveMode} />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="gs-proactive-rounds">Max proactive rounds</Label>
+                <p className="text-xs text-muted-foreground">
+                  Up to {proactiveMaxRounds} rounds where each agent decides whether to add to the conversation. The loop ends early when everyone stays silent.
+                </p>
+              </div>
+              <Input
+                id="gs-proactive-rounds"
+                type="number"
+                min={1}
+                max={5}
+                step={1}
+                value={proactiveMaxRounds}
+                onChange={(e) => setClampedProactiveRounds(e.target.value)}
+                disabled={!proactiveMode}
+                className="w-20"
+              />
             </div>
 
             <div className="flex items-center justify-between gap-4">

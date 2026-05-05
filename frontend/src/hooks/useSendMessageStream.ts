@@ -45,9 +45,11 @@ export function useSendMessageStream(groupId: string | undefined) {
   const patchInFlight = useMessageStore((s) => s.patchInFlight)
   const finalizeInFlight = useMessageStore((s) => s.finalizeInFlight)
   const clearInFlight = useMessageStore((s) => s.clearInFlight)
+  const clearAgentInFlight = useMessageStore((s) => s.clearAgentInFlight)
   const setActiveAgent = useMessageStore((s) => s.setActiveAgent)
   const clearActiveAgent = useMessageStore((s) => s.clearActiveAgent)
   const pushWarning = useMessageStore((s) => s.pushWarning)
+  const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
@@ -69,6 +71,7 @@ export function useSendMessageStream(groupId: string | undefined) {
     (content: string) => {
       if (!groupId || !token || isStreaming) return
       setError(null)
+      clearWarnings(groupId)
       setIsStreaming(true)
 
       const ctrl = openSseStream({
@@ -97,6 +100,15 @@ export function useSendMessageStream(groupId: string | undefined) {
             if (event === 'agent_message') {
               const msg = safeJson<Message>(data)
               if (msg) finalizeInFlight(groupId, msg)
+              return
+            }
+            if (event === 'agent_silent') {
+              const info = safeJson<{ agent_id: string }>(data)
+              if (info?.agent_id) clearAgentInFlight(groupId, info.agent_id)
+              return
+            }
+            if (event === 'silence') {
+              pushWarning(groupId, 'No one replied')
               return
             }
             if (event === 'agent_error') {
@@ -136,7 +148,9 @@ export function useSendMessageStream(groupId: string | undefined) {
     [
       appendMessage,
       clearActiveAgent,
+      clearAgentInFlight,
       clearInFlight,
+      clearWarnings,
       finalizeInFlight,
       groupId,
       invalidate,

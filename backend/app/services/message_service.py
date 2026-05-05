@@ -27,6 +27,7 @@ Phase 1 Week 6 (interrupt + resume):
 import asyncio
 import json
 import logging
+import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -60,6 +61,7 @@ from app.services import group_service, thread_service
 logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW = 20
+SILENT_MARKER = "<SILENT>"
 
 RESUME_CONTINUATION_PROMPT = (
     "Continue from your last reply. Pick up exactly where you left off; "
@@ -68,10 +70,18 @@ RESUME_CONTINUATION_PROMPT = (
 
 
 @dataclass
+class SilentAgentTurn:
+    agent_id: UUID
+    display_name: str
+
+
+@dataclass
 class MessageSendResult:
     user_message: Message
     agent_replies: list[Message]
     warnings: list[str]
+    silent_turns: list[SilentAgentTurn]
+    all_silent: bool
 
 
 async def list_messages(
@@ -275,6 +285,17 @@ async def _build_lc_input(
     return out
 
 
+def _is_silent_reply(group: Group, text: str) -> bool:
+    return group.proactive_mode and text.strip() == SILENT_MARKER
+
+
+def _agent_identity_payload(agent: Agent, group_agent: GroupAgent) -> dict[str, str]:
+    return {
+        "agent_id": str(agent.id),
+        "display_name": group_agent.display_name or agent.name,
+    }
+
+
 def _serialize_msg(m: Message) -> dict[str, Any]:
     return {
         "id": str(m.id),
@@ -307,45 +328,77 @@ async def send_message(
         return MessageSendResult(
             user_message=user_msg,
             agent_replies=[],
-            warnings=["no agent matched in this group"],
+            warnings=["no agent mentioned in this group"],
+            silent_turns=[],
+            all_silent=False,
         )
 
     graph = request.app.state.graph
 
     agent_replies: list[Message] = []
     warnings: list[str] = []
-    for group_agent, agent in resolved:
-        chat_thread = await thread_service.get_or_create_chat_thread(
-            db, group_id, agent.id, sender.id
+    silent_turns: list[SilentAgentTurn] = []
+    max_rounds = group.proactive_max_rounds if group.proactive_mode else 1
+    spoke_previous_round = True
+    round_idx = 0
+    while round_idx < max_rounds and spoke_previous_round:
+        round_idx += 1
+        spoke_this_round = False
+        round_participants = (
+            resolved if round_idx == 1 else random.sample(resolved, k=len(resolved))
         )
-        await thread_service.mark_running(db, chat_thread)
-        try:
-            input_messages = await _build_lc_input(db, group, group_agent, agent)
-            chat_model = await resolve_chat_model(db, agent, streaming=False)
-            response: AIMessage = await runtime.run(
-                graph=graph,
-                thread_id=str(chat_thread.id),
-                chat_model=chat_model,
-                input_messages=input_messages,
+        for group_agent, agent in round_participants:
+            chat_thread = await thread_service.get_or_create_chat_thread(
+                db, group_id, agent.id, sender.id
             )
-            text = (
-                response.content
-                if isinstance(response.content, str)
-                else str(response.content)
-            )
-            agent_msg = await _persist_agent_message(
-                db, group_id, agent, text, chat_thread.id, reply_to=user_msg.id
-            )
-            agent_replies.append(agent_msg)
-            await thread_service.mark_completed(db, chat_thread)
-        except Exception as exc:
-            logger.exception("agent %s failed in group %s", agent.id, group_id)
-            await thread_service.mark_failed(db, chat_thread)
-            display = group_agent.display_name or agent.name
-            warnings.append(f"agent '{display}' failed: {exc!s}")
+            await thread_service.mark_running(db, chat_thread)
+            try:
+                input_messages = await _build_lc_input(db, group, group_agent, agent)
+                chat_model = await resolve_chat_model(db, agent, streaming=False)
+                response: AIMessage = await runtime.run(
+                    graph=graph,
+                    thread_id=str(chat_thread.id),
+                    chat_model=chat_model,
+                    input_messages=input_messages,
+                )
+                text = (
+                    response.content
+                    if isinstance(response.content, str)
+                    else str(response.content)
+                )
+                if _is_silent_reply(group, text):
+                    silent_turns.append(
+                        SilentAgentTurn(
+                            agent_id=agent.id,
+                            display_name=group_agent.display_name or agent.name,
+                        )
+                    )
+                    await thread_service.mark_completed(db, chat_thread)
+                    continue
+                agent_msg = await _persist_agent_message(
+                    db, group_id, agent, text, chat_thread.id, reply_to=user_msg.id
+                )
+                agent_replies.append(agent_msg)
+                spoke_this_round = True
+                await thread_service.mark_completed(db, chat_thread)
+            except Exception as exc:
+                logger.exception("agent %s failed in group %s", agent.id, group_id)
+                await thread_service.mark_failed(db, chat_thread)
+                display = group_agent.display_name or agent.name
+                warnings.append(f"agent '{display}' failed: {exc!s}")
+        if not group.proactive_mode:
+            break
+        spoke_previous_round = spoke_this_round
+
+    if group.proactive_mode and silent_turns and not agent_replies:
+        warnings.append("No one replied")
 
     return MessageSendResult(
-        user_message=user_msg, agent_replies=agent_replies, warnings=warnings
+        user_message=user_msg,
+        agent_replies=agent_replies,
+        warnings=warnings,
+        silent_turns=silent_turns,
+        all_silent=group.proactive_mode and bool(silent_turns) and not agent_replies,
     )
 
 
@@ -390,13 +443,19 @@ async def _stream_one_agent(
                     if isinstance(final.content, str)
                     else "".join(chunks)
                 )
-                agent_msg = await _persist_agent_message(
-                    db, group.id, agent, text, chat_thread.id, reply_to=reply_to
-                )
-                yield {
-                    "event": "agent_message",
-                    "data": json.dumps(_serialize_msg(agent_msg)),
-                }
+                if _is_silent_reply(group, text):
+                    yield {
+                        "event": "agent_silent",
+                        "data": json.dumps(_agent_identity_payload(agent, group_agent)),
+                    }
+                else:
+                    agent_msg = await _persist_agent_message(
+                        db, group.id, agent, text, chat_thread.id, reply_to=reply_to
+                    )
+                    yield {
+                        "event": "agent_message",
+                        "data": json.dumps(_serialize_msg(agent_msg)),
+                    }
         await thread_service.mark_completed(db, chat_thread)
     except asyncio.CancelledError:
         cancelled = True
@@ -471,40 +530,59 @@ async def send_message_stream(
         return
 
     graph = request.app.state.graph
+    emitted_agent_messages = 0
+    max_rounds = group.proactive_max_rounds if group.proactive_mode else 1
+    spoke_previous_round = True
+    round_idx = 0
 
-    for idx, (group_agent, agent) in enumerate(resolved):
-        display = group_agent.display_name or agent.name
-        yield {
-            "event": "agent_start",
-            "data": json.dumps({
-                "agent_id": str(agent.id),
-                "display_name": display,
-                "index": idx,
-                "total": len(resolved),
-            }),
-        }
-        chat_thread = await thread_service.get_or_create_chat_thread(
-            db, group_id, agent.id, sender.id
+    while round_idx < max_rounds and spoke_previous_round:
+        round_idx += 1
+        spoke_this_round = False
+        round_participants = (
+            resolved if round_idx == 1 else random.sample(resolved, k=len(resolved))
         )
-        await thread_service.mark_running(db, chat_thread)
-        try:
-            async for event in _stream_one_agent(
-                db, graph, group, group_agent, agent, chat_thread, reply_to=user_msg.id
-            ):
-                yield event
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("agent %s failed in group %s stream", agent.id, group_id)
+        for idx, (group_agent, agent) in enumerate(round_participants):
+            display = group_agent.display_name or agent.name
             yield {
-                "event": "agent_error",
+                "event": "agent_start",
                 "data": json.dumps({
                     "agent_id": str(agent.id),
                     "display_name": display,
-                    "error": str(exc),
+                    "index": idx,
+                    "total": len(round_participants),
+                    "round": round_idx,
                 }),
             }
+            chat_thread = await thread_service.get_or_create_chat_thread(
+                db, group_id, agent.id, sender.id
+            )
+            await thread_service.mark_running(db, chat_thread)
+            try:
+                async for event in _stream_one_agent(
+                    db, graph, group, group_agent, agent, chat_thread, reply_to=user_msg.id
+                ):
+                    if event["event"] == "agent_message":
+                        emitted_agent_messages += 1
+                        spoke_this_round = True
+                    yield event
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("agent %s failed in group %s stream", agent.id, group_id)
+                yield {
+                    "event": "agent_error",
+                    "data": json.dumps({
+                        "agent_id": str(agent.id),
+                        "display_name": display,
+                        "error": str(exc),
+                    }),
+                }
+        if not group.proactive_mode:
+            break
+        spoke_previous_round = spoke_this_round
 
+    if group.proactive_mode and emitted_agent_messages == 0:
+        yield {"event": "silence", "data": ""}
     yield {"event": "done", "data": ""}
 
 

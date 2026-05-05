@@ -76,7 +76,7 @@ async def _candidate_agents(
         .join(Agent, Agent.id == GroupAgent.agent_id)
         .where(GroupAgent.group_id == group.id, GroupAgent.status == "active")
     )
-    rows = (await db.execute(stmt)).all()
+    rows = (await db.execute(stmt.order_by(GroupAgent.joined_at.asc()))).all()
     seen_names: set[str] = set()
     candidates: list[tuple[str, tuple[GroupAgent, Agent]]] = []
     for ga, agent in rows:
@@ -153,7 +153,8 @@ async def resolve_all_mentions(
 
     # No explicit @-mentions: free_speech → all agents; otherwise none
     if group.free_speech:
-        return [(ga, agent) for _name, (ga, agent) in candidates]
+        joined_order = sorted(candidates, key=lambda item: (item[1][0].joined_at, item[1][0].id))
+        return [(ga, agent) for _name, (ga, agent) in joined_order]
 
     return []
 

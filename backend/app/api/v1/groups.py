@@ -242,6 +242,8 @@ async def send_message(
         user_message=MessageRead.model_validate(result.user_message),
         agent_replies=[MessageRead.model_validate(m) for m in result.agent_replies],
         warnings=result.warnings,
+        silent_turns=result.silent_turns,
+        all_silent=result.all_silent,
     )
 
 

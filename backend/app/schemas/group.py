@@ -21,6 +21,8 @@ class GroupUpdate(BaseModel):
     description: str | None = None
     announcement: str | None = None
     free_speech: bool | None = None
+    proactive_mode: bool | None = None
+    proactive_max_rounds: int | None = Field(default=None, ge=1, le=5)
     allow_agent_free_mention: bool | None = None
 
 
@@ -56,6 +58,8 @@ class GroupRead(BaseModel):
     description: str | None
     announcement: str | None
     free_speech: bool
+    proactive_mode: bool
+    proactive_max_rounds: int
     allow_agent_free_mention: bool
     muted_agent_ids: list[UUID] | None
     admin_agent_ids: list[UUID] | None

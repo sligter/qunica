@@ -154,6 +154,17 @@ def _render_group_context(group: Group) -> str:
     if group.announcement:
         lines.append(f"- announcement: {group.announcement}")
     lines.append(f"- free_speech: {group.free_speech}")
+    lines.append(f"- proactive_mode: {group.proactive_mode}")
+    lines.append(f"- proactive_max_rounds: {group.proactive_max_rounds}")
+    if group.proactive_mode:
+        lines.append(
+            "- proactive participation: You are participating in a group chat. "
+            "After reading the conversation, decide whether you have anything "
+            "substantive to add. If you do, reply normally. If you would rather "
+            "stay silent, reply with exactly the single token `<SILENT>` (no other "
+            "characters, no punctuation, no whitespace before or after). The system "
+            "will skip your turn and not persist a message."
+        )
     lines.append(f"- allow_agent_free_mention: {group.allow_agent_free_mention}")
     return "\n".join(lines)
 

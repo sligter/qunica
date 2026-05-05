@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -129,7 +130,7 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
     db.add(GroupMember(group_id=group.id, user_id=owner.id, role="owner"))
 
     if data.initial_agents:
-        for agent_id in data.initial_agents:
+        for position, agent_id in enumerate(data.initial_agents):
             agent = await db.scalar(select(Agent).where(Agent.id == agent_id))
             if agent is None:
                 raise NotFoundError(f"agent {agent_id}")
@@ -140,6 +141,7 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
                 agent_id=agent_id,
                 response_mode="mentioned_only",
             )
+            ga.joined_at = group.created_at + timedelta(microseconds=position)
             if agent.workspace_id == workspace.id:
                 _set_group_workspace_sharing(ga, True)
             db.add(ga)
@@ -190,6 +192,10 @@ async def update_group(
         group.announcement = data.announcement
     if data.free_speech is not None:
         group.free_speech = data.free_speech
+    if data.proactive_mode is not None:
+        group.proactive_mode = data.proactive_mode
+    if data.proactive_max_rounds is not None:
+        group.proactive_max_rounds = data.proactive_max_rounds
     if data.allow_agent_free_mention is not None:
         group.allow_agent_free_mention = data.allow_agent_free_mention
 

@@ -37,6 +37,7 @@ interface MessageState {
   patchInFlight: (groupId: string, agentId: string, delta: string) => void
   finalizeInFlight: (groupId: string, message: Message) => void
   clearInFlight: (groupId: string) => void
+  clearAgentInFlight: (groupId: string, agentId: string) => void
   setActiveAgent: (groupId: string, agent: ActiveAgent) => void
   clearActiveAgent: (groupId: string) => void
   pushWarning: (groupId: string, warning: string) => void
@@ -107,6 +108,19 @@ export const useMessageStore = create<MessageState>((set) => ({
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
       activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
     })),
+
+  clearAgentInFlight: (groupId, agentId) =>
+    set((s) => {
+      const groupInFlight = s.inFlightByGroup[groupId] ?? {}
+      const remaining = { ...groupInFlight }
+      delete remaining[agentId]
+      return {
+        inFlightByGroup: {
+          ...s.inFlightByGroup,
+          [groupId]: remaining,
+        },
+      }
+    }),
 
   setActiveAgent: (groupId, agent) =>
     set((s) => ({

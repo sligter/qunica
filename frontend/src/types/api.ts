@@ -200,6 +200,8 @@ export interface GroupRead {
   description: string | null
   announcement: string | null
   free_speech: boolean
+  proactive_mode: boolean
+  proactive_max_rounds: number
   allow_agent_free_mention: boolean
   muted_agent_ids: string[] | null
   admin_agent_ids: string[] | null
@@ -221,6 +223,8 @@ export interface GroupUpdate {
   description?: string | null
   announcement?: string | null
   free_speech?: boolean
+  proactive_mode?: boolean
+  proactive_max_rounds?: number
   allow_agent_free_mention?: boolean
 }
 

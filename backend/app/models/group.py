@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import Boolean, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Integer, String, Text, false, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -10,6 +10,12 @@ from app.models.base import Base, TimestampMixin, UUIDPkMixin
 
 class Group(Base, UUIDPkMixin, TimestampMixin):
     __tablename__ = "groups"
+    __table_args__ = (
+        CheckConstraint(
+            "proactive_max_rounds BETWEEN 1 AND 5",
+            name="ck_groups_proactive_max_rounds_range",
+        ),
+    )
 
     owner_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     workspace_id: Mapped[UUID | None] = mapped_column(
@@ -32,6 +38,18 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
         String(50), default="mentioned_only", nullable=False
     )
     free_speech: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    proactive_mode: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    proactive_max_rounds: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        server_default=text("1"),
+        nullable=False,
+    )
     allow_agent_free_mention: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )

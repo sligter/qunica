@@ -25,7 +25,16 @@ class MessageRead(BaseModel):
     created_at: datetime
 
 
+class SilentAgentTurnRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    agent_id: UUID
+    display_name: str
+
+
 class MessageSendResponse(BaseModel):
     user_message: MessageRead
     agent_replies: list[MessageRead]
     warnings: list[str]
+    silent_turns: list[SilentAgentTurnRead] = []
+    all_silent: bool = False
