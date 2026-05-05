@@ -40,6 +40,7 @@ EXECUTABLE_TOOL_NAMES = frozenset(
         "WebSearch",
         "Fetch",
         "RunSubAgent",
+        "AgentAsTool",
         "GenerateImage",
         "GenerateVideo",
         "SkillManager",
@@ -397,7 +398,10 @@ def _web_search(query: str, max_results: int = MAX_SEARCH_RESULTS) -> str:
     )
 
 
-def build_workspace_tools(context: AgentInvocationContext) -> dict[str, BaseTool]:
+def build_workspace_tools(
+    context: AgentInvocationContext,
+    agent_tool_executor: Any | None = None,
+) -> dict[str, BaseTool]:
     """Return executable provider-native tools allowed by the invocation context."""
 
     root = _workspace_root(context)
@@ -439,20 +443,24 @@ def build_workspace_tools(context: AgentInvocationContext) -> dict[str, BaseTool
 
         tools["Fetch"] = fetch
 
-    if "RunSubAgent" in enabled:
+    if "RunSubAgent" in enabled or "AgentAsTool" in enabled:
 
-        @tool("RunSubAgent")
-        def run_sub_agent(task: str, instructions: str | None = None) -> str:
-            """Return a controlled result for unavailable sub-agent orchestration."""
+        @tool("AgentAsTool")
+        async def agent_as_tool(agent_id: str, task: str, instructions: str | None = None) -> str:
+            """Delegate a bounded task to an explicitly bound assistant agent."""
 
-            _ = instructions
-            return _controlled_tool_result(
-                "RunSubAgent",
-                "Sub-agent orchestration is not configured for this runtime. "
-                f"Requested task: {task[:1000]}",
-            )
+            if agent_tool_executor is None:
+                return _controlled_tool_result(
+                    "AgentAsTool",
+                    "Agent-as-tool delegation is not configured for this invocation.",
+                )
+            result = agent_tool_executor(agent_id, task, instructions)
+            if hasattr(result, "__await__"):
+                result = await result
+            return str(result)
 
-        tools["RunSubAgent"] = run_sub_agent
+        tools["AgentAsTool"] = agent_as_tool
+        tools["RunSubAgent"] = agent_as_tool
 
     if "GenerateImage" in enabled:
 
@@ -738,6 +746,8 @@ def execute_workspace_tool(tools: dict[str, BaseTool], name: str, args: dict[str
         return f"Tool {name!r} is unavailable in this runtime."
     try:
         result = executor.invoke(args)
+    except NotImplementedError:
+        return f"Tool {name!r} failed: async-only tool cannot execute in this sync path"
     except Exception as exc:  # tool errors must be returned to the model, not crash fan-out
         return f"Tool {name!r} failed: {exc}"
     return str(result)

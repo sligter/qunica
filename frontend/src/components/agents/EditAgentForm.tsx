@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
@@ -45,6 +46,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const skills = useSkills()
   const workspaces = useWorkspaces()
   const builtinTools = useBuiltinTools()
+  const agents = useAgents()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
   const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(agent.tool_config)
@@ -230,6 +232,8 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
             tools={tools}
             value={currentToolConfig}
             workspaceBackendType={selectedWorkspace?.backend_type ?? 'local'}
+            agents={agents.data ?? []}
+            currentAgentId={agent.id}
             onChange={setToolConfig}
           />
         )}

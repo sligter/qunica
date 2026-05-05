@@ -10,10 +10,13 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.messages import BaseMessage, SystemMessage
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.builtin_tools import (
+    AgentToolConfig,
     executable_tool_names,
+    normalize_tool_config,
     saved_only_tool_names,
     selected_tool_names,
 )
@@ -45,6 +48,7 @@ class AgentInvocationContext:
     saved_only_tools: list[str]
     setup_required_tools: list[str]
     mounted_skills: list[Skill]
+    assistant_agents: list[Agent]
     runtime_limits: dict[str, int]
     workspace_source: str
 
@@ -87,6 +91,7 @@ async def build_agent_invocation_context(
         workspace_source = "agent"
 
     skills = await _mounted_skills(db, agent)
+    assistant_agents = await _assistant_agents(db, agent)
     selected_tools = selected_tool_names(agent.tool_config)
     executable_tools = executable_tool_names(agent.tool_config)
     saved_only_tools = saved_only_tool_names(agent.tool_config)
@@ -97,7 +102,6 @@ async def build_agent_invocation_context(
         in {
             "AskUser",
             "WebSearch",
-            "RunSubAgent",
             "GenerateImage",
             "GenerateVideo",
             "TodoWrite",
@@ -114,6 +118,7 @@ async def build_agent_invocation_context(
         saved_only_tools=saved_only_tools,
         setup_required_tools=setup_required_tools,
         skills=skills,
+        assistant_agents=assistant_agents,
         runtime_limits=limits,
     )
     return AgentInvocationContext(
@@ -124,6 +129,7 @@ async def build_agent_invocation_context(
         saved_only_tools=saved_only_tools,
         setup_required_tools=setup_required_tools,
         mounted_skills=skills,
+        assistant_agents=assistant_agents,
         runtime_limits=limits,
         workspace_source=workspace_source,
     )
@@ -158,6 +164,31 @@ async def _mounted_skills(db: AsyncSession, agent: Agent) -> list[Skill]:
     return await skill_service.list_by_ids(db, skill_uuids)
 
 
+async def _assistant_agents(db: AsyncSession, agent: Agent) -> list[Agent]:
+    config = AgentToolConfig.model_validate(agent.tool_config or normalize_tool_config(None))
+    assistant_ids = [
+        selection.agent_id
+        for selection in config.assistant_agents
+        if selection.enabled and selection.agent_id != agent.id
+    ]
+    if not assistant_ids:
+        return []
+    rows = await db.scalars(
+        select(Agent)
+        .where(
+            Agent.id.in_(assistant_ids),
+            Agent.owner_id == agent.owner_id,
+            Agent.status == "active",
+        )
+    )
+    agents_by_id = {assistant.id: assistant for assistant in rows}
+    return [
+        agents_by_id[assistant_id]
+        for assistant_id in assistant_ids
+        if assistant_id in agents_by_id
+    ]
+
+
 def _render_system_prompt(
     *,
     agent: Agent,
@@ -169,6 +200,7 @@ def _render_system_prompt(
     saved_only_tools: list[str],
     setup_required_tools: list[str],
     skills: list[Skill],
+    assistant_agents: list[Agent],
     runtime_limits: dict[str, int],
 ) -> str:
     parts: list[str] = [agent.system_prompt]
@@ -188,6 +220,8 @@ def _render_system_prompt(
     parts.append(_render_runtime_limits(runtime_limits))
     if skills:
         parts.append(_render_skills(skills))
+    if assistant_agents:
+        parts.append(_render_assistant_agents(assistant_agents))
 
     return "\n\n".join(part for part in parts if part)
 
@@ -257,13 +291,27 @@ def _render_workspace_context(
         "limited to bounded text http/https GET requests. WebSearch uses configured Tavily "
         "credentials or a configured Playwright-backed search service when available and "
         "otherwise returns a controlled setup-required tool result. AskUser returns a "
-        "non-blocking WAITING_FOR_USER result. Media generation, "
-        "sub-agent orchestration, plan-exit, and transient todo tools are executable bounded "
-        "tool calls; if no provider or persistence contract is configured they return "
+        "non-blocking WAITING_FOR_USER result. AgentAsTool delegates tasks only to explicitly "
+        "bound assistant agents and returns their bounded response. Media generation, plan-exit, "
+        "and transient todo tools are executable bounded tool calls; if no provider or persistence "
+        "contract is configured they return "
         "truthful controlled tool results instead of pretending work completed. SkillManager "
         "can inspect mounted skill metadata and records activation intent only; it does not "
         "load arbitrary code."
     )
+
+
+def _render_assistant_agents(assistant_agents: list[Agent]) -> str:
+    lines = [
+        "Bound assistant agents:",
+        "Use the AgentAsTool provider-native tool to delegate a task to these assistants. "
+        "Delegation is dispatched as an @mention-style task to the selected assistant; do not "
+        "claim other agents were consulted unless this tool returned their response.",
+    ]
+    for assistant in assistant_agents:
+        description = f" — {assistant.description}" if assistant.description else ""
+        lines.append(f"- @{assistant.name} ({assistant.id}){description}")
+    return "\n".join(lines)
 
 
 def _render_runtime_limits(runtime_limits: dict[str, int]) -> str:

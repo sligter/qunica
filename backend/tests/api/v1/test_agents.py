@@ -118,6 +118,43 @@ async def test_create_agent_requires_workspace(
     assert r.status_code == 422
 
 
+async def test_create_agent_persists_assistant_agent_tool(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    helper = await _create_agent(client, auth_headers, name="Helper")
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "Caller",
+            "system_prompt": "You can delegate.",
+            "workspace_id": workspace["id"],
+            "tool_config": {
+                "assistant_agents": [{"agent_id": helper["id"], "enabled": True}],
+                "tools": {"run_sub_agent": {"enabled": True}},
+            },
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["tool_config"]["assistant_agents"] == [
+        {"agent_id": helper["id"], "enabled": True}
+    ]
+
+
+async def test_update_agent_rejects_self_assistant_tool(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    agent = await _create_agent(client, auth_headers, name="Selfish")
+    r = await client.patch(
+        f"/api/v1/agents/{agent['id']}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": agent["id"], "enabled": True}]}},
+    )
+    assert r.status_code == 400
+
+
 async def test_create_agent_rejects_unknown_tool(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:

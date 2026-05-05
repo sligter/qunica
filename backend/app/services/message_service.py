@@ -53,7 +53,7 @@ from app.agents.context import (
 from app.agents.router import resolve_all_mentions
 from app.agents.runtime import RuntimeToolEvent, RuntimeWaitForUser
 from app.agents.workspace_tools import build_workspace_tools
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import AgentChatError, ConflictError, NotFoundError
 from app.db import SessionLocal
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
@@ -75,6 +75,7 @@ PSEUDO_TOOL_PLACEHOLDER = (
 WAITING_FOR_USER_WARNING = "Waiting for your input"
 TOOL_CALL_STARTED_MESSAGE = "Tool call started"
 TOOL_CALL_COMPLETED_MESSAGE = "Tool call completed"
+MAX_AGENT_TOOL_DEPTH = 2
 
 _REASONING_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 _PSEUDO_TOOL_BLOCK_RE = re.compile(
@@ -333,6 +334,7 @@ async def _build_invocation(
     group_agent: GroupAgent,
     agent: Agent,
     extra_user_text: str | None = None,
+    history_statuses: tuple[str, ...] = ("visible", "interrupted"),
 ) -> tuple[list[BaseMessage], AgentInvocationContext]:
     """Build the LangChain message list for an agent invocation.
 
@@ -367,7 +369,7 @@ async def _build_invocation(
         select(Message)
         .where(
             Message.group_id == group.id,
-            Message.status.in_(("visible", "interrupted")),
+            Message.status.in_(history_statuses),
         )
         # `Message.id` is a tie-breaker for legacy rows that share a
         # `created_at` (see `list_messages` for the full rationale). We
@@ -410,6 +412,99 @@ async def _build_lc_input(
 
 def _is_silent_reply(group: Group, text: str) -> bool:
     return group.proactive_mode and text.strip() == SILENT_MARKER
+
+
+async def _resolve_bound_assistant(
+    context: AgentInvocationContext,
+    requested_agent_id: str,
+) -> Agent:
+    requested = requested_agent_id.strip()
+    for assistant in context.assistant_agents:
+        if requested in {str(assistant.id), assistant.name}:
+            return assistant
+    available = (
+        ", ".join(f"{agent.name} ({agent.id})" for agent in context.assistant_agents)
+        or "none"
+    )
+    raise AgentChatError(
+        f"assistant agent {requested_agent_id!r} is not bound for this agent; "
+        f"available: {available}"
+    )
+
+
+async def _run_agent_tool_delegation(
+    db: AsyncSession,
+    graph: CompiledStateGraph[Any, Any, Any, Any],
+    group: Group,
+    caller_agent: Agent,
+    caller_context: AgentInvocationContext,
+    requested_agent_id: str,
+    task: str,
+    instructions: str | None,
+    *,
+    depth: int,
+) -> str:
+    if depth >= MAX_AGENT_TOOL_DEPTH:
+        raise AgentChatError("agent-as-tool delegation depth limit reached")
+    if not task.strip():
+        raise AgentChatError("agent-as-tool task must be non-empty")
+    assistant = await _resolve_bound_assistant(caller_context, requested_agent_id)
+    if assistant.id == caller_agent.id:
+        raise AgentChatError("agent cannot delegate to itself")
+    owner = await db.scalar(select(User).where(User.id == caller_agent.owner_id))
+    if owner is None:
+        raise NotFoundError(f"user {caller_agent.owner_id}")
+    helper_group_agent = GroupAgent(
+        group_id=group.id,
+        agent_id=assistant.id,
+        display_name=assistant.name,
+        context_scope={"share_group_workspace": caller_context.workspace_source == "group"},
+    )
+    mention_task = f"@{assistant.name} {task.strip()}"
+    if instructions and instructions.strip():
+        mention_task = (
+            f"{mention_task}\n\n"
+            f"Instructions from @{caller_agent.name}: {instructions.strip()}"
+        )
+    input_messages, helper_context = await _build_invocation(
+        db,
+        group,
+        helper_group_agent,
+        assistant,
+        extra_user_text=mention_task,
+        history_statuses=("visible", "interrupted", "tool_result"),
+    )
+    chat_model = await resolve_chat_model(db, assistant, streaming=False)
+
+    def _nested_executor(
+        agent_id: str,
+        nested_task: str,
+        nested_instructions: str | None = None,
+    ) -> str:
+        raise AgentChatError(
+            "nested agent-as-tool calls are blocked during delegated assistant execution"
+        )
+
+    response = await runtime.run(
+        graph=graph,
+        thread_id=f"agent-tool:{group.id}:{caller_agent.id}:{assistant.id}:{depth}",
+        chat_model=chat_model,
+        input_messages=input_messages,
+        workspace_tools=build_workspace_tools(helper_context, agent_tool_executor=_nested_executor),
+    )
+    text = response.content if isinstance(response.content, str) else str(response.content)
+    visible_text = _sanitize_agent_visible_content(text)
+    return json.dumps(
+        {
+            "tool": "AgentAsTool",
+            "status": "COMPLETED",
+            "agent_id": str(assistant.id),
+            "display_name": assistant.name,
+            "dispatch": mention_task[:1000],
+            "content": visible_text[:4000],
+        },
+        ensure_ascii=False,
+    )
 
 
 def _avoid_immediate_repeat_speaker(
@@ -550,12 +645,37 @@ async def send_message(
                     if _tool_event_waits_for_user(tool_event):
                         tool_requested_wait = True
 
+                current_agent = agent
+                current_context = context
+
+                async def _agent_tool_executor(
+                    agent_id: str,
+                    task: str,
+                    instructions: str | None = None,
+                    bound_agent: Agent = current_agent,
+                    bound_context: AgentInvocationContext = current_context,
+                ) -> str:
+                    return await _run_agent_tool_delegation(
+                        db,
+                        graph,
+                        group,
+                        bound_agent,
+                        bound_context,
+                        agent_id,
+                        task,
+                        instructions,
+                        depth=0,
+                    )
+
                 response: AIMessage = await runtime.run(
                     graph=graph,
                     thread_id=str(chat_thread.id),
                     chat_model=chat_model,
                     input_messages=input_messages,
-                    workspace_tools=build_workspace_tools(context),
+                    workspace_tools=build_workspace_tools(
+                        current_context,
+                        agent_tool_executor=_agent_tool_executor,
+                    ),
                     tool_event_callback=_record_tool_event,
                 )
                 text = (
@@ -635,12 +755,30 @@ async def _stream_one_agent(
     try:
         input_messages, context = await _build_invocation(db, group, group_agent, agent)
         chat_model = await resolve_chat_model(db, agent, streaming=True)
+        async def _agent_tool_executor(
+            agent_id: str, task: str, instructions: str | None = None
+        ) -> str:
+            return await _run_agent_tool_delegation(
+                db,
+                graph,
+                group,
+                agent,
+                context,
+                agent_id,
+                task,
+                instructions,
+                depth=0,
+            )
+
         async for kind, payload in runtime.run_with_stream(
             graph=graph,
             thread_id=str(chat_thread.id),
             chat_model=chat_model,
             input_messages=input_messages,
-            workspace_tools=build_workspace_tools(context),
+            workspace_tools=build_workspace_tools(
+                context,
+                agent_tool_executor=_agent_tool_executor,
+            ),
         ):
             if kind == "tool_event" and isinstance(payload, RuntimeToolEvent):
                 yield {
@@ -906,7 +1044,7 @@ async def resume_thread_stream(
     chunks: list[str] = []
     agent_id_str = str(agent.id)
     try:
-        input_messages = await _build_lc_input(
+        input_messages, context = await _build_invocation(
             db, group, group_agent, agent, extra_user_text=RESUME_CONTINUATION_PROMPT
         )
         chat_model = await resolve_chat_model(db, agent, streaming=True)
@@ -915,6 +1053,7 @@ async def resume_thread_stream(
             thread_id=str(thread.id),
             chat_model=chat_model,
             input_messages=input_messages,
+            workspace_tools=build_workspace_tools(context),
         ):
             if kind == "token":
                 chunks.append(payload)

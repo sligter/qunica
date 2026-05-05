@@ -10,11 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.agents.builtin_tools import list_builtin_tools
 from app.agents.context import build_agent_invocation_context
 from app.agents.runtime import TOOL_LOOP_REPEATED_CALL_LIMIT
-from app.agents.workspace_tools import (
-    bind_workspace_tools,
-    build_workspace_tools,
-    execute_workspace_tool,
-)
+from app.agents.workspace_tools import bind_workspace_tools, build_workspace_tools
 from app.core.deps import get_current_user
 from app.core.exceptions import LLMProviderError
 from app.db import get_db
@@ -73,7 +69,12 @@ async def _invoke_with_tool_loop(
             args = tool_call_dict.get("args")
             call_id = str(tool_call_dict.get("id") or f"tool-call-{index}")
             tool_args = cast(dict[str, Any], args) if isinstance(args, dict) else {}
-            result = execute_workspace_tool(tools, name, tool_args)
+            executor = tools.get(name)
+            result = (
+                f"Tool {name!r} is unavailable in this runtime."
+                if executor is None
+                else str(await executor.ainvoke(tool_args))
+            )
             messages.append(ToolMessage(content=result, tool_call_id=call_id))
 
 

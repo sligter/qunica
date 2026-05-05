@@ -32,7 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.state import GroupState
 from app.agents.workspace_tools import bind_workspace_tools, execute_workspace_tool
-from app.core.exceptions import LLMProviderError
+from app.core.exceptions import AgentChatError, LLMProviderError
 
 _CHAT_MODEL_KEY = "chat_model"
 TOOL_LOOP_REPEATED_CALL_LIMIT = 8
@@ -274,11 +274,24 @@ async def _execute_tool_calls(
         if tool_event_callback is not None:
             await tool_event_callback(start_event)
         yield start_event, None
-        result = (
-            f"Malformed tool call at index {index}."
-            if name is None
-            else execute_workspace_tool(tools, name, args)
-        )
+        if name is None:
+            result = f"Malformed tool call at index {index}."
+        else:
+            executor = tools.get(name)
+            if executor is None:
+                result = execute_workspace_tool(tools, name, args)
+            else:
+                maybe_coroutine = executor.ainvoke(args)
+                if not hasattr(maybe_coroutine, "__await__"):
+                    result = str(maybe_coroutine)
+                else:
+                    try:
+                        result = str(await maybe_coroutine)
+                    except AgentChatError as exc:
+                        result = json.dumps(
+                            {"tool": name, "status": "FAILED", "message": str(exc)},
+                            ensure_ascii=False,
+                        )
         status = _result_status(name, result)
         result_event = RuntimeToolEvent(
             tool_call_id=call_id,

@@ -79,8 +79,14 @@ export interface AgentToolSelection {
   policy?: ToolPolicy | null
 }
 
+export interface AgentAssistantToolSelection {
+  agent_id: string
+  enabled: boolean
+}
+
 export interface AgentToolConfig {
   tools: Record<string, AgentToolSelection>
+  assistant_agents?: AgentAssistantToolSelection[]
 }
 
 export interface AgentRead {

@@ -3,8 +3,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.builtin_tools import normalize_tool_config
-from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.agents.builtin_tools import AgentToolConfig, normalize_tool_config
+from app.core.exceptions import AgentChatError, NotFoundError, PermissionDeniedError
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.agent import AgentCreate, AgentUpdate
@@ -29,6 +29,23 @@ async def _validate_provider_and_skills(
             await skill_service.get_skill(db, sid, owner)
 
 
+async def _validate_assistant_agents(
+    db: AsyncSession,
+    owner: User,
+    tool_config: AgentToolConfig | None,
+    *,
+    self_agent_id: UUID | None = None,
+) -> None:
+    if tool_config is None:
+        return
+    for selection in tool_config.assistant_agents:
+        if not selection.enabled:
+            continue
+        if self_agent_id is not None and selection.agent_id == self_agent_id:
+            raise AgentChatError("agent cannot bind itself as an assistant tool")
+        await get_agent(db, selection.agent_id, owner)
+
+
 async def create_agent(db: AsyncSession, data: AgentCreate, owner: User) -> Agent:
     await _validate_provider_and_skills(
         db,
@@ -36,6 +53,7 @@ async def create_agent(db: AsyncSession, data: AgentCreate, owner: User) -> Agen
         llm_provider_id=data.llm_provider_id,
         skill_ids=data.skill_ids,
     )
+    await _validate_assistant_agents(db, owner, data.tool_config)
     await workspace_service.get_active_workspace(db, data.workspace_id, owner)
     agent = Agent(
         owner_id=owner.id,
@@ -94,6 +112,7 @@ async def update_agent(
     if data.llm_config is not None:
         agent.llm_config = data.llm_config
     if data.tool_config is not None:
+        await _validate_assistant_agents(db, owner, data.tool_config, self_agent_id=agent.id)
         agent.tool_config = normalize_tool_config(data.tool_config)
     if data.workspace_id is not None:
         await workspace_service.get_active_workspace(db, data.workspace_id, owner)

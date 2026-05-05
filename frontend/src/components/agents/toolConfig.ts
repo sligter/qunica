@@ -1,6 +1,9 @@
-import type { AgentToolConfig, BuiltinToolRead } from '@/types/api'
+import type { AgentAssistantToolSelection, AgentToolConfig, BuiltinToolRead } from '@/types/api'
 
-export function createDefaultToolConfig(tools: BuiltinToolRead[]): AgentToolConfig {
+export function createDefaultToolConfig(
+  tools: BuiltinToolRead[],
+  assistantAgents: AgentAssistantToolSelection[] = [],
+): AgentToolConfig {
   const defaults = new Set(['read', 'glob', 'grep'])
   return {
     tools: Object.fromEntries(
@@ -12,14 +15,16 @@ export function createDefaultToolConfig(tools: BuiltinToolRead[]): AgentToolConf
         },
       ]),
     ),
+    assistant_agents: assistantAgents,
   }
 }
 
 export function mergeToolConfig(
   tools: BuiltinToolRead[],
   current: AgentToolConfig | null | undefined,
+  assistantAgents: AgentAssistantToolSelection[] = [],
 ): AgentToolConfig {
-  const defaults = createDefaultToolConfig(tools)
+  const defaults = createDefaultToolConfig(tools, assistantAgents)
   if (!current) return defaults
   return {
     tools: Object.fromEntries(
@@ -34,5 +39,6 @@ export function mergeToolConfig(
         ]
       }),
     ),
+    assistant_agents: assistantAgents,
   }
 }

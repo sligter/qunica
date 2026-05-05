@@ -1,6 +1,7 @@
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.exceptions import AgentChatError
 
@@ -50,8 +51,26 @@ class AgentToolSelection(BaseModel):
     policy: ToolPolicy | None = None
 
 
+class AgentAssistantToolSelection(BaseModel):
+    agent_id: UUID
+    enabled: bool = True
+
+
 class AgentToolConfig(BaseModel):
     tools: dict[str, AgentToolSelection] = Field(default_factory=dict)
+    assistant_agents: list[AgentAssistantToolSelection] = Field(default_factory=list)
+
+    @field_validator("assistant_agents")
+    @classmethod
+    def unique_assistant_agents(
+        cls, value: list[AgentAssistantToolSelection]
+    ) -> list[AgentAssistantToolSelection]:
+        seen: set[UUID] = set()
+        for selection in value:
+            if selection.agent_id in seen:
+                raise ValueError("assistant_agents must not contain duplicate agent_id values")
+            seen.add(selection.agent_id)
+        return value
 
 
 BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
@@ -177,6 +196,7 @@ def list_builtin_tools() -> list[BuiltinToolRead]:
 
 
 def normalize_tool_config(config: AgentToolConfig | None) -> dict[str, object]:
+    assistant_agents: list[AgentAssistantToolSelection] = []
     if config is None:
         selections = {
             tool.id: AgentToolSelection(
@@ -186,6 +206,7 @@ def normalize_tool_config(config: AgentToolConfig | None) -> dict[str, object]:
             for tool in BUILTIN_TOOLS
         }
     else:
+        assistant_agents = list(config.assistant_agents)
         selections = {}
         for tool_id, selection in config.tools.items():
             tool = _TOOL_BY_ID.get(tool_id)
@@ -203,21 +224,27 @@ def normalize_tool_config(config: AgentToolConfig | None) -> dict[str, object]:
                     policy=tool.policy,
                 ),
             )
-    return AgentToolConfig(tools=selections).model_dump(mode="json")
+    return AgentToolConfig(
+        tools=selections,
+        assistant_agents=assistant_agents,
+    ).model_dump(mode="json")
 
 
 def selected_tool_names(tool_config: dict[str, object] | None) -> list[str]:
     config = AgentToolConfig.model_validate(tool_config or normalize_tool_config(None))
-    return [
+    names = [
         _TOOL_BY_ID[tool_id].name
         for tool_id, selection in config.tools.items()
         if selection.enabled and tool_id in _TOOL_BY_ID
     ]
+    if any(selection.enabled for selection in config.assistant_agents):
+        names.append("AgentAsTool")
+    return names
 
 
 def executable_tool_names(tool_config: dict[str, object] | None) -> list[str]:
     config = AgentToolConfig.model_validate(tool_config or normalize_tool_config(None))
-    return [
+    names = [
         _TOOL_BY_ID[tool_id].name
         for tool_id, selection in config.tools.items()
         if selection.enabled
@@ -225,6 +252,9 @@ def executable_tool_names(tool_config: dict[str, object] | None) -> list[str]:
         and tool_id in EXECUTABLE_TOOL_IDS
         and _TOOL_BY_ID[tool_id].runtime_status == "available"
     ]
+    if any(selection.enabled for selection in config.assistant_agents):
+        names.append("AgentAsTool")
+    return names
 
 
 def saved_only_tool_names(tool_config: dict[str, object] | None) -> list[str]:
