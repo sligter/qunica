@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -313,7 +314,7 @@ async def upload_group_file(
         db,
         group_id,
         current_user,
-        filename=file.filename or "untitled",
+        filename=file.filename or "",
         file_bytes=content,
         mime_type=file.content_type,
     )
@@ -341,6 +342,40 @@ async def delete_group_file(
 
 
 # --- workspace files in group ---
+
+
+@router.post(
+    "/{group_id}/workspace-files/upload",
+    response_model=GroupWorkspaceFileRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_group_workspace_file(
+    group_id: UUID,
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupWorkspaceFileRead:
+    content = await file.read()
+    return await group_workspace_file_service.upload_workspace_file(
+        db,
+        group_id,
+        current_user,
+        filename=file.filename or "",
+        file_bytes=content,
+    )
+
+
+@router.get("/{group_id}/workspace-files/download")
+async def download_group_workspace_file(
+    group_id: UUID,
+    path: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    file_path, filename, media_type = await group_workspace_file_service.download_workspace_file(
+        db, group_id, current_user, path
+    )
+    return FileResponse(path=file_path, filename=filename, media_type=media_type)
 
 
 @router.get("/{group_id}/workspace-files", response_model=list[GroupWorkspaceFileRead])

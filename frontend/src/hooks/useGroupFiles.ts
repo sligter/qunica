@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { fetchFormData, fetchJson } from '@/lib/api'
+import { ApiError, fetchFormData, fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import type {
   GroupFileRead,
@@ -80,6 +80,58 @@ export function useGroupWorkspaceFilePreview(
       ),
     enabled: token !== null && !!groupId && !!path,
   })
+}
+
+export function useUploadGroupWorkspaceFile(groupId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (file: File) => {
+      if (!groupId) throw new Error('Group is required to upload workspace files')
+      const fd = new FormData()
+      fd.append('file', file)
+      return fetchFormData<GroupWorkspaceFileRead>(
+        `/groups/${groupId}/workspace-files/upload`,
+        fd,
+        { token },
+      )
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+    },
+  })
+}
+
+export async function downloadGroupWorkspaceFile(
+  groupId: string,
+  path: string,
+  token: string | null,
+) {
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  const response = await fetch(
+    `/api/v1/groups/${groupId}/workspace-files/download?${withPath(path)}`,
+    { headers },
+  )
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`
+    try {
+      const body = (await response.json()) as { error?: { message?: string }; detail?: string }
+      message = body.error?.message ?? body.detail ?? message
+    } catch {
+      // Keep fallback message for non-JSON errors.
+    }
+    throw new ApiError(response.status, 'http_error', message)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = path.split('/').pop() || 'download'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export function useRenameGroupWorkspaceFile(groupId: string | undefined) {

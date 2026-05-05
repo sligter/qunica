@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { ChevronLeft, File, Folder, Pencil, RefreshCw, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { ChevronLeft, Download, File, Folder, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -11,12 +11,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import {
+  downloadGroupWorkspaceFile,
   useDeleteGroupWorkspaceFile,
   useGroupWorkspaceFilePreview,
   useGroupWorkspaceFiles,
   useRenameGroupWorkspaceFile,
+  useUploadGroupWorkspaceFile,
 } from '@/hooks/useGroupFiles'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/authStore'
 import type { GroupWorkspaceFileRead } from '@/types/api'
 
 interface GroupWorkspaceFilesPanelProps {
@@ -47,14 +50,19 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [renaming, setRenaming] = useState<GroupWorkspaceFileRead | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const token = useAuthStore((s) => s.token)
   const files = useGroupWorkspaceFiles(groupId, currentPath)
   const preview = useGroupWorkspaceFilePreview(groupId, selectedPath)
+  const upload = useUploadGroupWorkspaceFile(groupId)
   const rename = useRenameGroupWorkspaceFile(groupId)
   const del = useDeleteGroupWorkspaceFile(groupId)
   const hasGroupId = groupId !== undefined && groupId.length > 0
 
   const title = currentPath || 'Workspace root'
-  const sortedFiles = useMemo(() => files.data ?? [], [files.data])
+  const sortedFiles = files.data ?? []
 
   const startRename = (file: GroupWorkspaceFileRead) => {
     setRenaming(file)
@@ -79,6 +87,29 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
           setCurrentPath(parentPath(next.path))
         }
       })
+  }
+
+  const uploadFile = (file: File | undefined) => {
+    if (!file || !hasGroupId) return
+    setDownloadError(null)
+    void upload
+      .mutateAsync(file)
+      .then(() => {
+        setCurrentPath('uploads')
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      })
+      .catch(() => {
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      })
+  }
+
+  const downloadFile = (file: GroupWorkspaceFileRead) => {
+    if (!hasGroupId || file.is_dir) return
+    setDownloadError(null)
+    setDownloadingPath(file.path)
+    void downloadGroupWorkspaceFile(groupId, file.path, token)
+      .catch((error: unknown) => setDownloadError(displayError(error)))
+      .finally(() => setDownloadingPath(null))
   }
 
   const deletePath = (file: GroupWorkspaceFileRead) => {
@@ -106,16 +137,36 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
           <h2 className="truncate text-sm font-semibold">Workspace files</h2>
           <p className="truncate text-[11px] text-muted-foreground" title={title}>{title}</p>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={() => void files.refetch()}
-          disabled={files.isFetching || !hasGroupId}
-          aria-label="Refresh workspace files"
-        >
-          <RefreshCw className={cn('h-4 w-4', files.isFetching && 'animate-spin')} />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="sr-only"
+            onChange={(event) => uploadFile(event.target.files?.[0])}
+            aria-label="Upload file to workspace uploads"
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={upload.isPending || !hasGroupId}
+            aria-label="Upload file to workspace uploads"
+            title="Upload to uploads/"
+          >
+            <Upload className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => void files.refetch()}
+            disabled={files.isFetching || !hasGroupId}
+            aria-label="Refresh workspace files"
+          >
+            <RefreshCw className={cn('h-4 w-4', files.isFetching && 'animate-spin')} />
+          </Button>
+        </div>
       </div>
 
       {currentPath && (
@@ -132,6 +183,16 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
       {files.error && (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
           {displayError(files.error)}
+        </div>
+      )}
+      {upload.error && (
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+          {displayError(upload.error)}
+        </div>
+      )}
+      {downloadError && (
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+          {downloadError}
         </div>
       )}
 
@@ -172,6 +233,18 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
                     </span>
                   </span>
                 </button>
+                {!file.is_dir && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                    onClick={() => downloadFile(file)}
+                    disabled={downloadingPath === file.path}
+                    aria-label={`Download ${file.name}`}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Files, File, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucide-react'
+import { Files, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucide-react'
 
 import { Composer } from '@/components/chat/Composer'
 import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
@@ -76,11 +76,6 @@ export function GroupChatPage() {
             ) : (
               <Files className="h-4 w-4" />
             )}
-          </Button>
-          <Button variant="ghost" size="icon" asChild aria-label="Uploaded group files">
-            <Link to={`/groups/${groupId}/files`}>
-              <File className="h-4 w-4" />
-            </Link>
           </Button>
           <Button variant="ghost" size="icon" asChild aria-label="Group notes">
             <Link to={`/groups/${groupId}/notes`}>

@@ -3,6 +3,7 @@ import secrets
 from pathlib import Path
 from typing import cast
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app.models.group import Group
 from app.models.group_member import GroupMember
 from app.models.user import User
 from app.models.workspace import Workspace
+from app.services import group_workspace_file_service
 
 
 async def _new_user_headers(client: AsyncClient) -> dict[str, str]:
@@ -233,6 +235,133 @@ async def test_group_workspace_file_list_preview_rename_delete(
     )
     assert r.status_code == 204, r.text
     assert not (workspace_root / "docs" / "renamed.txt").exists()
+
+
+async def test_group_workspace_file_upload_download_and_safety(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace-upload"
+    workspace_root.mkdir()
+    workspace_id = await _create_workspace_at(client, auth_headers, workspace_root)
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"name": "Workspace Uploads", "workspace_id": workspace_id},
+    )
+    assert r.status_code == 201, r.text
+    group_id = r.json()["id"]
+
+    monkeypatch.setattr(group_workspace_file_service, "MAX_UPLOAD_BYTES", 4)
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/workspace-files/upload",
+        headers=auth_headers,
+        files={"file": ("too-large.txt", b"12345", "text/plain")},
+    )
+    assert r.status_code == 400
+    monkeypatch.setattr(group_workspace_file_service, "MAX_UPLOAD_BYTES", 25 * 1024 * 1024)
+
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/workspace-files/upload",
+        headers=auth_headers,
+        files={"file": ("brief.txt", b"hello uploads", "text/plain")},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["path"] == "uploads/brief.txt"
+    assert (workspace_root / "uploads" / "brief.txt").read_text(encoding="utf-8") == "hello uploads"
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files",
+        headers=auth_headers,
+        params={"path": "uploads"},
+    )
+    assert r.status_code == 200, r.text
+    assert [item["name"] for item in r.json()] == ["brief.txt"]
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files/download",
+        headers=auth_headers,
+        params={"path": "uploads/brief.txt"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.content == b"hello uploads"
+    assert "brief.txt" in r.headers["content-disposition"]
+
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/workspace-files/upload",
+        headers=auth_headers,
+        files={"file": ("brief.txt", b"duplicate", "text/plain")},
+    )
+    assert r.status_code == 400
+    assert (workspace_root / "uploads" / "brief.txt").read_text(encoding="utf-8") == "hello uploads"
+
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/workspace-files/upload",
+        headers=auth_headers,
+        files={"file": ("", b"bad", "text/plain")},
+    )
+    assert r.status_code in {400, 422}
+
+    unsafe_upload_names = [
+        ".",
+        "../escape.txt",
+        "nested/escape.txt",
+        r"nested\\escape.txt",
+        "C:/escape.txt",
+        "//server/share.txt",
+    ]
+    for unsafe_name in unsafe_upload_names:
+        r = await client.post(
+            f"/api/v1/groups/{group_id}/workspace-files/upload",
+            headers=auth_headers,
+            files={"file": (unsafe_name, b"bad", "text/plain")},
+        )
+        assert r.status_code == 400, unsafe_name
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files/download",
+        headers=auth_headers,
+        params={"path": "uploads"},
+    )
+    assert r.status_code == 400
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files/download",
+        headers=auth_headers,
+        params={"path": "../outside.txt"},
+    )
+    assert r.status_code == 400
+
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/files",
+        headers=auth_headers,
+        files={"file": ("legacy.txt", b"legacy uploads", "text/plain")},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["filename"] == "legacy.txt"
+    legacy_content = (workspace_root / "uploads" / "legacy.txt").read_text(encoding="utf-8")
+    assert legacy_content == "legacy uploads"
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/files",
+        headers=auth_headers,
+        files={"file": ("legacy.txt", b"duplicate", "text/plain")},
+    )
+    assert r.status_code == 400
+
+    other_headers = await _new_user_headers(client)
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/workspace-files/upload",
+        headers=other_headers,
+        files={"file": ("other.txt", b"bad", "text/plain")},
+    )
+    assert r.status_code == 403
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files/download",
+        headers=other_headers,
+        params={"path": "uploads/brief.txt"},
+    )
+    assert r.status_code == 403
 
 
 async def test_group_workspace_file_paths_must_stay_inside_workspace(

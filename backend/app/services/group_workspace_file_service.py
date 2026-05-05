@@ -4,7 +4,7 @@ import mimetypes
 import os
 import re
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from uuid import UUID
 
 from sqlalchemy import select
@@ -19,6 +19,8 @@ from app.schemas.group_workspace_file import GroupWorkspaceFilePreview, GroupWor
 
 MAX_PREVIEW_BYTES = 64 * 1024
 TEXT_PREVIEW_CHARS = 20_000
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+UPLOADS_DIR = "uploads"
 _TEXT_EXTENSIONS = {
     ".txt",
     ".md",
@@ -118,6 +120,23 @@ def _display_path(root: Path, path: Path) -> str:
     return value if value != "." else ""
 
 
+def _safe_upload_filename(filename: str) -> str:
+    candidate = filename.strip()
+    if not candidate:
+        raise AgentChatError("upload filename is required")
+    path = PurePath(candidate)
+    normalized = candidate.replace("\\", "/")
+    if (
+        path.is_absolute()
+        or path.name != candidate
+        or normalized.startswith("//")
+        or _DRIVE_PREFIX_RE.match(normalized) is not None
+        or any(part in {"", ".", ".."} for part in PurePosixPath(normalized).parts)
+    ):
+        raise AgentChatError("upload filename must be a plain filename")
+    return candidate
+
+
 def _file_read(path: Path, root: Path) -> GroupWorkspaceFileRead:
     stat = path.stat()
     return GroupWorkspaceFileRead(
@@ -187,6 +206,40 @@ async def preview_workspace_file(
         truncated=truncated,
         size=size,
     )
+
+
+async def upload_workspace_file(
+    db: AsyncSession,
+    group_id: UUID,
+    user: User,
+    filename: str,
+    file_bytes: bytes,
+) -> GroupWorkspaceFileRead:
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise AgentChatError("uploaded file exceeds the workspace upload size limit")
+    root = await _workspace_root(db, group_id, user)
+    safe_filename = _safe_upload_filename(filename)
+    uploads_dir = _resolve_inside(root, UPLOADS_DIR, must_exist=False)
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    resolved_uploads_dir = uploads_dir.resolve(strict=True)
+    if os.path.commonpath([str(root), str(resolved_uploads_dir)]) != str(root):
+        raise AgentChatError("workspace upload path escapes the group workspace")
+    target = _resolve_inside(root, f"{UPLOADS_DIR}/{safe_filename}", must_exist=False)
+    if target.exists():
+        raise AgentChatError("a file with this name already exists in uploads")
+    target.write_bytes(file_bytes)
+    return _file_read(target.resolve(strict=True), root)
+
+
+async def download_workspace_file(
+    db: AsyncSession, group_id: UUID, user: User, path: str
+) -> tuple[Path, str, str]:
+    root = await _workspace_root(db, group_id, user)
+    file_path = _resolve_inside(root, path)
+    if not file_path.is_file():
+        raise AgentChatError("workspace path is not a file")
+    media_type, _encoding = mimetypes.guess_type(file_path.name)
+    return file_path, file_path.name, media_type or "application/octet-stream"
 
 
 async def delete_workspace_file(db: AsyncSession, group_id: UUID, user: User, path: str) -> None:

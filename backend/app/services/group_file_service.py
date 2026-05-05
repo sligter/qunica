@@ -1,7 +1,8 @@
 """Group file service — upload, list, delete files attached to a group."""
 
+import os
 from pathlib import Path, PurePath
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,17 +32,19 @@ async def _assert_member(db: AsyncSession, group_id: UUID, user: User) -> Group:
 
 
 def _safe_display_filename(filename: str) -> str:
-    candidate = filename.strip() or "untitled"
+    candidate = filename.strip()
+    if not candidate:
+        raise AgentChatError("upload filename is required")
     path = PurePath(candidate)
+    normalized = candidate.replace("\\", "/")
     if (
         path.is_absolute()
         or path.name != candidate
-        or ".." in path.parts
-        or "/" in candidate
-        or "\\" in candidate
+        or normalized.startswith("//")
         or ":" in candidate
+        or any(part in {"", ".", ".."} for part in normalized.split("/"))
     ):
-        raise AgentChatError("unsafe filename")
+        raise AgentChatError("upload filename must be a plain filename")
     return candidate
 
 
@@ -63,9 +66,15 @@ async def upload_file(
         raise AgentChatError("local workspace has no local_path")
 
     display_filename = _safe_display_filename(filename)
-    storage_dir = Path(workspace.local_path) / ".ag-swarmer" / "groups" / str(group_id) / "files"
+    root = Path(workspace.local_path).resolve()
+    storage_dir = root / "uploads"
     storage_dir.mkdir(parents=True, exist_ok=True)
-    file_path = storage_dir / f"{uuid4().hex}_{display_filename}"
+    resolved_storage_dir = storage_dir.resolve(strict=True)
+    if os.path.commonpath([str(root), str(resolved_storage_dir)]) != str(root):
+        raise AgentChatError("group upload path escapes the group workspace")
+    file_path = storage_dir / display_filename
+    if file_path.exists():
+        raise AgentChatError("a file with this name already exists in uploads")
     file_path.write_bytes(file_bytes)
 
     gf = GroupFile(
