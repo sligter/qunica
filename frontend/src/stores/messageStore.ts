@@ -25,11 +25,21 @@ export interface ActiveAgent {
   total: number
 }
 
+export interface ToolActivity {
+  id: string
+  agent_id: string
+  display_name: string
+  tool_name: string
+  status: 'started' | 'completed' | 'failed' | 'unavailable'
+  summary?: string
+}
+
 interface MessageState {
   byGroup: Record<string, Message[]>
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
   activeAgentByGroup: Record<string, ActiveAgent | null>
   warningsByGroup: Record<string, string[]>
+  toolActivityByGroup: Record<string, ToolActivity[]>
   resumingMessageIds: Set<string>
 
   setHistory: (groupId: string, messages: Message[]) => void
@@ -42,6 +52,8 @@ interface MessageState {
   clearActiveAgent: (groupId: string) => void
   pushWarning: (groupId: string, warning: string) => void
   clearWarnings: (groupId: string) => void
+  pushToolActivity: (groupId: string, activity: ToolActivity) => void
+  clearToolActivity: (groupId: string) => void
   appendToMessage: (groupId: string, messageId: string, delta: string) => void
   replaceMessage: (groupId: string, message: Message) => void
   startResume: (messageId: string) => void
@@ -53,6 +65,7 @@ export const useMessageStore = create<MessageState>((set) => ({
   inFlightByGroup: {},
   activeAgentByGroup: {},
   warningsByGroup: {},
+  toolActivityByGroup: {},
   resumingMessageIds: new Set(),
 
   setHistory: (groupId, messages) =>
@@ -60,6 +73,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       byGroup: { ...s.byGroup, [groupId]: messages },
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
+      toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
 
   appendMessage: (groupId, message) =>
@@ -107,6 +121,7 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => ({
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
       activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
+      toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
 
   clearAgentInFlight: (groupId, agentId) =>
@@ -143,6 +158,19 @@ export const useMessageStore = create<MessageState>((set) => ({
   clearWarnings: (groupId) =>
     set((s) => ({
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
+    })),
+
+  pushToolActivity: (groupId, activity) =>
+    set((s) => ({
+      toolActivityByGroup: {
+        ...s.toolActivityByGroup,
+        [groupId]: [...(s.toolActivityByGroup[groupId] ?? []), activity].slice(-8),
+      },
+    })),
+
+  clearToolActivity: (groupId) =>
+    set((s) => ({
+      toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
 
   appendToMessage: (groupId, messageId, delta) =>

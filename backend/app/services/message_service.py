@@ -51,6 +51,7 @@ from app.agents.context import (
     build_agent_invocation_context,
 )
 from app.agents.router import resolve_all_mentions
+from app.agents.runtime import RuntimeToolEvent
 from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db import SessionLocal
@@ -72,6 +73,8 @@ PSEUDO_TOOL_PLACEHOLDER = (
     "[Non-executed tool markup removed: this runtime did not execute a tool call.]"
 )
 WAITING_FOR_USER_WARNING = "Waiting for your input"
+TOOL_CALL_STARTED_MESSAGE = "Tool call started"
+TOOL_CALL_COMPLETED_MESSAGE = "Tool call completed"
 
 _REASONING_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 _PSEUDO_TOOL_BLOCK_RE = re.compile(
@@ -436,6 +439,23 @@ def _agent_identity_payload(agent: Agent, group_agent: GroupAgent) -> dict[str, 
     }
 
 
+def _serialize_tool_event(
+    tool_event: RuntimeToolEvent, agent: Agent, group_agent: GroupAgent
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "agent_id": str(agent.id),
+        "display_name": group_agent.display_name or agent.name,
+        "tool_call_id": tool_event.tool_call_id,
+        "tool_name": tool_event.tool_name,
+        "status": tool_event.status,
+    }
+    if tool_event.args_summary:
+        payload["args_summary"] = tool_event.args_summary
+    if tool_event.result_summary:
+        payload["result_summary"] = tool_event.result_summary
+    return payload
+
+
 def _serialize_msg(m: Message) -> dict[str, Any]:
     return {
         "id": str(m.id),
@@ -589,6 +609,11 @@ async def _stream_one_agent(
     chunks: list[str] = []
     emitted_visible_len = 0
     cancelled = False
+    pending_tool_events: list[RuntimeToolEvent] = []
+
+    async def _record_tool_event(tool_event: RuntimeToolEvent) -> None:
+        pending_tool_events.append(tool_event)
+
     try:
         input_messages, context = await _build_invocation(db, group, group_agent, agent)
         chat_model = await resolve_chat_model(db, agent, streaming=True)
@@ -598,7 +623,18 @@ async def _stream_one_agent(
             chat_model=chat_model,
             input_messages=input_messages,
             workspace_tools=build_workspace_tools(context),
+            tool_event_callback=_record_tool_event,
         ):
+            while pending_tool_events:
+                tool_event = pending_tool_events.pop(0)
+                yield {
+                    "event": (
+                        "tool_call_start"
+                        if tool_event.status == "started"
+                        else "tool_call_result"
+                    ),
+                    "data": json.dumps(_serialize_tool_event(tool_event, agent, group_agent)),
+                }
             if kind == "token":
                 chunks.append(payload)
                 visible_so_far = _sanitize_streaming_visible_content("".join(chunks))

@@ -14,6 +14,7 @@ ToolPolicy = Literal[
     "orchestration",
 ]
 ToolRuntimeStatus = Literal["available", "planned", "sandbox_required", "disabled"]
+EXECUTABLE_TOOL_IDS: frozenset[str] = frozenset({"read", "glob", "grep"})
 
 
 class BuiltinToolRead(BaseModel):
@@ -89,7 +90,7 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
         name="AskUser",
         description="Ask the user for clarification or approval.",
         policy="planning",
-        runtime_status="available",
+        runtime_status="planned",
     ),
     BuiltinToolRead(
         id="web_search",
@@ -150,7 +151,7 @@ BUILTIN_TOOLS: tuple[BuiltinToolRead, ...] = (
 )
 
 _TOOL_BY_ID: dict[str, BuiltinToolRead] = {tool.id: tool for tool in BUILTIN_TOOLS}
-DEFAULT_ENABLED_TOOL_IDS: frozenset[str] = frozenset({"read", "glob", "grep", "ask_user"})
+DEFAULT_ENABLED_TOOL_IDS: frozenset[str] = frozenset({"read", "glob", "grep"})
 
 
 def list_builtin_tools() -> list[BuiltinToolRead]:
@@ -187,10 +188,39 @@ def normalize_tool_config(config: AgentToolConfig | None) -> dict[str, object]:
     return AgentToolConfig(tools=selections).model_dump(mode="json")
 
 
-def enabled_tool_names(tool_config: dict[str, object] | None) -> list[str]:
+def selected_tool_names(tool_config: dict[str, object] | None) -> list[str]:
     config = AgentToolConfig.model_validate(tool_config or normalize_tool_config(None))
     return [
         _TOOL_BY_ID[tool_id].name
         for tool_id, selection in config.tools.items()
         if selection.enabled and tool_id in _TOOL_BY_ID
     ]
+
+
+def executable_tool_names(tool_config: dict[str, object] | None) -> list[str]:
+    config = AgentToolConfig.model_validate(tool_config or normalize_tool_config(None))
+    return [
+        _TOOL_BY_ID[tool_id].name
+        for tool_id, selection in config.tools.items()
+        if selection.enabled
+        and tool_id in _TOOL_BY_ID
+        and tool_id in EXECUTABLE_TOOL_IDS
+        and _TOOL_BY_ID[tool_id].runtime_status == "available"
+    ]
+
+
+def saved_only_tool_names(tool_config: dict[str, object] | None) -> list[str]:
+    config = AgentToolConfig.model_validate(tool_config or normalize_tool_config(None))
+    return [
+        _TOOL_BY_ID[tool_id].name
+        for tool_id, selection in config.tools.items()
+        if selection.enabled
+        and tool_id in _TOOL_BY_ID
+        and tool_id not in EXECUTABLE_TOOL_IDS
+    ]
+
+
+def enabled_tool_names(tool_config: dict[str, object] | None) -> list[str]:
+    """Backward-compatible name for persisted/selected tool names."""
+
+    return selected_tool_names(tool_config)

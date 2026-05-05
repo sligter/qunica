@@ -18,7 +18,8 @@ Two public entrypoints:
 """
 
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Literal, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -33,6 +34,19 @@ from app.core.exceptions import LLMProviderError
 
 _CHAT_MODEL_KEY = "chat_model"
 MAX_TOOL_ITERATIONS = 5
+ToolEventStatus = Literal["started", "completed", "failed", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeToolEvent:
+    tool_call_id: str
+    tool_name: str
+    status: ToolEventStatus
+    args_summary: str | None = None
+    result_summary: str | None = None
+
+
+MAX_TOOL_SUMMARY_LENGTH = 240
 
 # StateGraph and CompiledStateGraph are highly generic in langgraph 1.x; we
 # pin the state type and let the rest fall to Any to avoid leaking internal
@@ -88,6 +102,37 @@ def _tool_call_id(tool_call: dict[str, Any], index: int) -> str:
     return str(raw_id) if raw_id else f"tool-call-{index}"
 
 
+def _summarize_mapping(values: dict[str, Any]) -> str:
+    if not values:
+        return "no arguments"
+    parts = [f"{key}={value!r}" for key, value in sorted(values.items())]
+    return _bounded_summary(", ".join(parts))
+
+
+def _bounded_summary(value: str, limit: int = MAX_TOOL_SUMMARY_LENGTH) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 1]}…"
+
+
+def _result_summary(name: str | None, result: str) -> str:
+    if name == "Read" and not result.startswith("Tool "):
+        line_count = len(result.splitlines())
+        return _bounded_summary(f"Read completed; returned {line_count} numbered lines.")
+    return _bounded_summary(result)
+
+
+def _result_status(name: str | None, result: str) -> ToolEventStatus:
+    if name is None or "Malformed tool call" in result:
+        return "failed"
+    if result.startswith("Tool ") and " is unavailable in this runtime." in result:
+        return "unavailable"
+    if result.startswith("Tool ") and " failed: " in result:
+        return "failed"
+    return "completed"
+
+
 async def _invoke_once(
     graph: _Graph,
     thread_id: str,
@@ -113,6 +158,7 @@ async def run(
     input_messages: list[BaseMessage],
     workspace_tools: dict[str, Any] | None = None,
     max_tool_iterations: int = MAX_TOOL_ITERATIONS,
+    tool_event_callback: Any | None = None,
 ) -> AIMessage:
     tools = workspace_tools or {}
     model = bind_workspace_tools(chat_model, tools)
@@ -136,14 +182,34 @@ async def run(
         for index, tool_call in enumerate(tool_calls):
             tool_call_dict = cast(dict[str, Any], tool_call)
             name = _tool_call_name(tool_call_dict)
+            args = _tool_call_args(tool_call_dict)
+            call_id = _tool_call_id(tool_call_dict, index)
+            display_name = name or "unknown"
+            if tool_event_callback is not None:
+                await tool_event_callback(
+                    RuntimeToolEvent(
+                        tool_call_id=call_id,
+                        tool_name=display_name,
+                        status="started",
+                        args_summary=_summarize_mapping(args),
+                    )
+                )
             result = (
                 f"Malformed tool call at index {index}."
                 if name is None
-                else execute_workspace_tool(tools, name, _tool_call_args(tool_call_dict))
+                else execute_workspace_tool(tools, name, args)
             )
-            messages.append(
-                ToolMessage(content=result, tool_call_id=_tool_call_id(tool_call_dict, index))
-            )
+            status = _result_status(name, result)
+            if tool_event_callback is not None:
+                await tool_event_callback(
+                    RuntimeToolEvent(
+                        tool_call_id=call_id,
+                        tool_name=display_name,
+                        status=status,
+                        result_summary=_result_summary(name, result),
+                    )
+                )
+            messages.append(ToolMessage(content=result, tool_call_id=call_id))
 
 
 async def run_with_stream(
@@ -153,6 +219,7 @@ async def run_with_stream(
     input_messages: list[BaseMessage],
     workspace_tools: dict[str, Any] | None = None,
     max_tool_iterations: int = MAX_TOOL_ITERATIONS,
+    tool_event_callback: Any | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
     """Yield final tokens when tools are active, otherwise stream model chunks."""
     if workspace_tools:
@@ -163,6 +230,7 @@ async def run_with_stream(
             input_messages=input_messages,
             workspace_tools=workspace_tools,
             max_tool_iterations=max_tool_iterations,
+            tool_event_callback=tool_event_callback,
         )
         content = final.content if isinstance(final.content, str) else str(final.content)
         if content:

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { MessageItem } from '@/components/chat/MessageItem'
-import { useMessageStore } from '@/stores/messageStore'
+import { useMessageStore, type ToolActivity } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 interface MessageListProps {
@@ -11,6 +11,7 @@ interface MessageListProps {
 const EMPTY_MESSAGES: readonly Message[] = []
 const EMPTY_INFLIGHT: Record<string, never> = {}
 const EMPTY_WARNINGS: readonly string[] = []
+const EMPTY_TOOL_ACTIVITY: readonly ToolActivity[] = []
 
 export function MessageList({ groupId }: MessageListProps) {
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
@@ -21,11 +22,14 @@ export function MessageList({ groupId }: MessageListProps) {
   const warnings = useMessageStore(
     (s) => s.warningsByGroup[groupId] ?? EMPTY_WARNINGS,
   )
+  const toolActivity = useMessageStore(
+    (s) => s.toolActivityByGroup[groupId] ?? EMPTY_TOOL_ACTIVITY,
+  )
   const endRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages, inFlight, activeAgent, warnings])
+  }, [messages, inFlight, activeAgent, warnings, toolActivity])
 
   const inFlightBubbles: Message[] = Object.values(inFlight).map((bubble) => ({
     id: `inflight:${bubble.agent_id}`,
@@ -70,6 +74,20 @@ export function MessageList({ groupId }: MessageListProps) {
             <span className="font-medium text-foreground">{activeAgent.display_name}</span>
             is thinking{progressLabel}…
           </span>
+        </div>
+      )}
+      {toolActivity.length > 0 && (
+        <div className="mx-4 mt-2 space-y-1 rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
+          {toolActivity.slice(-3).map((activity) => (
+            <div key={activity.id} className="flex items-center justify-between gap-3">
+              <span>
+                <span className="font-medium text-foreground">{activity.display_name}</span>{' '}
+                {activity.status === 'started' ? 'is using' : 'used'}{' '}
+                <span className="font-medium text-foreground">{activity.tool_name}</span>
+              </span>
+              <span className="shrink-0 capitalize">{activity.status}</span>
+            </div>
+          ))}
         </div>
       )}
       {warnings.length > 0 && (

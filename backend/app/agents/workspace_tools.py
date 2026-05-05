@@ -131,7 +131,7 @@ def build_workspace_tools(context: AgentInvocationContext) -> dict[str, BaseTool
     root = _workspace_root(context)
     if root is None:
         return {}
-    enabled = set(context.enabled_tools)
+    enabled = set(context.executable_tools)
     tools: dict[str, BaseTool] = {}
 
     if "Read" in enabled:

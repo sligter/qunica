@@ -621,9 +621,84 @@ async def test_stream_native_tool_loop_emits_final_answer_without_placeholder(
     messages = await _messages(client, auth_headers, group_id)
     agent_messages = [message for message in messages if message["sender_type"] == "agent"]
 
+    event_names = [event for event, _data in events]
+    start_payloads = [json.loads(data) for event, data in events if event == "tool_call_start"]
+    result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
+
+    assert event_names.index("tool_call_start") < event_names.index("tool_call_result")
+    assert start_payloads[0]["tool_name"] == "Glob"
+    assert start_payloads[0]["status"] == "started"
+    assert result_payloads[0]["tool_name"] == "Glob"
+    assert result_payloads[0]["status"] == "completed"
+    assert len(result_payloads[0]["result_summary"]) <= 240
+    assert "notes.txt" in result_payloads[0]["result_summary"]
     assert "The workspace contains notes.txt." in "".join(tokens)
     assert agent_messages[0]["content"] == "The workspace contains notes.txt."
     assert "Non-executed tool markup removed" not in agent_messages[0]["content"]
+
+
+async def test_read_tool_result_event_does_not_leak_file_contents(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "secret.txt").write_text("top secret brand plan", encoding="utf-8")
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Read", "args": {"file_path": "secret.txt"}, "id": "read-1"}],
+            ),
+            AIMessage(content="I read the requested file."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    events = await _stream_events(client, auth_headers, group_id, "@Echo read secret.txt")
+
+    result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
+    assert result_payloads[0]["tool_name"] == "Read"
+    assert result_payloads[0]["status"] == "completed"
+    assert result_payloads[0]["result_summary"] == "Read completed; returned 1 numbered lines."
+    assert "top secret brand plan" not in result_payloads[0]["result_summary"]
+
+
+async def test_selected_non_executable_tool_is_not_bound_or_executed(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Write", "args": {"file_path": "deck.txt"}, "id": "write-1"}],
+            ),
+            AIMessage(content="Write is unavailable in this runtime."),
+        ],
+    )
+    group_id, agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+    agent_id = agents[0][0]
+    response = await client.patch(
+        f"/api/v1/agents/{agent_id}",
+        headers=auth_headers,
+        json={
+            "tool_config": {
+                "tools": {
+                    "read": {"enabled": False},
+                    "glob": {"enabled": False},
+                    "grep": {"enabled": False},
+                    "write": {"enabled": True},
+                }
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    events = await _stream_events(client, auth_headers, group_id, "@Echo write a file")
+
+    assert "tool_call_start" not in [event for event, _data in events]
+    assert "tool_call_result" not in [event for event, _data in events]
+    assert len(calls) == 1
+    assert not (tmp_path / "deck.txt").exists()
 
 
 async def test_workspace_tool_rejects_traversal_and_returns_error_to_model(

@@ -17,7 +17,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { openSseStream } from '@/lib/sse'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
-import type { ActiveAgent } from '@/stores/messageStore'
+import type { ActiveAgent, ToolActivity } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 interface TokenPayload {
@@ -33,6 +33,16 @@ interface AgentErrorPayload {
 
 interface WaitingForUserPayload {
   message?: string
+}
+
+interface ToolCallPayload {
+  agent_id: string
+  display_name: string
+  tool_call_id: string
+  tool_name: string
+  status: 'started' | 'completed' | 'failed' | 'unavailable'
+  args_summary?: string
+  result_summary?: string
 }
 
 function safeJson<T>(raw: string): T | null {
@@ -54,6 +64,8 @@ export function useSendMessageStream(groupId: string | undefined) {
   const clearActiveAgent = useMessageStore((s) => s.clearActiveAgent)
   const pushWarning = useMessageStore((s) => s.pushWarning)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
+  const pushToolActivity = useMessageStore((s) => s.pushToolActivity)
+  const clearToolActivity = useMessageStore((s) => s.clearToolActivity)
   const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
@@ -76,6 +88,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       if (!groupId || !token || isStreaming) return
       setError(null)
       clearWarnings(groupId)
+      clearToolActivity(groupId)
       setIsStreaming(true)
 
       const ctrl = openSseStream({
@@ -111,6 +124,21 @@ export function useSendMessageStream(groupId: string | undefined) {
               if (info?.agent_id) clearAgentInFlight(groupId, info.agent_id)
               return
             }
+            if (event === 'tool_call_start' || event === 'tool_call_result') {
+              const payload = safeJson<ToolCallPayload>(data)
+              if (payload) {
+                const activity: ToolActivity = {
+                  id: `${payload.tool_call_id}:${payload.status}:${Date.now()}`,
+                  agent_id: payload.agent_id,
+                  display_name: payload.display_name,
+                  tool_name: payload.tool_name,
+                  status: payload.status,
+                  summary: event === 'tool_call_start' ? payload.args_summary : payload.result_summary,
+                }
+                pushToolActivity(groupId, activity)
+              }
+              return
+            }
             if (event === 'silence') {
               pushWarning(groupId, 'No one replied')
               return
@@ -136,6 +164,7 @@ export function useSendMessageStream(groupId: string | undefined) {
               clearActiveAgent(groupId)
               setIsStreaming(false)
               ctrlRef.current = null
+              window.setTimeout(() => clearToolActivity(groupId), 4_000)
               invalidate()
             }
           },
@@ -160,12 +189,14 @@ export function useSendMessageStream(groupId: string | undefined) {
       clearActiveAgent,
       clearAgentInFlight,
       clearInFlight,
+      clearToolActivity,
       clearWarnings,
       finalizeInFlight,
       groupId,
       invalidate,
       isStreaming,
       patchInFlight,
+      pushToolActivity,
       pushWarning,
       setActiveAgent,
       token,

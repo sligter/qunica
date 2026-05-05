@@ -12,7 +12,11 @@ from uuid import UUID
 from langchain_core.messages import BaseMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.builtin_tools import enabled_tool_names
+from app.agents.builtin_tools import (
+    executable_tool_names,
+    saved_only_tool_names,
+    selected_tool_names,
+)
 from app.models.agent import Agent
 from app.models.group import Group
 from app.models.group_agent import GroupAgent
@@ -35,6 +39,8 @@ class AgentInvocationContext:
     system_prompt: str
     workspace: Workspace | None
     enabled_tools: list[str]
+    executable_tools: list[str]
+    saved_only_tools: list[str]
     mounted_skills: list[Skill]
     runtime_limits: dict[str, int]
     workspace_source: str
@@ -78,19 +84,26 @@ async def build_agent_invocation_context(
         workspace_source = "agent"
 
     skills = await _mounted_skills(db, agent)
+    selected_tools = selected_tool_names(agent.tool_config)
+    executable_tools = executable_tool_names(agent.tool_config)
+    saved_only_tools = saved_only_tool_names(agent.tool_config)
     system_prompt = _render_system_prompt(
         agent=agent,
         group=group,
         workspace=workspace,
         workspace_source=workspace_source,
-        enabled_tools=enabled_tool_names(agent.tool_config),
+        selected_tools=selected_tools,
+        executable_tools=executable_tools,
+        saved_only_tools=saved_only_tools,
         skills=skills,
         runtime_limits=limits,
     )
     return AgentInvocationContext(
         system_prompt=system_prompt,
         workspace=workspace,
-        enabled_tools=enabled_tool_names(agent.tool_config),
+        enabled_tools=selected_tools,
+        executable_tools=executable_tools,
+        saved_only_tools=saved_only_tools,
         mounted_skills=skills,
         runtime_limits=limits,
         workspace_source=workspace_source,
@@ -132,7 +145,9 @@ def _render_system_prompt(
     group: Group | None,
     workspace: Workspace | None,
     workspace_source: str,
-    enabled_tools: list[str],
+    selected_tools: list[str],
+    executable_tools: list[str],
+    saved_only_tools: list[str],
     skills: list[Skill],
     runtime_limits: dict[str, int],
 ) -> str:
@@ -140,7 +155,11 @@ def _render_system_prompt(
 
     if group is not None:
         parts.append(_render_group_context(group))
-    parts.append(_render_workspace_context(workspace, workspace_source, enabled_tools))
+    parts.append(
+        _render_workspace_context(
+            workspace, workspace_source, selected_tools, executable_tools, saved_only_tools
+        )
+    )
     parts.append(_render_runtime_limits(runtime_limits))
     if skills:
         parts.append(_render_skills(skills))
@@ -171,9 +190,15 @@ def _render_group_context(group: Group) -> str:
 
 
 def _render_workspace_context(
-    workspace: Workspace | None, workspace_source: str, enabled_tools: list[str]
+    workspace: Workspace | None,
+    workspace_source: str,
+    selected_tools: list[str],
+    executable_tools: list[str],
+    saved_only_tools: list[str],
 ) -> str:
-    tools = ", ".join(enabled_tools) if enabled_tools else "none"
+    tools = ", ".join(selected_tools) if selected_tools else "none"
+    executable = ", ".join(executable_tools) if executable_tools else "none"
+    saved_only = ", ".join(saved_only_tools) if saved_only_tools else "none"
     location: str | None
     if workspace is None:
         location = "not configured"
@@ -193,11 +218,16 @@ def _render_workspace_context(
         f"- name: {name}\n"
         f"- backend_type: {backend_type}\n"
         f"- location: {location or 'not configured'}\n"
-        f"- enabled built-in tools: {tools}\n"
-        "Runtime tool execution: provider-native Read, Glob, and Grep calls may execute "
-        "read-only against the resolved local workspace when enabled. Literal XML-like "
-        "tool markup in text is not executed. Bash, write, edit, network, media, and "
-        "other risky tools are not implemented in this runtime."
+        f"- selected built-in tools: {tools}\n"
+        f"- executable built-in tools now: {executable}\n"
+        f"- saved-only/planned selections: {saved_only}\n"
+        "Runtime tool execution: only provider-native Read, Glob, and Grep calls listed "
+        "as executable above may execute read-only against the resolved local workspace. "
+        "Do not claim you can create, write, edit, run code, run shell commands, access "
+        "the network, generate media, or manage skills unless that exact tool is listed "
+        "as executable now. Literal XML-like tool markup in text is not executed. "
+        "Saved-only/planned selections are configuration for future runtimes, not current "
+        "capabilities."
     )
 
 

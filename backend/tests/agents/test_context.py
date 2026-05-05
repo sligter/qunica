@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.builtin_tools import normalize_tool_config
+from app.agents.builtin_tools import AgentToolConfig, AgentToolSelection, normalize_tool_config
 from app.agents.context import build_agent_invocation_context
 from app.models.agent import Agent
 from app.models.group import Group
@@ -62,12 +62,57 @@ async def test_shared_context_includes_workspace_tools_skills_and_limits(
     assert "Be concise" in prompt
     assert "source: agent" in prompt
     assert "Repo Workspace" in prompt
-    assert "enabled built-in tools: Read, Glob, Grep, AskUser" in prompt
+    assert "selected built-in tools: Read, Glob, Grep" in prompt
+    assert "executable built-in tools now: Read, Glob, Grep" in prompt
+    assert "saved-only/planned selections: none" in prompt
     assert "# Skill: Reviewer" in prompt
     assert "version: 1.0.0" in prompt
     assert "Review the diff." in prompt
     assert "Runtime limits:" in prompt
     assert "file_mutations: 0" in prompt
+
+
+async def test_context_distinguishes_executable_tools_from_saved_only_tools(
+    db_session: AsyncSession,
+) -> None:
+    user = User(email=f"ctx-{uuid4().hex[:8]}@example.com", password_hash="x", name="Context User")
+    db_session.add(user)
+    await db_session.flush()
+    workspace = Workspace(
+        owner_id=user.id,
+        name="Repo Workspace",
+        backend_type="local",
+        local_path="/repo",
+    )
+    db_session.add(workspace)
+    agent = Agent(
+        owner_id=user.id,
+        name="Nova",
+        system_prompt="Base prompt",
+        workspace_id=workspace.id,
+        tool_config=normalize_tool_config(
+            AgentToolConfig(
+                tools={
+                    "read": AgentToolSelection(enabled=True),
+                    "write": AgentToolSelection(enabled=True),
+                    "edit": AgentToolSelection(enabled=True),
+                    "bash": AgentToolSelection(enabled=True),
+                    "glob": AgentToolSelection(enabled=False),
+                    "grep": AgentToolSelection(enabled=False),
+                }
+            )
+        ),
+    )
+    db_session.add(agent)
+    await db_session.flush()
+
+    context = await build_agent_invocation_context(db_session, agent, user)
+
+    assert context.executable_tools == ["Read"]
+    assert "selected built-in tools: Read, Write, Edit, Bash" in context.system_prompt
+    assert "executable built-in tools now: Read" in context.system_prompt
+    assert "saved-only/planned selections: Write, Edit, Bash" in context.system_prompt
+    assert "Do not claim you can create, write, edit, run code" in context.system_prompt
 
 
 async def test_group_workspace_sharing_switches_context_source(

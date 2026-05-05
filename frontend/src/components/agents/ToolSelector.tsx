@@ -28,6 +28,14 @@ interface ToolSelectorProps {
   onChange: (next: AgentToolConfig) => void
 }
 
+function isRuntimeExecutable(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
+  return (
+    tool.runtime_status === 'available' &&
+    !(tool.requires_sandbox && workspaceBackendType === 'local') &&
+    ['read', 'glob', 'grep'].includes(tool.id)
+  )
+}
+
 function isToggleDisabled(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
   return (
     tool.runtime_status === 'disabled' ||
@@ -37,7 +45,8 @@ function isToggleDisabled(tool: BuiltinToolRead, workspaceBackendType: Workspace
 
 function statusText(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
   if (tool.requires_sandbox && workspaceBackendType === 'local') return 'Cloud sandbox required'
-  if (tool.runtime_status === 'available') return 'Available'
+  if (isRuntimeExecutable(tool, workspaceBackendType)) return 'Executable now'
+  if (tool.runtime_status === 'available') return 'Saved only'
   if (tool.runtime_status === 'planned') return 'Saved only'
   if (tool.runtime_status === 'sandbox_required') return 'Sandbox required'
   return 'Disabled'
@@ -65,6 +74,10 @@ export function ToolSelector({
 
   return (
     <div className="space-y-3">
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+        Only Read, Glob, and Grep can execute today, and only as read-only workspace tools.
+        Saved-only selections are persisted for future runtimes but are not current agent capabilities.
+      </div>
       {POLICY_ORDER.map((policy) => {
         const policyTools = tools.filter((tool) => tool.policy === policy)
         if (policyTools.length === 0) return null
@@ -75,6 +88,7 @@ export function ToolSelector({
               {policyTools.map((tool) => {
                 const checked = value.tools[tool.id]?.enabled ?? false
                 const disabled = isToggleDisabled(tool, workspaceBackendType)
+                const executable = isRuntimeExecutable(tool, workspaceBackendType)
                 return (
                   <button
                     key={tool.id}
@@ -83,9 +97,9 @@ export function ToolSelector({
                     onClick={() => toggleTool(tool)}
                     className={cn(
                       'rounded-md border p-3 text-left transition-colors',
-                      checked
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-border bg-background hover:bg-muted',
+                      checked && executable && 'border-primary bg-primary/10 text-foreground',
+                      checked && !executable && 'border-amber-300 bg-amber-50 text-foreground',
+                      !checked && 'border-border bg-background hover:bg-muted',
                       disabled && 'cursor-not-allowed opacity-50 hover:bg-background',
                     )}
                   >
@@ -96,6 +110,11 @@ export function ToolSelector({
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{tool.description}</p>
+                    {!executable && checked && (
+                      <p className="mt-2 text-[11px] font-medium text-amber-700">
+                        Saved in agent settings only; the runtime will not execute this tool yet.
+                      </p>
+                    )}
                   </button>
                 )
               })}

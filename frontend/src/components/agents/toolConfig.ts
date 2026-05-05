@@ -1,7 +1,7 @@
 import type { AgentToolConfig, BuiltinToolRead } from '@/types/api'
 
 export function createDefaultToolConfig(tools: BuiltinToolRead[]): AgentToolConfig {
-  const defaults = new Set(['read', 'glob', 'grep', 'ask_user'])
+  const defaults = new Set(['read', 'glob', 'grep'])
   return {
     tools: Object.fromEntries(
       tools.map((tool) => [
