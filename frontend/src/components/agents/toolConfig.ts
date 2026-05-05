@@ -22,9 +22,10 @@ export function createDefaultToolConfig(
 export function mergeToolConfig(
   tools: BuiltinToolRead[],
   current: AgentToolConfig | null | undefined,
-  assistantAgents: AgentAssistantToolSelection[] = [],
+  assistantAgents?: AgentAssistantToolSelection[],
 ): AgentToolConfig {
-  const defaults = createDefaultToolConfig(tools, assistantAgents)
+  const assistantSelections = assistantAgents ?? current?.assistant_agents ?? []
+  const defaults = createDefaultToolConfig(tools, assistantSelections)
   if (!current) return defaults
   return {
     tools: Object.fromEntries(
@@ -39,6 +40,6 @@ export function mergeToolConfig(
         ]
       }),
     ),
-    assistant_agents: assistantAgents,
+    assistant_agents: assistantSelections,
   }
 }

@@ -1,18 +1,20 @@
+import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app.agents import runtime
 from app.agents.builtin_tools import list_builtin_tools
 from app.agents.context import build_agent_invocation_context
 from app.agents.runtime import TOOL_LOOP_REPEATED_CALL_LIMIT
 from app.agents.workspace_tools import bind_workspace_tools, build_workspace_tools
 from app.core.deps import get_current_user
-from app.core.exceptions import LLMProviderError
+from app.core.exceptions import AgentChatError, LLMProviderError
 from app.db import get_db
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
@@ -25,7 +27,7 @@ from app.schemas.agent import (
     InvokeResponse,
     ToolCatalogResponse,
 )
-from app.services import agent_service
+from app.services import agent_service, message_service
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -39,6 +41,49 @@ def _direct_tool_signature(tool_call: dict[str, object]) -> tuple[str, str]:
     args = tool_call.get("args")
     args_signature = repr(sorted(args.items())) if isinstance(args, dict) else repr(args)
     return (name, args_signature)
+
+
+async def _direct_agent_tool_result(
+    request: Request,
+    db: AsyncSession,
+    current_user: User,
+    caller_agent: Agent,
+    requested_agent_id: str,
+    task: str,
+    instructions: str | None = None,
+) -> str:
+    context = await build_agent_invocation_context(db, caller_agent, current_user)
+    assistant = await message_service._resolve_bound_assistant(  # noqa: SLF001
+        context,
+        requested_agent_id,
+    )
+    if not task.strip():
+        raise AgentChatError("agent-as-tool task must be non-empty")
+    assistant_context = await build_agent_invocation_context(db, assistant, current_user)
+    chat_model = await resolve_chat_model(db, assistant, streaming=False)
+    dispatch = f"@{assistant.name} {task.strip()}"
+    if instructions and instructions.strip():
+        dispatch = f"{dispatch}\n\nInstructions from @{caller_agent.name}: {instructions.strip()}"
+    response = await runtime.run(
+        graph=request.app.state.graph,
+        thread_id=f"direct-agent-tool:{caller_agent.id}:{assistant.id}",
+        chat_model=chat_model,
+        input_messages=_build_messages(assistant_context.to_system_message(), dispatch),
+        workspace_tools=build_workspace_tools(assistant_context),
+    )
+    text = response.content if isinstance(response.content, str) else str(response.content)
+    visible_text = message_service._sanitize_agent_visible_content(text)  # noqa: SLF001
+    return json.dumps(
+        {
+            "tool": "AgentAsTool",
+            "status": "COMPLETED",
+            "agent_id": str(assistant.id),
+            "display_name": assistant.name,
+            "dispatch": dispatch[:1000],
+            "content": visible_text[:4000],
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _invoke_with_tool_loop(
@@ -136,13 +181,30 @@ async def delete_agent(
 async def invoke_agent(
     agent_id: UUID,
     data: InvokeRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> InvokeResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
     context = await build_agent_invocation_context(db, agent, current_user)
     chat_model = await resolve_chat_model(db, agent, streaming=False)
-    tools = build_workspace_tools(context)
+
+    async def _agent_tool_executor(
+        requested_agent_id: str,
+        task: str,
+        instructions: str | None = None,
+    ) -> str:
+        return await _direct_agent_tool_result(
+            request,
+            db,
+            current_user,
+            agent,
+            requested_agent_id,
+            task,
+            instructions,
+        )
+
+    tools = build_workspace_tools(context, agent_tool_executor=_agent_tool_executor)
     model = bind_workspace_tools(chat_model, tools)
     messages = _build_messages(context.to_system_message(), data.message)
     try:
@@ -161,13 +223,30 @@ async def invoke_agent(
 async def invoke_agent_stream(
     agent_id: UUID,
     data: InvokeRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
     context = await build_agent_invocation_context(db, agent, current_user)
     chat_model = await resolve_chat_model(db, agent, streaming=True)
-    tools = build_workspace_tools(context)
+
+    async def _agent_tool_executor(
+        requested_agent_id: str,
+        task: str,
+        instructions: str | None = None,
+    ) -> str:
+        return await _direct_agent_tool_result(
+            request,
+            db,
+            current_user,
+            agent,
+            requested_agent_id,
+            task,
+            instructions,
+        )
+
+    tools = build_workspace_tools(context, agent_tool_executor=_agent_tool_executor)
 
     async def event_gen() -> AsyncIterator[dict[str, str]]:
         try:
