@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.group import Group
 from app.models.group_member import GroupMember
+from app.models.group_note import GroupNote
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.services import group_workspace_file_service
@@ -486,6 +487,152 @@ async def test_group_workspace_files_authorize_members_but_use_owner_workspace(
         headers=non_member_headers,
     )
     assert r.status_code == 403
+
+
+async def test_group_notes_are_stored_in_workspace_notes_directory(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    auth_headers: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "notes-workspace"
+    workspace_root.mkdir()
+    workspace_id = await _create_workspace_at(client, auth_headers, workspace_root)
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"name": "Workspace Notes", "workspace_id": workspace_id},
+    )
+    assert r.status_code == 201, r.text
+    group_id = r.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/groups/{group_id}/notes",
+        headers=auth_headers,
+        json={"title": "Brief", "content": "first draft"},
+    )
+    assert r.status_code == 201, r.text
+    note = r.json()
+    note_path = workspace_root / "Notes" / f"{note['id']}.md"
+    assert note_path.read_text(encoding="utf-8") == "first draft"
+    db_note = await db_session.scalar(select(GroupNote).where(GroupNote.id == note["id"]))
+    assert db_note is not None
+    assert db_note.content == "first draft"
+
+    r = await client.get(f"/api/v1/groups/{group_id}/notes", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["content"] == "first draft"
+
+    r = await client.patch(
+        f"/api/v1/groups/{group_id}/notes/{note['id']}",
+        headers=auth_headers,
+        json={"content": "second draft"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == "second draft"
+    assert note_path.read_text(encoding="utf-8") == "second draft"
+    await db_session.refresh(db_note)
+    assert db_note.content == "second draft"
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files",
+        headers=auth_headers,
+        params={"path": "Notes"},
+    )
+    assert r.status_code == 200, r.text
+    assert [item["name"] for item in r.json()] == [f"{note['id']}.md"]
+
+    r = await client.delete(
+        f"/api/v1/groups/{group_id}/notes/{note['id']}",
+        headers=auth_headers,
+    )
+    assert r.status_code == 204, r.text
+    assert not note_path.exists()
+    r = await client.get(f"/api/v1/groups/{group_id}/notes", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json() == []
+
+
+async def test_group_notes_authorize_and_reject_unsafe_notes_path(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    auth_headers: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    owner = await db_session.scalar(select(User).where(User.id == me.json()["id"]))
+    assert owner is not None
+    workspace_root = tmp_path / "notes-safety"
+    workspace_root.mkdir()
+    outside = tmp_path / "outside-notes"
+    outside.mkdir()
+    notes_link = workspace_root / "Notes"
+    try:
+        notes_link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("filesystem does not allow directory symlinks")
+    workspace = Workspace(owner_id=owner.id, name="Unsafe notes", local_path=str(workspace_root))
+    group = Group(owner_id=owner.id, workspace_id=workspace.id, name="Unsafe notes")
+    db_session.add_all([workspace, group])
+    await db_session.flush()
+    db_session.add(GroupMember(group_id=group.id, user_id=owner.id, role="owner"))
+    await db_session.flush()
+
+    r = await client.post(
+        f"/api/v1/groups/{group.id}/notes",
+        headers=auth_headers,
+        json={"title": "Bad", "content": "escape"},
+    )
+    assert r.status_code == 400
+    assert not list(outside.iterdir())
+
+    other_headers = await _new_user_headers(client)
+    r = await client.get(f"/api/v1/groups/{group.id}/notes", headers=other_headers)
+    assert r.status_code == 403
+
+
+async def test_group_notes_reject_missing_and_non_local_workspace(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    auth_headers: dict[str, str],
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    owner = await db_session.scalar(select(User).where(User.id == me.json()["id"]))
+    assert owner is not None
+    no_workspace = Group(owner_id=owner.id, name="No notes workspace")
+    cloud_workspace = Workspace(
+        owner_id=owner.id,
+        name="Cloud notes workspace",
+        backend_type="cloud_sandbox",
+        sandbox_ref="sandbox-notes",
+    )
+    db_session.add_all([no_workspace, cloud_workspace])
+    await db_session.flush()
+    cloud_group = Group(
+        owner_id=owner.id, workspace_id=cloud_workspace.id, name="Cloud notes group"
+    )
+    db_session.add(cloud_group)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            GroupMember(group_id=no_workspace.id, user_id=owner.id, role="owner"),
+            GroupMember(group_id=cloud_group.id, user_id=owner.id, role="owner"),
+        ]
+    )
+    await db_session.flush()
+
+    r = await client.post(
+        f"/api/v1/groups/{no_workspace.id}/notes",
+        headers=auth_headers,
+        json={"title": "Missing", "content": "body"},
+    )
+    assert r.status_code == 400
+    r = await client.post(
+        f"/api/v1/groups/{cloud_group.id}/notes",
+        headers=auth_headers,
+        json={"title": "Cloud", "content": "body"},
+    )
+    assert r.status_code == 400
 
 
 async def test_group_workspace_files_reject_missing_and_non_local_workspace(
