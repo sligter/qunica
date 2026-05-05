@@ -13,7 +13,7 @@ import type { ClearGroupMessagesResponse, Message } from '@/types/api'
 export function useClearGroupMessages(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
-  const setHistory = useMessageStore((s) => s.setHistory)
+  const clearGroupMessages = useMessageStore((s) => s.clearGroupMessages)
   return useMutation({
     mutationFn: () =>
       fetchJson<ClearGroupMessagesResponse>(`/groups/${groupId}/messages/clear`, {
@@ -22,7 +22,8 @@ export function useClearGroupMessages(groupId: string | undefined) {
       }),
     onSuccess: () => {
       if (groupId) {
-        setHistory(groupId, [])
+        qc.setQueryData(['groups', groupId, 'messages'], [])
+        clearGroupMessages(groupId)
         void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
       }
     },

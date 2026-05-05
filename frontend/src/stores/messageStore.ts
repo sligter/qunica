@@ -54,6 +54,7 @@ interface MessageState {
   resumingMessageIds: Set<string>
 
   setHistory: (groupId: string, messages: Message[]) => void
+  clearGroupMessages: (groupId: string) => void
   appendMessage: (groupId: string, message: Message) => void
   patchInFlight: (groupId: string, agentId: string, delta: string) => void
   finalizeInFlight: (groupId: string, message: Message) => void
@@ -83,6 +84,15 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => ({
       byGroup: { ...s.byGroup, [groupId]: messages },
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
+      warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
+      toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
+    })),
+
+  clearGroupMessages: (groupId) =>
+    set((s) => ({
+      byGroup: { ...s.byGroup, [groupId]: [] },
+      inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
+      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
