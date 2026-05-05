@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { MessageItem } from '@/components/chat/MessageItem'
+import { cn } from '@/lib/utils'
 import { useMessageStore, type ToolActivity } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
@@ -12,6 +13,20 @@ const EMPTY_MESSAGES: readonly Message[] = []
 const EMPTY_INFLIGHT: Record<string, never> = {}
 const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_TOOL_ACTIVITY: readonly ToolActivity[] = []
+
+function toolStatusLabel(status: ToolActivity['status']): string {
+  return status.replace(/_/g, ' ')
+}
+
+function toolStatusClasses(status: ToolActivity['status']): string {
+  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+  if (status === 'started') return 'border-blue-200 bg-blue-50 text-blue-700'
+  if (status === 'failed') return 'border-destructive/30 bg-destructive/10 text-destructive'
+  if (status === 'input_required' || status === 'approval_required') {
+    return 'border-amber-200 bg-amber-50 text-amber-700'
+  }
+  return 'border-border bg-background text-muted-foreground'
+}
 
 export function MessageList({ groupId }: MessageListProps) {
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
@@ -77,15 +92,35 @@ export function MessageList({ groupId }: MessageListProps) {
         </div>
       )}
       {toolActivity.length > 0 && (
-        <div className="mx-4 mt-2 space-y-1 rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
-          {toolActivity.slice(-3).map((activity) => (
-            <div key={activity.id} className="flex items-center justify-between gap-3">
-              <span>
-                <span className="font-medium text-foreground">{activity.display_name}</span>{' '}
-                {activity.status === 'started' ? 'is using' : 'used'}{' '}
-                <span className="font-medium text-foreground">{activity.tool_name}</span>
-              </span>
-              <span className="shrink-0 capitalize">{activity.status}</span>
+        <div className="mx-4 mt-2 space-y-2 rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
+          {toolActivity.slice(-4).map((activity) => (
+            <div key={activity.id} className="rounded-md border border-border bg-background/80 p-2">
+              <div className="flex items-center justify-between gap-3">
+                <span>
+                  <span className="font-medium text-foreground">{activity.display_name || 'Agent'}</span>{' '}
+                  {activity.status === 'started' ? 'is using' : 'used'}{' '}
+                  <span className="font-medium text-foreground">{activity.tool_name || 'Unknown tool'}</span>
+                </span>
+                <span
+                  className={cn(
+                    'shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize',
+                    toolStatusClasses(activity.status),
+                  )}
+                >
+                  {toolStatusLabel(activity.status)}
+                </span>
+              </div>
+              {activity.args_summary && (
+                <div className="mt-1 break-words">
+                  <span className="font-medium text-foreground">Args:</span> {activity.args_summary}
+                </div>
+              )}
+              {activity.result_summary && (
+                <div className="mt-1 break-words">
+                  <span className="font-medium text-foreground">Result:</span>{' '}
+                  {activity.result_summary}
+                </div>
+              )}
             </div>
           ))}
         </div>

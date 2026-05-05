@@ -51,7 +51,7 @@ from app.agents.context import (
     build_agent_invocation_context,
 )
 from app.agents.router import resolve_all_mentions
-from app.agents.runtime import RuntimeToolEvent
+from app.agents.runtime import RuntimeToolEvent, RuntimeWaitForUser
 from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db import SessionLocal
@@ -439,6 +439,19 @@ def _agent_identity_payload(agent: Agent, group_agent: GroupAgent) -> dict[str, 
     }
 
 
+def _is_waiting_for_user_response(response: AIMessage) -> bool:
+    return bool(response.additional_kwargs.get("waiting_for_user"))
+
+
+def _waiting_message_from_response(response: AIMessage) -> str:
+    message = response.additional_kwargs.get("waiting_message")
+    return str(message) if message else WAITING_FOR_USER_WARNING
+
+
+def _tool_event_waits_for_user(tool_event: RuntimeToolEvent) -> bool:
+    return tool_event.tool_name == "AskUser" and tool_event.status == "input_required"
+
+
 def _serialize_tool_event(
     tool_event: RuntimeToolEvent, agent: Agent, group_agent: GroupAgent
 ) -> dict[str, Any]:
@@ -530,12 +543,20 @@ async def send_message(
             try:
                 input_messages, context = await _build_invocation(db, group, group_agent, agent)
                 chat_model = await resolve_chat_model(db, agent, streaming=False)
+                tool_requested_wait = False
+
+                async def _record_tool_event(tool_event: RuntimeToolEvent) -> None:
+                    nonlocal tool_requested_wait
+                    if _tool_event_waits_for_user(tool_event):
+                        tool_requested_wait = True
+
                 response: AIMessage = await runtime.run(
                     graph=graph,
                     thread_id=str(chat_thread.id),
                     chat_model=chat_model,
                     input_messages=input_messages,
                     workspace_tools=build_workspace_tools(context),
+                    tool_event_callback=_record_tool_event,
                 )
                 text = (
                     response.content
@@ -559,11 +580,13 @@ async def send_message(
                 visible_replies_used += 1
                 spoke_this_round = True
                 last_visible_agent_id = agent.id
-                waiting_for_user = _requests_human_input(
-                    visible_text, human_names, sender_name
+                waiting_for_user = (
+                    tool_requested_wait
+                    or _is_waiting_for_user_response(response)
+                    or _requests_human_input(visible_text, human_names, sender_name)
                 )
                 if waiting_for_user:
-                    warnings.append(WAITING_FOR_USER_WARNING)
+                    warnings.append(_waiting_message_from_response(response))
                 await thread_service.mark_completed(db, chat_thread)
                 if waiting_for_user:
                     break
@@ -629,7 +652,7 @@ async def _stream_one_agent(
                     "data": json.dumps(_serialize_tool_event(payload, agent, group_agent)),
                 }
             elif kind == "token":
-                chunks.append(payload)
+                chunks.append(str(payload))
                 visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
                 if len(visible_so_far) <= emitted_visible_len:
                     continue
@@ -641,6 +664,11 @@ async def _stream_one_agent(
                         {"agent_id": agent_id_str, "delta": delta}
                     ),
                 }
+            elif kind == "waiting_for_user" and isinstance(payload, RuntimeWaitForUser):
+                # The final response is still persisted below; emit the public
+                # waiting event after that message so frontend ordering remains
+                # agent_message -> waiting_for_user -> done.
+                continue
             elif kind == "done":
                 final: AIMessage = payload
                 text = (
@@ -672,10 +700,12 @@ async def _stream_one_agent(
                         "event": "agent_message",
                         "data": json.dumps(_serialize_msg(agent_msg)),
                     }
-                    if _requests_human_input(visible_text, human_names, sender_name):
+                    if _is_waiting_for_user_response(final) or _requests_human_input(
+                        visible_text, human_names, sender_name
+                    ):
                         yield {
                             "event": "waiting_for_user",
-                            "data": json.dumps({"message": WAITING_FOR_USER_WARNING}),
+                            "data": json.dumps({"message": _waiting_message_from_response(final)}),
                         }
         await thread_service.mark_completed(db, chat_thread)
     except asyncio.CancelledError:

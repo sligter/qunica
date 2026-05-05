@@ -639,6 +639,135 @@ async def test_tool_loop_allows_more_than_five_sequential_tool_calls(
     assert sum(isinstance(message, ToolMessage) for message in calls[-1]) == 6
 
 
+async def test_ask_user_tool_call_sets_non_stream_waiting_for_user(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="I need your input before continuing.",
+                tool_calls=[
+                    {
+                        "name": "AskUser",
+                        "args": {"question": "Please upload the draft.", "required": True},
+                        "id": "ask-1",
+                    }
+                ],
+            ),
+            AIMessage(content="SHOULD NOT CALL"),
+        ],
+    )
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=3,
+        workspace_path=tmp_path,
+    )
+    patch = await client.patch(
+        f"/api/v1/agents/{agents[0][0]}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"ask_user": {"enabled": True}}}},
+    )
+    assert patch.status_code == 200, patch.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["waiting_for_user"] is True
+    assert body["warnings"] == ["Human input requested: Please upload the draft."]
+    assert [reply["content"] for reply in body["agent_replies"]] == [
+        "I need your input before continuing."
+    ]
+    assert len(calls) == 1
+
+
+async def test_stream_ask_user_emits_intermediate_text_tool_result_and_waiting(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="I need your input before continuing.",
+                tool_calls=[
+                    {
+                        "name": "AskUser",
+                        "args": {"question": "Please paste the missing outline.", "required": True},
+                        "id": "ask-stream-1",
+                    }
+                ],
+            ),
+            AIMessage(content="SHOULD NOT CALL"),
+        ],
+    )
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=3,
+        workspace_path=tmp_path,
+    )
+    patch = await client.patch(
+        f"/api/v1/agents/{agents[0][0]}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"ask_user": {"enabled": True}}}},
+    )
+    assert patch.status_code == 200, patch.text
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    event_names = [event for event, _data in events]
+    tokens = [json.loads(data)["delta"] for event, data in events if event == "token"]
+    result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
+
+    assert "I need your input before continuing." in "".join(tokens)
+    assert event_names.index("token") < event_names.index("tool_call_start")
+    assert event_names.index("tool_call_result") < event_names.index("agent_message")
+    assert event_names.index("agent_message") < event_names.index("waiting_for_user")
+    assert event_names.index("waiting_for_user") < event_names.index("done")
+    assert result_payloads[0]["tool_name"] == "AskUser"
+    assert result_payloads[0]["status"] == "input_required"
+    assert (
+        result_payloads[0]["result_summary"]
+        == "Human input requested: Please paste the missing outline."
+    )
+    assert event_names.count("agent_message") == 1
+    assert event_names.count("agent_start") == 1
+
+
+async def test_stream_native_tool_loop_emits_intermediate_text_before_tool_events(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "notes.txt").write_text("notes", encoding="utf-8")
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="I'll inspect the workspace first. ",
+                tool_calls=[{"name": "Glob", "args": {"pattern": "*"}, "id": "glob-text-1"}],
+            ),
+            AIMessage(content="The workspace contains notes.txt."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    events = await _stream_events(client, auth_headers, group_id, "@Echo list files")
+    event_names = [event for event, _data in events]
+    tokens = [json.loads(data)["delta"] for event, data in events if event == "token"]
+
+    assert event_names.index("token") < event_names.index("tool_call_start")
+    assert "I'll inspect the workspace first. " in "".join(tokens)
+    assert "The workspace contains notes.txt." in "".join(tokens)
+
+
 async def test_stream_native_tool_loop_emits_live_tool_events_before_final_message(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
 ) -> None:

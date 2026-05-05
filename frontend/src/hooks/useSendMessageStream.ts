@@ -17,7 +17,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { openSseStream } from '@/lib/sse'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
-import type { ActiveAgent, ToolActivity } from '@/stores/messageStore'
+import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 interface TokenPayload {
@@ -36,14 +36,25 @@ interface WaitingForUserPayload {
 }
 
 interface ToolCallPayload {
-  agent_id: string
-  display_name: string
-  tool_call_id: string
-  tool_name: string
-  status: 'started' | 'completed' | 'failed' | 'unavailable'
+  agent_id?: string
+  display_name?: string
+  tool_call_id?: string
+  tool_name?: string
+  status?: ToolActivityStatus
   args_summary?: string
   result_summary?: string
 }
+
+const TOOL_ACTIVITY_STATUSES = new Set<ToolActivityStatus>([
+  'started',
+  'completed',
+  'failed',
+  'unavailable',
+  'setup_required',
+  'workspace_required',
+  'input_required',
+  'approval_required',
+])
 
 function safeJson<T>(raw: string): T | null {
   try {
@@ -51,6 +62,12 @@ function safeJson<T>(raw: string): T | null {
   } catch {
     return null
   }
+}
+
+function normalizeToolStatus(status: unknown): ToolActivityStatus {
+  return typeof status === 'string' && TOOL_ACTIVITY_STATUSES.has(status as ToolActivityStatus)
+    ? (status as ToolActivityStatus)
+    : 'unavailable'
 }
 
 export function useSendMessageStream(groupId: string | undefined) {
@@ -126,14 +143,16 @@ export function useSendMessageStream(groupId: string | undefined) {
             }
             if (event === 'tool_call_start' || event === 'tool_call_result') {
               const payload = safeJson<ToolCallPayload>(data)
-              if (payload) {
+              if (payload?.tool_call_id) {
+                const status = normalizeToolStatus(payload.status)
                 const activity: ToolActivity = {
-                  id: `${payload.tool_call_id}:${payload.status}:${Date.now()}`,
-                  agent_id: payload.agent_id,
-                  display_name: payload.display_name,
-                  tool_name: payload.tool_name,
-                  status: payload.status,
-                  summary: event === 'tool_call_start' ? payload.args_summary : payload.result_summary,
+                  id: payload.tool_call_id,
+                  agent_id: payload.agent_id ?? 'unknown-agent',
+                  display_name: payload.display_name ?? 'Agent',
+                  tool_name: payload.tool_name ?? 'Unknown tool',
+                  status,
+                  args_summary: payload.args_summary,
+                  result_summary: payload.result_summary,
                 }
                 pushToolActivity(groupId, activity)
               }

@@ -25,13 +25,24 @@ export interface ActiveAgent {
   total: number
 }
 
+export type ToolActivityStatus =
+  | 'started'
+  | 'completed'
+  | 'failed'
+  | 'unavailable'
+  | 'setup_required'
+  | 'workspace_required'
+  | 'input_required'
+  | 'approval_required'
+
 export interface ToolActivity {
   id: string
   agent_id: string
   display_name: string
   tool_name: string
-  status: 'started' | 'completed' | 'failed' | 'unavailable'
-  summary?: string
+  status: ToolActivityStatus
+  args_summary?: string
+  result_summary?: string
 }
 
 interface MessageState {
@@ -161,12 +172,22 @@ export const useMessageStore = create<MessageState>((set) => ({
     })),
 
   pushToolActivity: (groupId, activity) =>
-    set((s) => ({
-      toolActivityByGroup: {
-        ...s.toolActivityByGroup,
-        [groupId]: [...(s.toolActivityByGroup[groupId] ?? []), activity].slice(-8),
-      },
-    })),
+    set((s) => {
+      const existing = s.toolActivityByGroup[groupId] ?? []
+      const index = existing.findIndex((item) => item.id === activity.id)
+      const next =
+        index === -1
+          ? [...existing, activity]
+          : existing.map((item, itemIndex) =>
+              itemIndex === index ? { ...item, ...activity } : item,
+            )
+      return {
+        toolActivityByGroup: {
+          ...s.toolActivityByGroup,
+          [groupId]: next.slice(-8),
+        },
+      }
+    }),
 
   clearToolActivity: (groupId) =>
     set((s) => ({

@@ -17,10 +17,10 @@ Two public entrypoints:
   `("done", AIMessage)`.
 """
 
+import json
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-import json
 from typing import Any, Literal, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -36,7 +36,16 @@ from app.core.exceptions import LLMProviderError
 
 _CHAT_MODEL_KEY = "chat_model"
 TOOL_LOOP_REPEATED_CALL_LIMIT = 8
-ToolEventStatus = Literal["started", "completed", "failed", "unavailable"]
+ToolEventStatus = Literal[
+    "started",
+    "completed",
+    "failed",
+    "unavailable",
+    "setup_required",
+    "workspace_required",
+    "input_required",
+    "approval_required",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +55,11 @@ class RuntimeToolEvent:
     status: ToolEventStatus
     args_summary: str | None = None
     result_summary: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWaitForUser:
+    message: str
 
 
 MAX_TOOL_SUMMARY_LENGTH = 240
@@ -119,6 +133,23 @@ def _bounded_summary(value: str, limit: int = MAX_TOOL_SUMMARY_LENGTH) -> str:
 
 
 def _result_summary(name: str | None, result: str) -> str:
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        status = str(payload.get("status") or "").upper()
+        message = payload.get("message")
+        if status in {
+            "WAITING_FOR_USER",
+            "INPUT_REQUESTED",
+            "SETUP_REQUIRED",
+            "WORKSPACE_REQUIRED",
+            "APPROVAL_REQUIRED",
+            "FAILED",
+            "ERROR",
+        } and isinstance(message, str):
+            return _bounded_summary(message)
     if name == "Read" and not result.startswith("Tool "):
         line_count = len(result.splitlines())
         return _bounded_summary(f"Read completed; returned {line_count} numbered lines.")
@@ -140,7 +171,17 @@ def _result_status(name: str | None, result: str) -> ToolEventStatus:
         return "completed"
     if isinstance(payload, dict):
         status = str(payload.get("status") or "").upper()
-        if status in {"SETUP_REQUIRED", "WORKSPACE_REQUIRED", "NOT_FOUND"}:
+        if status == "WAITING_FOR_USER":
+            return "input_required"
+        if status == "INPUT_REQUESTED":
+            return "input_required"
+        if status == "SETUP_REQUIRED":
+            return "setup_required"
+        if status == "WORKSPACE_REQUIRED":
+            return "workspace_required"
+        if status == "APPROVAL_REQUIRED":
+            return "approval_required"
+        if status == "NOT_FOUND":
             return "unavailable"
         if status in {"FAILED", "ERROR"}:
             return "failed"
@@ -165,6 +206,36 @@ def _repeated_call_guard_message(name: str | None) -> str:
     )
 
 
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content) if content is not None else ""
+
+
+def _wait_for_user_from_result(result: str) -> RuntimeWaitForUser | None:
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    status = str(payload.get("status") or "").upper()
+    if status != "WAITING_FOR_USER":
+        return None
+    message = payload.get("message")
+    return RuntimeWaitForUser(str(message) if message else "Waiting for your input")
+
+
 async def _invoke_once(
     graph: _Graph,
     thread_id: str,
@@ -187,7 +258,7 @@ async def _execute_tool_calls(
     tool_calls: list[Any],
     tools: dict[str, Any],
     tool_event_callback: Any | None = None,
-) -> AsyncIterator[tuple[RuntimeToolEvent, ToolMessage | None]]:
+) -> AsyncIterator[tuple[RuntimeToolEvent, ToolMessage | RuntimeWaitForUser | None]]:
     for index, tool_call in enumerate(tool_calls):
         tool_call_dict = cast(dict[str, Any], tool_call)
         name = _tool_call_name(tool_call_dict)
@@ -217,6 +288,10 @@ async def _execute_tool_calls(
         )
         if tool_event_callback is not None:
             await tool_event_callback(result_event)
+        wait_for_user = _wait_for_user_from_result(result)
+        if wait_for_user is not None:
+            yield result_event, wait_for_user
+            return
         yield result_event, ToolMessage(content=result, tool_call_id=call_id)
 
 
@@ -249,6 +324,12 @@ async def run(
             tools=tools,
             tool_event_callback=tool_event_callback,
         ):
+            if isinstance(result, RuntimeWaitForUser):
+                content = _message_text(response.content).strip() or result.message
+                return AIMessage(
+                    content=content,
+                    additional_kwargs={"waiting_for_user": True, "waiting_message": result.message},
+                )
             if result is not None:
                 messages.append(result)
 
@@ -290,6 +371,9 @@ async def run_with_stream(
                     yield ("token", guarded.content)
                     yield ("done", guarded)
                     return
+            interim_content = _message_text(final.content)
+            if interim_content:
+                yield ("token", interim_content)
             messages.append(final)
             async for tool_event, result in _execute_tool_calls(
                 tool_calls=tool_calls,
@@ -297,6 +381,18 @@ async def run_with_stream(
                 tool_event_callback=tool_event_callback,
             ):
                 yield ("tool_event", tool_event)
+                if isinstance(result, RuntimeWaitForUser):
+                    content = interim_content.strip() or result.message
+                    waiting = AIMessage(
+                        content=content,
+                        additional_kwargs={
+                            "waiting_for_user": True,
+                            "waiting_message": result.message,
+                        },
+                    )
+                    yield ("waiting_for_user", result)
+                    yield ("done", waiting)
+                    return
                 if result is not None:
                     messages.append(result)
     config = _config_for(thread_id, chat_model)
