@@ -338,6 +338,28 @@ export interface GroupFileRead {
   created_at: string
 }
 
+export interface GroupWorkspaceFileRead {
+  path: string
+  name: string
+  is_dir: boolean
+  size: number | null
+  modified_at: string | null
+}
+
+export interface GroupWorkspaceFilePreview {
+  path: string
+  name: string
+  is_text: boolean
+  content: string | null
+  truncated: boolean
+  message: string | null
+  size: number | null
+}
+
+export interface GroupWorkspaceFileRename {
+  new_path: string
+}
+
 export interface GroupNoteRead {
   id: string
   group_id: string

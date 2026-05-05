@@ -1,8 +1,16 @@
+import os
 import secrets
 from pathlib import Path
 from typing import cast
 
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.group import Group
+from app.models.group_member import GroupMember
+from app.models.user import User
+from app.models.workspace import Workspace
 
 
 async def _new_user_headers(client: AsyncClient) -> dict[str, str]:
@@ -19,9 +27,7 @@ async def _new_user_headers(client: AsyncClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
-async def _configure_group_root(
-    client: AsyncClient, headers: dict[str, str], root: Path
-) -> str:
+async def _configure_group_root(client: AsyncClient, headers: dict[str, str], root: Path) -> str:
     r = await client.patch(
         "/api/v1/settings/system",
         headers=headers,
@@ -31,18 +37,22 @@ async def _configure_group_root(
     return cast(str, r.json()["group_workspace_root"])
 
 
-async def _create_workspace(client: AsyncClient, headers: dict[str, str]) -> str:
+async def _create_workspace_at(client: AsyncClient, headers: dict[str, str], path: Path) -> str:
     r = await client.post(
         "/api/v1/workspaces",
         headers=headers,
         json={
             "name": "Test repo",
             "backend_type": "local",
-            "local_path": str(Path.cwd()),
+            "local_path": str(path),
         },
     )
     assert r.status_code == 201, r.text
     return cast(str, r.json()["id"])
+
+
+async def _create_workspace(client: AsyncClient, headers: dict[str, str]) -> str:
+    return await _create_workspace_at(client, headers, Path.cwd())
 
 
 async def _create_agent(client: AsyncClient, headers: dict[str, str], name: str) -> str:
@@ -86,16 +96,12 @@ async def test_create_group_auto_creates_dedicated_workspace(
 
     # The dedicated workspace is owned by the same user and points at the
     # auto-created directory.
-    r = await client.get(
-        f"/api/v1/workspaces/{workspace_id}", headers=auth_headers
-    )
+    r = await client.get(f"/api/v1/workspaces/{workspace_id}", headers=auth_headers)
     assert r.status_code == 200, r.text
     assert r.json()["local_path"] == str(expected_dir.resolve())
 
     # Group agents endpoint should show Echo
-    r = await client.get(
-        f"/api/v1/groups/{body['id']}/agents", headers=auth_headers
-    )
+    r = await client.get(f"/api/v1/groups/{body['id']}/agents", headers=auth_headers)
     assert r.status_code == 200
     assert len(r.json()) == 1
     assert r.json()[0]["display_name"] == "Echo"
@@ -127,9 +133,7 @@ async def test_list_groups_only_returns_owned(
     client: AsyncClient, auth_headers: dict[str, str], tmp_path: Path
 ) -> None:
     await _configure_group_root(client, auth_headers, tmp_path)
-    r = await client.post(
-        "/api/v1/groups", headers=auth_headers, json={"name": "OwnedGroup"}
-    )
+    r = await client.post("/api/v1/groups", headers=auth_headers, json={"name": "OwnedGroup"})
     assert r.status_code == 201
     owned_id = r.json()["id"]
 
@@ -137,9 +141,7 @@ async def test_list_groups_only_returns_owned(
     other_root = tmp_path / "other"
     other_root.mkdir()
     await _configure_group_root(client, other_headers, other_root)
-    r = await client.post(
-        "/api/v1/groups", headers=other_headers, json={"name": "OtherGroup"}
-    )
+    r = await client.post("/api/v1/groups", headers=other_headers, json={"name": "OtherGroup"})
     other_id = r.json()["id"]
 
     r = await client.get("/api/v1/groups", headers=auth_headers)
@@ -152,9 +154,7 @@ async def test_get_group_as_non_member_forbidden(
     client: AsyncClient, auth_headers: dict[str, str], tmp_path: Path
 ) -> None:
     await _configure_group_root(client, auth_headers, tmp_path)
-    r = await client.post(
-        "/api/v1/groups", headers=auth_headers, json={"name": "P"}
-    )
+    r = await client.post("/api/v1/groups", headers=auth_headers, json={"name": "P"})
     group_id = r.json()["id"]
 
     other_headers = await _new_user_headers(client)
@@ -175,13 +175,236 @@ async def test_create_group_rejects_other_owner_workspace(
     assert r.status_code == 403
 
 
+async def test_group_workspace_file_list_preview_rename_delete(
+    client: AsyncClient, auth_headers: dict[str, str], tmp_path: Path
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "docs").mkdir()
+    (workspace_root / "docs" / "brief.txt").write_text("hello workspace", encoding="utf-8")
+    (workspace_root / "image.bin").write_bytes(b"\x00\x01\x02")
+    workspace_id = await _create_workspace_at(client, auth_headers, workspace_root)
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"name": "Workspace Files", "workspace_id": workspace_id},
+    )
+    assert r.status_code == 201, r.text
+    group_id = r.json()["id"]
+
+    r = await client.get(f"/api/v1/groups/{group_id}/workspace-files", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    names = [item["name"] for item in r.json()]
+    assert names == ["docs", "image.bin"]
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files/preview",
+        headers=auth_headers,
+        params={"path": "docs/brief.txt"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["is_text"] is True
+    assert r.json()["content"] == "hello workspace"
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/workspace-files/preview",
+        headers=auth_headers,
+        params={"path": "image.bin"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["is_text"] is False
+    assert "not available" in r.json()["message"]
+
+    r = await client.patch(
+        f"/api/v1/groups/{group_id}/workspace-files/rename",
+        headers=auth_headers,
+        params={"path": "docs/brief.txt"},
+        json={"new_path": "docs/renamed.txt"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == "docs/renamed.txt"
+    assert not (workspace_root / "docs" / "brief.txt").exists()
+    assert (workspace_root / "docs" / "renamed.txt").exists()
+
+    r = await client.delete(
+        f"/api/v1/groups/{group_id}/workspace-files",
+        headers=auth_headers,
+        params={"path": "docs/renamed.txt"},
+    )
+    assert r.status_code == 204, r.text
+    assert not (workspace_root / "docs" / "renamed.txt").exists()
+
+
+async def test_group_workspace_file_paths_must_stay_inside_workspace(
+    client: AsyncClient, auth_headers: dict[str, str], tmp_path: Path
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "safe.txt").write_text("safe", encoding="utf-8")
+    (workspace_root / "taken.txt").write_text("taken", encoding="utf-8")
+    (workspace_root / "full-dir").mkdir()
+    (workspace_root / "full-dir" / "nested.txt").write_text("nested", encoding="utf-8")
+    unsafe_paths = ["../outside.txt", "/tmp/outside.txt", "C:/tmp/outside.txt"]
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    try:
+        (workspace_root / "escape.txt").symlink_to(outside)
+    except OSError:
+        pass
+    else:
+        unsafe_paths.append("escape.txt")
+    workspace_id = await _create_workspace_at(client, auth_headers, workspace_root)
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={"name": "Workspace Safety", "workspace_id": workspace_id},
+    )
+    assert r.status_code == 201, r.text
+    group_id = r.json()["id"]
+
+    if os.name == "nt":
+        unsafe_paths.append("/C:/tmp/outside.txt")
+    for unsafe_path in unsafe_paths:
+        r = await client.get(
+            f"/api/v1/groups/{group_id}/workspace-files/preview",
+            headers=auth_headers,
+            params={"path": unsafe_path},
+        )
+        assert r.status_code == 400, unsafe_path
+
+    r = await client.patch(
+        f"/api/v1/groups/{group_id}/workspace-files/rename",
+        headers=auth_headers,
+        params={"path": "safe.txt"},
+        json={"new_path": "../renamed.txt"},
+    )
+    assert r.status_code == 400
+
+    r = await client.patch(
+        f"/api/v1/groups/{group_id}/workspace-files/rename",
+        headers=auth_headers,
+        params={"path": "safe.txt"},
+        json={"new_path": "taken.txt"},
+    )
+    assert r.status_code == 400
+
+    r = await client.patch(
+        f"/api/v1/groups/{group_id}/workspace-files/rename",
+        headers=auth_headers,
+        params={"path": ""},
+        json={"new_path": "root-moved"},
+    )
+    assert r.status_code == 400
+
+    r = await client.delete(
+        f"/api/v1/groups/{group_id}/workspace-files",
+        headers=auth_headers,
+        params={"path": ""},
+    )
+    assert r.status_code == 400
+
+    r = await client.delete(
+        f"/api/v1/groups/{group_id}/workspace-files",
+        headers=auth_headers,
+        params={"path": "full-dir"},
+    )
+    assert r.status_code == 400
+    assert (workspace_root / "full-dir").is_dir()
+
+
+async def test_group_workspace_files_authorize_members_but_use_owner_workspace(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    auth_headers: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    owner_id = me.json()["id"]
+    owner = await db_session.scalar(select(User).where(User.id == owner_id))
+    assert owner is not None
+    workspace_root = tmp_path / "owner-workspace"
+    workspace_root.mkdir()
+    (workspace_root / "shared.txt").write_text("member can read", encoding="utf-8")
+    workspace = Workspace(owner_id=owner.id, name="Owner workspace", local_path=str(workspace_root))
+    db_session.add(workspace)
+    await db_session.flush()
+    group = Group(owner_id=owner.id, workspace_id=workspace.id, name="Shared workspace")
+    db_session.add(group)
+    await db_session.flush()
+    member_headers = await _new_user_headers(client)
+    member_me = await client.get("/api/v1/auth/me", headers=member_headers)
+    member = await db_session.scalar(select(User).where(User.id == member_me.json()["id"]))
+    assert member is not None
+    db_session.add_all(
+        [
+            GroupMember(group_id=group.id, user_id=owner.id, role="owner"),
+            GroupMember(group_id=group.id, user_id=member.id, role="member"),
+        ]
+    )
+    await db_session.flush()
+
+    r = await client.get(
+        f"/api/v1/groups/{group.id}/workspace-files/preview",
+        headers=member_headers,
+        params={"path": "shared.txt"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == "member can read"
+
+    non_member_headers = await _new_user_headers(client)
+    r = await client.get(
+        f"/api/v1/groups/{group.id}/workspace-files",
+        headers=non_member_headers,
+    )
+    assert r.status_code == 403
+
+
+async def test_group_workspace_files_reject_missing_and_non_local_workspace(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    auth_headers: dict[str, str],
+) -> None:
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    owner_id = me.json()["id"]
+    owner = await db_session.scalar(select(User).where(User.id == owner_id))
+    assert owner is not None
+    no_workspace = Group(owner_id=owner.id, name="No workspace")
+    cloud_workspace = Workspace(
+        owner_id=owner.id,
+        name="Cloud workspace",
+        backend_type="cloud_sandbox",
+        sandbox_ref="sandbox-1",
+    )
+    db_session.add_all([no_workspace, cloud_workspace])
+    await db_session.flush()
+    cloud_group = Group(owner_id=owner.id, workspace_id=cloud_workspace.id, name="Cloud group")
+    db_session.add(cloud_group)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            GroupMember(group_id=no_workspace.id, user_id=owner.id, role="owner"),
+            GroupMember(group_id=cloud_group.id, user_id=owner.id, role="owner"),
+        ]
+    )
+    await db_session.flush()
+
+    r = await client.get(
+        f"/api/v1/groups/{no_workspace.id}/workspace-files",
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    r = await client.get(
+        f"/api/v1/groups/{cloud_group.id}/workspace-files",
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+
+
 async def test_add_agent_to_group_uses_display_name_fallback(
     client: AsyncClient, auth_headers: dict[str, str], tmp_path: Path
 ) -> None:
     await _configure_group_root(client, auth_headers, tmp_path)
-    r = await client.post(
-        "/api/v1/groups", headers=auth_headers, json={"name": "G"}
-    )
+    r = await client.post("/api/v1/groups", headers=auth_headers, json={"name": "G"})
     group_id = r.json()["id"]
     agent_id = await _create_agent(client, auth_headers, "Helper")
     r = await client.post(

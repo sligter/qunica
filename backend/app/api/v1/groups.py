@@ -27,9 +27,20 @@ from app.schemas.group import (
 )
 from app.schemas.group_file import GroupFileRead
 from app.schemas.group_note import GroupNoteCreate, GroupNoteRead, GroupNoteUpdate
+from app.schemas.group_workspace_file import (
+    GroupWorkspaceFilePreview,
+    GroupWorkspaceFileRead,
+    GroupWorkspaceFileRename,
+)
 from app.schemas.message import MessageCreate, MessageRead, MessageSendResponse
 from app.schemas.user import UserRead
-from app.services import group_file_service, group_note_service, group_service, message_service
+from app.services import (
+    group_file_service,
+    group_note_service,
+    group_service,
+    group_workspace_file_service,
+    message_service,
+)
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
@@ -327,6 +338,56 @@ async def delete_group_file(
     current_user: User = Depends(get_current_user),
 ) -> None:
     await group_file_service.delete_file(db, group_id, file_id, current_user)
+
+
+# --- workspace files in group ---
+
+
+@router.get("/{group_id}/workspace-files", response_model=list[GroupWorkspaceFileRead])
+async def list_group_workspace_files(
+    group_id: UUID,
+    path: str = "",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[GroupWorkspaceFileRead]:
+    return await group_workspace_file_service.list_workspace_files(
+        db, group_id, current_user, path
+    )
+
+
+@router.get("/{group_id}/workspace-files/preview", response_model=GroupWorkspaceFilePreview)
+async def preview_group_workspace_file(
+    group_id: UUID,
+    path: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupWorkspaceFilePreview:
+    return await group_workspace_file_service.preview_workspace_file(
+        db, group_id, current_user, path
+    )
+
+
+@router.patch("/{group_id}/workspace-files/rename", response_model=GroupWorkspaceFileRead)
+async def rename_group_workspace_file(
+    group_id: UUID,
+    path: str,
+    data: GroupWorkspaceFileRename,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupWorkspaceFileRead:
+    return await group_workspace_file_service.rename_workspace_file(
+        db, group_id, current_user, path, data.new_path
+    )
+
+
+@router.delete("/{group_id}/workspace-files", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group_workspace_file(
+    group_id: UUID,
+    path: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await group_workspace_file_service.delete_workspace_file(db, group_id, current_user, path)
 
 
 # --- notes in group ---

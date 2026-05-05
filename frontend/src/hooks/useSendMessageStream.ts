@@ -98,6 +98,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const invalidate = useCallback(() => {
     if (!groupId) return
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+    void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
   }, [groupId, qc])
 
   const send = useCallback(
@@ -134,6 +135,7 @@ export function useSendMessageStream(groupId: string | undefined) {
             if (event === 'agent_message') {
               const msg = safeJson<Message>(data)
               if (msg) finalizeInFlight(groupId, msg)
+              void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
               return
             }
             if (event === 'agent_silent') {
@@ -155,6 +157,9 @@ export function useSendMessageStream(groupId: string | undefined) {
                   result_summary: payload.result_summary,
                 }
                 pushToolActivity(groupId, activity)
+                if (event === 'tool_call_result') {
+                  void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+                }
               }
               return
             }
@@ -217,6 +222,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       patchInFlight,
       pushToolActivity,
       pushWarning,
+      qc,
       setActiveAgent,
       token,
     ],

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { File, NotebookPen, Settings, UsersRound } from 'lucide-react'
+import { Files, File, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucide-react'
 
 import { Composer } from '@/components/chat/Composer'
 import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
+import { GroupWorkspaceFilesPanel } from '@/components/chat/GroupWorkspaceFilesPanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { Button } from '@/components/ui/button'
 import { useGroup } from '@/hooks/useGroups'
@@ -20,6 +21,7 @@ export function GroupChatPage() {
   const stream = useSendMessageStream(groupId)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(true)
 
   useEffect(() => {
     if (groupId) clearWarnings(groupId)
@@ -63,7 +65,19 @@ export function GroupChatPage() {
               <UsersRound className="h-4 w-4" />
             </Link>
           </Button>
-          <Button variant="ghost" size="icon" asChild aria-label="Group files">
+          <Button
+            variant={workspaceFilesOpen ? 'secondary' : 'ghost'}
+            size="icon"
+            onClick={() => setWorkspaceFilesOpen((open) => !open)}
+            aria-label={workspaceFilesOpen ? 'Hide workspace files' : 'Show workspace files'}
+          >
+            {workspaceFilesOpen ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <Files className="h-4 w-4" />
+            )}
+          </Button>
+          <Button variant="ghost" size="icon" asChild aria-label="Uploaded group files">
             <Link to={`/groups/${groupId}/files`}>
               <File className="h-4 w-4" />
             </Link>
@@ -86,25 +100,30 @@ export function GroupChatPage() {
 
       {group.data?.announcement && (
         <div className="shrink-0 border-b border-border bg-card px-6 py-2 text-xs text-muted-foreground">
-          📣 {group.data.announcement}
+          Announcement: {group.data.announcement}
         </div>
       )}
 
-      <MessageList groupId={groupId} />
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <MessageList groupId={groupId} />
 
-      {stream.error && (
-        <div className="border-t border-border bg-red-50 px-6 py-2 text-xs text-red-700">
-          Stream error: {stream.error}
+          {stream.error && (
+            <div className="border-t border-border bg-red-50 px-6 py-2 text-xs text-red-700">
+              Stream error: {stream.error}
+            </div>
+          )}
+
+          <Composer
+            isStreaming={stream.isStreaming}
+            onSend={stream.send}
+            onCancel={stream.cancel}
+            hint={hint}
+            groupAgents={agents}
+          />
         </div>
-      )}
-
-      <Composer
-        isStreaming={stream.isStreaming}
-        onSend={stream.send}
-        onCancel={stream.cancel}
-        hint={hint}
-        groupAgents={agents}
-      />
+        {workspaceFilesOpen && <GroupWorkspaceFilesPanel groupId={groupId} />}
+      </div>
 
       {group.data && (
         <GroupSettingsDialog
