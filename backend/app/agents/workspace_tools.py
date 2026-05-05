@@ -21,7 +21,8 @@ MAX_GLOB_RESULTS = 200
 MAX_GREP_RESULTS = 200
 MAX_FILE_BYTES = 1_000_000
 MAX_WRITE_BYTES = 1_000_000
-MAX_BASH_TIMEOUT_SECONDS = 10
+DEFAULT_BASH_TIMEOUT_SECONDS = 600
+MAX_BASH_TIMEOUT_SECONDS = 3_600
 MAX_BASH_OUTPUT_CHARS = 12_000
 MAX_FETCH_BYTES = 500_000
 MAX_FETCH_CHARS = 20_000
@@ -242,10 +243,16 @@ def _guard_bash_command(command: str, root: Path) -> None:
                 _resolve_inside(root, target)
 
 
-def _run_bash(root: Path, command: str, timeout_seconds: int = MAX_BASH_TIMEOUT_SECONDS) -> str:
+def _run_bash(
+    root: Path,
+    command: str,
+    timeout_seconds: int = DEFAULT_BASH_TIMEOUT_SECONDS,
+) -> str:
+    if timeout_seconds is None:
+        timeout_seconds = DEFAULT_BASH_TIMEOUT_SECONDS
     if timeout_seconds < 1 or timeout_seconds > MAX_BASH_TIMEOUT_SECONDS:
         raise WorkspaceToolError(
-            f"timeout_seconds must be between 1 and {MAX_BASH_TIMEOUT_SECONDS}"
+            f"timeout_seconds must be between 1 and {MAX_BASH_TIMEOUT_SECONDS} when provided"
         )
     _guard_bash_command(command, root)
     try:
@@ -527,9 +534,7 @@ def build_workspace_tools(
                 )
             if action in {"inspect", "activate"} and skill_name:
                 matched_skills = [
-                    skill
-                    for skill in context.mounted_skills
-                    if skill.name == skill_name
+                    skill for skill in context.mounted_skills if skill.name == skill_name
                 ]
                 matched = [
                     {
@@ -676,7 +681,7 @@ def build_workspace_tools(
 
             @tool("Bash")
             def bash_unconfigured(
-                command: str, timeout_seconds: int = MAX_BASH_TIMEOUT_SECONDS
+                command: str, timeout_seconds: int = DEFAULT_BASH_TIMEOUT_SECONDS
             ) -> str:
                 """Return a workspace-required result when no local workspace is configured."""
 
@@ -747,7 +752,7 @@ def build_workspace_tools(
     if "Bash" in enabled:
 
         @tool("Bash")
-        def bash(command: str, timeout_seconds: int = MAX_BASH_TIMEOUT_SECONDS) -> str:
+        def bash(command: str, timeout_seconds: int = DEFAULT_BASH_TIMEOUT_SECONDS) -> str:
             """Run a guarded shell command in the workspace root with bounded output."""
 
             return _run_bash(root, command, timeout_seconds=timeout_seconds)

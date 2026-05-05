@@ -32,7 +32,8 @@ DEFAULT_RUNTIME_LIMITS: dict[str, int] = {
     "context_history_messages": 20,
     "tool_iterations": 5,
     "file_mutation_bytes": 1_000_000,
-    "bash_timeout_seconds": 10,
+    "bash_default_timeout_seconds": 600,
+    "bash_max_timeout_seconds": 3_600,
     "fetch_bytes": 500_000,
 }
 
@@ -287,7 +288,8 @@ def _render_workspace_context(
         "may execute with bounded safeguards. Literal XML-like tool markup in text is not "
         "executed. Workspace file and shell tools are rooted at the resolved local workspace "
         "and reject absolute paths, traversal, and root escapes. Bash commands run in the "
-        "workspace with timeout/output limits and destructive command guards. Fetch is "
+        "workspace with output limits, destructive command guards, and a generous default "
+        "timeout that can be overridden with timeout_seconds. Fetch is "
         "limited to bounded text http/https GET requests. WebSearch uses configured Tavily "
         "credentials or a configured Playwright-backed search service when available and "
         "otherwise returns a controlled setup-required tool result. AskUser returns a "

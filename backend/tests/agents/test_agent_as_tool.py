@@ -1,8 +1,11 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.builtin_tools import (
@@ -11,12 +14,20 @@ from app.agents.builtin_tools import (
     normalize_tool_config,
 )
 from app.agents.context import AgentInvocationContext, build_agent_invocation_context
-from app.agents.workspace_tools import bind_workspace_tools, build_workspace_tools
+from app.agents.workspace_tools import (
+    bind_workspace_tools,
+    build_workspace_tools,
+    execute_workspace_tool,
+)
 from app.core.exceptions import AgentChatError
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.agent import AgentUpdate
 from app.services.agent_service import update_agent
+
+
+def _local_workspace(path: Path) -> SimpleNamespace:
+    return SimpleNamespace(backend_type="local", local_path=str(path.resolve()))
 
 
 async def test_context_includes_bound_assistant_agents(db_session: AsyncSession) -> None:
@@ -71,6 +82,65 @@ async def test_agent_as_tool_executes_bound_delegate() -> None:
 
     assert calls == [(str(helper_id), "summarize", "brief")]
     assert "helper answer" in str(result)
+
+
+async def test_bash_tool_accepts_timeout_above_ten_seconds_for_delegated_workflows(
+    tmp_path: Path,
+) -> None:
+    context = object.__new__(AgentInvocationContext)
+    object.__setattr__(context, "workspace", _local_workspace(tmp_path))
+    object.__setattr__(context, "executable_tools", ["Bash"])
+    object.__setattr__(context, "mounted_skills", [])
+
+    tools = build_workspace_tools(context)
+    result = execute_workspace_tool(
+        tools,
+        "Bash",
+        {"command": "python -c \"print('ppt task ready')\"", "timeout_seconds": 60},
+    )
+
+    args_schema = tools["Bash"].args_schema
+    assert isinstance(args_schema, type) and issubclass(args_schema, BaseModel)
+    bash_schema = args_schema.model_json_schema()
+    timeout_schema = bash_schema["properties"]["timeout_seconds"]
+
+    assert "ppt task ready" in result
+    assert "timeout_seconds must be between 1 and 10" not in result
+    assert timeout_schema.get("maximum") is None
+    assert timeout_schema.get("exclusiveMaximum") is None
+    assert timeout_schema.get("default") == 600
+
+
+async def test_bash_tool_allows_omitted_timeout_for_delegated_workflows(tmp_path: Path) -> None:
+    context = object.__new__(AgentInvocationContext)
+    object.__setattr__(context, "workspace", _local_workspace(tmp_path))
+    object.__setattr__(context, "executable_tools", ["Bash"])
+    object.__setattr__(context, "mounted_skills", [])
+
+    tools = build_workspace_tools(context)
+    result = execute_workspace_tool(
+        tools,
+        "Bash",
+        {"command": "python -c \"print('default timeout remains bounded')\""},
+    )
+
+    assert "default timeout remains bounded" in result
+
+
+async def test_bash_tool_rejects_excessive_timeout(tmp_path: Path) -> None:
+    context = object.__new__(AgentInvocationContext)
+    object.__setattr__(context, "workspace", _local_workspace(tmp_path))
+    object.__setattr__(context, "executable_tools", ["Bash"])
+    object.__setattr__(context, "mounted_skills", [])
+
+    tools = build_workspace_tools(context)
+    too_large_result = execute_workspace_tool(
+        tools,
+        "Bash",
+        {"command": "python -c \"print('should not run')\"", "timeout_seconds": 3601},
+    )
+
+    assert "timeout_seconds must be between 1 and 3600" in too_large_result
 
 
 async def test_agent_as_tool_and_run_sub_agent_bind_unique_provider_names() -> None:

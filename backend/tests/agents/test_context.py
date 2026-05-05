@@ -134,6 +134,8 @@ async def test_context_distinguishes_executable_tools_from_saved_only_tools(
     assert "WebSearch uses configured Tavily" in context.system_prompt
     assert "AskUser returns a non-blocking WAITING_FOR_USER result" in context.system_prompt
     assert "Bash commands run in the workspace" in context.system_prompt
+    assert "generous default timeout" in context.system_prompt
+    assert "can be overridden with timeout_seconds" in context.system_prompt
 
 
 async def test_every_catalog_builtin_selected_is_executable_in_context(
@@ -149,10 +151,7 @@ async def test_every_catalog_builtin_selected_is_executable_in_context(
         local_path="/repo",
     )
     db_session.add(workspace)
-    all_enabled = {
-        tool.id: AgentToolSelection(enabled=True)
-        for tool in list_builtin_tools()
-    }
+    all_enabled = {tool.id: AgentToolSelection(enabled=True) for tool in list_builtin_tools()}
     agent = Agent(
         owner_id=user.id,
         name="Nova",
@@ -257,9 +256,7 @@ async def test_controlled_runtime_tools_bind_and_execute_without_provider_config
     assert "WAITING_FOR_USER" in execute_workspace_tool(
         tools, "AskUser", {"question": "Please provide the draft."}
     )
-    assert "SETUP_REQUIRED" in execute_workspace_tool(
-        tools, "WebSearch", {"query": "current news"}
-    )
+    assert "SETUP_REQUIRED" in execute_workspace_tool(tools, "WebSearch", {"query": "current news"})
     assert "SETUP_REQUIRED" in execute_workspace_tool(
         tools, "GenerateImage", {"prompt": "a slide hero"}
     )
@@ -314,7 +311,9 @@ async def test_web_search_uses_configured_tavily_provider(
 
     monkeypatch.setattr(httpx, "Client", MockClient)
     monkeypatch.setattr("app.agents.workspace_tools.settings.tavily_api_key", "test-key")
-    monkeypatch.setattr("app.agents.workspace_tools.settings.tavily_search_url", "https://tavily.test/search")
+    monkeypatch.setattr(
+        "app.agents.workspace_tools.settings.tavily_search_url", "https://tavily.test/search"
+    )
     monkeypatch.setattr("app.agents.workspace_tools.settings.playwright_search_url", "")
     context = await build_agent_invocation_context(db_session, agent, user)
     tools = build_workspace_tools(context)
@@ -358,7 +357,9 @@ async def test_web_search_uses_configured_playwright_provider(
 
     monkeypatch.setattr(httpx, "Client", MockClient)
     monkeypatch.setattr("app.agents.workspace_tools.settings.tavily_api_key", "")
-    monkeypatch.setattr("app.agents.workspace_tools.settings.playwright_search_url", "https://search.test/query")
+    monkeypatch.setattr(
+        "app.agents.workspace_tools.settings.playwright_search_url", "https://search.test/query"
+    )
     context = await build_agent_invocation_context(db_session, agent, user)
     tools = build_workspace_tools(context)
 
@@ -390,12 +391,8 @@ async def test_every_catalog_builtin_binds_without_workspace(
     tools = build_workspace_tools(context)
 
     assert set(tools) == {tool.name for tool in list_builtin_tools()}
-    assert "WORKSPACE_REQUIRED" in execute_workspace_tool(
-        tools, "Read", {"file_path": "README.md"}
-    )
-    assert "WORKSPACE_REQUIRED" in execute_workspace_tool(
-        tools, "Bash", {"command": "pwd"}
-    )
+    assert "WORKSPACE_REQUIRED" in execute_workspace_tool(tools, "Read", {"file_path": "README.md"})
+    assert "WORKSPACE_REQUIRED" in execute_workspace_tool(tools, "Bash", {"command": "pwd"})
 
 
 async def test_group_workspace_sharing_switches_context_source(
