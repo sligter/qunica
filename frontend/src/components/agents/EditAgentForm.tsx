@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { z } from 'zod'
 
+import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
@@ -11,7 +12,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
-import { Textarea } from '@/components/ui/textarea'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
@@ -75,6 +75,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
     (workspace) => workspace.id === form.watch('workspace_id'),
   )
   const currentToolConfig = mergeToolConfig(tools, toolConfig)
+  const systemPromptField = form.register('system_prompt')
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
@@ -115,7 +116,15 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="ea-prompt">System prompt</Label>
-        <Textarea id="ea-prompt" rows={6} {...form.register('system_prompt')} />
+        <SystemPromptMentionTextarea
+          id="ea-prompt"
+          rows={6}
+          value={form.watch('system_prompt')}
+          onChange={(value) => form.setValue('system_prompt', value, { shouldDirty: true, shouldValidate: true })}
+          onBlur={systemPromptField.onBlur}
+          name={systemPromptField.name}
+          inputRef={systemPromptField.ref}
+        />
         {form.formState.errors.system_prompt && (
           <p className="text-xs text-red-600">
             {form.formState.errors.system_prompt.message}

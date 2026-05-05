@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { z } from 'zod'
 
+import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { createDefaultToolConfig } from '@/components/agents/toolConfig'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
@@ -11,7 +12,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
-import { Textarea } from '@/components/ui/textarea'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
 import { useCreateAgent } from '@/hooks/useCreateAgent'
 import { useProviders } from '@/hooks/useProviders'
@@ -75,6 +75,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
     (workspace) => workspace.id === form.watch('workspace_id'),
   )
   const currentToolConfig = toolConfig ?? createDefaultToolConfig(tools)
+  const systemPromptField = form.register('system_prompt')
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
@@ -124,11 +125,15 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="agent-system-prompt">System prompt</Label>
-        <Textarea
+        <SystemPromptMentionTextarea
           id="agent-system-prompt"
           rows={5}
-          placeholder="You are a concise assistant. Always end with the word DONE."
-          {...form.register('system_prompt')}
+          placeholder="You are a concise assistant. Type @ to insert Agent or Team context."
+          value={form.watch('system_prompt')}
+          onChange={(value) => form.setValue('system_prompt', value, { shouldDirty: true, shouldValidate: true })}
+          onBlur={systemPromptField.onBlur}
+          name={systemPromptField.name}
+          inputRef={systemPromptField.ref}
         />
         {form.formState.errors.system_prompt && (
           <p className="text-xs text-red-600">
