@@ -2,6 +2,13 @@ import { useMemo, useState } from 'react'
 import { ChevronLeft, File, Folder, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import {
   useDeleteGroupWorkspaceFile,
@@ -37,6 +44,7 @@ function displayError(error: unknown) {
 export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceFilesPanelProps) {
   const [currentPath, setCurrentPath] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [renaming, setRenaming] = useState<GroupWorkspaceFileRead | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const files = useGroupWorkspaceFiles(groupId, currentPath)
@@ -56,23 +64,38 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
   const submitRename = () => {
     if (!hasGroupId || !renaming || !renameValue.trim()) return
     const oldPath = renaming.path
+    const wasPreviewOpen = isPreviewOpen && selectedPath !== null
     void rename
       .mutateAsync({ path: oldPath, newPath: renameValue.trim() })
       .then((next) => {
         setRenaming(null)
-        setSelectedPath((path) => (path === oldPath ? next.path : path))
+        setSelectedPath((path) => {
+          if (path === oldPath) return next.path
+          if (path?.startsWith(`${oldPath}/`)) return `${next.path}${path.slice(oldPath.length)}`
+          return path
+        })
+        setIsPreviewOpen(wasPreviewOpen)
         if (parentPath(oldPath) !== parentPath(next.path)) {
           setCurrentPath(parentPath(next.path))
         }
       })
   }
 
-  const deletePath = (path: string) => {
+  const deletePath = (file: GroupWorkspaceFileRead) => {
     if (!hasGroupId) return
-    const confirmed = window.confirm(`Delete ${path}?`)
+    const confirmed = window.confirm(`Delete ${file.path}?`)
     if (!confirmed) return
-    void del.mutateAsync(path).then(() => {
-      setSelectedPath((selected) => (selected === path ? null : selected))
+    void del.mutateAsync(file.path).then(() => {
+      const deletesSelectedPath =
+        selectedPath === file.path || (file.is_dir && selectedPath?.startsWith(`${file.path}/`))
+      setSelectedPath((selected) => {
+        if (selected === file.path) return null
+        if (file.is_dir && selected?.startsWith(`${file.path}/`)) return null
+        return selected
+      })
+      if (deletesSelectedPath) {
+        setIsPreviewOpen(false)
+      }
     })
   }
 
@@ -131,9 +154,9 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
                   onClick={() => {
                     if (file.is_dir) {
                       setCurrentPath(file.path)
-                      setSelectedPath(null)
                     } else {
                       setSelectedPath(file.path)
+                      setIsPreviewOpen(true)
                     }
                   }}
                 >
@@ -162,7 +185,7 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100"
-                  onClick={() => deletePath(file.path)}
+                  onClick={() => deletePath(file)}
                   disabled={del.isPending}
                   aria-label={`Delete ${file.name}`}
                 >
@@ -174,25 +197,39 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
         )}
       </div>
 
-      <div className="max-h-[45%] shrink-0 border-t border-border p-3">
-        <h3 className="mb-2 truncate text-xs font-semibold text-muted-foreground">
-          {selectedPath ? `Preview: ${selectedPath}` : 'Preview'}
-        </h3>
-        {!selectedPath && <p className="text-xs text-muted-foreground">Select a text-like file to preview it.</p>}
-        {selectedPath && preview.isLoading && <p className="text-xs text-muted-foreground">Loading preview…</p>}
-        {selectedPath && preview.error && (
-          <p className="text-xs text-destructive">{displayError(preview.error)}</p>
-        )}
-        {preview.data && !preview.data.is_text && (
-          <p className="text-xs text-muted-foreground">{preview.data.message ?? 'Preview is not available.'}</p>
-        )}
-        {preview.data?.is_text && (
-          <pre className="max-h-56 overflow-auto rounded-md bg-muted p-2 text-[11px] leading-relaxed text-foreground whitespace-pre-wrap">
-            {preview.data.content}
-            {preview.data.truncated ? '\n… Preview truncated.' : ''}
-          </pre>
-        )}
-      </div>
+      <Dialog open={isPreviewOpen && selectedPath !== null} onOpenChange={setIsPreviewOpen}>
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-0">
+          <DialogHeader className="border-b border-border px-6 py-4 pr-12">
+            <DialogTitle className="truncate text-base">
+              {selectedPath ?? 'File preview'}
+            </DialogTitle>
+            <DialogDescription>
+              Preview is bounded by the server and may be truncated for large files.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-40 overflow-y-auto px-6 py-4">
+            {selectedPath && preview.isLoading && (
+              <p className="text-sm text-muted-foreground">Loading preview…</p>
+            )}
+            {selectedPath && preview.error && (
+              <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                {displayError(preview.error)}
+              </p>
+            )}
+            {preview.data && !preview.data.is_text && (
+              <p className="rounded-md border border-border bg-muted/50 p-3 text-sm text-muted-foreground">
+                {preview.data.message ?? 'Preview is not available for this file.'}
+              </p>
+            )}
+            {preview.data?.is_text && (
+              <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed whitespace-pre-wrap break-words text-foreground">
+                {preview.data.content}
+                {preview.data.truncated ? '\n… Preview truncated.' : ''}
+              </pre>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {renaming && (
         <div className="border-t border-border p-3">
