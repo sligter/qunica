@@ -196,6 +196,8 @@ async def update_group(
         group.proactive_mode = data.proactive_mode
     if data.proactive_max_rounds is not None:
         group.proactive_max_rounds = data.proactive_max_rounds
+    if data.proactive_reply_multiplier is not None:
+        group.proactive_reply_multiplier = data.proactive_reply_multiplier
     if data.allow_agent_free_mention is not None:
         group.allow_agent_free_mention = data.allow_agent_free_mention
 

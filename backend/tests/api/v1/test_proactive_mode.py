@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -23,7 +24,7 @@ async def _setup(
     *,
     free_speech: bool = False,
     proactive_mode: bool = True,
-    proactive_max_rounds: int = 1,
+    proactive_reply_multiplier: int = 1,
 ) -> tuple[str, list[tuple[str, str]]]:
     workspace = await client.post(
         "/api/v1/workspaces",
@@ -69,10 +70,11 @@ async def _setup(
         json={
             "free_speech": free_speech,
             "proactive_mode": proactive_mode,
-            "proactive_max_rounds": proactive_max_rounds,
+            "proactive_reply_multiplier": proactive_reply_multiplier,
         },
     )
     assert patch.status_code == 200, patch.text
+    assert patch.json()["proactive_reply_multiplier"] == proactive_reply_multiplier
     return group_id, agents
 
 
@@ -158,7 +160,7 @@ async def test_all_silent_emits_silence_event(
         auth_headers,
         ("Echo", "Mirror"),
         free_speech=True,
-        proactive_max_rounds=3,
+        proactive_reply_multiplier=3,
     )
 
     events = await _stream_events(client, auth_headers, group_id, "hello group")
@@ -241,11 +243,11 @@ async def test_multi_round_continues_when_someone_spoke(
         auth_headers,
         ("Echo", "Mirror"),
         free_speech=True,
-        proactive_max_rounds=2,
+        proactive_reply_multiplier=2,
     )
     monkeypatch.setattr(
         "app.services.message_service.random.sample",
-        lambda population, *, k: list(population),
+        lambda population, *, k: sorted(population, key=lambda item: item[1].name),
     )
 
     events = await _stream_events(client, auth_headers, group_id, "hello group")
@@ -253,7 +255,7 @@ async def test_multi_round_continues_when_someone_spoke(
     messages = await _messages(client, auth_headers, group_id)
     agent_messages = [message for message in messages if message["sender_type"] == "agent"]
 
-    assert [message["sender_id"] for message in agent_messages] == [agents[0][0], agents[1][0]]
+    assert [message["sender_id"] for message in agent_messages] == [agents[0][0], agents[0][0]]
     assert [message["content"] for message in agent_messages] == ["hi", "now I want in"]
     assert event_names.count("agent_silent") == 2
     assert "silence" not in event_names
@@ -271,7 +273,7 @@ async def test_multi_round_stops_early_on_full_silence(
         auth_headers,
         ("Echo", "Mirror"),
         free_speech=True,
-        proactive_max_rounds=3,
+        proactive_reply_multiplier=3,
     )
 
     events = await _stream_events(client, auth_headers, group_id, "hello group")
@@ -283,7 +285,7 @@ async def test_multi_round_stops_early_on_full_silence(
     assert [message["content"] for message in agent_messages] == ["echo 1", "mirror 1"]
 
 
-async def test_max_rounds_validation_rejects_out_of_range(
+async def test_reply_multiplier_validation_rejects_too_low_and_has_no_upper_bound(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
     group_id, _agents = await _setup(client, auth_headers)
@@ -291,23 +293,17 @@ async def test_max_rounds_validation_rejects_out_of_range(
     too_low = await client.patch(
         f"/api/v1/groups/{group_id}",
         headers=auth_headers,
-        json={"proactive_max_rounds": 0},
+        json={"proactive_reply_multiplier": 0},
     )
-    too_high = await client.patch(
+    valid_large = await client.patch(
         f"/api/v1/groups/{group_id}",
         headers=auth_headers,
-        json={"proactive_max_rounds": 6},
-    )
-    valid = await client.patch(
-        f"/api/v1/groups/{group_id}",
-        headers=auth_headers,
-        json={"proactive_max_rounds": 3},
+        json={"proactive_reply_multiplier": 50},
     )
 
     assert too_low.status_code == 422
-    assert too_high.status_code == 422
-    assert valid.status_code == 200
-    assert valid.json()["proactive_max_rounds"] == 3
+    assert valid_large.status_code == 200
+    assert valid_large.json()["proactive_reply_multiplier"] == 50
 
 
 async def test_round_order_join_then_random(
@@ -315,13 +311,13 @@ async def test_round_order_join_then_random(
     auth_headers: dict[str, str],
     monkeypatch: Any,
 ) -> None:
-    _patch_llm_script(monkeypatch, ["A1", "B1", "C1", "C2", "A2", "B2"])
+    _patch_llm_script(monkeypatch, ["A1", "B1", "C1", "A2", "C2", "B2"])
     group_id, agents = await _setup(
         client,
         auth_headers,
         ("A", "B", "C"),
         free_speech=True,
-        proactive_max_rounds=2,
+        proactive_reply_multiplier=2,
     )
 
     def reverse_sample(population: Sequence[Any], *, k: int) -> list[Any]:
@@ -338,15 +334,230 @@ async def test_round_order_join_then_random(
         agents[0][0],
         agents[1][0],
         agents[2][0],
-        agents[2][0],
         agents[0][0],
+        agents[2][0],
         agents[1][0],
     ]
     assert [message["content"] for message in agent_messages] == [
         "A1",
         "B1",
         "C1",
-        "C2",
         "A2",
+        "C2",
         "B2",
+    ]
+
+
+async def test_non_stream_rotates_previous_visible_speaker_after_other_candidate(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["first 1", "<SILENT>", "other 2", "first 2"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=2,
+    )
+
+    def previous_speaker_first_sample(population: Sequence[Any], *, k: int) -> list[Any]:
+        assert k == len(population)
+        return list(population)
+
+    monkeypatch.setattr(
+        "app.services.message_service.random.sample",
+        previous_speaker_first_sample,
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+    first_agent_id = agent_messages[0]["sender_id"]
+    other_agent_id = agents[1][0] if first_agent_id == agents[0][0] else agents[0][0]
+
+    assert [message["sender_id"] for message in agent_messages] == [
+        first_agent_id,
+        other_agent_id,
+        first_agent_id,
+    ]
+    assert [message["content"] for message in agent_messages] == [
+        "first 1",
+        "other 2",
+        "first 2",
+    ]
+
+
+async def test_visible_reply_budget_caps_non_stream_replies(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(
+        monkeypatch,
+        ["E1", "M1", "E2", "M2", "E3", "M3", "SHOULD NOT CALL"],
+    )
+    group_id, _agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=3,
+    )
+    monkeypatch.setattr(
+        "app.services.message_service.random.sample",
+        lambda population, *, k: sorted(population, key=lambda item: item[1].name),
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+    assert [message["content"] for message in agent_messages] == [
+        "E1",
+        "M1",
+        "E2",
+        "M2",
+        "E3",
+        "M3",
+    ]
+
+
+async def test_silent_turns_do_not_consume_visible_reply_budget(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["E1", "<SILENT>", "M2", "E2", "M3", "SHOULD NOT CALL"])
+    group_id, _agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=2,
+    )
+    calls = 0
+
+    def rotating_sample(population: Sequence[Any], *, k: int) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        assert k == len(population)
+        if calls == 1:
+            return list(population)
+        return [population[1], population[0]]
+
+    monkeypatch.setattr("app.services.message_service.random.sample", rotating_sample)
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    event_names = [event for event, _data in events]
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+
+    assert event_names.count("agent_silent") == 1
+    assert event_names.count("agent_message") == 4
+    assert [message["content"] for message in agent_messages] == ["E1", "M2", "E2", "M3"]
+
+
+async def test_stream_visible_reply_budget_caps_replies(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(
+        monkeypatch,
+        ["E1", "M1", "E2", "M2", "E3", "M3", "SHOULD NOT CALL"],
+    )
+    group_id, _agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=3,
+    )
+    monkeypatch.setattr(
+        "app.services.message_service.random.sample",
+        lambda population, *, k: sorted(population, key=lambda item: item[1].name),
+    )
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    event_names = [event for event, _data in events]
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+
+    assert event_names.count("agent_message") == 6
+    assert [message["content"] for message in agent_messages] == [
+        "E1",
+        "M1",
+        "E2",
+        "M2",
+        "E3",
+        "M3",
+    ]
+
+
+async def test_stream_rotates_previous_visible_speaker_after_other_candidate(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["first 1", "<SILENT>", "other 2", "first 2"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo", "Mirror"),
+        free_speech=True,
+        proactive_reply_multiplier=2,
+    )
+
+    def previous_speaker_first_sample(population: Sequence[Any], *, k: int) -> list[Any]:
+        assert k == len(population)
+        return list(population)
+
+    monkeypatch.setattr(
+        "app.services.message_service.random.sample",
+        previous_speaker_first_sample,
+    )
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    agent_starts = [
+        json.loads(data)
+        for event, data in events
+        if event == "agent_start"
+    ]
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+
+    first_agent_id = agent_messages[0]["sender_id"]
+    other_agent_id = agents[1][0] if first_agent_id == agents[0][0] else agents[0][0]
+
+    assert [start["agent_id"] for start in agent_starts] == [
+        first_agent_id,
+        other_agent_id,
+        other_agent_id,
+        first_agent_id,
+        other_agent_id,
+        first_agent_id,
+    ]
+
+    assert [message["sender_id"] for message in agent_messages] == [
+        first_agent_id,
+        other_agent_id,
+        first_agent_id,
+    ]
+    assert [message["content"] for message in agent_messages] == [
+        "first 1",
+        "other 2",
+        "first 2",
     ]

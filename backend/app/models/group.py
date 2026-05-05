@@ -15,6 +15,10 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
             "proactive_max_rounds BETWEEN 1 AND 5",
             name="ck_groups_proactive_max_rounds_range",
         ),
+        CheckConstraint(
+            "proactive_reply_multiplier >= 1",
+            name="ck_groups_proactive_reply_multiplier_min",
+        ),
     )
 
     owner_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
@@ -45,6 +49,12 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
         nullable=False,
     )
     proactive_max_rounds: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        server_default=text("1"),
+        nullable=False,
+    )
+    proactive_reply_multiplier: Mapped[int] = mapped_column(
         Integer,
         default=1,
         server_default=text("1"),

@@ -28,7 +28,7 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -289,6 +289,26 @@ def _is_silent_reply(group: Group, text: str) -> bool:
     return group.proactive_mode and text.strip() == SILENT_MARKER
 
 
+def _avoid_immediate_repeat_speaker(
+    participants: Sequence[tuple[GroupAgent, Agent]],
+    last_visible_agent_id: UUID | None,
+) -> list[tuple[GroupAgent, Agent]]:
+    ordered = list(participants)
+    if last_visible_agent_id is None or len(ordered) < 2:
+        return ordered
+    first_group_agent, first_agent = ordered[0]
+    if first_agent.id != last_visible_agent_id:
+        return ordered
+    for index, (_group_agent, agent) in enumerate(ordered[1:], start=1):
+        if agent.id != last_visible_agent_id:
+            return [
+                *ordered[1 : index + 1],
+                (first_group_agent, first_agent),
+                *ordered[index + 1 :],
+            ]
+    return ordered
+
+
 def _agent_identity_payload(agent: Agent, group_agent: GroupAgent) -> dict[str, str]:
     return {
         "agent_id": str(agent.id),
@@ -338,16 +358,28 @@ async def send_message(
     agent_replies: list[Message] = []
     warnings: list[str] = []
     silent_turns: list[SilentAgentTurn] = []
-    max_rounds = group.proactive_max_rounds if group.proactive_mode else 1
+    proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
+    visible_replies_used = 0
     spoke_previous_round = True
     round_idx = 0
-    while round_idx < max_rounds and spoke_previous_round:
+    last_visible_agent_id: UUID | None = None
+    while (not group.proactive_mode and round_idx < 1) or (
+        group.proactive_mode
+        and visible_replies_used < proactive_reply_budget
+        and spoke_previous_round
+    ):
         round_idx += 1
         spoke_this_round = False
-        round_participants = (
+        selected_participants = (
             resolved if round_idx == 1 else random.sample(resolved, k=len(resolved))
         )
+        round_participants = _avoid_immediate_repeat_speaker(
+            selected_participants,
+            last_visible_agent_id if group.proactive_mode else None,
+        )
         for group_agent, agent in round_participants:
+            if group.proactive_mode and visible_replies_used >= proactive_reply_budget:
+                break
             chat_thread = await thread_service.get_or_create_chat_thread(
                 db, group_id, agent.id, sender.id
             )
@@ -379,7 +411,9 @@ async def send_message(
                     db, group_id, agent, text, chat_thread.id, reply_to=user_msg.id
                 )
                 agent_replies.append(agent_msg)
+                visible_replies_used += 1
                 spoke_this_round = True
+                last_visible_agent_id = agent.id
                 await thread_service.mark_completed(db, chat_thread)
             except Exception as exc:
                 logger.exception("agent %s failed in group %s", agent.id, group_id)
@@ -531,17 +565,28 @@ async def send_message_stream(
 
     graph = request.app.state.graph
     emitted_agent_messages = 0
-    max_rounds = group.proactive_max_rounds if group.proactive_mode else 1
+    proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
     spoke_previous_round = True
     round_idx = 0
+    last_visible_agent_id: UUID | None = None
 
-    while round_idx < max_rounds and spoke_previous_round:
+    while (not group.proactive_mode and round_idx < 1) or (
+        group.proactive_mode
+        and emitted_agent_messages < proactive_reply_budget
+        and spoke_previous_round
+    ):
         round_idx += 1
         spoke_this_round = False
-        round_participants = (
+        selected_participants = (
             resolved if round_idx == 1 else random.sample(resolved, k=len(resolved))
         )
+        round_participants = _avoid_immediate_repeat_speaker(
+            selected_participants,
+            last_visible_agent_id if group.proactive_mode else None,
+        )
         for idx, (group_agent, agent) in enumerate(round_participants):
+            if group.proactive_mode and emitted_agent_messages >= proactive_reply_budget:
+                break
             display = group_agent.display_name or agent.name
             yield {
                 "event": "agent_start",
@@ -564,6 +609,7 @@ async def send_message_stream(
                     if event["event"] == "agent_message":
                         emitted_agent_messages += 1
                         spoke_this_round = True
+                        last_visible_agent_id = agent.id
                     yield event
             except asyncio.CancelledError:
                 raise

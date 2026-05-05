@@ -41,7 +41,9 @@ export function GroupSettingsDialog({
   const [announcement, setAnnouncement] = useState(group.announcement ?? '')
   const [freeSpeech, setFreeSpeech] = useState(group.free_speech)
   const [proactiveMode, setProactiveMode] = useState(group.proactive_mode)
-  const [proactiveMaxRounds, setProactiveMaxRounds] = useState(group.proactive_max_rounds)
+  const [proactiveReplyMultiplier, setProactiveReplyMultiplier] = useState(
+    group.proactive_reply_multiplier,
+  )
   const [allowFreeMention, setAllowFreeMention] = useState(group.allow_agent_free_mention)
 
   useEffect(() => {
@@ -49,7 +51,7 @@ export function GroupSettingsDialog({
     setAnnouncement(group.announcement ?? '')
     setFreeSpeech(group.free_speech)
     setProactiveMode(group.proactive_mode)
-    setProactiveMaxRounds(group.proactive_max_rounds)
+    setProactiveReplyMultiplier(group.proactive_reply_multiplier)
     setAllowFreeMention(group.allow_agent_free_mention)
   }, [group])
 
@@ -59,7 +61,7 @@ export function GroupSettingsDialog({
       announcement: announcement || null,
       free_speech: freeSpeech,
       proactive_mode: proactiveMode,
-      proactive_max_rounds: proactiveMaxRounds,
+      proactive_reply_multiplier: proactiveReplyMultiplier,
       allow_agent_free_mention: allowFreeMention,
     })
     onOpenChange(false)
@@ -73,13 +75,13 @@ export function GroupSettingsDialog({
   }
 
   const workspace = workspaces.data?.find((item) => item.id === group.workspace_id)
-  const setClampedProactiveRounds = (value: string) => {
+  const setMinimumProactiveReplyMultiplier = (value: string) => {
     const next = Number.parseInt(value, 10)
     if (Number.isNaN(next)) {
-      setProactiveMaxRounds(1)
+      setProactiveReplyMultiplier(1)
       return
     }
-    setProactiveMaxRounds(Math.min(5, Math.max(1, next)))
+    setProactiveReplyMultiplier(Math.max(1, next))
   }
 
   const onDelete = async () => {
@@ -155,19 +157,19 @@ export function GroupSettingsDialog({
 
             <div className="flex items-center justify-between gap-4">
               <div>
-                <Label htmlFor="gs-proactive-rounds">Max proactive rounds</Label>
+                <Label htmlFor="gs-proactive-reply-multiplier">Reply multiplier</Label>
                 <p className="text-xs text-muted-foreground">
-                  Up to {proactiveMaxRounds} rounds where each agent decides whether to add to the conversation. The loop ends early when everyone stays silent.
+                  Allows up to routed agents × {proactiveReplyMultiplier} visible replies. Silent
+                  turns do not count, and the loop ends early when everyone stays silent.
                 </p>
               </div>
               <Input
-                id="gs-proactive-rounds"
+                id="gs-proactive-reply-multiplier"
                 type="number"
                 min={1}
-                max={5}
                 step={1}
-                value={proactiveMaxRounds}
-                onChange={(e) => setClampedProactiveRounds(e.target.value)}
+                value={proactiveReplyMultiplier}
+                onChange={(e) => setMinimumProactiveReplyMultiplier(e.target.value)}
                 disabled={!proactiveMode}
                 className="w-20"
               />

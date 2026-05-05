@@ -23,6 +23,7 @@ class GroupUpdate(BaseModel):
     free_speech: bool | None = None
     proactive_mode: bool | None = None
     proactive_max_rounds: int | None = Field(default=None, ge=1, le=5)
+    proactive_reply_multiplier: int | None = Field(default=None, ge=1)
     allow_agent_free_mention: bool | None = None
 
 
@@ -60,6 +61,7 @@ class GroupRead(BaseModel):
     free_speech: bool
     proactive_mode: bool
     proactive_max_rounds: int
+    proactive_reply_multiplier: int
     allow_agent_free_mention: bool
     muted_agent_ids: list[UUID] | None
     admin_agent_ids: list[UUID] | None

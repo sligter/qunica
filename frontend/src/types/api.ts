@@ -202,6 +202,7 @@ export interface GroupRead {
   free_speech: boolean
   proactive_mode: boolean
   proactive_max_rounds: number
+  proactive_reply_multiplier: number
   allow_agent_free_mention: boolean
   muted_agent_ids: string[] | null
   admin_agent_ids: string[] | null
@@ -225,6 +226,7 @@ export interface GroupUpdate {
   free_speech?: boolean
   proactive_mode?: boolean
   proactive_max_rounds?: number
+  proactive_reply_multiplier?: number
   allow_agent_free_mention?: boolean
 }
 
