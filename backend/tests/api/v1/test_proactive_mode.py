@@ -1,11 +1,12 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from pydantic import Field
 
 
 def _patch_llm_script(monkeypatch: Any, messages: Sequence[str]) -> None:
@@ -17,6 +18,43 @@ def _patch_llm_script(monkeypatch: Any, messages: Sequence[str]) -> None:
     monkeypatch.setattr("app.services.message_service.resolve_chat_model", _resolve_factory)
 
 
+class RecordingFakeChatModel(GenericFakeChatModel):
+    shared_calls: ClassVar[list[list[BaseMessage]]] = []
+    calls: list[list[BaseMessage]] = Field(default_factory=list)
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:
+        if isinstance(input, list):
+            self.calls.append(list(input))
+            self.shared_calls.append(list(input))
+        result = await super().ainvoke(input, config=config, **kwargs)
+        assert isinstance(result, AIMessage)
+        return result
+
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> "RecordingFakeChatModel":
+        return self
+
+
+class NoBindRecordingFakeChatModel(RecordingFakeChatModel):
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> "NoBindRecordingFakeChatModel":
+        raise NotImplementedError
+
+
+def _patch_ai_message_script(
+    monkeypatch: Any,
+    messages: Sequence[AIMessage],
+    model_class: type[RecordingFakeChatModel] = RecordingFakeChatModel,
+) -> list[list[BaseMessage]]:
+    calls: list[list[BaseMessage]] = []
+    RecordingFakeChatModel.shared_calls = calls
+    script = iter(messages)
+
+    async def _resolve_factory(_db: Any, _agent: Any, *, streaming: bool = False) -> Any:
+        return model_class(messages=script, calls=calls)
+
+    monkeypatch.setattr("app.services.message_service.resolve_chat_model", _resolve_factory)
+    return calls
+
+
 async def _setup(
     client: AsyncClient,
     auth_headers: dict[str, str],
@@ -25,6 +63,7 @@ async def _setup(
     free_speech: bool = False,
     proactive_mode: bool = True,
     proactive_reply_multiplier: int = 1,
+    workspace_path: Path | None = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     workspace = await client.post(
         "/api/v1/workspaces",
@@ -32,7 +71,7 @@ async def _setup(
         json={
             "name": "Proactive repo",
             "backend_type": "local",
-            "local_path": str(Path.cwd()),
+            "local_path": str(workspace_path or Path.cwd()),
         },
     )
     assert workspace.status_code == 201, workspace.text
@@ -491,6 +530,239 @@ async def test_agent_visible_content_strips_reasoning_and_pseudo_tool_markup(
     assert "<think" not in content
     assert "<tool_call" not in content
     assert "Non-executed tool markup removed" in content
+
+
+async def test_native_glob_tool_call_executes_and_loops_to_final_message(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "deck.md").write_text("slides", encoding="utf-8")
+    (tmp_path / "brand.txt").write_text("brand", encoding="utf-8")
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Glob", "args": {"pattern": "*"}, "id": "glob-1"}],
+            ),
+            AIMessage(content="I found brand.txt and deck.md."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo list files"},
+    )
+
+    assert response.status_code == 201, response.text
+    content = response.json()["agent_replies"][0]["content"]
+    assert content == "I found brand.txt and deck.md."
+    assert "Non-executed tool markup removed" not in content
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage) and "brand.txt" in str(message.content)
+        for message in calls[1]
+    )
+
+
+async def test_tool_loop_degrades_safely_when_model_bind_tools_fails(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "deck.md").write_text("slides", encoding="utf-8")
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Glob", "args": {"pattern": "*"}, "id": "glob-1"}],
+            ),
+            AIMessage(content="I recovered after tool binding failed."),
+        ],
+        model_class=NoBindRecordingFakeChatModel,
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo list files"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["agent_replies"][0]["content"] == (
+        "I recovered after tool binding failed."
+    )
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage) and "deck.md" in str(message.content)
+        for message in calls[1]
+    )
+
+
+async def test_stream_native_tool_loop_emits_final_answer_without_placeholder(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "notes.txt").write_text("notes", encoding="utf-8")
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Glob", "args": {"pattern": "*"}, "id": "glob-1"}],
+            ),
+            AIMessage(content="The workspace contains notes.txt."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    events = await _stream_events(client, auth_headers, group_id, "@Echo list files")
+    tokens = [json.loads(data)["delta"] for event, data in events if event == "token"]
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+
+    assert "The workspace contains notes.txt." in "".join(tokens)
+    assert agent_messages[0]["content"] == "The workspace contains notes.txt."
+    assert "Non-executed tool markup removed" not in agent_messages[0]["content"]
+
+
+async def test_workspace_tool_rejects_traversal_and_returns_error_to_model(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "Read", "args": {"file_path": "../secret.txt"}, "id": "read-1"}
+                ],
+            ),
+            AIMessage(content="I cannot read outside the workspace."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo read outside"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage)
+        and "stay inside the workspace root" in str(message.content)
+        for message in calls[1]
+    )
+
+
+async def test_workspace_tool_rejects_windows_absolute_paths_on_posix(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "Read", "args": {"file_path": "C:/secret.txt"}, "id": "read-1"}
+                ],
+            ),
+            AIMessage(content="That absolute path is outside the workspace."),
+        ],
+    )
+    group_id, _agents = await _setup(client, auth_headers, workspace_path=tmp_path)
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo read outside"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, ToolMessage)
+        and "path must be relative to the workspace root" in str(message.content)
+        for message in calls[1]
+    )
+
+
+async def test_group_workspace_sharing_uses_group_workspace_for_tools(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    agent_root = tmp_path / "agent"
+    group_root = tmp_path / "group"
+    agent_root.mkdir()
+    group_root.mkdir()
+    (agent_root / "agent-only.txt").write_text("agent", encoding="utf-8")
+    (group_root / "group-only.txt").write_text("group", encoding="utf-8")
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "Glob", "args": {"pattern": "*"}, "id": "glob-1"}],
+            ),
+            AIMessage(content="I see group-only.txt."),
+        ],
+    )
+
+    agent_workspace = await client.post(
+        "/api/v1/workspaces",
+        headers=auth_headers,
+        json={"name": "Agent ws", "backend_type": "local", "local_path": str(agent_root)},
+    )
+    assert agent_workspace.status_code == 201, agent_workspace.text
+    group_workspace = await client.post(
+        "/api/v1/workspaces",
+        headers=auth_headers,
+        json={"name": "Group ws", "backend_type": "local", "local_path": str(group_root)},
+    )
+    assert group_workspace.status_code == 201, group_workspace.text
+    agent_response = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "Echo",
+            "system_prompt": "You are Echo.",
+            "workspace_id": agent_workspace.json()["id"],
+        },
+    )
+    assert agent_response.status_code == 201, agent_response.text
+    group_response = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "name": "SharedGroup",
+            "workspace_id": group_workspace.json()["id"],
+            "initial_agents": [agent_response.json()["id"]],
+        },
+    )
+    assert group_response.status_code == 201, group_response.text
+    group_id = cast(str, group_response.json()["id"])
+    toggle = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_response.json()['id']}/workspace-sharing",
+        headers=auth_headers,
+        json={"share_group_workspace": True},
+    )
+    assert toggle.status_code == 200, toggle.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Echo list files"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert any(
+        isinstance(message, ToolMessage)
+        and "group-only.txt" in str(message.content)
+        and "agent-only.txt" not in str(message.content)
+        for message in calls[1]
+    )
 
 
 async def test_stream_sanitization_resumes_after_internal_blocks(

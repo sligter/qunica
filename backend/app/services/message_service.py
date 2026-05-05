@@ -45,8 +45,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import runtime
-from app.agents.context import DEFAULT_RUNTIME_LIMITS, build_agent_system_message
+from app.agents.context import (
+    DEFAULT_RUNTIME_LIMITS,
+    AgentInvocationContext,
+    build_agent_invocation_context,
+)
 from app.agents.router import resolve_all_mentions
+from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db import SessionLocal
 from app.llm.chat_model import resolve_chat_model
@@ -319,13 +324,13 @@ def _requests_human_input(text: str, human_names: set[str], sender_name: str) ->
     return False
 
 
-async def _build_lc_input(
+async def _build_invocation(
     db: AsyncSession,
     group: Group,
     group_agent: GroupAgent,
     agent: Agent,
     extra_user_text: str | None = None,
-) -> list[BaseMessage]:
+) -> tuple[list[BaseMessage], AgentInvocationContext]:
     """Build the LangChain message list for an agent invocation.
 
     - system = shared agent context (prompt, group, workspace, tools, skills).
@@ -342,7 +347,7 @@ async def _build_lc_input(
     owner = await db.scalar(select(User).where(User.id == agent.owner_id))
     if owner is None:
         raise NotFoundError(f"user {agent.owner_id}")
-    system_message = await build_agent_system_message(
+    context = await build_agent_invocation_context(
         db,
         agent,
         owner,
@@ -350,6 +355,7 @@ async def _build_lc_input(
         group_agent=group_agent,
         runtime_limits={**DEFAULT_RUNTIME_LIMITS, "context_history_messages": CONTEXT_WINDOW},
     )
+    system_message = context.to_system_message()
 
     sender_names = await _build_sender_names(db, group.id)
     my_id = str(agent.id)
@@ -383,7 +389,20 @@ async def _build_lc_input(
             out.append(HumanMessage(content=f"{prefix}{m.content}"))
     if extra_user_text:
         out.append(HumanMessage(content=extra_user_text))
-    return out
+    return out, context
+
+
+async def _build_lc_input(
+    db: AsyncSession,
+    group: Group,
+    group_agent: GroupAgent,
+    agent: Agent,
+    extra_user_text: str | None = None,
+) -> list[BaseMessage]:
+    messages, _context = await _build_invocation(
+        db, group, group_agent, agent, extra_user_text=extra_user_text
+    )
+    return messages
 
 
 def _is_silent_reply(group: Group, text: str) -> bool:
@@ -489,13 +508,14 @@ async def send_message(
             )
             await thread_service.mark_running(db, chat_thread)
             try:
-                input_messages = await _build_lc_input(db, group, group_agent, agent)
+                input_messages, context = await _build_invocation(db, group, group_agent, agent)
                 chat_model = await resolve_chat_model(db, agent, streaming=False)
                 response: AIMessage = await runtime.run(
                     graph=graph,
                     thread_id=str(chat_thread.id),
                     chat_model=chat_model,
                     input_messages=input_messages,
+                    workspace_tools=build_workspace_tools(context),
                 )
                 text = (
                     response.content
@@ -570,13 +590,14 @@ async def _stream_one_agent(
     emitted_visible_len = 0
     cancelled = False
     try:
-        input_messages = await _build_lc_input(db, group, group_agent, agent)
+        input_messages, context = await _build_invocation(db, group, group_agent, agent)
         chat_model = await resolve_chat_model(db, agent, streaming=True)
         async for kind, payload in runtime.run_with_stream(
             graph=graph,
             thread_id=str(chat_thread.id),
             chat_model=chat_model,
             input_messages=input_messages,
+            workspace_tools=build_workspace_tools(context),
         ):
             if kind == "token":
                 chunks.append(payload)

@@ -1,7 +1,8 @@
 """Shared context assembly for direct and group agent invocations.
 
-This module only builds prompt/context metadata. It does not execute built-in
-workspace tools, mutate files, or grant runtime permissions.
+This module builds prompt/context metadata. Safe read-only workspace tools may
+execute in the runtime from the same resolved context; this module itself does
+not mutate files or grant risky runtime permissions.
 """
 
 from dataclasses import dataclass
@@ -55,8 +56,8 @@ async def build_agent_invocation_context(
 
     Includes the agent prompt, optional group announcement/context, workspace
     metadata, enabled built-in tools, mounted skill metadata/instructions, and
-    explicit runtime limits. Built-in tools are represented as prompt metadata
-    only; no risky tool execution is implemented here.
+    explicit runtime limits. Safe read-only tools can execute from this resolved
+    context; risky tool execution is not implemented.
     """
 
     limits = dict(DEFAULT_RUNTIME_LIMITS)
@@ -193,8 +194,10 @@ def _render_workspace_context(
         f"- backend_type: {backend_type}\n"
         f"- location: {location or 'not configured'}\n"
         f"- enabled built-in tools: {tools}\n"
-        "Built-in tools are declared for context only. This runtime does not execute "
-        "bash, write, edit, or other risky tools."
+        "Runtime tool execution: provider-native Read, Glob, and Grep calls may execute "
+        "read-only against the resolved local workspace when enabled. Literal XML-like "
+        "tool markup in text is not executed. Bash, write, edit, network, media, and "
+        "other risky tools are not implemented in this runtime."
     )
 
 
