@@ -1,5 +1,5 @@
 import json
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -8,6 +8,7 @@ from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from pydantic import Field
+from sqlalchemy import select
 
 
 def _patch_llm_script(monkeypatch: Any, messages: Sequence[str]) -> None:
@@ -1288,6 +1289,160 @@ async def test_group_workspace_sharing_uses_group_workspace_for_tools(
         and "agent-only.txt" not in str(message.content)
         for message in calls[1]
     )
+
+
+async def test_agent_as_tool_non_stream_persists_visible_dispatch_and_helper_identity(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    async def _fake_run(**kwargs: Any) -> AIMessage:
+        workspace_tools = kwargs["workspace_tools"]
+        input_messages = kwargs["input_messages"]
+        if "AgentAsTool" in workspace_tools:
+            result = await workspace_tools["AgentAsTool"].ainvoke(
+                {"agent_id": "Coder", "task": "整理工作目录", "instructions": "keep it brief"}
+            )
+            assert json.loads(result)["status"] == "DISPATCHED"
+            return AIMessage(content="I delegated this to Coder.")
+        assert any("@Coder 整理工作目录" in str(message.content) for message in input_messages)
+        return AIMessage(content="Tony completed the directory summary.")
+
+    monkeypatch.setattr("app.services.message_service.runtime.run", _fake_run)
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Coder"),
+        proactive_mode=False,
+        workspace_path=tmp_path,
+    )
+    mike_id, coder_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": coder_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Mike 调用你的助手整理下工作目录"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert [message["sender_id"] for message in body["dispatch_messages"]] == [mike_id]
+    assert body["dispatch_messages"][0]["content"].startswith("@Coder 整理工作目录")
+    assert [message["sender_id"] for message in body["agent_replies"]] == [mike_id, coder_id]
+    assert body["agent_replies"][-1]["content"] == "Tony completed the directory summary."
+    history = await _messages(client, auth_headers, group_id)
+    agent_history = [message for message in history if message["sender_type"] == "agent"]
+    assert [message["sender_id"] for message in agent_history] == [mike_id, mike_id, coder_id]
+    assert agent_history[1]["content"].startswith("@Coder 整理工作目录")
+
+
+async def test_agent_as_tool_stream_emits_dispatch_before_helper_reply_identity(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    async def _fake_run_with_stream(**kwargs: Any) -> AsyncIterator[tuple[str, Any]]:
+        workspace_tools = kwargs["workspace_tools"]
+        input_messages = kwargs["input_messages"]
+        if "AgentAsTool" in workspace_tools:
+            result = await workspace_tools["AgentAsTool"].ainvoke(
+                {"agent_id": "Coder", "task": "整理工作目录"}
+            )
+            assert json.loads(result)["status"] == "DISPATCHED"
+            yield ("token", "I delegated this to Coder.")
+            yield ("done", AIMessage(content="I delegated this to Coder."))
+            return
+        assert any("@Coder 整理工作目录" in str(message.content) for message in input_messages)
+        yield ("token", "Tony completed the directory summary.")
+        yield ("done", AIMessage(content="Tony completed the directory summary."))
+
+    monkeypatch.setattr(
+        "app.services.message_service.runtime.run_with_stream", _fake_run_with_stream
+    )
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Coder"),
+        proactive_mode=False,
+        workspace_path=tmp_path,
+    )
+    mike_id, coder_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": coder_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+
+    events = await _stream_events(
+        client, auth_headers, group_id, "@Mike 调用你的助手整理下工作目录"
+    )
+    agent_messages = [
+        json.loads(data) for event, data in events if event == "agent_message"
+    ]
+
+    assert [message["sender_id"] for message in agent_messages] == [mike_id, mike_id, coder_id]
+    assert agent_messages[1]["content"].startswith("@Coder 整理工作目录")
+    assert agent_messages[2]["content"] == "Tony completed the directory summary."
+    history = await _messages(client, auth_headers, group_id)
+    agent_history = [message for message in history if message["sender_type"] == "agent"]
+    assert [message["sender_id"] for message in agent_history] == [mike_id, mike_id, coder_id]
+
+
+async def test_agent_as_tool_resolves_helper_by_group_display_name(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    db_session: Any,
+    tmp_path: Path,
+) -> None:
+    async def _fake_run(**kwargs: Any) -> AIMessage:
+        workspace_tools = kwargs["workspace_tools"]
+        if "AgentAsTool" in workspace_tools:
+            await workspace_tools["AgentAsTool"].ainvoke(
+                {"agent_id": "Coder", "task": "整理工作目录"}
+            )
+            return AIMessage(content="delegated")
+        return AIMessage(content="helper reply")
+
+    monkeypatch.setattr("app.services.message_service.runtime.run", _fake_run)
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Coder"),
+        proactive_mode=False,
+        workspace_path=tmp_path,
+    )
+    mike_id, coder_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": coder_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    from app.models.group_agent import GroupAgent
+
+    group_agent = await db_session.scalar(
+        select(GroupAgent).where(
+            GroupAgent.group_id == group_id,
+            GroupAgent.agent_id == coder_id,
+        )
+    )
+    assert group_agent is not None
+    group_agent.display_name = "Tony"
+    await db_session.flush()
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Mike dispatch"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["dispatch_messages"][0]["content"].startswith("@Tony 整理工作目录")
+    assert response.json()["agent_replies"][-1]["sender_id"] == coder_id
 
 
 async def test_stream_sanitization_resumes_after_internal_blocks(

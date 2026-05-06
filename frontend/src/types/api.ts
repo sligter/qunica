@@ -316,6 +316,7 @@ export interface SilentAgentTurn {
 export interface MessageSendResponse {
   user_message: Message
   agent_replies: Message[]
+  dispatch_messages: Message[]
   warnings: string[]
   silent_turns: SilentAgentTurn[]
   all_silent: boolean

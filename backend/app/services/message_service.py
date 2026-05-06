@@ -479,27 +479,43 @@ async def _resolve_group_assistant_member(
     caller_context: AgentInvocationContext,
     requested_agent_id: str,
 ) -> tuple[GroupAgent, Agent]:
+    requested = requested_agent_id.strip()
+    requested_folded = requested.casefold()
+    bound_by_id = {assistant.id: assistant for assistant in caller_context.assistant_agents}
+    if not bound_by_id:
+        await _resolve_bound_assistant(caller_context, requested_agent_id)
+
+    rows = (
+        await db.execute(
+            select(GroupAgent, Agent)
+            .join(Agent, Agent.id == GroupAgent.agent_id)
+            .where(
+                GroupAgent.group_id == group.id,
+                GroupAgent.agent_id.in_(list(bound_by_id)),
+                GroupAgent.status == "active",
+            )
+        )
+    ).all()
+    for helper_group_agent, helper_agent in rows:
+        candidate_names = {
+            str(helper_agent.id),
+            helper_agent.name,
+            helper_group_agent.display_name or "",
+        }
+        if requested in candidate_names or requested_folded in {
+            name.casefold() for name in candidate_names if name
+        }:
+            if helper_agent.id == caller_agent.id:
+                raise AgentChatError("agent cannot delegate to itself")
+            return helper_group_agent, helper_agent
+
     assistant = await _resolve_bound_assistant(caller_context, requested_agent_id)
     if assistant.id == caller_agent.id:
         raise AgentChatError("agent cannot delegate to itself")
-    row = await db.execute(
-        select(GroupAgent, Agent)
-        .join(Agent, Agent.id == GroupAgent.agent_id)
-        .where(
-            GroupAgent.group_id == group.id,
-            GroupAgent.agent_id == assistant.id,
-            GroupAgent.status == "active",
-        )
-        .limit(1)
+    raise AgentChatError(
+        f"assistant agent '{assistant.name}' must be added to this group before "
+        "AgentAsTool can dispatch to it"
     )
-    result = row.one_or_none()
-    if result is None:
-        raise AgentChatError(
-            f"assistant agent '{assistant.name}' must be added to this group before "
-            "AgentAsTool can dispatch to it"
-        )
-    helper_group_agent, helper_agent = result
-    return helper_group_agent, helper_agent
 
 
 def _build_agent_tool_dispatch_content(
