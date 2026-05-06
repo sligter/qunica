@@ -40,7 +40,6 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
 )
-from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,7 +74,7 @@ PSEUDO_TOOL_PLACEHOLDER = (
 WAITING_FOR_USER_WARNING = "Waiting for your input"
 TOOL_CALL_STARTED_MESSAGE = "Tool call started"
 TOOL_CALL_COMPLETED_MESSAGE = "Tool call completed"
-MAX_AGENT_TOOL_DEPTH = 2
+MAX_AGENT_TOOL_DISPATCHES_PER_SEND = 8
 
 _REASONING_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 _PSEUDO_TOOL_BLOCK_RE = re.compile(
@@ -95,11 +94,20 @@ class SilentAgentTurn:
 
 
 @dataclass
+class AgentToolDispatch:
+    caller_agent: Agent
+    helper_group_agent: GroupAgent
+    helper_agent: Agent
+    content: str
+
+
+@dataclass
 class MessageSendResult:
     user_message: Message
     agent_replies: list[Message]
     warnings: list[str]
     silent_turns: list[SilentAgentTurn]
+    dispatch_messages: list[Message]
     all_silent: bool
     waiting_for_user: bool = False
 
@@ -216,7 +224,7 @@ async def _persist_agent_message(
     group_id: UUID,
     agent: Agent,
     content: str,
-    thread_id: UUID,
+    thread_id: UUID | None,
     reply_to: UUID | None,
     status: str = "visible",
 ) -> Message:
@@ -464,79 +472,55 @@ async def _resolve_bound_assistant(
     )
 
 
-async def _run_agent_tool_delegation(
+async def _resolve_group_assistant_member(
     db: AsyncSession,
-    graph: CompiledStateGraph[Any, Any, Any, Any],
     group: Group,
     caller_agent: Agent,
     caller_context: AgentInvocationContext,
     requested_agent_id: str,
-    task: str,
-    instructions: str | None,
-    *,
-    depth: int,
-) -> str:
-    if depth >= MAX_AGENT_TOOL_DEPTH:
-        raise AgentChatError("agent-as-tool delegation depth limit reached")
-    if not task.strip():
-        raise AgentChatError("agent-as-tool task must be non-empty")
+) -> tuple[GroupAgent, Agent]:
     assistant = await _resolve_bound_assistant(caller_context, requested_agent_id)
     if assistant.id == caller_agent.id:
         raise AgentChatError("agent cannot delegate to itself")
-    owner = await db.scalar(select(User).where(User.id == caller_agent.owner_id))
-    if owner is None:
-        raise NotFoundError(f"user {caller_agent.owner_id}")
-    helper_group_agent = GroupAgent(
-        group_id=group.id,
-        agent_id=assistant.id,
-        display_name=assistant.name,
-        context_scope={"share_group_workspace": caller_context.workspace_source == "group"},
-    )
-    mention_task = f"@{assistant.name} {task.strip()}"
-    if instructions and instructions.strip():
-        mention_task = (
-            f"{mention_task}\n\n"
-            f"Instructions from @{caller_agent.name}: {instructions.strip()}"
+    row = await db.execute(
+        select(GroupAgent, Agent)
+        .join(Agent, Agent.id == GroupAgent.agent_id)
+        .where(
+            GroupAgent.group_id == group.id,
+            GroupAgent.agent_id == assistant.id,
+            GroupAgent.status == "active",
         )
-    input_messages, helper_context = await _build_invocation(
-        db,
-        group,
-        helper_group_agent,
-        assistant,
-        extra_user_text=mention_task,
-        history_statuses=("visible", "interrupted", "tool_result"),
+        .limit(1)
     )
-    chat_model = await resolve_chat_model(db, assistant, streaming=False)
-
-    def _nested_executor(
-        agent_id: str,
-        nested_task: str,
-        nested_instructions: str | None = None,
-    ) -> str:
+    result = row.one_or_none()
+    if result is None:
         raise AgentChatError(
-            "nested agent-as-tool calls are blocked during delegated assistant execution"
+            f"assistant agent '{assistant.name}' must be added to this group before "
+            "AgentAsTool can dispatch to it"
         )
+    helper_group_agent, helper_agent = result
+    return helper_group_agent, helper_agent
 
-    response = await runtime.run(
-        graph=graph,
-        thread_id=f"agent-tool:{group.id}:{caller_agent.id}:{assistant.id}:{depth}",
-        chat_model=chat_model,
-        input_messages=input_messages,
-        workspace_tools=build_workspace_tools(helper_context, agent_tool_executor=_nested_executor),
-    )
-    text = response.content if isinstance(response.content, str) else str(response.content)
-    visible_text = _sanitize_agent_visible_content(text)
-    return json.dumps(
-        {
-            "tool": "AgentAsTool",
-            "status": "COMPLETED",
-            "agent_id": str(assistant.id),
-            "display_name": assistant.name,
-            "dispatch": mention_task[:1000],
-            "content": visible_text[:4000],
-        },
-        ensure_ascii=False,
-    )
+
+def _build_agent_tool_dispatch_content(
+    helper_group_agent: GroupAgent,
+    helper_agent: Agent,
+    caller_agent: Agent,
+    task: str,
+    instructions: str | None,
+) -> str:
+    stripped_task = task.strip()
+    if not stripped_task:
+        raise AgentChatError("agent-as-tool task must be non-empty")
+    helper_display = helper_group_agent.display_name or helper_agent.name
+    caller_display = caller_agent.name
+    content = f"@{helper_display} {stripped_task}"
+    if instructions and instructions.strip():
+        content = (
+            f"{content}\n\n"
+            f"Instructions from @{caller_display}: {instructions.strip()}"
+        )
+    return content
 
 
 def _avoid_immediate_repeat_speaker(
@@ -630,6 +614,7 @@ async def send_message(
             agent_replies=[],
             warnings=["no agent mentioned in this group"],
             silent_turns=[],
+            dispatch_messages=[],
             all_silent=False,
         )
 
@@ -640,6 +625,9 @@ async def send_message(
     agent_replies: list[Message] = []
     warnings: list[str] = []
     silent_turns: list[SilentAgentTurn] = []
+    dispatch_messages: list[Message] = []
+    pending_dispatches: list[AgentToolDispatch] = []
+    dispatches_created = 0
     waiting_for_user = False
     proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
     visible_replies_used = 0
@@ -687,16 +675,45 @@ async def send_message(
                     bound_agent: Agent = current_agent,
                     bound_context: AgentInvocationContext = current_context,
                 ) -> str:
-                    return await _run_agent_tool_delegation(
+                    nonlocal dispatches_created
+                    if dispatches_created >= MAX_AGENT_TOOL_DISPATCHES_PER_SEND:
+                        raise AgentChatError("agent-as-tool dispatch limit reached for this send")
+                    helper_group_agent, helper_agent = await _resolve_group_assistant_member(
                         db,
-                        graph,
                         group,
                         bound_agent,
                         bound_context,
                         agent_id,
+                    )
+                    dispatch_content = _build_agent_tool_dispatch_content(
+                        helper_group_agent,
+                        helper_agent,
+                        bound_agent,
                         task,
                         instructions,
-                        depth=0,
+                    )
+                    pending_dispatches.append(
+                        AgentToolDispatch(
+                            caller_agent=bound_agent,
+                            helper_group_agent=helper_group_agent,
+                            helper_agent=helper_agent,
+                            content=dispatch_content,
+                        )
+                    )
+                    dispatches_created += 1
+                    return json.dumps(
+                        {
+                            "tool": "AgentAsTool",
+                            "status": "DISPATCHED",
+                            "agent_id": str(helper_agent.id),
+                            "display_name": helper_group_agent.display_name or helper_agent.name,
+                            "dispatch": dispatch_content[:1000],
+                            "message": (
+                        "Visible group dispatch queued; the assistant will respond "
+                        "through normal group routing."
+                    ),
+                        },
+                        ensure_ascii=False,
                     )
 
                 response: AIMessage = await runtime.run(
@@ -751,6 +768,82 @@ async def send_message(
             break
         spoke_previous_round = spoke_this_round
 
+    while pending_dispatches and not waiting_for_user:
+        dispatch = pending_dispatches.pop(0)
+        dispatch_msg = await _persist_agent_message(
+            db,
+            group_id,
+            dispatch.caller_agent,
+            dispatch.content,
+            thread_id=None,
+            reply_to=user_msg.id,
+        )
+        dispatch_messages.append(dispatch_msg)
+        helper_thread = await thread_service.get_or_create_chat_thread(
+            db, group_id, dispatch.helper_agent.id, sender.id
+        )
+        await thread_service.mark_running(db, helper_thread)
+        try:
+            input_messages, context = await _build_invocation(
+                db,
+                group,
+                dispatch.helper_group_agent,
+                dispatch.helper_agent,
+            )
+            chat_model = await resolve_chat_model(db, dispatch.helper_agent, streaming=False)
+            tool_requested_wait = False
+
+            async def _record_tool_event(tool_event: RuntimeToolEvent) -> None:
+                nonlocal tool_requested_wait
+                if _tool_event_waits_for_user(tool_event):
+                    tool_requested_wait = True
+
+            response = await runtime.run(
+                graph=graph,
+                thread_id=str(helper_thread.id),
+                chat_model=chat_model,
+                input_messages=input_messages,
+                workspace_tools=build_workspace_tools(context),
+                tool_event_callback=_record_tool_event,
+            )
+            text = response.content if isinstance(response.content, str) else str(response.content)
+            if _is_silent_reply(group, text):
+                silent_turns.append(
+                    SilentAgentTurn(
+                        agent_id=dispatch.helper_agent.id,
+                        display_name=(
+                            dispatch.helper_group_agent.display_name or dispatch.helper_agent.name
+                        ),
+                    )
+                )
+                await thread_service.mark_completed(db, helper_thread)
+                continue
+            visible_text = _sanitize_agent_visible_content(text)
+            agent_msg = await _persist_agent_message(
+                db,
+                group_id,
+                dispatch.helper_agent,
+                visible_text,
+                helper_thread.id,
+                reply_to=dispatch_msg.id,
+            )
+            agent_replies.append(agent_msg)
+            waiting_for_user = (
+                tool_requested_wait
+                or _is_waiting_for_user_response(response)
+                or _requests_human_input(visible_text, human_names, sender_name)
+            )
+            if waiting_for_user:
+                warnings.append(_waiting_message_from_response(response))
+            await thread_service.mark_completed(db, helper_thread)
+        except Exception as exc:
+            logger.exception(
+                "agent %s failed in group %s dispatch", dispatch.helper_agent.id, group_id
+            )
+            await thread_service.mark_failed(db, helper_thread)
+            display = dispatch.helper_group_agent.display_name or dispatch.helper_agent.name
+            warnings.append(f"agent '{display}' failed: {exc!s}")
+
     if group.proactive_mode and silent_turns and not agent_replies:
         warnings.append("No one replied")
 
@@ -759,6 +852,7 @@ async def send_message(
         agent_replies=agent_replies,
         warnings=warnings,
         silent_turns=silent_turns,
+        dispatch_messages=dispatch_messages,
         all_silent=group.proactive_mode and bool(silent_turns) and not agent_replies,
         waiting_for_user=waiting_for_user,
     )
@@ -766,7 +860,7 @@ async def send_message(
 
 async def _stream_one_agent(
     db: AsyncSession,
-    graph: CompiledStateGraph[Any, Any, Any, Any],
+    graph: Any,
     group: Group,
     group_agent: GroupAgent,
     agent: Agent,
@@ -774,6 +868,8 @@ async def _stream_one_agent(
     reply_to: UUID,
     human_names: set[str],
     sender_name: str,
+    pending_dispatches: list[AgentToolDispatch] | None = None,
+    dispatch_counter: list[int] | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """Stream one agent's reply, persisting on graceful done OR on cancel.
 
@@ -790,16 +886,46 @@ async def _stream_one_agent(
         async def _agent_tool_executor(
             agent_id: str, task: str, instructions: str | None = None
         ) -> str:
-            return await _run_agent_tool_delegation(
+            if pending_dispatches is None or dispatch_counter is None:
+                raise AgentChatError("group context is required for AgentAsTool dispatch")
+            if dispatch_counter[0] >= MAX_AGENT_TOOL_DISPATCHES_PER_SEND:
+                raise AgentChatError("agent-as-tool dispatch limit reached for this send")
+            helper_group_agent, helper_agent = await _resolve_group_assistant_member(
                 db,
-                graph,
                 group,
                 agent,
                 context,
                 agent_id,
+            )
+            dispatch_content = _build_agent_tool_dispatch_content(
+                helper_group_agent,
+                helper_agent,
+                agent,
                 task,
                 instructions,
-                depth=0,
+            )
+            pending_dispatches.append(
+                AgentToolDispatch(
+                    caller_agent=agent,
+                    helper_group_agent=helper_group_agent,
+                    helper_agent=helper_agent,
+                    content=dispatch_content,
+                )
+            )
+            dispatch_counter[0] += 1
+            return json.dumps(
+                {
+                    "tool": "AgentAsTool",
+                    "status": "DISPATCHED",
+                    "agent_id": str(helper_agent.id),
+                    "display_name": helper_group_agent.display_name or helper_agent.name,
+                    "dispatch": dispatch_content[:1000],
+                    "message": (
+                        "Visible group dispatch queued; the assistant will respond "
+                        "through normal group routing."
+                    ),
+                },
+                ensure_ascii=False,
             )
 
         async for kind, payload in runtime.run_with_stream(
@@ -959,6 +1085,8 @@ async def send_message_stream(
     round_idx = 0
     last_visible_agent_id: UUID | None = None
     waiting_for_user = False
+    pending_dispatches: list[AgentToolDispatch] = []
+    dispatch_counter = [0]
 
     while (not group.proactive_mode and round_idx < 1) or (
         group.proactive_mode
@@ -1003,6 +1131,8 @@ async def send_message_stream(
                     reply_to=user_msg.id,
                     human_names=human_names,
                     sender_name=sender_name,
+                    pending_dispatches=pending_dispatches,
+                    dispatch_counter=dispatch_counter,
                 ):
                     if event["event"] == "agent_message":
                         emitted_agent_messages += 1
@@ -1030,6 +1160,70 @@ async def send_message_stream(
         if waiting_for_user or not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
+
+    while pending_dispatches and not waiting_for_user:
+        dispatch = pending_dispatches.pop(0)
+        dispatch_msg = await _persist_agent_message(
+            db,
+            group_id,
+            dispatch.caller_agent,
+            dispatch.content,
+            thread_id=None,
+            reply_to=user_msg.id,
+        )
+        yield {"event": "agent_message", "data": json.dumps(_serialize_msg(dispatch_msg))}
+        display = dispatch.helper_group_agent.display_name or dispatch.helper_agent.name
+        yield {
+            "event": "agent_start",
+            "data": json.dumps({
+                "agent_id": str(dispatch.helper_agent.id),
+                "display_name": display,
+                "index": 0,
+                "total": 1,
+                "round": round_idx + 1,
+            }),
+        }
+        helper_thread = await thread_service.get_or_create_chat_thread(
+            db, group_id, dispatch.helper_agent.id, sender.id
+        )
+        await thread_service.mark_running(db, helper_thread)
+        try:
+            async for event in _stream_one_agent(
+                db,
+                graph,
+                group,
+                dispatch.helper_group_agent,
+                dispatch.helper_agent,
+                helper_thread,
+                reply_to=dispatch_msg.id,
+                human_names=human_names,
+                sender_name=sender_name,
+                pending_dispatches=None,
+                dispatch_counter=None,
+            ):
+                if event["event"] == "agent_message":
+                    emitted_agent_messages += 1
+                elif event["event"] == "waiting_for_user":
+                    waiting_for_user = True
+                yield event
+                if waiting_for_user:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "agent %s failed in group %s dispatch stream",
+                dispatch.helper_agent.id,
+                group_id,
+            )
+            yield {
+                "event": "agent_error",
+                "data": json.dumps({
+                    "agent_id": str(dispatch.helper_agent.id),
+                    "display_name": display,
+                    "error": str(exc),
+                }),
+            }
 
     if group.proactive_mode and emitted_agent_messages == 0:
         yield {"event": "silence", "data": ""}

@@ -35,6 +35,7 @@ class SilentAgentTurnRead(BaseModel):
 class MessageSendResponse(BaseModel):
     user_message: MessageRead
     agent_replies: list[MessageRead]
+    dispatch_messages: list[MessageRead] = []
     warnings: list[str]
     silent_turns: list[SilentAgentTurnRead] = []
     all_silent: bool = False

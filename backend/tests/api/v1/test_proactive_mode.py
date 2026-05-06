@@ -53,6 +53,7 @@ def _patch_ai_message_script(
         return model_class(messages=script, calls=calls)
 
     monkeypatch.setattr("app.services.message_service.resolve_chat_model", _resolve_factory)
+    monkeypatch.setattr("app.api.v1.agents.resolve_chat_model", _resolve_factory)
     return calls
 
 
@@ -1399,6 +1400,217 @@ async def test_agent_mentions_do_not_trigger_waiting_for_user(
     body = response.json()
     assert body["waiting_for_user"] is False
     assert len(body["agent_replies"]) == 2
+
+
+async def test_agent_as_tool_group_dispatch_is_visible_and_helper_routes_normally(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Caller", "Helper"),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    caller_id, helper_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{caller_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": helper_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {
+                            "agent_id": helper_id,
+                            "task": "prepare slide outline",
+                            "instructions": "use the shared brief",
+                        },
+                        "id": "agent-tool-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Dispatch queued."),
+            AIMessage(content="Helper visible answer"),
+        ],
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Caller delegate this"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["dispatch_messages"][0]["content"] == (
+        "@Helper prepare slide outline\n\nInstructions from @Caller: use the shared brief"
+    )
+    assert [reply["content"] for reply in body["agent_replies"]] == [
+        "Dispatch queued.",
+        "Helper visible answer",
+    ]
+    messages = await _messages(client, auth_headers, group_id)
+    assert [message["content"] for message in messages if message["sender_type"] == "agent"] == [
+        "Dispatch queued.",
+        "@Helper prepare slide outline\n\nInstructions from @Caller: use the shared brief",
+        "Helper visible answer",
+    ]
+
+
+async def test_agent_as_tool_rejects_assistant_not_in_group(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Caller",),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    workspace = await client.post(
+        "/api/v1/workspaces",
+        headers=auth_headers,
+        json={"name": "Helper ws", "backend_type": "local", "local_path": str(tmp_path)},
+    )
+    assert workspace.status_code == 201, workspace.text
+    helper = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "Helper",
+            "system_prompt": "You help.",
+            "workspace_id": workspace.json()["id"],
+        },
+    )
+    assert helper.status_code == 201, helper.text
+    caller_id = agents[0][0]
+    helper_id = helper.json()["id"]
+    patch = await client.patch(
+        f"/api/v1/agents/{caller_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": helper_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": helper_id, "task": "prepare outline"},
+                        "id": "agent-tool-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Helper must be added first."),
+        ],
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Caller delegate this"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert "must be added to this group" in str(calls[1][-1].content)
+    body = response.json()
+    assert body["dispatch_messages"] == []
+    assert [reply["content"] for reply in body["agent_replies"]] == ["Helper must be added first."]
+
+
+async def test_direct_agent_as_tool_requires_group_context(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(client, auth_headers, ("Caller", "Helper"))
+    _ = group_id
+    caller_id, helper_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{caller_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": helper_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": helper_id, "task": "prepare outline"},
+                        "id": "agent-tool-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Cannot privately call helper."),
+        ],
+    )
+
+    response = await client.post(
+        f"/api/v1/agents/{caller_id}/invoke",
+        headers=auth_headers,
+        json={"message": "delegate"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "Cannot privately call helper." in response.json()["content"]
+    assert "GROUP_CONTEXT_REQUIRED" in str(calls[1][-1].content)
+
+
+async def test_agent_as_tool_stream_dispatches_visible_group_message(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Caller", "Helper"),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    caller_id, helper_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{caller_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": helper_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": helper_id, "task": "stream task"},
+                        "id": "agent-tool-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Dispatch queued."),
+            AIMessage(content="Stream helper answer"),
+        ],
+    )
+
+    events = await _stream_events(client, auth_headers, group_id, "@Caller delegate this")
+    agent_messages = [json.loads(data) for event, data in events if event == "agent_message"]
+
+    assert [message["content"] for message in agent_messages] == [
+        "Dispatch queued.",
+        "@Helper stream task",
+        "Stream helper answer",
+    ]
 
 
 async def test_stream_visible_reply_budget_caps_replies(

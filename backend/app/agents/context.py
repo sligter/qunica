@@ -293,8 +293,10 @@ def _render_workspace_context(
         "limited to bounded text http/https GET requests. WebSearch uses configured Tavily "
         "credentials or a configured Playwright-backed search service when available and "
         "otherwise returns a controlled setup-required tool result. AskUser returns a "
-        "non-blocking WAITING_FOR_USER result. AgentAsTool delegates tasks only to explicitly "
-        "bound assistant agents and returns their bounded response. Media generation, plan-exit, "
+        "non-blocking WAITING_FOR_USER result. AgentAsTool dispatches tasks only to explicitly "
+        "bound assistant agents as visible group @mentions when group context is available; "
+        "direct/private invocations return a controlled group-context-required result. "
+        "Media generation, plan-exit, "
         "and transient todo tools are executable bounded tool calls; if no provider or persistence "
         "contract is configured they return "
         "truthful controlled tool results instead of pretending work completed. SkillManager "
@@ -306,9 +308,11 @@ def _render_workspace_context(
 def _render_assistant_agents(assistant_agents: list[Agent]) -> str:
     lines = [
         "Bound assistant agents:",
-        "Use the AgentAsTool provider-native tool to delegate a task to these assistants. "
-        "Delegation is dispatched as an @mention-style task to the selected assistant; do not "
-        "claim other agents were consulted unless this tool returned their response.",
+        "Use the AgentAsTool provider-native tool to assign a task to these assistants. "
+        "In group chat this creates a visible @mention dispatch to the selected assistant, "
+        "who must already be a member of the same group and will respond through "
+        "normal group routing; "
+        "direct/private invocation cannot call assistants hidden in the backend.",
     ]
     for assistant in assistant_agents:
         description = f" — {assistant.description}" if assistant.description else ""

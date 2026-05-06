@@ -57,12 +57,12 @@ async def test_context_includes_bound_assistant_agents(db_session: AsyncSession)
     assert "AgentAsTool" in context.executable_tools
     assert "@Helper" in context.system_prompt
     assert (
-        "do not claim other agents were consulted unless this tool returned"
+        "direct/private invocation cannot call assistants hidden in the backend"
         in context.system_prompt
     )
 
 
-async def test_agent_as_tool_executes_bound_delegate() -> None:
+async def test_agent_as_tool_uses_configured_executor() -> None:
     helper_id = uuid4()
     calls: list[tuple[str, str, str | None]] = []
 

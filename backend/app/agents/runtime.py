@@ -32,7 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.state import GroupState
 from app.agents.workspace_tools import bind_workspace_tools, execute_workspace_tool
-from app.core.exceptions import AgentChatError, LLMProviderError
+from app.core.exceptions import LLMProviderError
 
 _CHAT_MODEL_KEY = "chat_model"
 TOOL_LOOP_REPEATED_CALL_LIMIT = 8
@@ -287,7 +287,8 @@ async def _execute_tool_calls(
                 else:
                     try:
                         result = str(await maybe_coroutine)
-                    except AgentChatError as exc:
+                    except Exception as exc:
+                        # Tool errors must be returned to the model, not crash fan-out.
                         result = json.dumps(
                             {"tool": name, "status": "FAILED", "message": str(exc)},
                             ensure_ascii=False,
