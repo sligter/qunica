@@ -50,7 +50,7 @@ from app.agents.context import (
     build_agent_invocation_context,
 )
 from app.agents.router import resolve_all_mentions
-from app.agents.runtime import RuntimeToolEvent, RuntimeWaitForUser
+from app.agents.runtime import RuntimeAgentHandoff, RuntimeToolEvent, RuntimeWaitForUser
 from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import AgentChatError, ConflictError, NotFoundError
 from app.db import SessionLocal
@@ -570,6 +570,10 @@ def _is_waiting_for_user_response(response: AIMessage) -> bool:
     return bool(response.additional_kwargs.get("waiting_for_user"))
 
 
+def _is_agent_handoff_response(response: AIMessage) -> bool:
+    return bool(response.additional_kwargs.get("agent_handoff"))
+
+
 def _waiting_message_from_response(response: AIMessage) -> str:
     message = response.additional_kwargs.get("waiting_message")
     return str(message) if message else WAITING_FOR_USER_WARNING
@@ -645,6 +649,7 @@ async def send_message(
     pending_dispatches: list[AgentToolDispatch] = []
     dispatches_created = 0
     waiting_for_user = False
+    handoff_dispatched = False
     proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
     visible_replies_used = 0
     spoke_previous_round = True
@@ -742,6 +747,7 @@ async def send_message(
                         agent_tool_executor=_agent_tool_executor,
                     ),
                     tool_event_callback=_record_tool_event,
+                    agent_handoff_tool_names={"AgentAsTool"},
                 )
                 text = (
                     response.content
@@ -758,13 +764,14 @@ async def send_message(
                     await thread_service.mark_completed(db, chat_thread)
                     continue
                 visible_text = _sanitize_agent_visible_content(text)
-                agent_msg = await _persist_agent_message(
-                    db, group_id, agent, visible_text, chat_thread.id, reply_to=user_msg.id
-                )
-                agent_replies.append(agent_msg)
-                visible_replies_used += 1
-                spoke_this_round = True
-                last_visible_agent_id = agent.id
+                if visible_text:
+                    agent_msg = await _persist_agent_message(
+                        db, group_id, agent, visible_text, chat_thread.id, reply_to=user_msg.id
+                    )
+                    agent_replies.append(agent_msg)
+                    visible_replies_used += 1
+                    spoke_this_round = True
+                    last_visible_agent_id = agent.id
                 waiting_for_user = (
                     tool_requested_wait
                     or _is_waiting_for_user_response(response)
@@ -773,14 +780,16 @@ async def send_message(
                 if waiting_for_user:
                     warnings.append(_waiting_message_from_response(response))
                 await thread_service.mark_completed(db, chat_thread)
-                if waiting_for_user:
+                if _is_agent_handoff_response(response):
+                    handoff_dispatched = True
+                if waiting_for_user or handoff_dispatched:
                     break
             except Exception as exc:
                 logger.exception("agent %s failed in group %s", agent.id, group_id)
                 await thread_service.mark_failed(db, chat_thread)
                 display = group_agent.display_name or agent.name
                 warnings.append(f"agent '{display}' failed: {exc!s}")
-        if waiting_for_user or not group.proactive_mode:
+        if waiting_for_user or handoff_dispatched or not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
 
@@ -953,6 +962,7 @@ async def _stream_one_agent(
                 context,
                 agent_tool_executor=_agent_tool_executor,
             ),
+            agent_handoff_tool_names={"AgentAsTool"},
         ):
             if kind == "tool_event" and isinstance(payload, RuntimeToolEvent):
                 yield {
@@ -976,6 +986,12 @@ async def _stream_one_agent(
                         {"agent_id": agent_id_str, "delta": delta}
                     ),
                 }
+            elif kind == "agent_handoff" and isinstance(payload, RuntimeAgentHandoff):
+                # The final response below terminates the caller turn. The
+                # queued dispatch is drained by the group send loop as a separate
+                # visible helper turn instead of feeding a tool result back to
+                # the caller model.
+                continue
             elif kind == "waiting_for_user" and isinstance(payload, RuntimeWaitForUser):
                 # The final response is still persisted below; emit the public
                 # waiting event after that message so frontend ordering remains
@@ -1005,14 +1021,17 @@ async def _stream_one_agent(
                                 }
                             ),
                         }
-                    agent_msg = await _persist_agent_message(
-                        db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
-                    )
-                    yield {
-                        "event": "agent_message",
-                        "data": json.dumps(_serialize_msg(agent_msg)),
-                    }
-                    if _is_waiting_for_user_response(final) or _requests_human_input(
+                    if visible_text:
+                        agent_msg = await _persist_agent_message(
+                            db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
+                        )
+                        yield {
+                            "event": "agent_message",
+                            "data": json.dumps(_serialize_msg(agent_msg)),
+                        }
+                    if _is_agent_handoff_response(final):
+                        yield {"event": "agent_handoff", "data": ""}
+                    elif _is_waiting_for_user_response(final) or _requests_human_input(
                         visible_text, human_names, sender_name
                     ):
                         yield {
@@ -1101,6 +1120,7 @@ async def send_message_stream(
     round_idx = 0
     last_visible_agent_id: UUID | None = None
     waiting_for_user = False
+    handoff_dispatched = False
     pending_dispatches: list[AgentToolDispatch] = []
     dispatch_counter = [0]
 
@@ -1154,10 +1174,13 @@ async def send_message_stream(
                         emitted_agent_messages += 1
                         spoke_this_round = True
                         last_visible_agent_id = agent.id
+                    elif event["event"] == "agent_handoff":
+                        handoff_dispatched = True
+                        continue
                     elif event["event"] == "waiting_for_user":
                         waiting_for_user = True
                     yield event
-                    if waiting_for_user:
+                    if waiting_for_user or handoff_dispatched:
                         break
             except asyncio.CancelledError:
                 raise
@@ -1171,9 +1194,9 @@ async def send_message_stream(
                         "error": str(exc),
                     }),
                 }
-            if waiting_for_user:
+            if waiting_for_user or handoff_dispatched:
                 break
-        if waiting_for_user or not group.proactive_mode:
+        if waiting_for_user or handoff_dispatched or not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
 

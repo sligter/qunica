@@ -62,6 +62,11 @@ class RuntimeWaitForUser:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeAgentHandoff:
+    message: str
+
+
 MAX_TOOL_SUMMARY_LENGTH = 240
 
 # StateGraph and CompiledStateGraph are highly generic in langgraph 1.x; we
@@ -222,18 +227,41 @@ def _message_text(content: Any) -> str:
     return str(content) if content is not None else ""
 
 
-def _wait_for_user_from_result(result: str) -> RuntimeWaitForUser | None:
+def _json_payload_from_result(result: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(result)
     except json.JSONDecodeError:
         return None
-    if not isinstance(payload, dict):
+    return payload if isinstance(payload, dict) else None
+
+
+def _wait_for_user_from_result(result: str) -> RuntimeWaitForUser | None:
+    payload = _json_payload_from_result(result)
+    if payload is None:
         return None
     status = str(payload.get("status") or "").upper()
     if status != "WAITING_FOR_USER":
         return None
     message = payload.get("message")
     return RuntimeWaitForUser(str(message) if message else "Waiting for your input")
+
+
+def _agent_handoff_from_result(
+    tool_name: str | None,
+    result: str,
+    agent_handoff_tool_names: set[str] | None = None,
+) -> RuntimeAgentHandoff | None:
+    terminal_names = agent_handoff_tool_names or set()
+    if tool_name not in terminal_names:
+        return None
+    payload = _json_payload_from_result(result)
+    if payload is None:
+        return None
+    status = str(payload.get("status") or "").upper()
+    if status != "DISPATCHED":
+        return None
+    message = payload.get("message")
+    return RuntimeAgentHandoff(str(message) if message else "Agent handoff dispatched")
 
 
 async def _invoke_once(
@@ -258,7 +286,10 @@ async def _execute_tool_calls(
     tool_calls: list[Any],
     tools: dict[str, Any],
     tool_event_callback: Any | None = None,
-) -> AsyncIterator[tuple[RuntimeToolEvent, ToolMessage | RuntimeWaitForUser | None]]:
+    agent_handoff_tool_names: set[str] | None = None,
+) -> AsyncIterator[
+    tuple[RuntimeToolEvent, ToolMessage | RuntimeWaitForUser | RuntimeAgentHandoff | None]
+]:
     for index, tool_call in enumerate(tool_calls):
         tool_call_dict = cast(dict[str, Any], tool_call)
         name = _tool_call_name(tool_call_dict)
@@ -302,6 +333,10 @@ async def _execute_tool_calls(
         )
         if tool_event_callback is not None:
             await tool_event_callback(result_event)
+        handoff = _agent_handoff_from_result(name, result, agent_handoff_tool_names)
+        if handoff is not None:
+            yield result_event, handoff
+            return
         wait_for_user = _wait_for_user_from_result(result)
         if wait_for_user is not None:
             yield result_event, wait_for_user
@@ -316,6 +351,7 @@ async def run(
     input_messages: list[BaseMessage],
     workspace_tools: dict[str, Any] | None = None,
     tool_event_callback: Any | None = None,
+    agent_handoff_tool_names: set[str] | None = None,
 ) -> AIMessage:
     tools = workspace_tools or {}
     model = bind_workspace_tools(chat_model, tools)
@@ -337,7 +373,14 @@ async def run(
             tool_calls=tool_calls,
             tools=tools,
             tool_event_callback=tool_event_callback,
+            agent_handoff_tool_names=agent_handoff_tool_names,
         ):
+            if isinstance(result, RuntimeAgentHandoff):
+                content = _message_text(response.content).strip()
+                return AIMessage(
+                    content=content,
+                    additional_kwargs={"agent_handoff": True, "handoff_message": result.message},
+                )
             if isinstance(result, RuntimeWaitForUser):
                 content = _message_text(response.content).strip() or result.message
                 return AIMessage(
@@ -355,6 +398,7 @@ async def run_with_stream(
     input_messages: list[BaseMessage],
     workspace_tools: dict[str, Any] | None = None,
     tool_event_callback: Any | None = None,
+    agent_handoff_tool_names: set[str] | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
     """Yield live tool events and final tokens when tools are active.
 
@@ -393,8 +437,20 @@ async def run_with_stream(
                 tool_calls=tool_calls,
                 tools=tools,
                 tool_event_callback=tool_event_callback,
+                agent_handoff_tool_names=agent_handoff_tool_names,
             ):
                 yield ("tool_event", tool_event)
+                if isinstance(result, RuntimeAgentHandoff):
+                    handoff = AIMessage(
+                        content=interim_content.strip(),
+                        additional_kwargs={
+                            "agent_handoff": True,
+                            "handoff_message": result.message,
+                        },
+                    )
+                    yield ("agent_handoff", result)
+                    yield ("done", handoff)
+                    return
                 if isinstance(result, RuntimeWaitForUser):
                     content = interim_content.strip() or result.message
                     waiting = AIMessage(

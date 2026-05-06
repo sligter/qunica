@@ -1302,7 +1302,7 @@ async def test_agent_as_tool_non_stream_persists_visible_dispatch_and_helper_ide
                 {"agent_id": "Coder", "task": "整理工作目录", "instructions": "keep it brief"}
             )
             assert json.loads(result)["status"] == "DISPATCHED"
-            return AIMessage(content="I delegated this to Coder.")
+            return AIMessage(content="", additional_kwargs={"agent_handoff": True})
         assert any("@Coder 整理工作目录" in str(message.content) for message in input_messages)
         return AIMessage(content="Tony completed the directory summary.")
 
@@ -1332,12 +1332,12 @@ async def test_agent_as_tool_non_stream_persists_visible_dispatch_and_helper_ide
     body = response.json()
     assert [message["sender_id"] for message in body["dispatch_messages"]] == [mike_id]
     assert body["dispatch_messages"][0]["content"].startswith("@Coder 整理工作目录")
-    assert [message["sender_id"] for message in body["agent_replies"]] == [mike_id, coder_id]
+    assert [message["sender_id"] for message in body["agent_replies"]] == [coder_id]
     assert body["agent_replies"][-1]["content"] == "Tony completed the directory summary."
     history = await _messages(client, auth_headers, group_id)
     agent_history = [message for message in history if message["sender_type"] == "agent"]
-    assert [message["sender_id"] for message in agent_history] == [mike_id, mike_id, coder_id]
-    assert agent_history[1]["content"].startswith("@Coder 整理工作目录")
+    assert [message["sender_id"] for message in agent_history] == [mike_id, coder_id]
+    assert agent_history[0]["content"].startswith("@Coder 整理工作目录")
 
 
 async def test_agent_as_tool_stream_emits_dispatch_before_helper_reply_identity(
@@ -1351,8 +1351,8 @@ async def test_agent_as_tool_stream_emits_dispatch_before_helper_reply_identity(
                 {"agent_id": "Coder", "task": "整理工作目录"}
             )
             assert json.loads(result)["status"] == "DISPATCHED"
-            yield ("token", "I delegated this to Coder.")
-            yield ("done", AIMessage(content="I delegated this to Coder."))
+            yield ("agent_handoff", object())
+            yield ("done", AIMessage(content="", additional_kwargs={"agent_handoff": True}))
             return
         assert any("@Coder 整理工作目录" in str(message.content) for message in input_messages)
         yield ("token", "Tony completed the directory summary.")
@@ -1383,12 +1383,12 @@ async def test_agent_as_tool_stream_emits_dispatch_before_helper_reply_identity(
         json.loads(data) for event, data in events if event == "agent_message"
     ]
 
-    assert [message["sender_id"] for message in agent_messages] == [mike_id, mike_id, coder_id]
-    assert agent_messages[1]["content"].startswith("@Coder 整理工作目录")
-    assert agent_messages[2]["content"] == "Tony completed the directory summary."
+    assert [message["sender_id"] for message in agent_messages] == [mike_id, coder_id]
+    assert agent_messages[0]["content"].startswith("@Coder 整理工作目录")
+    assert agent_messages[1]["content"] == "Tony completed the directory summary."
     history = await _messages(client, auth_headers, group_id)
     agent_history = [message for message in history if message["sender_type"] == "agent"]
-    assert [message["sender_id"] for message in agent_history] == [mike_id, mike_id, coder_id]
+    assert [message["sender_id"] for message in agent_history] == [mike_id, coder_id]
 
 
 async def test_agent_as_tool_resolves_helper_by_group_display_name(
@@ -1591,7 +1591,6 @@ async def test_agent_as_tool_group_dispatch_is_visible_and_helper_routes_normall
                     }
                 ],
             ),
-            AIMessage(content="Dispatch queued."),
             AIMessage(content="Helper visible answer"),
         ],
     )
@@ -1608,15 +1607,17 @@ async def test_agent_as_tool_group_dispatch_is_visible_and_helper_routes_normall
         "@Helper prepare slide outline\n\nInstructions from @Caller: use the shared brief"
     )
     assert [reply["content"] for reply in body["agent_replies"]] == [
-        "Dispatch queued.",
         "Helper visible answer",
     ]
     messages = await _messages(client, auth_headers, group_id)
-    assert [message["content"] for message in messages if message["sender_type"] == "agent"] == [
-        "Dispatch queued.",
-        "@Helper prepare slide outline\n\nInstructions from @Caller: use the shared brief",
-        "Helper visible answer",
+    agent_contents = [
+        message["content"] for message in messages if message["sender_type"] == "agent"
     ]
+    assert (
+        "@Helper prepare slide outline\n\nInstructions from @Caller: use the shared brief"
+        in agent_contents
+    )
+    assert "Helper visible answer" in agent_contents
 
 
 async def test_agent_as_tool_rejects_assistant_not_in_group(
@@ -1753,7 +1754,6 @@ async def test_agent_as_tool_stream_dispatches_visible_group_message(
                     }
                 ],
             ),
-            AIMessage(content="Dispatch queued."),
             AIMessage(content="Stream helper answer"),
         ],
     )
@@ -1762,10 +1762,125 @@ async def test_agent_as_tool_stream_dispatches_visible_group_message(
     agent_messages = [json.loads(data) for event, data in events if event == "agent_message"]
 
     assert [message["content"] for message in agent_messages] == [
-        "Dispatch queued.",
         "@Helper stream task",
         "Stream helper answer",
     ]
+
+
+async def test_agent_as_tool_terminal_handoff_does_not_feed_result_back_to_caller(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Tony"),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    mike_id, tony_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": tony_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": tony_id, "task": "make the slide outline"},
+                        "id": "agent-tool-terminal-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Tony separate reply"),
+        ],
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Mike ask Tony"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert not any(
+        isinstance(message, ToolMessage) and "DISPATCHED" in str(message.content)
+        for message in calls[1]
+    )
+    assert not any(
+        isinstance(message, ToolMessage) and message.tool_call_id == "agent-tool-terminal-1"
+        for message in calls[1]
+    )
+    body = response.json()
+    assert [message["sender_id"] for message in body["dispatch_messages"]] == [mike_id]
+    assert len(body["dispatch_messages"]) == 1
+    assert [message["sender_id"] for message in body["agent_replies"]] == [tony_id]
+    history = await _messages(client, auth_headers, group_id)
+    agent_history = [message for message in history if message["sender_type"] == "agent"]
+    assert [message["sender_id"] for message in agent_history] == [mike_id, tony_id]
+    assert agent_history[0]["content"].startswith("@Tony make the slide outline")
+    assert all(message["content"] for message in agent_history)
+
+
+async def test_agent_as_tool_stream_terminal_handoff_emits_tony_separate_turn(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Tony"),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    mike_id, tony_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": tony_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": tony_id, "task": "make the slide outline"},
+                        "id": "agent-tool-stream-terminal-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Tony stream reply"),
+        ],
+    )
+
+    events = await _stream_events(client, auth_headers, group_id, "@Mike ask Tony")
+
+    assert len(calls) == 2
+    assert not any(
+        isinstance(message, ToolMessage) and message.tool_call_id == "agent-tool-stream-terminal-1"
+        for message in calls[1]
+    )
+    starts = [json.loads(data) for event, data in events if event == "agent_start"]
+    messages = [json.loads(data) for event, data in events if event == "agent_message"]
+    result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
+    assert "agent_handoff" not in [event for event, _data in events]
+    assert [start["agent_id"] for start in starts] == [mike_id, tony_id]
+    assert len(result_payloads) == 1
+    assert result_payloads[0]["tool_name"] == "AgentAsTool"
+    assert result_payloads[0]["status"] == "completed"
+    assert [message["sender_id"] for message in messages] == [mike_id, tony_id]
+    assert messages[0]["content"].startswith("@Tony make the slide outline")
+    assert messages[1]["content"] == "Tony stream reply"
+    assert all(message["content"] for message in messages)
 
 
 async def test_stream_visible_reply_budget_caps_replies(
