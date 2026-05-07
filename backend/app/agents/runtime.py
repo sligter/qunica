@@ -282,6 +282,21 @@ async def _invoke_once(
     return response
 
 
+def _agent_handoff_tool_call_priority(
+    tool_calls: list[Any], agent_handoff_tool_names: set[str] | None
+) -> list[tuple[int, Any]]:
+    indexed_calls = list(enumerate(tool_calls))
+    if not agent_handoff_tool_names:
+        return indexed_calls
+    return sorted(
+        indexed_calls,
+        key=lambda item: (
+            _tool_call_name(cast(dict[str, Any], item[1])) not in agent_handoff_tool_names,
+            item[0],
+        ),
+    )
+
+
 async def _execute_tool_calls(
     tool_calls: list[Any],
     tools: dict[str, Any],
@@ -290,7 +305,9 @@ async def _execute_tool_calls(
 ) -> AsyncIterator[
     tuple[RuntimeToolEvent, ToolMessage | RuntimeWaitForUser | RuntimeAgentHandoff | None]
 ]:
-    for index, tool_call in enumerate(tool_calls):
+    for index, tool_call in _agent_handoff_tool_call_priority(
+        tool_calls, agent_handoff_tool_names
+    ):
         tool_call_dict = cast(dict[str, Any], tool_call)
         name = _tool_call_name(tool_call_dict)
         args = _tool_call_args(tool_call_dict)

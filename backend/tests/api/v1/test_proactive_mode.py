@@ -7,6 +7,7 @@ import httpx
 from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.tools import tool
 from pydantic import Field
 from sqlalchemy import select
 
@@ -1826,6 +1827,125 @@ async def test_agent_as_tool_terminal_handoff_does_not_feed_result_back_to_calle
     assert [message["sender_id"] for message in agent_history] == [mike_id, tony_id]
     assert agent_history[0]["content"].startswith("@Tony make the slide outline")
     assert all(message["content"] for message in agent_history)
+
+
+async def test_agent_as_tool_stream_prioritizes_terminal_handoff_over_other_tool_calls(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Tony"),
+        free_speech=False,
+        proactive_mode=False,
+        workspace_path=tmp_path,
+    )
+    mike_id, tony_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={
+            "tool_config": {
+                "tools": {
+                    "fetch": {"enabled": True},
+                    "bash": {"enabled": True},
+                    "todo_write": {"enabled": True},
+                },
+                "assistant_agents": [{"agent_id": tony_id, "enabled": True}],
+            }
+        },
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="I will delegate this and should not become a final answer.",
+                tool_calls=[
+                    {
+                        "name": "Fetch",
+                        "args": {"url": "https://example.com/should-not-run"},
+                        "id": "fetch-after-handoff",
+                    },
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": tony_id, "task": "research and make PPT"},
+                        "id": "agent-tool-priority-1",
+                    },
+                    {
+                        "name": "Bash",
+                        "args": {"command": "pwd"},
+                        "id": "bash-after-handoff",
+                    },
+                ],
+            ),
+            AIMessage(content="Tony stream reply after handoff"),
+        ],
+    )
+
+    events = await _stream_events(client, auth_headers, group_id, "@Mike ask Tony")
+
+    assert len(calls) == 2
+    assert not any(
+        isinstance(message, ToolMessage)
+        and message.tool_call_id
+        in {"agent-tool-priority-1", "fetch-after-handoff", "bash-after-handoff"}
+        for message in calls[1]
+    )
+    event_names = [event for event, _data in events]
+    starts = [json.loads(data) for event, data in events if event == "agent_start"]
+    messages = [json.loads(data) for event, data in events if event == "agent_message"]
+    result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
+    token_payloads = [json.loads(data) for event, data in events if event == "token"]
+    assert "agent_handoff" not in event_names
+    assert [start["agent_id"] for start in starts] == [mike_id, tony_id]
+    assert [payload["tool_name"] for payload in result_payloads] == ["AgentAsTool"]
+    assert [payload["tool_call_id"] for payload in result_payloads] == ["agent-tool-priority-1"]
+    assert [message["sender_id"] for message in messages] == [mike_id, tony_id]
+    assert messages[0]["content"].startswith("@Tony research and make PPT")
+    assert messages[1]["content"] == "Tony stream reply after handoff"
+    assert all("should not become a final answer" not in message["content"] for message in messages)
+    assert any("should not become a final answer" in payload["delta"] for payload in token_payloads)
+    assert event_names.index("agent_silent") < event_names.index("agent_message")
+
+
+async def test_runtime_tool_call_order_is_unchanged_without_handoff_names() -> None:
+    from app.agents import runtime
+
+    calls: list[str] = []
+
+    @tool("SecondTool")
+    def second_tool() -> str:
+        """Record that the second tool ran."""
+        calls.append("SecondTool")
+        return "second"
+
+    @tool("FirstTool")
+    def first_tool() -> str:
+        """Record that the first tool ran."""
+        calls.append("FirstTool")
+        return "first"
+
+    tool_calls = [
+        {"name": "SecondTool", "args": {}, "id": "second-1"},
+        {"name": "FirstTool", "args": {}, "id": "first-1"},
+    ]
+    events = [
+        (event.tool_name, event.status)
+        async for event, _result in runtime._execute_tool_calls(
+            tool_calls=tool_calls,
+            tools={"FirstTool": first_tool, "SecondTool": second_tool},
+            agent_handoff_tool_names=None,
+        )
+    ]
+
+    assert calls == ["SecondTool", "FirstTool"]
+    assert events == [
+        ("SecondTool", "started"),
+        ("SecondTool", "completed"),
+        ("FirstTool", "started"),
+        ("FirstTool", "completed"),
+    ]
 
 
 async def test_agent_as_tool_stream_terminal_handoff_emits_tony_separate_turn(

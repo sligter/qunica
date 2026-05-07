@@ -764,6 +764,10 @@ async def send_message(
                     await thread_service.mark_completed(db, chat_thread)
                     continue
                 visible_text = _sanitize_agent_visible_content(text)
+                if _is_agent_handoff_response(response):
+                    handoff_dispatched = True
+                    await thread_service.mark_completed(db, chat_thread)
+                    break
                 if visible_text:
                     agent_msg = await _persist_agent_message(
                         db, group_id, agent, visible_text, chat_thread.id, reply_to=user_msg.id
@@ -780,9 +784,7 @@ async def send_message(
                 if waiting_for_user:
                     warnings.append(_waiting_message_from_response(response))
                 await thread_service.mark_completed(db, chat_thread)
-                if _is_agent_handoff_response(response):
-                    handoff_dispatched = True
-                if waiting_for_user or handoff_dispatched:
+                if waiting_for_user:
                     break
             except Exception as exc:
                 logger.exception("agent %s failed in group %s", agent.id, group_id)
@@ -1011,6 +1013,14 @@ async def _stream_one_agent(
                     }
                 else:
                     visible_text = _sanitize_agent_visible_content(text)
+                    if _is_agent_handoff_response(final):
+                        if emitted_visible_len:
+                            yield {
+                                "event": "agent_silent",
+                                "data": json.dumps(_agent_identity_payload(agent, group_agent)),
+                            }
+                        yield {"event": "agent_handoff", "data": ""}
+                        continue
                     if len(visible_text) > emitted_visible_len:
                         yield {
                             "event": "token",
@@ -1029,9 +1039,7 @@ async def _stream_one_agent(
                             "event": "agent_message",
                             "data": json.dumps(_serialize_msg(agent_msg)),
                         }
-                    if _is_agent_handoff_response(final):
-                        yield {"event": "agent_handoff", "data": ""}
-                    elif _is_waiting_for_user_response(final) or _requests_human_input(
+                    if _is_waiting_for_user_response(final) or _requests_human_input(
                         visible_text, human_names, sender_name
                     ):
                         yield {
