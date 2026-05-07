@@ -1292,6 +1292,43 @@ async def test_group_workspace_sharing_uses_group_workspace_for_tools(
     )
 
 
+async def test_agent_as_tool_prompt_instructs_delegation_for_user_requested_helper_call(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Tony"),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    mike_id, tony_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": tony_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(monkeypatch, [AIMessage(content="I should delegate.")])
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={
+            "content": "@Mike 调用你助手，调研下https://code.claude.com/docs/zh-CN/overview，并生成PPT"
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    system_prompt = str(calls[0][0].content)
+    user_prompt = str(calls[0][-1].content)
+    assert "you must call the AgentAsTool provider-native tool" in system_prompt
+    assert "Pass the user's requested deliverable as the task" in system_prompt
+    assert "@Tony" in system_prompt
+    assert "调用你助手" in user_prompt
+    assert "生成PPT" in user_prompt
+
+
 async def test_agent_as_tool_non_stream_persists_visible_dispatch_and_helper_identity(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -1827,6 +1864,135 @@ async def test_agent_as_tool_terminal_handoff_does_not_feed_result_back_to_calle
     assert [message["sender_id"] for message in agent_history] == [mike_id, tony_id]
     assert agent_history[0]["content"].startswith("@Tony make the slide outline")
     assert all(message["content"] for message in agent_history)
+
+
+async def test_agent_as_tool_non_stream_prioritizes_terminal_handoff_over_other_tool_calls(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Mike", "Tony"),
+        free_speech=False,
+        proactive_mode=False,
+        workspace_path=tmp_path,
+    )
+    mike_id, tony_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{mike_id}",
+        headers=auth_headers,
+        json={
+            "tool_config": {
+                "tools": {
+                    "fetch": {"enabled": True},
+                    "bash": {"enabled": True},
+                    "todo_write": {"enabled": True},
+                },
+                "assistant_agents": [{"agent_id": tony_id, "enabled": True}],
+            }
+        },
+    )
+    assert patch.status_code == 200, patch.text
+    calls = _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="I will delegate this and should not become a final answer.",
+                tool_calls=[
+                    {
+                        "name": "Fetch",
+                        "args": {"url": "https://example.com/should-not-run"},
+                        "id": "fetch-after-handoff",
+                    },
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": tony_id, "task": "research and make PPT"},
+                        "id": "agent-tool-priority-1",
+                    },
+                    {
+                        "name": "Bash",
+                        "args": {"command": "pwd"},
+                        "id": "bash-after-handoff",
+                    },
+                ],
+            ),
+            AIMessage(content="Tony non-stream reply after handoff"),
+        ],
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Mike ask Tony"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 2
+    assert not any(
+        isinstance(message, ToolMessage)
+        and message.tool_call_id
+        in {"agent-tool-priority-1", "fetch-after-handoff", "bash-after-handoff"}
+        for message in calls[1]
+    )
+    body = response.json()
+    assert [message["sender_id"] for message in body["dispatch_messages"]] == [mike_id]
+    assert [message["sender_id"] for message in body["agent_replies"]] == [tony_id]
+    assert body["dispatch_messages"][0]["content"].startswith("@Tony research and make PPT")
+    assert body["agent_replies"][0]["content"] == "Tony non-stream reply after handoff"
+    assert all(
+        "should not become a final answer" not in message["content"]
+        for message in [*body["dispatch_messages"], *body["agent_replies"]]
+    )
+
+
+async def test_agent_as_tool_non_stream_empty_helper_reply_is_not_persisted(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Caller", "Helper"),
+        free_speech=False,
+        proactive_mode=False,
+    )
+    caller_id, helper_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/agents/{caller_id}",
+        headers=auth_headers,
+        json={"tool_config": {"assistant_agents": [{"agent_id": helper_id, "enabled": True}]}},
+    )
+    assert patch.status_code == 200, patch.text
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentAsTool",
+                        "args": {"agent_id": helper_id, "task": "prepare outline"},
+                        "id": "agent-tool-empty-helper-1",
+                    }
+                ],
+            ),
+            AIMessage(content=""),
+        ],
+    )
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@Caller delegate this"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert [message["sender_id"] for message in body["dispatch_messages"]] == [caller_id]
+    assert body["agent_replies"] == []
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+    assert [message["sender_id"] for message in agent_messages] == [caller_id]
+    assert agent_messages[0]["content"].startswith("@Helper prepare outline")
 
 
 async def test_agent_as_tool_stream_prioritizes_terminal_handoff_over_other_tool_calls(

@@ -308,10 +308,12 @@ def _render_workspace_context(
 def _render_assistant_agents(assistant_agents: list[Agent]) -> str:
     lines = [
         "Bound assistant agents:",
-        "Use the AgentAsTool provider-native tool to assign a task to these assistants. "
-        "In group chat this creates a visible @mention dispatch to the selected assistant, "
-        "who must already be a member of the same group and will respond through "
-        "normal group routing; "
+        "When the user asks you to call, ask, delegate to, hand off to, or use one of "
+        "these assistants, you must call the AgentAsTool provider-native tool before "
+        "doing the assistant's work yourself. Pass the user's requested deliverable as "
+        "the task, including any URLs or artifacts to produce. In group chat this creates "
+        "a visible @mention dispatch to the selected assistant, who must already be a "
+        "member of the same group and will respond through normal group routing; "
         "direct/private invocation cannot call assistants hidden in the backend.",
     ]
     for assistant in assistant_agents:

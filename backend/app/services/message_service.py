@@ -846,15 +846,16 @@ async def send_message(
                 await thread_service.mark_completed(db, helper_thread)
                 continue
             visible_text = _sanitize_agent_visible_content(text)
-            agent_msg = await _persist_agent_message(
-                db,
-                group_id,
-                dispatch.helper_agent,
-                visible_text,
-                helper_thread.id,
-                reply_to=dispatch_msg.id,
-            )
-            agent_replies.append(agent_msg)
+            if visible_text:
+                agent_msg = await _persist_agent_message(
+                    db,
+                    group_id,
+                    dispatch.helper_agent,
+                    visible_text,
+                    helper_thread.id,
+                    reply_to=dispatch_msg.id,
+                )
+                agent_replies.append(agent_msg)
             waiting_for_user = (
                 tool_requested_wait
                 or _is_waiting_for_user_response(response)

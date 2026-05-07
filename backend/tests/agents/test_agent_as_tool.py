@@ -56,6 +56,8 @@ async def test_context_includes_bound_assistant_agents(db_session: AsyncSession)
     assert "AgentAsTool" in context.enabled_tools
     assert "AgentAsTool" in context.executable_tools
     assert "@Helper" in context.system_prompt
+    assert "you must call the AgentAsTool provider-native tool" in context.system_prompt
+    assert "Pass the user's requested deliverable as the task" in context.system_prompt
     assert (
         "direct/private invocation cannot call assistants hidden in the backend"
         in context.system_prompt
