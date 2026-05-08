@@ -7,6 +7,9 @@ import type { Message } from '@/types/api'
 
 interface MessageListProps {
   groupId: string
+  hasOlderMessages?: boolean
+  isLoadingOlderMessages?: boolean
+  onLoadOlderMessages?: () => void
 }
 
 const EMPTY_MESSAGES: readonly Message[] = []
@@ -28,7 +31,12 @@ function toolStatusClasses(status: ToolActivity['status']): string {
   return 'border-border bg-background text-muted-foreground'
 }
 
-export function MessageList({ groupId }: MessageListProps) {
+export function MessageList({
+  groupId,
+  hasOlderMessages = false,
+  isLoadingOlderMessages = false,
+  onLoadOlderMessages,
+}: MessageListProps) {
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
   const inFlight = useMessageStore(
     (s) => s.inFlightByGroup[groupId] ?? EMPTY_INFLIGHT,
@@ -74,6 +82,18 @@ export function MessageList({ groupId }: MessageListProps) {
       {messages.length === 0 && inFlightBubbles.length === 0 && !showThinking && (
         <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
           No messages yet. Try sending <code>@AgentName hello</code> to start.
+        </div>
+      )}
+      {hasOlderMessages && (
+        <div className="flex justify-center px-4 pb-3">
+          <button
+            type="button"
+            className="rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isLoadingOlderMessages}
+            onClick={onLoadOlderMessages}
+          >
+            {isLoadingOlderMessages ? 'Loading earlier messages…' : 'Load earlier messages'}
+          </button>
         </div>
       )}
       {messages.map((m) => (

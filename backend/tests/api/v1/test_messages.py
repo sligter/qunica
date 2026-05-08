@@ -405,3 +405,35 @@ async def test_history_lists_persisted_messages_in_order(
     assert r.status_code == 200
     senders = [m["sender_type"] for m in r.json()]
     assert senders == ["user", "agent", "user", "agent"]
+
+
+async def test_history_defaults_to_latest_thirty_and_paginates_older_messages(
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
+) -> None:
+    fake_llm["messages"] = [f"reply {index}" for index in range(36)]
+    group_id, _ = await _setup(client, auth_headers)
+    for index in range(36):
+        r = await client.post(
+            f"/api/v1/groups/{group_id}/messages",
+            headers=auth_headers,
+            json={"content": f"@Echo round {index}"},
+        )
+        assert r.status_code == 201, r.text
+
+    r = await client.get(f"/api/v1/groups/{group_id}/messages", headers=auth_headers)
+    assert r.status_code == 200
+    first_page = r.json()
+    assert len(first_page) == 30
+    assert first_page[0]["content"] == "@Echo round 21"
+    assert first_page[-2]["content"] == "@Echo round 35"
+
+    r = await client.get(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        params={"limit": 30, "before": first_page[0]["id"]},
+    )
+    assert r.status_code == 200
+    second_page = r.json()
+    assert len(second_page) == 30
+    assert second_page[0]["content"] == "@Echo round 6"
+    assert second_page[-2]["content"] == "@Echo round 20"

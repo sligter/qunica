@@ -17,6 +17,7 @@ from app.models.agent import Agent
 from app.models.group import Group
 from app.models.group_agent import GroupAgent
 from app.models.skill import Skill
+from app.models.system_settings import SystemSettings
 from app.models.user import User
 from app.models.workspace import Workspace
 
@@ -324,6 +325,72 @@ async def test_web_search_uses_configured_tavily_provider(
     assert result["answer"] == "real provider answer"
     assert result["results"][0]["content"] == "provider snippet"
     assert requests[0].url == "https://tavily.test/search"
+
+
+async def test_web_search_prefers_user_tavily_settings_and_allows_configured_limit(
+    db_session: AsyncSession,
+    monkeypatch: Any,
+) -> None:
+    user = User(email=f"ctx-{uuid4().hex[:8]}@example.com", password_hash="x", name="Context User")
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(
+        SystemSettings(
+            owner_id=user.id,
+            web_search_provider="tavily",
+            tavily_api_key="user-key",
+            tavily_search_url="https://user-tavily.test/search",
+            tavily_max_results=10,
+            tavily_search_depth="advanced",
+            tavily_include_answer=False,
+            tavily_include_raw_content=True,
+        )
+    )
+    agent = Agent(
+        owner_id=user.id,
+        name="Nova",
+        system_prompt="Base prompt",
+        tool_config=normalize_tool_config(
+            AgentToolConfig(tools={"web_search": AgentToolSelection(enabled=True)})
+        ),
+    )
+    db_session.add(agent)
+    await db_session.flush()
+
+    requests: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": []}, request=request)
+
+    class MockClient(httpx.Client):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+            super().__init__(transport=httpx.MockTransport(_handler))
+
+    monkeypatch.setattr(httpx, "Client", MockClient)
+    monkeypatch.setattr("app.agents.workspace_tools.settings.tavily_api_key", "env-key")
+    monkeypatch.setattr(
+        "app.agents.workspace_tools.settings.tavily_search_url", "https://env-tavily.test/search"
+    )
+    context = await build_agent_invocation_context(db_session, agent, user)
+    tools = build_workspace_tools(context)
+
+    result = json.loads(
+        execute_workspace_tool(tools, "WebSearch", {"query": "latest", "max_results": 10})
+    )
+
+    assert result["status"] == "COMPLETED"
+    assert requests[0].url == "https://user-tavily.test/search"
+    payload = json.loads(requests[0].content.decode())
+    assert payload == {
+        "api_key": "user-key",
+        "query": "latest",
+        "max_results": 10,
+        "include_answer": False,
+        "include_raw_content": True,
+        "search_depth": "advanced",
+    }
 
 
 async def test_web_search_uses_configured_playwright_provider(

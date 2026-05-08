@@ -291,9 +291,16 @@ async def list_messages(
     group_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    limit: int = 50,
+    limit: int = 30,
+    before: UUID | None = None,
 ) -> list[Message]:
-    return await message_service.list_messages(db, group_id, current_user, limit=limit)
+    return await message_service.list_messages(
+        db,
+        group_id,
+        current_user,
+        limit=limit,
+        before=before,
+    )
 
 
 # --- files in group ---

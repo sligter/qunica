@@ -26,7 +26,8 @@ from app.models.group_agent import GroupAgent
 from app.models.skill import Skill
 from app.models.user import User
 from app.models.workspace import Workspace
-from app.services import skill_service, workspace_service
+from app.services import skill_service, system_settings_service, workspace_service
+from app.services.system_settings_service import TavilySearchConfig
 
 DEFAULT_RUNTIME_LIMITS: dict[str, int] = {
     "context_history_messages": 20,
@@ -52,6 +53,7 @@ class AgentInvocationContext:
     assistant_agents: list[Agent]
     runtime_limits: dict[str, int]
     workspace_source: str
+    tavily_search: TavilySearchConfig | None
 
     def to_system_message(self) -> SystemMessage:
         return SystemMessage(content=self.system_prompt)
@@ -91,6 +93,8 @@ async def build_agent_invocation_context(
         workspace = await workspace_service.get_active_workspace(db, agent.workspace_id, user)
         workspace_source = "agent"
 
+    system_settings = await system_settings_service.get_or_create(db, user)
+    tavily_search = system_settings_service.tavily_config_from_settings(system_settings)
     skills = await _mounted_skills(db, agent)
     assistant_agents = await _assistant_agents(db, agent)
     selected_tools = selected_tool_names(agent.tool_config)
@@ -133,6 +137,7 @@ async def build_agent_invocation_context(
         assistant_agents=assistant_agents,
         runtime_limits=limits,
         workspace_source=workspace_source,
+        tavily_search=tavily_search,
     )
 
 

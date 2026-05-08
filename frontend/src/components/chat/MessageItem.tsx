@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
 
 import { InterruptedMessageActions } from '@/components/chat/InterruptedMessageActions'
+import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { MessageActions } from '@/components/chat/MessageActions'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useAuthStore } from '@/stores/authStore'
@@ -58,8 +60,9 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
 
   return (
     <div
+      id={`message-${message.id}`}
       className={cn(
-        'flex w-full gap-3 px-4 py-2',
+        'group/message flex w-full gap-3 px-4 py-2',
         isUser ? 'flex-row-reverse' : 'flex-row',
       )}
     >
@@ -87,17 +90,25 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
               interrupted
             </span>
           )}
+          {message.content && !showStreamingDot && (
+            <MessageActions
+              content={message.content}
+              senderName={senderName}
+              timeLabel={time}
+              groupId={groupId}
+            />
+          )}
         </div>
         <div
           className={cn(
-            'whitespace-pre-wrap rounded-lg px-3 py-2 text-sm',
+            'min-w-0 rounded-lg px-3 py-2',
             isUser
               ? 'bg-primary text-primary-foreground'
               : 'border border-border bg-card text-foreground',
             isInterrupted && !isResuming && 'border-amber-300/70',
           )}
         >
-          {message.content || ' '}
+          <MarkdownMessage content={message.content || ' '} isUser={isUser} />
         </div>
         {isInterrupted && !isResuming && message.thread_id && (
           <InterruptedMessageActions

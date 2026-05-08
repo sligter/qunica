@@ -280,16 +280,33 @@ export interface ClearGroupMessagesResponse {
   cleared_count: number
 }
 
+export type WebSearchProvider = 'tavily'
+export type TavilySearchDepth = 'basic' | 'advanced'
+
 export interface SystemSettingsRead {
   id: string
   owner_id: string
   group_workspace_root: string | null
+  web_search_provider: WebSearchProvider
+  tavily_api_key_configured: boolean
+  tavily_search_url: string
+  tavily_max_results: number
+  tavily_search_depth: TavilySearchDepth
+  tavily_include_answer: boolean
+  tavily_include_raw_content: boolean
   created_at: string
   updated_at: string
 }
 
 export interface SystemSettingsUpdate {
   group_workspace_root?: string | null
+  web_search_provider?: WebSearchProvider | null
+  tavily_api_key?: string | null
+  tavily_search_url?: string | null
+  tavily_max_results?: number | null
+  tavily_search_depth?: TavilySearchDepth | null
+  tavily_include_answer?: boolean | null
+  tavily_include_raw_content?: boolean | null
 }
 
 export type SenderType = 'user' | 'agent' | 'system'

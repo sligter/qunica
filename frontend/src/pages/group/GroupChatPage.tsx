@@ -101,7 +101,12 @@ export function GroupChatPage() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <MessageList groupId={groupId} />
+          <MessageList
+            groupId={groupId}
+            hasOlderMessages={messagesQuery.hasNextPage}
+            isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
+            onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
+          />
 
           {stream.error && (
             <div className="border-t border-border bg-red-50 px-6 py-2 text-xs text-red-700">

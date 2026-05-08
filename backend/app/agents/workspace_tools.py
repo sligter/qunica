@@ -26,7 +26,8 @@ MAX_BASH_TIMEOUT_SECONDS = 3_600
 MAX_BASH_OUTPUT_CHARS = 12_000
 MAX_FETCH_BYTES = 500_000
 MAX_FETCH_CHARS = 20_000
-MAX_SEARCH_RESULTS = 5
+DEFAULT_SEARCH_RESULTS = 5
+MAX_SEARCH_RESULTS = 20
 MAX_SEARCH_QUERY_CHARS = 500
 FETCH_TIMEOUT_SECONDS = 10
 EXECUTABLE_TOOL_NAMES = frozenset(
@@ -346,28 +347,42 @@ def _fetch_url(url: str, timeout_seconds: int = FETCH_TIMEOUT_SECONDS) -> str:
     return f"{header}\n{snippet}{suffix}"
 
 
-def _web_search(query: str, max_results: int = MAX_SEARCH_RESULTS) -> str:
+def _web_search(
+    query: str,
+    context: AgentInvocationContext,
+    max_results: int = DEFAULT_SEARCH_RESULTS,
+) -> str:
     if not query.strip():
         raise WorkspaceToolError("query must be non-empty")
     if len(query) > MAX_SEARCH_QUERY_CHARS:
         raise WorkspaceToolError(f"query must be at most {MAX_SEARCH_QUERY_CHARS} characters")
     if max_results < 1 or max_results > MAX_SEARCH_RESULTS:
         raise WorkspaceToolError(f"max_results must be between 1 and {MAX_SEARCH_RESULTS}")
-    if settings.tavily_api_key:
+    tavily_search = context.tavily_search
+    if tavily_search is not None or settings.tavily_api_key:
+        configured_max_results = (
+            tavily_search.max_results if tavily_search else DEFAULT_SEARCH_RESULTS
+        )
+        effective_max_results = min(max_results, configured_max_results)
         payload = {
-            "api_key": settings.tavily_api_key,
+            "api_key": tavily_search.api_key if tavily_search else settings.tavily_api_key,
             "query": query,
-            "max_results": max_results,
-            "include_answer": True,
-            "include_raw_content": False,
+            "max_results": effective_max_results,
+            "include_answer": tavily_search.include_answer if tavily_search else True,
+            "include_raw_content": tavily_search.include_raw_content if tavily_search else False,
         }
+        if tavily_search is not None:
+            payload["search_depth"] = tavily_search.search_depth
+            if tavily_search.extra_params:
+                payload.update(tavily_search.extra_params)
+        search_url = tavily_search.search_url if tavily_search else settings.tavily_search_url
         with httpx.Client(timeout=FETCH_TIMEOUT_SECONDS) as client:
-            response = client.post(settings.tavily_search_url, json=payload)
+            response = client.post(search_url, json=payload)
             response.raise_for_status()
             data = response.json()
         answer = str(data.get("answer") or "")[:MAX_FETCH_CHARS]
         results = []
-        for item in data.get("results", [])[:max_results]:
+        for item in data.get("results", [])[:effective_max_results]:
             if not isinstance(item, dict):
                 continue
             results.append(
@@ -378,7 +393,13 @@ def _web_search(query: str, max_results: int = MAX_SEARCH_RESULTS) -> str:
                 }
             )
         return json.dumps(
-            {"tool": "WebSearch", "status": "COMPLETED", "answer": answer, "results": results},
+            {
+                "tool": "WebSearch",
+                "status": "COMPLETED",
+                "provider": "tavily",
+                "answer": answer,
+                "results": results,
+            },
             ensure_ascii=False,
         )
     if settings.playwright_search_url:
@@ -433,10 +454,10 @@ def build_workspace_tools(
     if "WebSearch" in enabled:
 
         @tool("WebSearch")
-        def web_search(query: str, max_results: int = MAX_SEARCH_RESULTS) -> str:
+        def web_search(query: str, max_results: int = DEFAULT_SEARCH_RESULTS) -> str:
             """Search the web through configured Tavily or Playwright services."""
 
-            return _web_search(query, max_results=max_results)
+            return _web_search(query, context, max_results=max_results)
 
         tools["WebSearch"] = web_search
 

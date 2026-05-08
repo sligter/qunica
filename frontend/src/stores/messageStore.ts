@@ -54,6 +54,7 @@ interface MessageState {
   resumingMessageIds: Set<string>
 
   setHistory: (groupId: string, messages: Message[]) => void
+  prependHistory: (groupId: string, messages: Message[]) => void
   clearGroupMessages: (groupId: string) => void
   appendMessage: (groupId: string, message: Message) => void
   patchInFlight: (groupId: string, agentId: string, delta: string) => void
@@ -87,6 +88,16 @@ export const useMessageStore = create<MessageState>((set) => ({
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
+
+  prependHistory: (groupId, messages) =>
+    set((s) => {
+      const existing = s.byGroup[groupId] ?? []
+      const existingIds = new Set(existing.map((message) => message.id))
+      const older = messages.filter((message) => !existingIds.has(message.id))
+      return {
+        byGroup: { ...s.byGroup, [groupId]: [...older, ...existing] },
+      }
+    }),
 
   clearGroupMessages: (groupId) =>
     set((s) => ({

@@ -40,7 +40,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
 )
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import runtime
@@ -113,24 +113,44 @@ class MessageSendResult:
 
 
 async def list_messages(
-    db: AsyncSession, group_id: UUID, user: User, limit: int = 50
+    db: AsyncSession,
+    group_id: UUID,
+    user: User,
+    limit: int = 30,
+    before: UUID | None = None,
 ) -> list[Message]:
     await group_service.get_group(db, group_id, user)
+    limit = min(max(limit, 1), 100)
+    visible_statuses = ("visible", "interrupted")
+    before_message: Message | None = None
+    if before is not None:
+        before_message = await db.scalar(
+            select(Message).where(
+                Message.id == before,
+                Message.group_id == group_id,
+                Message.status.in_(visible_statuses),
+            )
+        )
+        if before_message is None:
+            raise NotFoundError("message not found")
+
+    conditions = [
+        Message.group_id == group_id,
+        Message.status.in_(visible_statuses),
+    ]
+    if before_message is not None:
+        conditions.append(
+            tuple_(Message.created_at, Message.id) < (before_message.created_at, before_message.id)
+        )
+
     stmt = (
         select(Message)
-        .where(
-            Message.group_id == group_id,
-            Message.status.in_(("visible", "interrupted")),
-        )
-        # Secondary sort by id is a tie-breaker for legacy rows that share
-        # a created_at value (pre-0009 migration, all messages within one
-        # request transaction collided on `now()`). New rows get distinct
-        # timestamps via `clock_timestamp()`, but the tie-breaker keeps
-        # ordering stable for old data and as defense-in-depth.
-        .order_by(Message.created_at.asc(), Message.id.asc())
+        .where(*conditions)
+        .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(limit)
     )
-    return list(await db.scalars(stmt))
+    messages = list(await db.scalars(stmt))
+    return list(reversed(messages))
 
 
 async def clear_group_history(db: AsyncSession, group_id: UUID, user: User) -> int:
