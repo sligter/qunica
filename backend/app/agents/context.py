@@ -241,6 +241,7 @@ def _render_group_context(group: Group) -> str:
     lines.append(f"- free_speech: {group.free_speech}")
     lines.append(f"- proactive_mode: {group.proactive_mode}")
     lines.append(f"- proactive_reply_multiplier: {group.proactive_reply_multiplier}")
+    lines.append(f"- communication_mode: {group.communication_mode}")
     if group.proactive_mode:
         lines.append(
             "- proactive participation: You are participating in a group chat. "

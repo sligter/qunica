@@ -18,7 +18,34 @@ import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
-import type { GroupRead } from '@/types/api'
+import type { GroupCommunicationMode, GroupRead } from '@/types/api'
+
+const communicationModeOptions: Array<{
+  value: GroupCommunicationMode
+  label: string
+  description: string
+}> = [
+  {
+    value: 'mesh',
+    label: 'Mesh',
+    description: 'Peer collaboration for creative or dynamic work.',
+  },
+  {
+    value: 'star',
+    label: 'Star',
+    description: 'Admin hub agents speak first, then other routed agents.',
+  },
+  {
+    value: 'hierarchical',
+    label: 'Hierarchical',
+    description: 'Admin agents lead before worker agents.',
+  },
+  {
+    value: 'ring',
+    label: 'Ring',
+    description: 'Agents take turns in a stable pipeline order.',
+  },
+]
 
 interface GroupSettingsDialogProps {
   group: GroupRead
@@ -45,6 +72,9 @@ export function GroupSettingsDialog({
     group.proactive_reply_multiplier,
   )
   const [allowFreeMention, setAllowFreeMention] = useState(group.allow_agent_free_mention)
+  const [communicationMode, setCommunicationMode] = useState<GroupCommunicationMode>(
+    group.communication_mode,
+  )
 
   useEffect(() => {
     setName(group.name)
@@ -53,6 +83,7 @@ export function GroupSettingsDialog({
     setProactiveMode(group.proactive_mode)
     setProactiveReplyMultiplier(group.proactive_reply_multiplier)
     setAllowFreeMention(group.allow_agent_free_mention)
+    setCommunicationMode(group.communication_mode)
   }, [group])
 
   const onSave = async () => {
@@ -63,6 +94,7 @@ export function GroupSettingsDialog({
       proactive_mode: proactiveMode,
       proactive_reply_multiplier: proactiveReplyMultiplier,
       allow_agent_free_mention: allowFreeMention,
+      communication_mode: communicationMode,
     })
     onOpenChange(false)
   }
@@ -72,6 +104,17 @@ export function GroupSettingsDialog({
       return
     }
     await clearMessages.mutateAsync()
+  }
+
+  const setSelectedCommunicationMode = (value: string) => {
+    if (
+      value === 'mesh' ||
+      value === 'star' ||
+      value === 'hierarchical' ||
+      value === 'ring'
+    ) {
+      setCommunicationMode(value)
+    }
   }
 
   const workspace = workspaces.data?.find((item) => item.id === group.workspace_id)
@@ -134,6 +177,29 @@ export function GroupSettingsDialog({
             </div>
 
             <Separator />
+
+            <div className="space-y-1.5">
+              <Label htmlFor="gs-communication-mode">Communication mode</Label>
+              <select
+                id="gs-communication-mode"
+                value={communicationMode}
+                onChange={(event) => setSelectedCommunicationMode(event.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {communicationModeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                {
+                  communicationModeOptions.find(
+                    (option) => option.value === communicationMode,
+                  )?.description
+                }
+              </p>
+            </div>
 
             <div className="flex items-center justify-between gap-4">
               <div>

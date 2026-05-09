@@ -2,6 +2,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
+from uuid import UUID
 
 import httpx
 from httpx import AsyncClient
@@ -10,6 +11,10 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import tool
 from pydantic import Field
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.group import Group
+from app.models.group_agent import GroupAgent
 
 
 def _patch_llm_script(monkeypatch: Any, messages: Sequence[str]) -> None:
@@ -347,6 +352,282 @@ async def test_reply_multiplier_validation_rejects_too_low_and_has_no_upper_boun
     assert too_low.status_code == 422
     assert valid_large.status_code == 200
     assert valid_large.json()["proactive_reply_multiplier"] == 50
+
+
+async def test_star_mode_prefers_member_hub_over_legacy_admin(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    db_session: AsyncSession,
+) -> None:
+    _patch_llm_script(monkeypatch, ["B1", "A1", "C1"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("A", "B", "C"),
+        free_speech=True,
+        proactive_mode=False,
+    )
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "star"},
+    )
+    assert patch.status_code == 200, patch.text
+    group = await db_session.scalar(select(Group).where(Group.id == UUID(group_id)))
+    assert group is not None
+    group.admin_agent_ids = [agents[0][0]]
+    await db_session.flush()
+    hub = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agents[1][0]}/topology",
+        headers=auth_headers,
+        json={"topology_role": "hub"},
+    )
+    assert hub.status_code == 200, hub.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [
+        agents[1][0],
+        agents[0][0],
+        agents[2][0],
+    ]
+    assert [reply["content"] for reply in replies] == ["B1", "A1", "C1"]
+
+
+async def test_star_mode_falls_back_to_legacy_admin(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    db_session: AsyncSession,
+) -> None:
+    _patch_llm_script(monkeypatch, ["A1", "B1", "C1"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("A", "B", "C"),
+        free_speech=True,
+        proactive_mode=False,
+    )
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "star"},
+    )
+    assert patch.status_code == 200, patch.text
+    group = await db_session.scalar(select(Group).where(Group.id == UUID(group_id)))
+    assert group is not None
+    group.admin_agent_ids = [agents[1][0]]
+    rows = await db_session.scalars(
+        select(GroupAgent).where(GroupAgent.group_id == UUID(group_id))
+    )
+    for row in rows:
+        row.topology_role = None
+    await db_session.flush()
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [
+        agents[1][0],
+        agents[0][0],
+        agents[2][0],
+    ]
+
+
+async def test_star_mode_falls_back_to_earliest_joined_agent(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["A1", "B1", "C1"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("A", "B", "C"),
+        free_speech=True,
+        proactive_mode=False,
+    )
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "star"},
+    )
+    assert patch.status_code == 200, patch.text
+    clear_hub = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agents[0][0]}/topology",
+        headers=auth_headers,
+        json={"topology_role": None},
+    )
+    assert clear_hub.status_code == 200, clear_hub.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "hello group"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [
+        agents[0][0],
+        agents[1][0],
+        agents[2][0],
+    ]
+
+
+async def test_hierarchical_mode_routes_member_leaders_before_workers(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    db_session: AsyncSession,
+) -> None:
+    _patch_llm_script(monkeypatch, ["B1", "C1", "A1"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("A", "B", "C"),
+        proactive_mode=False,
+    )
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "hierarchical"},
+    )
+    assert patch.status_code == 200, patch.text
+    leader = await db_session.scalar(
+        select(GroupAgent).where(
+            GroupAgent.group_id == UUID(group_id),
+            GroupAgent.agent_id == UUID(agents[1][0]),
+        )
+    )
+    assert leader is not None
+    leader.topology_role = "leader"
+    group = await db_session.scalar(select(Group).where(Group.id == UUID(group_id)))
+    assert group is not None
+    group.admin_agent_ids = [agents[0][0]]
+    await db_session.flush()
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@C @A @B please review"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [
+        agents[1][0],
+        agents[2][0],
+        agents[0][0],
+    ]
+    assert [reply["content"] for reply in replies] == ["B1", "C1", "A1"]
+
+
+async def test_hierarchical_mode_falls_back_to_legacy_admins(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    db_session: AsyncSession,
+) -> None:
+    _patch_llm_script(monkeypatch, ["B1", "C1", "A1"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("A", "B", "C"),
+        proactive_mode=False,
+    )
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "hierarchical"},
+    )
+    assert patch.status_code == 200, patch.text
+    group = await db_session.scalar(select(Group).where(Group.id == UUID(group_id)))
+    assert group is not None
+    group.admin_agent_ids = [agents[1][0]]
+    rows = await db_session.scalars(
+        select(GroupAgent).where(GroupAgent.group_id == UUID(group_id))
+    )
+    for row in rows:
+        row.topology_role = None
+    await db_session.flush()
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@C @A @B please review"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [
+        agents[1][0],
+        agents[2][0],
+        agents[0][0],
+    ]
+
+
+async def test_ring_mode_stream_uses_speaking_order_and_rotates(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["A1", "B2", "C2", "A2"])
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("A", "B", "C"),
+        free_speech=True,
+        proactive_mode=False,
+    )
+    first = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "@A first"},
+    )
+    assert first.status_code == 201, first.text
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "ring"},
+    )
+    assert patch.status_code == 200, patch.text
+    for agent_id, order in [(agents[0][0], 3), (agents[1][0], 1), (agents[2][0], 2)]:
+        topology = await client.patch(
+            f"/api/v1/groups/{group_id}/agents/{agent_id}/topology",
+            headers=auth_headers,
+            json={"speaking_order": order},
+        )
+        assert topology.status_code == 200, topology.text
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    assert [event for event, _data in events].count("agent_message") == 3
+    messages = await _messages(client, auth_headers, group_id)
+    agent_messages = [message for message in messages if message["sender_type"] == "agent"]
+    assert [message["sender_id"] for message in agent_messages] == [
+        agents[0][0],
+        agents[1][0],
+        agents[2][0],
+        agents[0][0],
+    ]
+    assert [message["content"] for message in agent_messages] == [
+        "A1",
+        "B2",
+        "C2",
+        "A2",
+    ]
 
 
 async def test_round_order_join_then_random(

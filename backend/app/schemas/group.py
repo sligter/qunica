@@ -1,13 +1,18 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+GroupCommunicationMode = Literal["mesh", "star", "hierarchical", "ring"]
+GroupTopologyRole = Literal["hub", "leader", "worker"]
 
 
 class GroupCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = None
     announcement: str | None = None
+    communication_mode: GroupCommunicationMode = "mesh"
     initial_agents: list[UUID] | None = None
     # Optional escape hatch: callers may pass an existing workspace to bind
     # instead of letting the service auto-create a dedicated one. The standard
@@ -25,6 +30,7 @@ class GroupUpdate(BaseModel):
     proactive_max_rounds: int | None = Field(default=None, ge=1, le=5)
     proactive_reply_multiplier: int | None = Field(default=None, ge=1)
     allow_agent_free_mention: bool | None = None
+    communication_mode: GroupCommunicationMode | None = None
 
 
 class GroupMemberAdd(BaseModel):
@@ -63,6 +69,7 @@ class GroupRead(BaseModel):
     proactive_max_rounds: int
     proactive_reply_multiplier: int
     allow_agent_free_mention: bool
+    communication_mode: GroupCommunicationMode
     muted_agent_ids: list[UUID] | None
     admin_agent_ids: list[UUID] | None
     muted_member_ids: list[UUID] | None
@@ -77,6 +84,11 @@ class GroupAgentAdd(BaseModel):
 
 class GroupAgentWorkspaceSharingUpdate(BaseModel):
     share_group_workspace: bool
+
+
+class GroupAgentTopologyUpdate(BaseModel):
+    topology_role: GroupTopologyRole | None = None
+    speaking_order: int | None = Field(default=None, ge=1)
 
 
 class ClearGroupMessagesResponse(BaseModel):
@@ -95,6 +107,8 @@ class GroupAgentRead(BaseModel):
     agent_id: UUID
     display_name: str
     role: str | None
+    topology_role: GroupTopologyRole | None
+    speaking_order: int | None
     response_mode: str
     share_group_workspace: bool
     status: str

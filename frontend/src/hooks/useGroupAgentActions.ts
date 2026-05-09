@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
-import type { GroupAgentRead } from '@/types/api'
+import type { GroupAgentRead, GroupTopologyRole } from '@/types/api'
 
 interface AgentMutationVars {
   groupId: string
@@ -15,6 +15,11 @@ interface AgentMuteVars extends AgentMutationVars {
 
 interface AgentWorkspaceSharingVars extends AgentMutationVars {
   shareGroupWorkspace: boolean
+}
+
+interface AgentTopologyVars extends AgentMutationVars {
+  topologyRole?: GroupTopologyRole | null
+  speakingOrder?: number | null
 }
 
 export function useRemoveGroupAgent() {
@@ -46,6 +51,23 @@ export function useSetGroupAgentWorkspaceSharing() {
       }),
     onSuccess: (_data, { groupId }) => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+    },
+  })
+}
+
+export function useSetGroupAgentTopology() {
+  const qc = useQueryClient()
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: ({ groupId, agentId, topologyRole, speakingOrder }: AgentTopologyVars) =>
+      fetchJson<GroupAgentRead>(`/groups/${groupId}/agents/${agentId}/topology`, {
+        token,
+        method: 'PATCH',
+        body: { topology_role: topologyRole, speaking_order: speakingOrder },
+      }),
+    onSuccess: (_data, { groupId }) => {
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+      void qc.invalidateQueries({ queryKey: ['groups', groupId] })
     },
   })
 }

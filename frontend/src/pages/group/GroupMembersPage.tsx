@@ -19,10 +19,18 @@ import { useGroupAgents } from '@/hooks/useGroupAgents'
 import {
   useMuteGroupAgent,
   useRemoveGroupAgent,
+  useSetGroupAgentTopology,
   useSetGroupAgentWorkspaceSharing,
 } from '@/hooks/useGroupAgentActions'
 import { ApiError } from '@/lib/api'
-import type { AgentRead, GroupAgentRead, GroupMemberRead, UserRead } from '@/types/api'
+import type {
+  AgentRead,
+  GroupAgentRead,
+  GroupCommunicationMode,
+  GroupMemberRead,
+  GroupTopologyRole,
+  UserRead,
+} from '@/types/api'
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback
@@ -104,12 +112,14 @@ interface AgentRowProps {
   agent: GroupAgentRead
   groupId: string
   isMuted: boolean
+  communicationMode: GroupCommunicationMode
 }
 
-function AgentRow({ agent, groupId, isMuted }: AgentRowProps) {
+function AgentRow({ agent, groupId, isMuted, communicationMode }: AgentRowProps) {
   const muteAgent = useMuteGroupAgent()
   const removeAgent = useRemoveGroupAgent()
   const setSharing = useSetGroupAgentWorkspaceSharing()
+  const setTopology = useSetGroupAgentTopology()
   const [error, setError] = useState<string | null>(null)
 
   const onMute = () => {
@@ -130,6 +140,24 @@ function AgentRow({ agent, groupId, isMuted }: AgentRowProps) {
       },
       { onError: (err) => setError(errorMessage(err, 'Failed to update workspace sharing')) },
     )
+  }
+
+  const updateTopology = (topologyRole?: GroupTopologyRole | null, speakingOrder?: number | null) => {
+    setError(null)
+    setTopology.mutate(
+      { groupId, agentId: agent.agent_id, topologyRole, speakingOrder },
+      { onError: (err) => setError(errorMessage(err, 'Failed to update topology')) },
+    )
+  }
+
+  const onHierarchyRoleChange = (value: string) => {
+    if (value === 'leader' || value === 'worker') {
+      updateTopology(value, null)
+    }
+  }
+
+  const onRingOrderChange = (value: string) => {
+    updateTopology(null, value === '' ? null : Number(value))
   }
 
   const onRemove = () => {
@@ -153,12 +181,56 @@ function AgentRow({ agent, groupId, isMuted }: AgentRowProps) {
               <p className="truncate text-sm font-medium">{agent.display_name}</p>
               <Badge variant="outline">{formatRole(agent.role)}</Badge>
               {isMuted ? <Badge variant="secondary">Muted</Badge> : null}
+              {communicationMode === 'star' && agent.topology_role === 'hub' ? (
+                <Badge variant="secondary">Hub</Badge>
+              ) : null}
+              {communicationMode === 'hierarchical' ? (
+                <Badge variant="secondary">
+                  {agent.topology_role === 'leader' ? 'Leader' : 'Worker'}
+                </Badge>
+              ) : null}
+              {communicationMode === 'ring' && agent.speaking_order !== null ? (
+                <Badge variant="secondary">Order {agent.speaking_order}</Badge>
+              ) : null}
               {agent.share_group_workspace ? <Badge variant="secondary">Group workspace</Badge> : null}
             </div>
             <p className="text-xs text-muted-foreground">Agent ID: {agent.agent_id}</p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {communicationMode === 'star' ? (
+            <Button
+              size="sm"
+              variant={agent.topology_role === 'hub' ? 'default' : 'outline'}
+              onClick={() => updateTopology('hub', null)}
+              disabled={setTopology.isPending || agent.topology_role === 'hub'}
+            >
+              {agent.topology_role === 'hub' ? 'Hub' : 'Make hub'}
+            </Button>
+          ) : null}
+          {communicationMode === 'hierarchical' ? (
+            <select
+              value={agent.topology_role === 'leader' ? 'leader' : 'worker'}
+              onChange={(event) => onHierarchyRoleChange(event.target.value)}
+              disabled={setTopology.isPending}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="leader">Leader</option>
+              <option value="worker">Worker</option>
+            </select>
+          ) : null}
+          {communicationMode === 'ring' ? (
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={agent.speaking_order ?? ''}
+              onChange={(event) => onRingOrderChange(event.target.value)}
+              disabled={setTopology.isPending}
+              className="h-8 w-24"
+              aria-label={`Speaking order for ${agent.display_name}`}
+            />
+          ) : null}
           <Button
             size="sm"
             variant="outline"
@@ -349,6 +421,7 @@ export function GroupMembersPage() {
                         agent={agent}
                         groupId={groupId}
                         isMuted={mutedAgentIds.includes(agent.agent_id)}
+                        communicationMode={group.data?.communication_mode ?? 'mesh'}
                       />
                     ))}
                   </ul>
@@ -357,6 +430,16 @@ export function GroupMembersPage() {
             </section>
 
             <aside className="space-y-6">
+              <section className="rounded-lg border border-border bg-card p-4">
+                <div className="space-y-1">
+                  <h2 className="text-sm font-semibold">Communication topology</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Current mode: {group.data?.communication_mode ?? 'mesh'}. Configure each
+                    agent's role or order in the Agent members list.
+                  </p>
+                </div>
+              </section>
+
               <section className="rounded-lg border border-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>

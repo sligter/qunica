@@ -579,6 +579,139 @@ def _avoid_immediate_repeat_speaker(
     return ordered
 
 
+def _legacy_admin_agent_ids(group: Group) -> set[str]:
+    return set(group.admin_agent_ids or [])
+
+
+def _earliest_joined(
+    participants: Sequence[tuple[GroupAgent, Agent]],
+) -> tuple[GroupAgent, Agent] | None:
+    if not participants:
+        return None
+    return min(participants, key=lambda item: (item[0].joined_at, item[0].id))
+
+
+def _is_legacy_admin(group: Group, agent: Agent) -> bool:
+    return str(agent.id) in _legacy_admin_agent_ids(group)
+
+
+def _is_legacy_star_hub(group: Group, group_agent: GroupAgent, agent: Agent) -> bool:
+    return group_agent.topology_role is None and _is_legacy_admin(group, agent)
+
+
+def _is_hierarchical_leader(group: Group, group_agent: GroupAgent, agent: Agent) -> bool:
+    return group_agent.topology_role == "leader" or (
+        group_agent.topology_role is None and _is_legacy_admin(group, agent)
+    )
+
+
+def _order_star_participants(
+    group: Group,
+    participants: Sequence[tuple[GroupAgent, Agent]],
+) -> list[tuple[GroupAgent, Agent]]:
+    ordered = list(participants)
+    hub = next((item for item in ordered if item[0].topology_role == "hub"), None)
+    if hub is None:
+        hub = next(
+            (
+                item
+                for item in ordered
+                if _is_legacy_star_hub(group, item[0], item[1])
+            ),
+            None,
+        )
+    if hub is None:
+        hub = _earliest_joined(ordered)
+    if hub is None:
+        return ordered
+    return [hub, *[item for item in ordered if item[1].id != hub[1].id]]
+
+
+def _order_hierarchical_participants(
+    group: Group,
+    participants: Sequence[tuple[GroupAgent, Agent]],
+) -> list[tuple[GroupAgent, Agent]]:
+    ordered = list(participants)
+    leaders = [
+        item for item in ordered if _is_hierarchical_leader(group, item[0], item[1])
+    ]
+    leader_ids = {item[1].id for item in leaders}
+    workers = [item for item in ordered if item[1].id not in leader_ids]
+    return [*leaders, *workers]
+
+
+def _order_ring_participants(
+    participants: Sequence[tuple[GroupAgent, Agent]],
+    last_visible_agent_id: UUID | None,
+) -> list[tuple[GroupAgent, Agent]]:
+    ordered = sorted(
+        participants,
+        key=lambda item: (
+            item[0].speaking_order is None,
+            item[0].speaking_order or 0,
+            item[0].joined_at,
+            item[0].id,
+        ),
+    )
+    return _rotate_after_agent(ordered, last_visible_agent_id)
+
+
+def _rotate_after_agent(
+    participants: Sequence[tuple[GroupAgent, Agent]],
+    last_visible_agent_id: UUID | None,
+) -> list[tuple[GroupAgent, Agent]]:
+    ordered = list(participants)
+    if last_visible_agent_id is None or len(ordered) < 2:
+        return ordered
+    for index, (_group_agent, agent) in enumerate(ordered):
+        if agent.id == last_visible_agent_id:
+            start = (index + 1) % len(ordered)
+            return [*ordered[start:], *ordered[:start]]
+    return ordered
+
+
+async def _latest_visible_agent_id(db: AsyncSession, group_id: UUID) -> UUID | None:
+    latest = await db.scalar(
+        select(Message)
+        .where(
+            Message.group_id == group_id,
+            Message.sender_type == "agent",
+            Message.sender_id.is_not(None),
+            Message.status == "visible",
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return latest.sender_id if latest is not None else None
+
+
+def _order_round_participants(
+    group: Group,
+    resolved: Sequence[tuple[GroupAgent, Agent]],
+    *,
+    round_idx: int,
+    last_visible_agent_id: UUID | None,
+) -> list[tuple[GroupAgent, Agent]]:
+    mode = group.communication_mode or "mesh"
+    if mode == "mesh":
+        selected = (
+            list(resolved)
+            if round_idx == 1
+            else random.sample(list(resolved), k=len(resolved))
+        )
+        return _avoid_immediate_repeat_speaker(
+            selected,
+            last_visible_agent_id if group.proactive_mode else None,
+        )
+    if mode == "star":
+        return _order_star_participants(group, resolved)
+    if mode == "hierarchical":
+        return _order_hierarchical_participants(group, resolved)
+    if mode == "ring":
+        return _order_ring_participants(resolved, last_visible_agent_id)
+    return list(resolved)
+
+
 def _agent_identity_payload(agent: Agent, group_agent: GroupAgent) -> dict[str, str]:
     return {
         "agent_id": str(agent.id),
@@ -674,7 +807,7 @@ async def send_message(
     visible_replies_used = 0
     spoke_previous_round = True
     round_idx = 0
-    last_visible_agent_id: UUID | None = None
+    last_visible_agent_id = await _latest_visible_agent_id(db, group_id)
     while (not group.proactive_mode and round_idx < 1) or (
         group.proactive_mode
         and visible_replies_used < proactive_reply_budget
@@ -682,12 +815,11 @@ async def send_message(
     ):
         round_idx += 1
         spoke_this_round = False
-        selected_participants = (
-            resolved if round_idx == 1 else random.sample(resolved, k=len(resolved))
-        )
-        round_participants = _avoid_immediate_repeat_speaker(
-            selected_participants,
-            last_visible_agent_id if group.proactive_mode else None,
+        round_participants = _order_round_participants(
+            group,
+            resolved,
+            round_idx=round_idx,
+            last_visible_agent_id=last_visible_agent_id,
         )
         for group_agent, agent in round_participants:
             if group.proactive_mode and visible_replies_used >= proactive_reply_budget:
@@ -1147,7 +1279,7 @@ async def send_message_stream(
     proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
     spoke_previous_round = True
     round_idx = 0
-    last_visible_agent_id: UUID | None = None
+    last_visible_agent_id = await _latest_visible_agent_id(db, group_id)
     waiting_for_user = False
     handoff_dispatched = False
     pending_dispatches: list[AgentToolDispatch] = []
@@ -1160,12 +1292,11 @@ async def send_message_stream(
     ):
         round_idx += 1
         spoke_this_round = False
-        selected_participants = (
-            resolved if round_idx == 1 else random.sample(resolved, k=len(resolved))
-        )
-        round_participants = _avoid_immediate_repeat_speaker(
-            selected_participants,
-            last_visible_agent_id if group.proactive_mode else None,
+        round_participants = _order_round_participants(
+            group,
+            resolved,
+            round_idx=round_idx,
+            last_visible_agent_id=last_visible_agent_id,
         )
         for idx, (group_agent, agent) in enumerate(round_participants):
             if group.proactive_mode and emitted_agent_messages >= proactive_reply_budget:

@@ -16,6 +16,7 @@ export function useCreateGroup() {
           ...(input.workspace_id ? { workspace_id: input.workspace_id } : {}),
           description: input.description,
           announcement: input.announcement,
+          communication_mode: input.communication_mode,
           initial_agents: input.initial_agents,
         },
         token,

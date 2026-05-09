@@ -18,6 +18,7 @@ from app.schemas.group import (
     GroupAgentAdd,
     GroupAgentMuteUpdate,
     GroupAgentRead,
+    GroupAgentTopologyUpdate,
     GroupAgentWorkspaceSharingUpdate,
     GroupCreate,
     GroupMemberAdd,
@@ -76,6 +77,8 @@ def _to_group_agent_read(ga: GroupAgent, agent: Agent) -> GroupAgentRead:
         agent_id=ga.agent_id,
         display_name=ga.display_name or agent.name,
         role=ga.role,
+        topology_role=ga.topology_role,
+        speaking_order=ga.speaking_order,
         response_mode=ga.response_mode,
         share_group_workspace=group_service.is_group_workspace_shared(ga),
         status=ga.status,
@@ -125,6 +128,20 @@ async def list_group_agents(
 ) -> list[GroupAgentRead]:
     rows = await group_service.list_agents_in_group(db, group_id, current_user)
     return [_to_group_agent_read(ga, agent) for ga, agent in rows]
+
+
+@router.patch("/{group_id}/agents/{agent_id}/topology", response_model=GroupAgentRead)
+async def set_group_agent_topology(
+    group_id: UUID,
+    agent_id: UUID,
+    data: GroupAgentTopologyUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupAgentRead:
+    ga, agent = await group_service.set_agent_topology(
+        db, group_id, agent_id, data, current_user
+    )
+    return _to_group_agent_read(ga, agent)
 
 
 @router.patch(

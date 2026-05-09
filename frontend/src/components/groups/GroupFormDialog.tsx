@@ -21,11 +21,40 @@ import { useCreateGroup } from '@/hooks/useCreateGroup'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import type { GroupCommunicationMode } from '@/types/api'
+
+const communicationModeOptions: Array<{
+  value: GroupCommunicationMode
+  label: string
+  description: string
+}> = [
+  {
+    value: 'mesh',
+    label: 'Mesh',
+    description: 'Peer collaboration for creative or dynamic work.',
+  },
+  {
+    value: 'star',
+    label: 'Star',
+    description: 'Admin hub speaks first, then other routed agents.',
+  },
+  {
+    value: 'hierarchical',
+    label: 'Hierarchical',
+    description: 'Admin agents lead before worker agents.',
+  },
+  {
+    value: 'ring',
+    label: 'Ring',
+    description: 'Agents take turns in a stable pipeline order.',
+  },
+]
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
   description: z.string().optional(),
   announcement: z.string().optional(),
+  communication_mode: z.enum(['mesh', 'star', 'hierarchical', 'ring']),
   free_speech: z.boolean(),
   allow_agent_free_mention: z.boolean(),
 })
@@ -56,6 +85,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
       name: '',
       description: '',
       announcement: '',
+      communication_mode: 'mesh',
       free_speech: false,
       allow_agent_free_mention: true,
     },
@@ -68,6 +98,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
         name: '',
         description: '',
         announcement: '',
+        communication_mode: 'mesh',
         free_speech: false,
         allow_agent_free_mention: true,
       })
@@ -91,6 +122,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
         name: values.name,
         description: values.description ?? null,
         announcement: values.announcement ?? null,
+        communication_mode: values.communication_mode,
         initial_agents: selectedAgentIds.length ? selectedAgentIds : undefined,
       })
       onOpenChange(false)
@@ -160,6 +192,28 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
               placeholder="A short statement included in every agent's system prompt."
               {...form.register('announcement')}
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="gd-communication-mode">Communication mode</Label>
+            <select
+              id="gd-communication-mode"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              {...form.register('communication_mode')}
+            >
+              {communicationModeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {
+                communicationModeOptions.find(
+                  (option) => option.value === form.watch('communication_mode'),
+                )?.description
+              }
+            </p>
           </div>
 
           <div className="space-y-1.5">

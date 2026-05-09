@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.group import Group
+from app.models.group_agent import GroupAgent
 from app.models.group_member import GroupMember
 from app.models.group_note import GroupNote
 from app.models.user import User
@@ -92,6 +93,7 @@ async def test_create_group_auto_creates_dedicated_workspace(
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["name"] == "Project A"
+    assert body["communication_mode"] == "mesh"
     workspace_id = body["workspace_id"]
     assert workspace_id is not None
     expected_dir = tmp_path / body["id"]
@@ -130,6 +132,229 @@ async def test_create_group_explicit_workspace_still_supported(
     )
     assert r.status_code == 201, r.text
     assert r.json()["workspace_id"] == workspace_id
+
+
+async def test_group_communication_mode_create_update_read(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace_id = await _create_workspace(client, auth_headers)
+    create = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": "Mode Group",
+            "communication_mode": "star",
+        },
+    )
+    assert create.status_code == 201, create.text
+    group_id = create.json()["id"]
+    assert create.json()["communication_mode"] == "star"
+
+    update = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "ring"},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["communication_mode"] == "ring"
+
+    read = await client.get(f"/api/v1/groups/{group_id}", headers=auth_headers)
+    assert read.status_code == 200, read.text
+    assert read.json()["communication_mode"] == "ring"
+
+
+async def test_group_communication_mode_rejects_invalid_value(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace_id = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": "Bad Mode",
+            "communication_mode": "broadcast",
+        },
+    )
+    assert r.status_code == 422
+
+
+async def test_group_agent_topology_fields_and_updates(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace_id = await _create_workspace(client, auth_headers)
+    agent_ids = [
+        await _create_agent(client, auth_headers, "Topology A"),
+        await _create_agent(client, auth_headers, "Topology B"),
+    ]
+    create = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": "Topology Group",
+            "communication_mode": "star",
+            "initial_agents": agent_ids,
+        },
+    )
+    assert create.status_code == 201, create.text
+    group_id = create.json()["id"]
+
+    agents = await client.get(f"/api/v1/groups/{group_id}/agents", headers=auth_headers)
+    assert agents.status_code == 200, agents.text
+    assert {"topology_role", "speaking_order"}.issubset(agents.json()[0])
+
+    first_hub = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_ids[0]}/topology",
+        headers=auth_headers,
+        json={"topology_role": "hub"},
+    )
+    assert first_hub.status_code == 200, first_hub.text
+    second_hub = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_ids[1]}/topology",
+        headers=auth_headers,
+        json={"topology_role": "hub"},
+    )
+    assert second_hub.status_code == 200, second_hub.text
+
+    agents = await client.get(f"/api/v1/groups/{group_id}/agents", headers=auth_headers)
+    roles = {row["agent_id"]: row["topology_role"] for row in agents.json()}
+    assert roles[agent_ids[0]] is None
+    assert roles[agent_ids[1]] == "hub"
+
+    mode = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "hierarchical"},
+    )
+    assert mode.status_code == 200, mode.text
+    leader = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_ids[0]}/topology",
+        headers=auth_headers,
+        json={"topology_role": "leader"},
+    )
+    assert leader.status_code == 200, leader.text
+    worker = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_ids[1]}/topology",
+        headers=auth_headers,
+        json={"topology_role": "worker"},
+    )
+    assert worker.status_code == 200, worker.text
+    assert leader.json()["topology_role"] == "leader"
+    assert worker.json()["topology_role"] == "worker"
+
+    mode = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "ring"},
+    )
+    assert mode.status_code == 200, mode.text
+    order = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_ids[0]}/topology",
+        headers=auth_headers,
+        json={"speaking_order": 2},
+    )
+    assert order.status_code == 200, order.text
+    assert order.json()["topology_role"] is None
+    assert order.json()["speaking_order"] == 2
+
+
+async def test_group_agent_topology_rejects_invalid_mode_payloads(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace_id = await _create_workspace(client, auth_headers)
+    agent_id = await _create_agent(client, auth_headers, "Invalid Topology")
+    create = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": "Invalid Topology Group",
+            "initial_agents": [agent_id],
+        },
+    )
+    assert create.status_code == 201, create.text
+    group_id = create.json()["id"]
+
+    mesh = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_id}/topology",
+        headers=auth_headers,
+        json={"topology_role": "hub"},
+    )
+    assert mesh.status_code == 400
+
+    star_mode = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "star"},
+    )
+    assert star_mode.status_code == 200, star_mode.text
+    star = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_id}/topology",
+        headers=auth_headers,
+        json={"topology_role": "leader"},
+    )
+    assert star.status_code == 400
+
+    ring_mode = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "ring"},
+    )
+    assert ring_mode.status_code == 200, ring_mode.text
+    ring_role = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_id}/topology",
+        headers=auth_headers,
+        json={"topology_role": "worker"},
+    )
+    assert ring_role.status_code == 400
+    ring_order = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{agent_id}/topology",
+        headers=auth_headers,
+        json={"speaking_order": 0},
+    )
+    assert ring_order.status_code == 422
+
+
+async def test_group_mode_change_initializes_topology_from_admin_ids(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    workspace_id = await _create_workspace(client, auth_headers)
+    agent_ids = [
+        await _create_agent(client, auth_headers, "Admin A"),
+        await _create_agent(client, auth_headers, "Admin B"),
+    ]
+    create = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": "Admin Mapping Group",
+            "initial_agents": agent_ids,
+        },
+    )
+    assert create.status_code == 201, create.text
+    group_id = create.json()["id"]
+    group = await db_session.scalar(select(Group).where(Group.id == group_id))
+    assert group is not None
+    group.admin_agent_ids = [agent_ids[1]]
+    await db_session.flush()
+
+    mode = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"communication_mode": "hierarchical"},
+    )
+    assert mode.status_code == 200, mode.text
+    rows = await db_session.scalars(
+        select(GroupAgent).where(GroupAgent.group_id == group_id)
+    )
+    roles = {str(row.agent_id): row.topology_role for row in rows}
+    assert roles[agent_ids[0]] == "worker"
+    assert roles[agent_ids[1]] == "leader"
 
 
 async def test_list_groups_only_returns_owned(

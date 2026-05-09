@@ -199,6 +199,9 @@ export interface SkillImport {
   raw: string
 }
 
+export type GroupCommunicationMode = 'mesh' | 'star' | 'hierarchical' | 'ring'
+export type GroupTopologyRole = 'hub' | 'leader' | 'worker'
+
 export interface GroupRead {
   id: string
   workspace_id: string | null
@@ -210,6 +213,7 @@ export interface GroupRead {
   proactive_max_rounds: number
   proactive_reply_multiplier: number
   allow_agent_free_mention: boolean
+  communication_mode: GroupCommunicationMode
   muted_agent_ids: string[] | null
   admin_agent_ids: string[] | null
   muted_member_ids: string[] | null
@@ -222,6 +226,7 @@ export interface GroupCreate {
   workspace_id?: string | null
   description?: string | null
   announcement?: string | null
+  communication_mode?: GroupCommunicationMode
   initial_agents?: string[]
 }
 
@@ -234,6 +239,7 @@ export interface GroupUpdate {
   proactive_max_rounds?: number
   proactive_reply_multiplier?: number
   allow_agent_free_mention?: boolean
+  communication_mode?: GroupCommunicationMode
 }
 
 export interface GroupMemberRead {
@@ -261,6 +267,8 @@ export interface GroupAgentRead {
   agent_id: string
   display_name: string
   role: string | null
+  topology_role: GroupTopologyRole | null
+  speaking_order: number | null
   response_mode: string
   share_group_workspace: boolean
   status: string
@@ -270,6 +278,11 @@ export interface GroupAgentRead {
 export interface GroupAgentAdd {
   agent_id: string
   share_group_workspace?: boolean
+}
+
+export interface GroupAgentTopologyUpdate {
+  topology_role?: GroupTopologyRole | null
+  speaking_order?: number | null
 }
 
 export interface GroupAgentWorkspaceSharingUpdate {

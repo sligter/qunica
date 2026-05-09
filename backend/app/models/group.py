@@ -19,6 +19,10 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
             "proactive_reply_multiplier >= 1",
             name="ck_groups_proactive_reply_multiplier_min",
         ),
+        CheckConstraint(
+            "communication_mode IN ('mesh', 'star', 'hierarchical', 'ring')",
+            name="ck_groups_communication_mode",
+        ),
     )
 
     owner_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
@@ -62,6 +66,9 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     )
     allow_agent_free_mention: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
+    )
+    communication_mode: Mapped[str] = mapped_column(
+        String(30), default="mesh", server_default=text("'mesh'"), nullable=False
     )
     muted_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     admin_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)

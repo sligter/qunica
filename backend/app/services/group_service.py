@@ -2,7 +2,7 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -17,7 +17,7 @@ from app.models.group_agent import GroupAgent
 from app.models.group_member import GroupMember
 from app.models.user import User
 from app.models.workspace import Workspace
-from app.schemas.group import GroupCreate, GroupUpdate
+from app.schemas.group import GroupAgentTopologyUpdate, GroupCreate, GroupUpdate
 from app.services import system_settings_service, workspace_service
 
 
@@ -55,6 +55,9 @@ def _remove_uuid_from_json_list(values: list[str] | None, item_id: UUID) -> list
     return [value for value in values or [] if value != item]
 
 
+VALID_TOPOLOGY_ROLES = {"hub", "leader", "worker"}
+
+
 def _set_group_workspace_sharing(ga: GroupAgent, share: bool) -> None:
     context_scope = dict(ga.context_scope or {})
     file_scope = dict(ga.file_scope or {})
@@ -73,6 +76,97 @@ def is_group_workspace_shared(ga: GroupAgent | None) -> bool:
         return False
     context_scope = ga.context_scope or {}
     return context_scope.get("share_group_workspace") is True
+
+
+def _sort_topology_rows(rows: list[GroupAgent]) -> list[GroupAgent]:
+    return sorted(
+        rows,
+        key=lambda ga: (
+            ga.speaking_order is None,
+            ga.speaking_order or 0,
+            ga.joined_at,
+            ga.id,
+        ),
+    )
+
+
+async def _active_group_agents(db: AsyncSession, group_id: UUID) -> list[GroupAgent]:
+    rows = await db.scalars(
+        select(GroupAgent)
+        .where(GroupAgent.group_id == group_id, GroupAgent.status == "active")
+        .order_by(GroupAgent.joined_at.asc(), GroupAgent.id.asc())
+    )
+    return list(rows)
+
+
+async def _ensure_topology_defaults(db: AsyncSession, group: Group) -> None:
+    rows = await _active_group_agents(db, group.id)
+    admin_ids = set(group.admin_agent_ids or [])
+    if group.communication_mode == "mesh":
+        for ga in rows:
+            ga.topology_role = None
+            ga.speaking_order = None
+        return
+
+    if group.communication_mode == "star":
+        current_hub = next((ga for ga in rows if ga.topology_role == "hub"), None)
+        legacy_hub = next((ga for ga in rows if str(ga.agent_id) in admin_ids), None)
+        hub = current_hub or legacy_hub or (rows[0] if rows else None)
+        for ga in rows:
+            ga.topology_role = "hub" if hub is not None and ga.id == hub.id else None
+            ga.speaking_order = None
+        return
+
+    if group.communication_mode == "hierarchical":
+        for ga in rows:
+            if ga.topology_role not in {"leader", "worker"}:
+                ga.topology_role = (
+                    "leader" if str(ga.agent_id) in admin_ids else "worker"
+                )
+            ga.speaking_order = None
+        return
+
+    if group.communication_mode == "ring":
+        used_orders = {ga.speaking_order for ga in rows if ga.speaking_order is not None}
+        next_order = max(used_orders, default=0) + 1
+        for ga in _sort_topology_rows(rows):
+            ga.topology_role = None
+            if ga.speaking_order is None:
+                while next_order in used_orders:
+                    next_order += 1
+                ga.speaking_order = next_order
+                used_orders.add(next_order)
+                next_order += 1
+
+
+async def _initialize_agent_topology(
+    db: AsyncSession, group: Group, group_agent: GroupAgent
+) -> None:
+    if group.communication_mode == "hierarchical":
+        group_agent.topology_role = "worker"
+        group_agent.speaking_order = None
+    elif group.communication_mode == "ring":
+        max_order = await db.scalar(
+            select(func.max(GroupAgent.speaking_order)).where(
+                GroupAgent.group_id == group.id,
+                GroupAgent.status == "active",
+            )
+        )
+        group_agent.topology_role = None
+        group_agent.speaking_order = (max_order or 0) + 1
+    elif group.communication_mode == "star":
+        has_hub = await db.scalar(
+            select(GroupAgent.id).where(
+                GroupAgent.group_id == group.id,
+                GroupAgent.status == "active",
+                GroupAgent.topology_role == "hub",
+            )
+        )
+        group_agent.topology_role = "hub" if has_hub is None else None
+        group_agent.speaking_order = None
+    else:
+        group_agent.topology_role = None
+        group_agent.speaking_order = None
 
 
 async def _bind_or_create_group_workspace(
@@ -118,6 +212,7 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
         name=data.name,
         description=data.description,
         announcement=data.announcement,
+        communication_mode=data.communication_mode,
     )
     db.add(group)
     await db.flush()  # need group.id for workspace path + membership + agents
@@ -145,6 +240,7 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
             if agent.workspace_id == workspace.id:
                 _set_group_workspace_sharing(ga, True)
             db.add(ga)
+        await _ensure_topology_defaults(db, group)
 
     await db.flush()
     await db.refresh(group)
@@ -200,6 +296,9 @@ async def update_group(
         group.proactive_reply_multiplier = data.proactive_reply_multiplier
     if data.allow_agent_free_mention is not None:
         group.allow_agent_free_mention = data.allow_agent_free_mention
+    if data.communication_mode is not None:
+        group.communication_mode = data.communication_mode
+        await _ensure_topology_defaults(db, group)
 
     await db.flush()
     await db.refresh(group)
@@ -232,6 +331,9 @@ async def add_agent(
     share_group_workspace: bool = False,
 ) -> tuple[GroupAgent, Agent]:
     await assert_owner(db, group_id, owner)
+    group = await db.scalar(select(Group).where(Group.id == group_id, Group.status == "active"))
+    if group is None:
+        raise NotFoundError(f"group {group_id}")
 
     agent = await db.scalar(select(Agent).where(Agent.id == agent_id))
     if agent is None:
@@ -256,6 +358,7 @@ async def add_agent(
         )
         db.add(ga)
     _set_group_workspace_sharing(ga, share_group_workspace)
+    await _initialize_agent_topology(db, group, ga)
     await db.flush()
     await db.refresh(ga)
     return ga, agent
@@ -275,14 +378,9 @@ async def list_agents_in_group(
     return [(row[0], row[1]) for row in rows]
 
 
-async def set_agent_workspace_sharing(
-    db: AsyncSession,
-    group_id: UUID,
-    agent_id: UUID,
-    share_group_workspace: bool,
-    user: User,
+async def _get_active_group_agent_with_agent(
+    db: AsyncSession, group_id: UUID, agent_id: UUID
 ) -> tuple[GroupAgent, Agent]:
-    await assert_owner(db, group_id, user)
     row = await db.execute(
         select(GroupAgent, Agent)
         .join(Agent, Agent.id == GroupAgent.agent_id)
@@ -295,10 +393,70 @@ async def set_agent_workspace_sharing(
     result = row.one_or_none()
     if result is None:
         raise NotFoundError(f"group agent {agent_id}")
-    _set_group_workspace_sharing(result[0], share_group_workspace)
-    await db.flush()
-    await db.refresh(result[0])
     return result[0], result[1]
+
+
+async def set_agent_workspace_sharing(
+    db: AsyncSession,
+    group_id: UUID,
+    agent_id: UUID,
+    share_group_workspace: bool,
+    user: User,
+) -> tuple[GroupAgent, Agent]:
+    await assert_owner(db, group_id, user)
+    group_agent, agent = await _get_active_group_agent_with_agent(db, group_id, agent_id)
+    _set_group_workspace_sharing(group_agent, share_group_workspace)
+    await db.flush()
+    await db.refresh(group_agent)
+    return group_agent, agent
+
+
+async def set_agent_topology(
+    db: AsyncSession,
+    group_id: UUID,
+    agent_id: UUID,
+    data: GroupAgentTopologyUpdate,
+    user: User,
+) -> tuple[GroupAgent, Agent]:
+    await assert_owner(db, group_id, user)
+    group = await db.scalar(select(Group).where(Group.id == group_id, Group.status == "active"))
+    if group is None:
+        raise NotFoundError(f"group {group_id}")
+    group_agent, agent = await _get_active_group_agent_with_agent(db, group_id, agent_id)
+    role = data.topology_role
+    order = data.speaking_order
+
+    if group.communication_mode == "mesh":
+        if role is not None or order is not None:
+            raise AgentChatError("mesh mode does not use agent topology settings")
+        group_agent.topology_role = None
+        group_agent.speaking_order = None
+    elif group.communication_mode == "star":
+        if order is not None or role not in {None, "hub"}:
+            raise AgentChatError("star mode only accepts hub topology role")
+        if role == "hub":
+            rows = await _active_group_agents(db, group_id)
+            for row in rows:
+                if row.id != group_agent.id and row.topology_role == "hub":
+                    row.topology_role = None
+        group_agent.topology_role = role
+        group_agent.speaking_order = None
+    elif group.communication_mode == "hierarchical":
+        if order is not None or role not in {None, "leader", "worker"}:
+            raise AgentChatError("hierarchical mode accepts leader or worker topology role")
+        group_agent.topology_role = role
+        group_agent.speaking_order = None
+    elif group.communication_mode == "ring":
+        if role is not None:
+            raise AgentChatError("ring mode only accepts speaking order")
+        group_agent.topology_role = None
+        group_agent.speaking_order = order
+    else:
+        raise AgentChatError("unsupported communication mode")
+
+    await db.flush()
+    await db.refresh(group_agent)
+    return group_agent, agent
 
 
 async def remove_agent(db: AsyncSession, group_id: UUID, agent_id: UUID, user: User) -> None:
