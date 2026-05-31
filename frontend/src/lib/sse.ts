@@ -8,6 +8,8 @@
 
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 
+import { apiUrl } from '@/lib/runtime'
+
 export interface SseHandlers {
   onEvent: (event: string, data: string) => void
   onError?: (err: unknown) => void
@@ -24,7 +26,7 @@ interface OpenSseOptions {
 export function openSseStream(opts: OpenSseOptions): AbortController {
   const ctrl = new AbortController()
 
-  void fetchEventSource(opts.url, {
+  void fetchEventSource(apiUrl(opts.url), {
     method: 'POST',
     headers: {
       Accept: 'text/event-stream',

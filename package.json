@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "pnpm --filter @ag-swarmer/frontend dev",
     "build": "pnpm --filter @ag-swarmer/frontend build",
+    "desktop:dev": "pnpm desktop:backend && pnpm --filter @ag-swarmer/frontend tauri dev",
+    "desktop:build": "pnpm desktop:backend && pnpm --filter @ag-swarmer/frontend tauri build && pnpm desktop:zip",
+    "desktop:backend": "uv --directory backend run pyinstaller --noconsole --name ag-swarmer-backend --onefile --paths . --distpath dist --workpath build --specpath build --hidden-import app.main --collect-all langgraph --collect-all langgraph_checkpoint --collect-all langgraph_checkpoint_sqlite app/desktop_server.py && node -e \"const fs=require('fs');fs.copyFileSync('backend/dist/ag-swarmer-backend.exe','backend/dist/ag-swarmer-backend-x86_64-pc-windows-msvc.exe')\"",
+    "desktop:zip": "node scripts/package-desktop-portable.mjs",
     "lint": "pnpm --filter @ag-swarmer/frontend lint",
     "type-check": "pnpm -r type-check",
     "sync-api": "openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api/schema.d.ts"

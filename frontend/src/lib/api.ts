@@ -7,6 +7,7 @@
  */
 
 import type { ApiErrorEnvelope } from '@/types/api'
+import { apiUrl } from '@/lib/runtime'
 
 const BASE = '/api/v1'
 
@@ -87,7 +88,7 @@ export async function fetchJson<T>(path: string, opts: FetchOptions = {}): Promi
     headers['Authorization'] = `Bearer ${opts.token}`
   }
 
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(apiUrl(`${BASE}${path}`), {
     method: opts.method ?? 'GET',
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
@@ -127,7 +128,7 @@ export async function fetchFormData<T>(
     headers['Authorization'] = `Bearer ${opts.token}`
   }
 
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(apiUrl(`${BASE}${path}`), {
     method: opts.method ?? 'POST',
     headers,
     body: formData,

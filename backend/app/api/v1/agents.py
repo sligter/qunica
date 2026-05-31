@@ -1,5 +1,7 @@
 import json
 from collections.abc import AsyncIterator
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -15,6 +17,13 @@ from app.agents.workspace_tools import bind_workspace_tools, build_workspace_too
 from app.core.deps import get_current_user
 from app.core.exceptions import LLMProviderError
 from app.db import get_db
+from app.external_agents import (
+    ADAPTER_LABELS,
+    detect_adapter_status,
+    normalize_external_runtime,
+    run_external_agent,
+    run_external_agent_stream,
+)
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.user import User
@@ -22,6 +31,8 @@ from app.schemas.agent import (
     AgentCreate,
     AgentRead,
     AgentUpdate,
+    ExternalAdapterStatusRead,
+    ExternalAdapterStatusResponse,
     InvokeRequest,
     InvokeResponse,
     ToolCatalogResponse,
@@ -114,6 +125,20 @@ async def get_tool_catalog() -> ToolCatalogResponse:
     return ToolCatalogResponse(tools=list_builtin_tools())
 
 
+@router.get("/external-runtimes/status", response_model=ExternalAdapterStatusResponse)
+async def get_external_runtime_status() -> ExternalAdapterStatusResponse:
+    statuses = [
+        await detect_adapter_status(adapter)
+        for adapter in ADAPTER_LABELS
+    ]
+    return ExternalAdapterStatusResponse(
+        adapters=[
+            ExternalAdapterStatusRead(**asdict(status))
+            for status in statuses
+        ]
+    )
+
+
 @router.post(
     "",
     response_model=AgentRead,
@@ -173,6 +198,21 @@ async def invoke_agent(
 ) -> InvokeResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
     context = await build_agent_invocation_context(db, agent, current_user)
+    if agent.runtime_kind == "external_cli":
+        if context.workspace is None or context.workspace.local_path is None:
+            raise LLMProviderError("external CLI agent requires a local workspace")
+        config = normalize_external_runtime(agent.external_runtime)
+        content = await run_external_agent(
+            db,
+            owner_id=current_user.id,
+            group_id=None,
+            agent_id=agent.id,
+            thread_id=None,
+            config=config,
+            cwd=Path(context.workspace.local_path),
+            prompt=f"{context.system_prompt}\n\nUser request:\n{data.message}",
+        )
+        return InvokeResponse(content=content)
     chat_model = await resolve_chat_model(db, agent, streaming=False)
 
     async def _agent_tool_executor(
@@ -197,12 +237,11 @@ async def invoke_agent(
         response = await _invoke_with_tool_loop(model, tools, messages)
     except Exception as exc:
         raise LLMProviderError(f"chat_complete failed: {exc}") from exc
-    content = (
-        response.content
-        if isinstance(response, AIMessage)
-        else str(getattr(response, "content", response))
-    )
-    return InvokeResponse(content=cast(str, content))
+    if isinstance(response, AIMessage) and isinstance(response.content, str):
+        content = response.content
+    else:
+        content = str(getattr(response, "content", response))
+    return InvokeResponse(content=content)
 
 
 @router.post("/{agent_id}/invoke/stream")
@@ -215,6 +254,34 @@ async def invoke_agent_stream(
 ) -> EventSourceResponse:
     agent = await agent_service.get_agent(db, agent_id, current_user)
     context = await build_agent_invocation_context(db, agent, current_user)
+    if agent.runtime_kind == "external_cli":
+        if context.workspace is None or context.workspace.local_path is None:
+            raise LLMProviderError("external CLI agent requires a local workspace")
+        config = normalize_external_runtime(agent.external_runtime)
+        workspace_path = Path(context.workspace.local_path)
+
+        async def external_event_gen() -> AsyncIterator[dict[str, str]]:
+            try:
+                async for event in run_external_agent_stream(
+                    db,
+                    owner_id=current_user.id,
+                    group_id=None,
+                    agent_id=agent.id,
+                    thread_id=None,
+                    config=config,
+                    cwd=workspace_path,
+                    prompt=f"{context.system_prompt}\n\nUser request:\n{data.message}",
+                ):
+                    if event.kind == "token" and isinstance(event.data, str):
+                        yield {"event": "token", "data": event.data}
+                    elif event.kind == "run" and isinstance(event.data, dict):
+                        payload = {**event.data, "display_name": agent.name}
+                        yield {"event": "external_agent_run", "data": json.dumps(payload)}
+            except Exception as exc:
+                yield {"event": "error", "data": f"external agent failed: {exc}"}
+            yield {"event": "done", "data": ""}
+
+        return EventSourceResponse(external_event_gen())
     chat_model = await resolve_chat_model(db, agent, streaming=True)
 
     async def _agent_tool_executor(

@@ -1,11 +1,10 @@
 from uuid import UUID
 
 from sqlalchemy import Boolean, CheckConstraint, Integer, String, Text, false, text
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDPkMixin
+from app.models.types import GUID, JSONData
 
 
 class Group(Base, UUIDPkMixin, TimestampMixin):
@@ -25,11 +24,11 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
         ),
     )
 
-    owner_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
     workspace_id: Mapped[UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True, index=True
+        GUID(), nullable=True, index=True
     )
-    org_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    org_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -70,7 +69,7 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     communication_mode: Mapped[str] = mapped_column(
         String(30), default="mesh", server_default=text("'mesh'"), nullable=False
     )
-    muted_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    admin_agent_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    muted_member_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    muted_agent_ids: Mapped[list[str] | None] = mapped_column(JSONData, nullable=True)
+    admin_agent_ids: Mapped[list[str] | None] = mapped_column(JSONData, nullable=True)
+    muted_member_ids: Mapped[list[str] | None] = mapped_column(JSONData, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)

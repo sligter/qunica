@@ -2,6 +2,7 @@
 node_modules/
 dist/
 build/
+target/
 *.log
 .pnpm-debug.log*
 *.tsbuildinfo
@@ -44,3 +45,4 @@ Thumbs.db
 workspaces/
 uploads/
 data/
+frontend/src-tauri/gen/

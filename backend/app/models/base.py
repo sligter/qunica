@@ -2,8 +2,9 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, func
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from app.models.types import GUID
 
 
 class Base(DeclarativeBase):
@@ -12,7 +13,7 @@ class Base(DeclarativeBase):
 
 class UUIDPkMixin:
     id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True),
+        GUID(),
         primary_key=True,
         default=uuid4,
     )

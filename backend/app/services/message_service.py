@@ -31,6 +31,7 @@ import random
 import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -54,6 +55,11 @@ from app.agents.runtime import RuntimeAgentHandoff, RuntimeToolEvent, RuntimeWai
 from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import AgentChatError, ConflictError, NotFoundError
 from app.db import SessionLocal
+from app.external_agents import (
+    normalize_external_runtime,
+    run_external_agent,
+    run_external_agent_stream,
+)
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.group import Group
@@ -770,6 +776,59 @@ def _serialize_msg(m: Message) -> dict[str, Any]:
     }
 
 
+def _external_workspace_path(context: AgentInvocationContext) -> Path:
+    workspace = context.workspace
+    if workspace is None or workspace.backend_type != "local" or not workspace.local_path:
+        raise AgentChatError("external CLI agents require a local workspace")
+    return Path(workspace.local_path).resolve()
+
+
+def _render_external_prompt(input_messages: list[BaseMessage]) -> str:
+    rendered: list[str] = []
+    for message in input_messages:
+        role = "Message"
+        if isinstance(message, AIMessage):
+            role = "Assistant"
+        elif isinstance(message, HumanMessage):
+            role = "User"
+        elif message.type == "system":
+            role = "System"
+        content = message.content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "".join(
+                item if isinstance(item, str) else str(item.get("text", ""))
+                for item in content
+                if isinstance(item, (str, dict))
+            )
+        else:
+            text = str(content)
+        rendered.append(f"{role}:\n{text}")
+    return "\n\n".join(rendered)
+
+
+async def _run_external_agent_once(
+    db: AsyncSession,
+    group: Group | None,
+    agent: Agent,
+    chat_thread: Thread | None,
+    input_messages: list[BaseMessage],
+    context: AgentInvocationContext,
+) -> str:
+    config = normalize_external_runtime(agent.external_runtime)
+    return await run_external_agent(
+        db,
+        owner_id=agent.owner_id,
+        group_id=group.id if group is not None else None,
+        agent_id=agent.id,
+        thread_id=chat_thread.id if chat_thread is not None else None,
+        config=config,
+        cwd=_external_workspace_path(context),
+        prompt=_render_external_prompt(input_messages),
+    )
+
+
 async def send_message(
     db: AsyncSession,
     request: Request,
@@ -830,6 +889,47 @@ async def send_message(
             await thread_service.mark_running(db, chat_thread)
             try:
                 input_messages, context = await _build_invocation(db, group, group_agent, agent)
+                if agent.runtime_kind == "external_cli":
+                    text = await _run_external_agent_once(
+                        db,
+                        group,
+                        agent,
+                        chat_thread,
+                        input_messages,
+                        context,
+                    )
+                    if _is_silent_reply(group, text):
+                        silent_turns.append(
+                            SilentAgentTurn(
+                                agent_id=agent.id,
+                                display_name=group_agent.display_name or agent.name,
+                            )
+                        )
+                        await thread_service.mark_completed(db, chat_thread)
+                        continue
+                    visible_text = _sanitize_agent_visible_content(text)
+                    if visible_text:
+                        agent_msg = await _persist_agent_message(
+                            db,
+                            group_id,
+                            agent,
+                            visible_text,
+                            chat_thread.id,
+                            reply_to=user_msg.id,
+                        )
+                        agent_replies.append(agent_msg)
+                        visible_replies_used += 1
+                        spoke_this_round = True
+                        last_visible_agent_id = agent.id
+                    waiting_for_user = _requests_human_input(
+                        visible_text, human_names, sender_name
+                    )
+                    if waiting_for_user:
+                        warnings.append(WAITING_FOR_USER_WARNING)
+                    await thread_service.mark_completed(db, chat_thread)
+                    if waiting_for_user:
+                        break
+                    continue
                 chat_model = await resolve_chat_model(db, agent, streaming=False)
                 tool_requested_wait = False
 
@@ -969,6 +1069,45 @@ async def send_message(
                 dispatch.helper_group_agent,
                 dispatch.helper_agent,
             )
+            if dispatch.helper_agent.runtime_kind == "external_cli":
+                text = await _run_external_agent_once(
+                    db,
+                    group,
+                    dispatch.helper_agent,
+                    helper_thread,
+                    input_messages,
+                    context,
+                )
+                if _is_silent_reply(group, text):
+                    silent_turns.append(
+                        SilentAgentTurn(
+                            agent_id=dispatch.helper_agent.id,
+                            display_name=(
+                                dispatch.helper_group_agent.display_name
+                                or dispatch.helper_agent.name
+                            ),
+                        )
+                    )
+                    await thread_service.mark_completed(db, helper_thread)
+                    continue
+                visible_text = _sanitize_agent_visible_content(text)
+                if visible_text:
+                    agent_msg = await _persist_agent_message(
+                        db,
+                        group_id,
+                        dispatch.helper_agent,
+                        visible_text,
+                        helper_thread.id,
+                        reply_to=dispatch_msg.id,
+                    )
+                    agent_replies.append(agent_msg)
+                waiting_for_user = _requests_human_input(
+                    visible_text, human_names, sender_name
+                )
+                if waiting_for_user:
+                    warnings.append(WAITING_FOR_USER_WARNING)
+                await thread_service.mark_completed(db, helper_thread)
+                continue
             chat_model = await resolve_chat_model(db, dispatch.helper_agent, streaming=False)
             tool_requested_wait = False
 
@@ -1062,6 +1201,70 @@ async def _stream_one_agent(
     cancelled = False
     try:
         input_messages, context = await _build_invocation(db, group, group_agent, agent)
+        if agent.runtime_kind == "external_cli":
+            config = normalize_external_runtime(agent.external_runtime)
+            async for event in run_external_agent_stream(
+                db,
+                owner_id=agent.owner_id,
+                group_id=group.id,
+                agent_id=agent.id,
+                thread_id=chat_thread.id,
+                config=config,
+                cwd=_external_workspace_path(context),
+                prompt=_render_external_prompt(input_messages),
+            ):
+                if event.kind == "run" and isinstance(event.data, dict):
+                    payload = {
+                        **event.data,
+                        "display_name": group_agent.display_name or agent.name,
+                    }
+                    yield {"event": "external_agent_run", "data": json.dumps(payload)}
+                    continue
+                if event.kind != "token" or not isinstance(event.data, str):
+                    continue
+                chunks.append(event.data)
+                visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
+                if len(visible_so_far) <= emitted_visible_len:
+                    continue
+                delta = visible_so_far[emitted_visible_len:]
+                emitted_visible_len = len(visible_so_far)
+                yield {
+                    "event": "token",
+                    "data": json.dumps({"agent_id": agent_id_str, "delta": delta}),
+                }
+            text = "".join(chunks)
+            if _is_silent_reply(group, text):
+                yield {
+                    "event": "agent_silent",
+                    "data": json.dumps(_agent_identity_payload(agent, group_agent)),
+                }
+            else:
+                visible_text = _sanitize_agent_visible_content(text)
+                if len(visible_text) > emitted_visible_len:
+                    yield {
+                        "event": "token",
+                        "data": json.dumps(
+                            {
+                                "agent_id": agent_id_str,
+                                "delta": visible_text[emitted_visible_len:],
+                            }
+                        ),
+                    }
+                if visible_text:
+                    agent_msg = await _persist_agent_message(
+                        db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
+                    )
+                    yield {
+                        "event": "agent_message",
+                        "data": json.dumps(_serialize_msg(agent_msg)),
+                    }
+                if _requests_human_input(visible_text, human_names, sender_name):
+                    yield {
+                        "event": "waiting_for_user",
+                        "data": json.dumps({"message": WAITING_FOR_USER_WARNING}),
+                    }
+            await thread_service.mark_completed(db, chat_thread)
+            return
         chat_model = await resolve_chat_model(db, agent, streaming=True)
         async def _agent_tool_executor(
             agent_id: str, task: str, instructions: str | None = None

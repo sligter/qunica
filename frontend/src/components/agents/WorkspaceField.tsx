@@ -55,10 +55,10 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     saveRememberedPrefix(PICKER_SCOPE, nextPath)
   }
 
-  const applyPick = (folderName: string) => {
+  const applyPick = (folderName: string, absolutePath?: string) => {
     if (!folderName) return
     const remembered = readRememberedPrefix(PICKER_SCOPE)
-    const composed = composePickedPath(localPath, folderName, remembered)
+    const composed = absolutePath ?? composePickedPath(localPath, folderName, remembered)
     setLocalPath(composed)
     saveRememberedPrefix(PICKER_SCOPE, composed)
     if (!workspaceName) {
@@ -73,7 +73,7 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     setCreateError(null)
     const result: FolderPickResult = await pickFolder()
     if (result.kind === 'native') {
-      applyPick(result.name)
+      applyPick(result.name, result.path)
       return
     }
     if (result.kind === 'cancelled') {

@@ -1,10 +1,12 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from sqlalchemy.engine import make_url
 
 from app.agents.runtime import compile_graph
 from app.api.v1 import api_router
@@ -17,6 +19,8 @@ from app.core.exceptions import (
     PermissionDeniedError,
 )
 from app.core.logging import setup_logging
+from app.db import engine
+from app.models import Base
 
 
 def _psycopg_url(asyncpg_url: str) -> str:
@@ -25,14 +29,41 @@ def _psycopg_url(asyncpg_url: str) -> str:
     return asyncpg_url.replace("postgresql+asyncpg://", "postgresql://")
 
 
+def _sqlite_path(sqlite_url: str) -> str:
+    database = make_url(sqlite_url).database
+    if not database:
+        raise RuntimeError("sqlite database URL must include a file path")
+    path = Path(database)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+async def _bootstrap_sqlite_schema() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
+    if settings.is_sqlite:
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        await _bootstrap_sqlite_schema()
+        checkpoint_url = settings.effective_checkpoint_database_url
+        async with aiosqlite.connect(_sqlite_path(checkpoint_url)) as conn:
+            sqlite_checkpointer = AsyncSqliteSaver(conn)
+            await sqlite_checkpointer.setup()
+            app.state.graph = compile_graph(sqlite_checkpointer)
+            yield
+        return
+
     async with AsyncPostgresSaver.from_conn_string(
-        _psycopg_url(settings.database_url)
-    ) as checkpointer:
-        await checkpointer.setup()
-        app.state.graph = compile_graph(checkpointer)
+        _psycopg_url(settings.effective_checkpoint_database_url)
+    ) as postgres_checkpointer:
+        await postgres_checkpointer.setup()
+        app.state.graph = compile_graph(postgres_checkpointer)
         yield
 
 

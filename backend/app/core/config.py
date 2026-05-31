@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -25,6 +27,8 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://agentchat:agentchat@localhost:5432/agentchat"
     )
+    checkpoint_database_url: str = ""
+    desktop_app_data_dir: str = ""
     redis_url: str = "redis://localhost:6379/0"
 
     minio_endpoint: str = "localhost:9000"
@@ -44,6 +48,26 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     tavily_search_url: str = "https://api.tavily.com/search"
     playwright_search_url: str = ""
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _parse_debug(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() in {"release", "prod", "production"}:
+            return False
+        return value
+
+    @property
+    def effective_checkpoint_database_url(self) -> str:
+        return self.checkpoint_database_url or self.database_url
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.database_url.startswith("sqlite")
+
+    def sqlite_connect_args(self) -> dict[str, Any]:
+        if self.database_url.startswith("sqlite"):
+            return {"check_same_thread": False}
+        return {}
 
 
 settings = Settings()

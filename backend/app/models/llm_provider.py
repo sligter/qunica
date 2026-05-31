@@ -2,16 +2,16 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import DateTime, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDPkMixin
+from app.models.types import GUID
 
 
 class LLMProvider(Base, UUIDPkMixin):
     __tablename__ = "llm_providers"
 
-    owner_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False, index=True)
+    owner_id: Mapped[UUID] = mapped_column(GUID(), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     # 'openai-compatible' | 'anthropic' | 'gemini'
     kind: Mapped[str] = mapped_column(String(50), nullable=False)

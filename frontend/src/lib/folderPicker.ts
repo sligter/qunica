@@ -25,7 +25,7 @@ interface ShowDirectoryPickerWindow extends Window {
 }
 
 export type FolderPickResult =
-  | { kind: 'native'; name: string }
+  | { kind: 'native'; name: string; path?: string }
   | { kind: 'cancelled' }
   | { kind: 'fallback' }
 
@@ -34,6 +34,13 @@ const ABSOLUTE_PREFIX_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/
 const TRAILING_SEPARATOR_RE = /[\\/]+$/
 
 export async function pickFolder(): Promise<FolderPickResult> {
+  const tauriPath = await pickTauriFolder()
+  if (tauriPath === null) {
+    return { kind: 'cancelled' }
+  }
+  if (tauriPath) {
+    return { kind: 'native', name: basename(tauriPath), path: tauriPath }
+  }
   const showDirectoryPicker = (window as ShowDirectoryPickerWindow)
     .showDirectoryPicker
   if (typeof showDirectoryPicker !== 'function') {
@@ -47,6 +54,17 @@ export async function pickFolder(): Promise<FolderPickResult> {
       return { kind: 'cancelled' }
     }
     return { kind: 'fallback' }
+  }
+}
+
+async function pickTauriFolder(): Promise<string | null | undefined> {
+  try {
+    const dialog = await import('@tauri-apps/plugin-dialog')
+    const selected = await dialog.open({ directory: true, multiple: false })
+    if (selected === null) return null
+    return typeof selected === 'string' ? selected : undefined
+  } catch {
+    return undefined
   }
 }
 

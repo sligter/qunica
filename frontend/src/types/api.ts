@@ -89,6 +89,31 @@ export interface AgentToolConfig {
   assistant_agents?: AgentAssistantToolSelection[]
 }
 
+export type AgentRuntimeKind = 'llm_chat' | 'external_cli'
+export type ExternalRuntimeAdapter = 'codex' | 'claude_code'
+
+export interface ExternalRuntimeConfig {
+  adapter: ExternalRuntimeAdapter
+  executable?: string | null
+  timeout_seconds?: number | null
+  max_turns?: number | null
+}
+
+export interface ExternalAdapterStatusRead {
+  adapter: ExternalRuntimeAdapter
+  label: string
+  executable: string
+  configured_path: string | null
+  resolved_path: string | null
+  available: boolean
+  version: string | null
+  error: string | null
+}
+
+export interface ExternalAdapterStatusResponse {
+  adapters: ExternalAdapterStatusRead[]
+}
+
 export interface AgentRead {
   id: string
   name: string
@@ -96,6 +121,8 @@ export interface AgentRead {
   system_prompt: string
   llm_config: Record<string, unknown> | null
   tool_config: AgentToolConfig | null
+  runtime_kind: AgentRuntimeKind
+  external_runtime: ExternalRuntimeConfig | null
   workspace_id: string | null
   llm_provider_id: string | null
   skill_ids: string[]
@@ -110,6 +137,8 @@ export interface AgentCreate {
   system_prompt: string
   llm_config?: Record<string, unknown> | null
   tool_config?: AgentToolConfig | null
+  runtime_kind?: AgentRuntimeKind
+  external_runtime?: ExternalRuntimeConfig | null
   workspace_id: string
   llm_provider_id?: string | null
   skill_ids?: string[]
@@ -121,6 +150,8 @@ export interface AgentUpdate {
   system_prompt?: string
   llm_config?: Record<string, unknown> | null
   tool_config?: AgentToolConfig | null
+  runtime_kind?: AgentRuntimeKind
+  external_runtime?: ExternalRuntimeConfig | null
   workspace_id?: string | null
   llm_provider_id?: string | null
   skill_ids?: string[]

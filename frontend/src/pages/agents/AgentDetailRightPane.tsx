@@ -18,7 +18,7 @@ export function AgentDetailRightPane() {
   const [editing, setEditing] = useState(false)
 
   if (agent.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading agent…</div>
+    return <div className="p-6 text-sm text-muted-foreground">Loading agent...</div>
   }
   if (agent.error) {
     return (
@@ -35,9 +35,7 @@ export function AgentDetailRightPane() {
   const provider = a.llm_provider_id
     ? providers.data?.find((p) => p.id === a.llm_provider_id)
     : null
-  const mountedSkills = (skills.data ?? []).filter((s) =>
-    a.skill_ids.includes(s.id),
-  )
+  const mountedSkills = (skills.data ?? []).filter((s) => a.skill_ids.includes(s.id))
 
   const onDelete = async () => {
     if (!confirm(`Delete agent "${a.name}"? This will remove it from active agent lists.`)) {
@@ -69,6 +67,13 @@ export function AgentDetailRightPane() {
     )
   }
 
+  const runtimeText =
+    a.runtime_kind === 'external_cli'
+      ? `External CLI - ${a.external_runtime?.adapter ?? 'not configured'}`
+      : provider
+        ? `LLM chat - ${provider.name} - ${provider.kind} - ${provider.default_model}`
+        : 'LLM chat - Default (env settings)'
+
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
       <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
@@ -89,7 +94,7 @@ export function AgentDetailRightPane() {
               onClick={onDelete}
               disabled={del.isPending}
             >
-              {del.isPending ? 'Deleting…' : 'Delete'}
+              {del.isPending ? 'Deleting...' : 'Delete'}
             </Button>
           </div>
         </header>
@@ -106,13 +111,9 @@ export function AgentDetailRightPane() {
         <section className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              LLM provider
+              Runtime
             </h3>
-            <p>
-              {provider
-                ? `${provider.name} — ${provider.kind} · ${provider.default_model}`
-                : 'Default (env settings)'}
-            </p>
+            <p>{runtimeText}</p>
           </div>
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">

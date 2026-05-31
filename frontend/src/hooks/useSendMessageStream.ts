@@ -45,6 +45,17 @@ interface ToolCallPayload {
   result_summary?: string
 }
 
+interface ExternalAgentRunPayload {
+  run_id?: string
+  agent_id?: string
+  display_name?: string
+  adapter?: string
+  status?: string
+  cwd?: string
+  exit_code?: number
+  summary?: string
+}
+
 const TOOL_ACTIVITY_STATUSES = new Set<ToolActivityStatus>([
   'started',
   'completed',
@@ -68,6 +79,12 @@ function normalizeToolStatus(status: unknown): ToolActivityStatus {
   return typeof status === 'string' && TOOL_ACTIVITY_STATUSES.has(status as ToolActivityStatus)
     ? (status as ToolActivityStatus)
     : 'unavailable'
+}
+
+function externalRunStatus(status: string | undefined): ToolActivityStatus {
+  if (status === 'running') return 'started'
+  if (status === 'completed') return 'completed'
+  return 'failed'
 }
 
 export function useSendMessageStream(groupId: string | undefined) {
@@ -158,6 +175,24 @@ export function useSendMessageStream(groupId: string | undefined) {
                 }
                 pushToolActivity(groupId, activity)
                 if (event === 'tool_call_result') {
+                  void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+                }
+              }
+              return
+            }
+            if (event === 'external_agent_run') {
+              const payload = safeJson<ExternalAgentRunPayload>(data)
+              if (payload?.run_id) {
+                pushToolActivity(groupId, {
+                  id: payload.run_id,
+                  agent_id: payload.agent_id ?? 'unknown-agent',
+                  display_name: payload.display_name ?? 'Agent',
+                  tool_name: `External CLI: ${payload.adapter ?? 'unknown'}`,
+                  status: externalRunStatus(payload.status),
+                  args_summary: payload.cwd,
+                  result_summary: payload.summary,
+                })
+                if (payload.status && payload.status !== 'running') {
                   void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
                 }
               }
