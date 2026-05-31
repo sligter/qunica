@@ -27,6 +27,7 @@ interface ShowDirectoryPickerWindow extends Window {
 export type FolderPickResult =
   | { kind: 'native'; name: string; path?: string }
   | { kind: 'cancelled' }
+  | { kind: 'error'; message: string }
   | { kind: 'fallback' }
 
 const SEPARATOR_RE = /[\\/]/
@@ -40,6 +41,12 @@ export async function pickFolder(): Promise<FolderPickResult> {
   }
   if (tauriPath) {
     return { kind: 'native', name: basename(tauriPath), path: tauriPath }
+  }
+  if (isTauriRuntime()) {
+    return {
+      kind: 'error',
+      message: 'Desktop folder picker did not return a local filesystem path.',
+    }
   }
   const showDirectoryPicker = (window as ShowDirectoryPickerWindow)
     .showDirectoryPicker
@@ -58,14 +65,47 @@ export async function pickFolder(): Promise<FolderPickResult> {
 }
 
 async function pickTauriFolder(): Promise<string | null | undefined> {
+  const commandPath = await pickTauriFolderCommand()
+  if (commandPath !== undefined) return commandPath
   try {
     const dialog = await import('@tauri-apps/plugin-dialog')
     const selected = await dialog.open({ directory: true, multiple: false })
     if (selected === null) return null
-    return typeof selected === 'string' ? selected : undefined
+    return coerceTauriPath(selected)
   } catch {
     return undefined
   }
+}
+
+function isTauriRuntime(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    ('__TAURI_INTERNALS__' in window || window.location.hostname === 'tauri.localhost')
+  )
+}
+
+async function pickTauriFolderCommand(): Promise<string | null | undefined> {
+  if (!isTauriRuntime()) return undefined
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const selected = await invoke<unknown>('pick_workspace_folder')
+    return coerceTauriPath(selected)
+  } catch {
+    return undefined
+  }
+}
+
+function coerceTauriPath(value: unknown): string | null | undefined {
+  if (value === null) return null
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return coerceTauriPath(value[0])
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  for (const key of ['path', 'Path', 'filePath', 'FilePath']) {
+    const nested = record[key]
+    if (typeof nested === 'string') return nested
+  }
+  return undefined
 }
 
 function detectSeparator(path: string): string {

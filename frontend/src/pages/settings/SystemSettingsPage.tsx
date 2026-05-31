@@ -52,10 +52,10 @@ export function SystemSettingsPage() {
     saveRememberedPrefix(PICKER_SCOPE, next)
   }
 
-  const applyPick = (folderName: string) => {
+  const applyPick = (folderName: string, absolutePath?: string) => {
     if (!folderName) return
     const remembered = readRememberedPrefix(PICKER_SCOPE)
-    const composed = composePickedPath(root, folderName, remembered)
+    const composed = absolutePath ?? composePickedPath(root, folderName, remembered)
     setRoot(composed)
     saveRememberedPrefix(PICKER_SCOPE, composed)
     requestAnimationFrame(() => {
@@ -67,10 +67,14 @@ export function SystemSettingsPage() {
     setError(null)
     const result: FolderPickResult = await pickFolder()
     if (result.kind === 'native') {
-      applyPick(result.name)
+      applyPick(result.name, result.path)
       return
     }
     if (result.kind === 'cancelled') {
+      return
+    }
+    if (result.kind === 'error') {
+      setError(result.message)
       return
     }
     fallbackInputRef.current?.click()

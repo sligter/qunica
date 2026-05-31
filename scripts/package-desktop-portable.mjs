@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,8 +8,9 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 const releaseDir = path.join(rootDir, "frontend", "src-tauri", "target", "release");
 const portableDir = path.join(releaseDir, "bundle", "portable");
-const appDir = path.join(portableDir, "AG Swarmer");
 const zipPath = path.join(portableDir, `AG Swarmer_${pkg.version}_x64-portable.zip`);
+const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ag-swarmer-portable-"));
+const appDir = path.join(stagingRoot, "AG Swarmer");
 
 const files = [
   {
@@ -27,7 +29,6 @@ for (const file of files) {
   }
 }
 
-fs.rmSync(appDir, { recursive: true, force: true });
 fs.mkdirSync(appDir, { recursive: true });
 
 for (const file of files) {
@@ -40,7 +41,8 @@ fs.writeFileSync(
     "AG Swarmer portable build",
     "",
     "Run AG Swarmer.exe directly. Keep ag-swarmer-backend.exe in the same folder.",
-    "The desktop backend stores local data under the Windows app data directory.",
+    "Data: %APPDATA%\\dev.ag-swarmer.desktop",
+    "Logs: %APPDATA%\\dev.ag-swarmer.desktop\\logs\\launcher.log and backend.log",
     "",
   ].join("\r\n"),
   "utf8",
@@ -72,3 +74,5 @@ if (result.status !== 0) {
 }
 
 console.log(`Portable zip: ${zipPath}`);
+
+fs.rmSync(stagingRoot, { recursive: true, force: true });

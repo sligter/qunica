@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import secrets
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from uvicorn import Config, Server
@@ -28,9 +30,24 @@ def _sqlite_url(path: Path) -> str:
     return f"sqlite+aiosqlite:///{path.resolve().as_posix()}"
 
 
+def _desktop_secret_key(app_data_dir: Path) -> str:
+    secret_file = app_data_dir / "desktop-secret.key"
+    try:
+        existing = secret_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        existing = ""
+    if len(existing.encode("utf-8")) >= 32:
+        return existing
+
+    secret = secrets.token_urlsafe(48)
+    secret_file.write_text(secret, encoding="utf-8")
+    return secret
+
+
 def _configure_env(app_data_dir: Path, port: int) -> None:
     app_data_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("DESKTOP_APP_DATA_DIR", str(app_data_dir))
+    os.environ.setdefault("SECRET_KEY", _desktop_secret_key(app_data_dir))
     os.environ.setdefault("DATABASE_URL", _sqlite_url(app_data_dir / "ag-swarmer.sqlite3"))
     os.environ.setdefault(
         "CHECKPOINT_DATABASE_URL",
@@ -45,13 +62,14 @@ def _configure_env(app_data_dir: Path, port: int) -> None:
 
 
 def _redirect_windowed_output(app_data_dir: Path) -> None:
-    if sys.stdout is not None and sys.stderr is not None:
-        return
-    log_file = (app_data_dir / "backend.log").open("a", encoding="utf-8", buffering=1)
-    if sys.stdout is None:
-        sys.stdout = log_file
-    if sys.stderr is None:
-        sys.stderr = log_file
+    log_dir = app_data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file_path = log_dir / "backend.log"
+    log_file = log_file_path.open("a", encoding="utf-8", buffering=1)
+    sys.stdout = log_file
+    sys.stderr = log_file
+    timestamp = datetime.now(timezone.utc).isoformat()
+    print(f"[{timestamp}] backend log started: {log_file_path}", flush=True)
 
 
 def _parse_args() -> argparse.Namespace:

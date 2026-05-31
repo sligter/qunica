@@ -79,6 +79,10 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     if (result.kind === 'cancelled') {
       return
     }
+    if (result.kind === 'error') {
+      setCreateError(result.message)
+      return
+    }
     fallbackInputRef.current?.click()
   }
 
