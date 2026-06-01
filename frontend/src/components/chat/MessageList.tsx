@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import { MessageItem } from '@/components/chat/MessageItem'
 import { cn } from '@/lib/utils'
-import { useMessageStore, type ToolActivity } from '@/stores/messageStore'
+import { useMessageStore, type ActiveAgent, type ToolActivity } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 interface MessageListProps {
@@ -14,6 +14,7 @@ interface MessageListProps {
 
 const EMPTY_MESSAGES: readonly Message[] = []
 const EMPTY_INFLIGHT: Record<string, never> = {}
+const EMPTY_ACTIVE_AGENTS: Record<string, never> = {}
 const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_TOOL_ACTIVITY: readonly ToolActivity[] = []
 
@@ -41,7 +42,9 @@ export function MessageList({
   const inFlight = useMessageStore(
     (s) => s.inFlightByGroup[groupId] ?? EMPTY_INFLIGHT,
   )
-  const activeAgent = useMessageStore((s) => s.activeAgentByGroup[groupId] ?? null)
+  const activeAgents = useMessageStore(
+    (s) => s.activeAgentsByGroup[groupId] ?? EMPTY_ACTIVE_AGENTS,
+  )
   const warnings = useMessageStore(
     (s) => s.warningsByGroup[groupId] ?? EMPTY_WARNINGS,
   )
@@ -52,10 +55,10 @@ export function MessageList({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages, inFlight, activeAgent, warnings, toolActivity])
+  }, [messages, inFlight, activeAgents, warnings, toolActivity])
 
   const inFlightBubbles: Message[] = Object.values(inFlight).map((bubble) => ({
-    id: `inflight:${bubble.agent_id}`,
+    id: `inflight:${bubble.id}`,
     group_id: groupId,
     thread_id: null,
     sender_type: 'agent',
@@ -68,18 +71,14 @@ export function MessageList({
     created_at: new Date().toISOString(),
   }))
 
-  const showThinking =
-    activeAgent !== null &&
-    Object.keys(inFlight).length === 0
-
-  const progressLabel =
-    activeAgent && activeAgent.total > 1
-      ? ` (${activeAgent.index + 1}/${activeAgent.total})`
-      : ''
+  const thinkingAgents: ActiveAgent[] = Object.values(activeAgents).filter((agent) => {
+    const key = `${agent.stream_id ?? 'default'}:${agent.agent_id}`
+    return inFlight[key] === undefined
+  })
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto py-4">
-      {messages.length === 0 && inFlightBubbles.length === 0 && !showThinking && (
+      {messages.length === 0 && inFlightBubbles.length === 0 && thinkingAgents.length === 0 && (
         <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
           No messages yet. Try sending <code>@AgentName hello</code> to start.
         </div>
@@ -92,7 +91,7 @@ export function MessageList({
             disabled={isLoadingOlderMessages}
             onClick={onLoadOlderMessages}
           >
-            {isLoadingOlderMessages ? 'Loading earlier messages…' : 'Load earlier messages'}
+            {isLoadingOlderMessages ? 'Loading earlier messages...' : 'Load earlier messages'}
           </button>
         </div>
       )}
@@ -102,24 +101,35 @@ export function MessageList({
       {inFlightBubbles.map((m) => (
         <MessageItem key={m.id} message={m} groupId={groupId} isStreaming />
       ))}
-      {showThinking && (
-        <div className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-            <span className="font-medium text-foreground">{activeAgent.display_name}</span>
-            is thinking{progressLabel}…
-          </span>
-        </div>
-      )}
+      {thinkingAgents.map((agent) => {
+        const progressLabel =
+          agent.total > 1 ? ` (${agent.index + 1}/${agent.total})` : ''
+        return (
+          <div
+            key={`${agent.stream_id ?? 'default'}:${agent.agent_id}`}
+            className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+              <span className="font-medium text-foreground">{agent.display_name}</span>
+              is thinking{progressLabel}...
+            </span>
+          </div>
+        )
+      })}
       {toolActivity.length > 0 && (
         <div className="mx-4 mt-2 space-y-2 rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
           {toolActivity.slice(-4).map((activity) => (
             <div key={activity.id} className="rounded-md border border-border bg-background/80 p-2">
               <div className="flex items-center justify-between gap-3">
                 <span>
-                  <span className="font-medium text-foreground">{activity.display_name || 'Agent'}</span>{' '}
+                  <span className="font-medium text-foreground">
+                    {activity.display_name || 'Agent'}
+                  </span>{' '}
                   {activity.status === 'started' ? 'is using' : 'used'}{' '}
-                  <span className="font-medium text-foreground">{activity.tool_name || 'Unknown tool'}</span>
+                  <span className="font-medium text-foreground">
+                    {activity.tool_name || 'Unknown tool'}
+                  </span>
                 </span>
                 <span
                   className={cn(
@@ -132,7 +142,8 @@ export function MessageList({
               </div>
               {activity.args_summary && (
                 <div className="mt-1 break-words">
-                  <span className="font-medium text-foreground">Args:</span> {activity.args_summary}
+                  <span className="font-medium text-foreground">Args:</span>{' '}
+                  {activity.args_summary}
                 </div>
               )}
               {activity.result_summary && (

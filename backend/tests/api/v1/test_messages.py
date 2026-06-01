@@ -176,7 +176,41 @@ async def test_stream_emits_per_agent_attribution(
     assert events_seen.get("done", 0) == 1
     assert echo_id in token_agent_ids
     assert mirror_id in token_agent_ids
-    assert agent_message_senders == [echo_id, mirror_id]
+    assert set(agent_message_senders) == {echo_id, mirror_id}
+
+
+async def test_stream_mesh_starts_all_agents_before_first_parallel_reply(
+    client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
+) -> None:
+    fake_llm["messages"] = ["reply"]
+    group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
+    expected_agent_ids = {agents[0][0], agents[1][0]}
+
+    events: list[tuple[str, str]] = []
+    current_event = ""
+    async with client.stream(
+        "POST",
+        f"/api/v1/groups/{group_id}/messages/stream",
+        headers=auth_headers,
+        json={"content": "@Echo @Mirror go"},
+    ) as resp:
+        assert resp.status_code == 200
+        async for line in resp.aiter_lines():
+            if line.startswith("event:"):
+                current_event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                events.append((current_event, line[len("data:") :].strip()))
+
+    event_names = [event for event, _data in events]
+    first_reply_index = event_names.index("agent_message")
+    start_payloads = [
+        json.loads(data)
+        for event, data in events[:first_reply_index]
+        if event == "agent_start"
+    ]
+
+    assert {payload["agent_id"] for payload in start_payloads} == expected_agent_ids
+    assert len({payload["stream_id"] for payload in start_payloads}) == 1
 
 
 async def test_clear_group_history_hides_messages_and_allows_new_send(

@@ -14,7 +14,9 @@ import { create } from 'zustand'
 import type { Message } from '@/types/api'
 
 export interface StreamingBubble {
+  id: string
   agent_id: string
+  stream_id: string | null
   content: string
 }
 
@@ -23,6 +25,7 @@ export interface ActiveAgent {
   display_name: string
   index: number
   total: number
+  stream_id?: string | null
 }
 
 export type ToolActivityStatus =
@@ -48,7 +51,7 @@ export interface ToolActivity {
 interface MessageState {
   byGroup: Record<string, Message[]>
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
-  activeAgentByGroup: Record<string, ActiveAgent | null>
+  activeAgentsByGroup: Record<string, Record<string, ActiveAgent>>
   warningsByGroup: Record<string, string[]>
   toolActivityByGroup: Record<string, ToolActivity[]>
   resumingMessageIds: Set<string>
@@ -57,12 +60,13 @@ interface MessageState {
   prependHistory: (groupId: string, messages: Message[]) => void
   clearGroupMessages: (groupId: string) => void
   appendMessage: (groupId: string, message: Message) => void
-  patchInFlight: (groupId: string, agentId: string, delta: string) => void
+  patchInFlight: (groupId: string, agentId: string, delta: string, streamId?: string | null) => void
   finalizeInFlight: (groupId: string, message: Message) => void
   clearInFlight: (groupId: string) => void
-  clearAgentInFlight: (groupId: string, agentId: string) => void
+  clearStreamInFlight: (groupId: string, streamId: string) => void
+  clearAgentInFlight: (groupId: string, agentId: string, streamId?: string | null) => void
   setActiveAgent: (groupId: string, agent: ActiveAgent) => void
-  clearActiveAgent: (groupId: string) => void
+  clearActiveAgent: (groupId: string, agentId?: string, streamId?: string | null) => void
   pushWarning: (groupId: string, warning: string) => void
   clearWarnings: (groupId: string) => void
   pushToolActivity: (groupId: string, activity: ToolActivity) => void
@@ -73,10 +77,14 @@ interface MessageState {
   endResume: (messageId: string) => void
 }
 
+function inFlightKey(agentId: string, streamId: string | null | undefined): string {
+  return `${streamId ?? 'default'}:${agentId}`
+}
+
 export const useMessageStore = create<MessageState>((set) => ({
   byGroup: {},
   inFlightByGroup: {},
-  activeAgentByGroup: {},
+  activeAgentsByGroup: {},
   warningsByGroup: {},
   toolActivityByGroup: {},
   resumingMessageIds: new Set(),
@@ -85,6 +93,7 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => ({
       byGroup: { ...s.byGroup, [groupId]: messages },
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
+      activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
@@ -103,7 +112,7 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => ({
       byGroup: { ...s.byGroup, [groupId]: [] },
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
-      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
+      activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
@@ -116,17 +125,18 @@ export const useMessageStore = create<MessageState>((set) => ({
       },
     })),
 
-  patchInFlight: (groupId, agentId, delta) =>
+  patchInFlight: (groupId, agentId, delta, streamId = null) =>
     set((s) => {
       const groupInFlight = s.inFlightByGroup[groupId] ?? {}
-      const existing = groupInFlight[agentId]
+      const bubbleId = inFlightKey(agentId, streamId)
+      const existing = groupInFlight[bubbleId]
       const next: StreamingBubble = existing
         ? { ...existing, content: existing.content + delta }
-        : { agent_id: agentId, content: delta }
+        : { id: bubbleId, agent_id: agentId, stream_id: streamId, content: delta }
       return {
         inFlightByGroup: {
           ...s.inFlightByGroup,
-          [groupId]: { ...groupInFlight, [agentId]: next },
+          [groupId]: { ...groupInFlight, [bubbleId]: next },
         },
       }
     }),
@@ -136,7 +146,12 @@ export const useMessageStore = create<MessageState>((set) => ({
       const agentId = message.sender_id ?? ''
       const groupInFlight = s.inFlightByGroup[groupId] ?? {}
       const remaining = { ...groupInFlight }
-      delete remaining[agentId]
+      delete remaining[inFlightKey(agentId, message.reply_to_message_id)]
+      delete remaining[inFlightKey(agentId, null)]
+      const groupActive = s.activeAgentsByGroup[groupId] ?? {}
+      const remainingActive = { ...groupActive }
+      delete remainingActive[inFlightKey(agentId, message.reply_to_message_id)]
+      delete remainingActive[inFlightKey(agentId, null)]
       return {
         byGroup: {
           ...s.byGroup,
@@ -146,21 +161,45 @@ export const useMessageStore = create<MessageState>((set) => ({
           ...s.inFlightByGroup,
           [groupId]: remaining,
         },
+        activeAgentsByGroup: {
+          ...s.activeAgentsByGroup,
+          [groupId]: remainingActive,
+        },
       }
     }),
 
   clearInFlight: (groupId) =>
     set((s) => ({
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
-      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
+      activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
 
-  clearAgentInFlight: (groupId, agentId) =>
+  clearStreamInFlight: (groupId, streamId) =>
+    set((s) => {
+      const streamPrefix = `${streamId}:`
+      const groupInFlight = s.inFlightByGroup[groupId] ?? {}
+      const remainingInFlight = Object.fromEntries(
+        Object.entries(groupInFlight).filter(([key]) => !key.startsWith(streamPrefix)),
+      )
+      const groupActive = s.activeAgentsByGroup[groupId] ?? {}
+      const remainingActive = Object.fromEntries(
+        Object.entries(groupActive).filter(([key]) => !key.startsWith(streamPrefix)),
+      )
+      return {
+        inFlightByGroup: { ...s.inFlightByGroup, [groupId]: remainingInFlight },
+        activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: remainingActive },
+      }
+    }),
+
+  clearAgentInFlight: (groupId, agentId, streamId = null) =>
     set((s) => {
       const groupInFlight = s.inFlightByGroup[groupId] ?? {}
       const remaining = { ...groupInFlight }
-      delete remaining[agentId]
+      delete remaining[inFlightKey(agentId, streamId)]
+      if (streamId !== null) {
+        delete remaining[inFlightKey(agentId, null)]
+      }
       return {
         inFlightByGroup: {
           ...s.inFlightByGroup,
@@ -170,14 +209,50 @@ export const useMessageStore = create<MessageState>((set) => ({
     }),
 
   setActiveAgent: (groupId, agent) =>
-    set((s) => ({
-      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: agent },
-    })),
+    set((s) => {
+      const groupActive = s.activeAgentsByGroup[groupId] ?? {}
+      const key = inFlightKey(agent.agent_id, agent.stream_id ?? null)
+      return {
+        activeAgentsByGroup: {
+          ...s.activeAgentsByGroup,
+          [groupId]: { ...groupActive, [key]: agent },
+        },
+      }
+    }),
 
-  clearActiveAgent: (groupId) =>
-    set((s) => ({
-      activeAgentByGroup: { ...s.activeAgentByGroup, [groupId]: null },
-    })),
+  clearActiveAgent: (groupId, agentId, streamId = null) =>
+    set((s) => {
+      if (!agentId) {
+        if (streamId !== null) {
+          const streamPrefix = `${streamId}:`
+          const groupActive = s.activeAgentsByGroup[groupId] ?? {}
+          const remaining = Object.fromEntries(
+            Object.entries(groupActive).filter(([key]) => !key.startsWith(streamPrefix)),
+          )
+          return {
+            activeAgentsByGroup: {
+              ...s.activeAgentsByGroup,
+              [groupId]: remaining,
+            },
+          }
+        }
+        return {
+          activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
+        }
+      }
+      const groupActive = s.activeAgentsByGroup[groupId] ?? {}
+      const remaining = { ...groupActive }
+      delete remaining[inFlightKey(agentId, streamId)]
+      if (streamId !== null) {
+        delete remaining[inFlightKey(agentId, null)]
+      }
+      return {
+        activeAgentsByGroup: {
+          ...s.activeAgentsByGroup,
+          [groupId]: remaining,
+        },
+      }
+    }),
 
   pushWarning: (groupId, warning) =>
     set((s) => ({

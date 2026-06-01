@@ -30,6 +30,7 @@ import logging
 import random
 import re
 from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,17 @@ class MessageSendResult:
     dispatch_messages: list[Message]
     all_silent: bool
     waiting_for_user: bool = False
+
+
+@asynccontextmanager
+async def _db_lock_section(
+    lock: asyncio.Lock | None,
+) -> AsyncIterator[None]:
+    if lock is None:
+        yield
+        return
+    async with lock:
+        yield
 
 
 async def list_messages(
@@ -718,11 +730,18 @@ def _order_round_participants(
     return list(resolved)
 
 
-def _agent_identity_payload(agent: Agent, group_agent: GroupAgent) -> dict[str, str]:
-    return {
+def _agent_identity_payload(
+    agent: Agent,
+    group_agent: GroupAgent,
+    stream_id: UUID | None = None,
+) -> dict[str, str]:
+    payload = {
         "agent_id": str(agent.id),
         "display_name": group_agent.display_name or agent.name,
     }
+    if stream_id is not None:
+        payload["stream_id"] = str(stream_id)
+    return payload
 
 
 def _is_waiting_for_user_response(response: AIMessage) -> bool:
@@ -743,7 +762,10 @@ def _tool_event_waits_for_user(tool_event: RuntimeToolEvent) -> bool:
 
 
 def _serialize_tool_event(
-    tool_event: RuntimeToolEvent, agent: Agent, group_agent: GroupAgent
+    tool_event: RuntimeToolEvent,
+    agent: Agent,
+    group_agent: GroupAgent,
+    stream_id: UUID | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "agent_id": str(agent.id),
@@ -756,6 +778,8 @@ def _serialize_tool_event(
         payload["args_summary"] = tool_event.args_summary
     if tool_event.result_summary:
         payload["result_summary"] = tool_event.result_summary
+    if stream_id is not None:
+        payload["stream_id"] = str(stream_id)
     return payload
 
 
@@ -1189,6 +1213,8 @@ async def _stream_one_agent(
     sender_name: str,
     pending_dispatches: list[AgentToolDispatch] | None = None,
     dispatch_counter: list[int] | None = None,
+    stream_id: UUID | None = None,
+    db_lock: asyncio.Lock | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """Stream one agent's reply, persisting on graceful done OR on cancel.
 
@@ -1200,43 +1226,52 @@ async def _stream_one_agent(
     emitted_visible_len = 0
     cancelled = False
     try:
-        input_messages, context = await _build_invocation(db, group, group_agent, agent)
+        async with _db_lock_section(db_lock):
+            input_messages, context = await _build_invocation(db, group, group_agent, agent)
         if agent.runtime_kind == "external_cli":
             config = normalize_external_runtime(agent.external_runtime)
-            async for event in run_external_agent_stream(
-                db,
-                owner_id=agent.owner_id,
-                group_id=group.id,
-                agent_id=agent.id,
-                thread_id=chat_thread.id,
-                config=config,
-                cwd=_external_workspace_path(context),
-                prompt=_render_external_prompt(input_messages),
-            ):
-                if event.kind == "run" and isinstance(event.data, dict):
-                    payload = {
-                        **event.data,
-                        "display_name": group_agent.display_name or agent.name,
+            async with _db_lock_section(db_lock):
+                external_events = run_external_agent_stream(
+                    db,
+                    owner_id=agent.owner_id,
+                    group_id=group.id,
+                    agent_id=agent.id,
+                    thread_id=chat_thread.id,
+                    config=config,
+                    cwd=_external_workspace_path(context),
+                    prompt=_render_external_prompt(input_messages),
+                )
+                async for event in external_events:
+                    if event.kind == "run" and isinstance(event.data, dict):
+                        payload = {
+                            **event.data,
+                            "display_name": group_agent.display_name or agent.name,
+                        }
+                        if stream_id is not None:
+                            payload["stream_id"] = str(stream_id)
+                        yield {"event": "external_agent_run", "data": json.dumps(payload)}
+                        continue
+                    if event.kind != "token" or not isinstance(event.data, str):
+                        continue
+                    chunks.append(event.data)
+                    visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
+                    if len(visible_so_far) <= emitted_visible_len:
+                        continue
+                    delta = visible_so_far[emitted_visible_len:]
+                    emitted_visible_len = len(visible_so_far)
+                    yield {
+                        "event": "token",
+                        "data": json.dumps(
+                            {"agent_id": agent_id_str, "delta": delta, "stream_id": str(stream_id)}
+                            if stream_id is not None
+                            else {"agent_id": agent_id_str, "delta": delta}
+                        ),
                     }
-                    yield {"event": "external_agent_run", "data": json.dumps(payload)}
-                    continue
-                if event.kind != "token" or not isinstance(event.data, str):
-                    continue
-                chunks.append(event.data)
-                visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
-                if len(visible_so_far) <= emitted_visible_len:
-                    continue
-                delta = visible_so_far[emitted_visible_len:]
-                emitted_visible_len = len(visible_so_far)
-                yield {
-                    "event": "token",
-                    "data": json.dumps({"agent_id": agent_id_str, "delta": delta}),
-                }
             text = "".join(chunks)
             if _is_silent_reply(group, text):
                 yield {
                     "event": "agent_silent",
-                    "data": json.dumps(_agent_identity_payload(agent, group_agent)),
+                    "data": json.dumps(_agent_identity_payload(agent, group_agent, stream_id)),
                 }
             else:
                 visible_text = _sanitize_agent_visible_content(text)
@@ -1247,13 +1282,15 @@ async def _stream_one_agent(
                             {
                                 "agent_id": agent_id_str,
                                 "delta": visible_text[emitted_visible_len:],
+                                **({"stream_id": str(stream_id)} if stream_id is not None else {}),
                             }
                         ),
                     }
                 if visible_text:
-                    agent_msg = await _persist_agent_message(
-                        db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
-                    )
+                    async with _db_lock_section(db_lock):
+                        agent_msg = await _persist_agent_message(
+                            db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
+                        )
                     yield {
                         "event": "agent_message",
                         "data": json.dumps(_serialize_msg(agent_msg)),
@@ -1261,41 +1298,49 @@ async def _stream_one_agent(
                 if _requests_human_input(visible_text, human_names, sender_name):
                     yield {
                         "event": "waiting_for_user",
-                        "data": json.dumps({"message": WAITING_FOR_USER_WARNING}),
+                        "data": json.dumps(
+                            {
+                                "message": WAITING_FOR_USER_WARNING,
+                                **({"stream_id": str(stream_id)} if stream_id is not None else {}),
+                            }
+                        ),
                     }
-            await thread_service.mark_completed(db, chat_thread)
+            async with _db_lock_section(db_lock):
+                await thread_service.mark_completed(db, chat_thread)
             return
-        chat_model = await resolve_chat_model(db, agent, streaming=True)
+        async with _db_lock_section(db_lock):
+            chat_model = await resolve_chat_model(db, agent, streaming=True)
         async def _agent_tool_executor(
             agent_id: str, task: str, instructions: str | None = None
         ) -> str:
             if pending_dispatches is None or dispatch_counter is None:
                 raise AgentChatError("group context is required for AgentAsTool dispatch")
-            if dispatch_counter[0] >= MAX_AGENT_TOOL_DISPATCHES_PER_SEND:
-                raise AgentChatError("agent-as-tool dispatch limit reached for this send")
-            helper_group_agent, helper_agent = await _resolve_group_assistant_member(
-                db,
-                group,
-                agent,
-                context,
-                agent_id,
-            )
-            dispatch_content = _build_agent_tool_dispatch_content(
-                helper_group_agent,
-                helper_agent,
-                agent,
-                task,
-                instructions,
-            )
-            pending_dispatches.append(
-                AgentToolDispatch(
-                    caller_agent=agent,
-                    helper_group_agent=helper_group_agent,
-                    helper_agent=helper_agent,
-                    content=dispatch_content,
+            async with _db_lock_section(db_lock):
+                if dispatch_counter[0] >= MAX_AGENT_TOOL_DISPATCHES_PER_SEND:
+                    raise AgentChatError("agent-as-tool dispatch limit reached for this send")
+                helper_group_agent, helper_agent = await _resolve_group_assistant_member(
+                    db,
+                    group,
+                    agent,
+                    context,
+                    agent_id,
                 )
-            )
-            dispatch_counter[0] += 1
+                dispatch_content = _build_agent_tool_dispatch_content(
+                    helper_group_agent,
+                    helper_agent,
+                    agent,
+                    task,
+                    instructions,
+                )
+                pending_dispatches.append(
+                    AgentToolDispatch(
+                        caller_agent=agent,
+                        helper_group_agent=helper_group_agent,
+                        helper_agent=helper_agent,
+                        content=dispatch_content,
+                    )
+                )
+                dispatch_counter[0] += 1
             return json.dumps(
                 {
                     "tool": "AgentAsTool",
@@ -1329,7 +1374,9 @@ async def _stream_one_agent(
                         if payload.status == "started"
                         else "tool_call_result"
                     ),
-                    "data": json.dumps(_serialize_tool_event(payload, agent, group_agent)),
+                    "data": json.dumps(
+                        _serialize_tool_event(payload, agent, group_agent, stream_id)
+                    ),
                 }
             elif kind == "token":
                 chunks.append(str(payload))
@@ -1341,7 +1388,11 @@ async def _stream_one_agent(
                 yield {
                     "event": "token",
                     "data": json.dumps(
-                        {"agent_id": agent_id_str, "delta": delta}
+                        {
+                            "agent_id": agent_id_str,
+                            "delta": delta,
+                            **({"stream_id": str(stream_id)} if stream_id is not None else {}),
+                        }
                     ),
                 }
             elif kind == "agent_handoff" and isinstance(payload, RuntimeAgentHandoff):
@@ -1365,7 +1416,7 @@ async def _stream_one_agent(
                 if _is_silent_reply(group, text):
                     yield {
                         "event": "agent_silent",
-                        "data": json.dumps(_agent_identity_payload(agent, group_agent)),
+                        "data": json.dumps(_agent_identity_payload(agent, group_agent, stream_id)),
                     }
                 else:
                     visible_text = _sanitize_agent_visible_content(text)
@@ -1373,9 +1424,16 @@ async def _stream_one_agent(
                         if emitted_visible_len:
                             yield {
                                 "event": "agent_silent",
-                                "data": json.dumps(_agent_identity_payload(agent, group_agent)),
+                                "data": json.dumps(
+                                    _agent_identity_payload(agent, group_agent, stream_id)
+                                ),
                             }
-                        yield {"event": "agent_handoff", "data": ""}
+                        yield {
+                            "event": "agent_handoff",
+                            "data": json.dumps(
+                                {"stream_id": str(stream_id)} if stream_id is not None else {}
+                            ),
+                        }
                         continue
                     if len(visible_text) > emitted_visible_len:
                         yield {
@@ -1384,13 +1442,24 @@ async def _stream_one_agent(
                                 {
                                     "agent_id": agent_id_str,
                                     "delta": visible_text[emitted_visible_len:],
+                                    **(
+                                        {"stream_id": str(stream_id)}
+                                        if stream_id is not None
+                                        else {}
+                                    ),
                                 }
                             ),
                         }
                     if visible_text:
-                        agent_msg = await _persist_agent_message(
-                            db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
-                        )
+                        async with _db_lock_section(db_lock):
+                            agent_msg = await _persist_agent_message(
+                                db,
+                                group.id,
+                                agent,
+                                visible_text,
+                                chat_thread.id,
+                                reply_to=reply_to,
+                            )
                         yield {
                             "event": "agent_message",
                             "data": json.dumps(_serialize_msg(agent_msg)),
@@ -1400,9 +1469,19 @@ async def _stream_one_agent(
                     ):
                         yield {
                             "event": "waiting_for_user",
-                            "data": json.dumps({"message": _waiting_message_from_response(final)}),
+                            "data": json.dumps(
+                                {
+                                    "message": _waiting_message_from_response(final),
+                                    **(
+                                        {"stream_id": str(stream_id)}
+                                        if stream_id is not None
+                                        else {}
+                                    ),
+                                }
+                            ),
                         }
-        await thread_service.mark_completed(db, chat_thread)
+        async with _db_lock_section(db_lock):
+            await thread_service.mark_completed(db, chat_thread)
     except asyncio.CancelledError:
         cancelled = True
         partial = _sanitize_agent_visible_content("".join(chunks))
@@ -1438,8 +1517,126 @@ async def _stream_one_agent(
         raise
     except Exception:
         if not cancelled:
-            await thread_service.mark_failed(db, chat_thread)
+            async with _db_lock_section(db_lock):
+                await thread_service.mark_failed(db, chat_thread)
         raise
+
+
+def _can_parallel_stream_round(
+    group: Group,
+    participants: Sequence[tuple[GroupAgent, Agent]],
+) -> bool:
+    return (
+        (group.communication_mode or "mesh") == "mesh"
+        and not group.proactive_mode
+        and len(participants) > 1
+    )
+
+
+async def _stream_agent_round_parallel(
+    db: AsyncSession,
+    graph: Any,
+    group: Group,
+    group_id: UUID,
+    sender: User,
+    user_msg: Message,
+    participants: Sequence[tuple[GroupAgent, Agent]],
+    human_names: set[str],
+    sender_name: str,
+    pending_dispatches: list[AgentToolDispatch],
+    dispatch_counter: list[int],
+    round_idx: int,
+) -> AsyncIterator[dict[str, str]]:
+    db_lock = asyncio.Lock()
+    queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
+    stream_id = user_msg.id
+    runs: list[tuple[int, GroupAgent, Agent, Thread]] = []
+
+    for idx, (group_agent, agent) in enumerate(participants):
+        async with _db_lock_section(db_lock):
+            chat_thread = await thread_service.get_or_create_chat_thread(
+                db, group_id, agent.id, sender.id
+            )
+        runs.append((idx, group_agent, agent, chat_thread))
+        display = group_agent.display_name or agent.name
+        yield {
+            "event": "agent_start",
+            "data": json.dumps(
+                {
+                    "agent_id": str(agent.id),
+                    "display_name": display,
+                    "index": idx,
+                    "total": len(participants),
+                    "round": round_idx,
+                    "stream_id": str(stream_id),
+                }
+            ),
+        }
+
+    async def _worker(
+        idx: int,
+        group_agent: GroupAgent,
+        agent: Agent,
+        chat_thread: Thread,
+    ) -> None:
+        display = group_agent.display_name or agent.name
+        try:
+            async with _db_lock_section(db_lock):
+                await thread_service.mark_running(db, chat_thread)
+            async for event in _stream_one_agent(
+                db,
+                graph,
+                group,
+                group_agent,
+                agent,
+                chat_thread,
+                reply_to=user_msg.id,
+                human_names=human_names,
+                sender_name=sender_name,
+                pending_dispatches=pending_dispatches,
+                dispatch_counter=dispatch_counter,
+                stream_id=stream_id,
+                db_lock=db_lock,
+            ):
+                await queue.put(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("agent %s failed in group %s parallel stream", agent.id, group_id)
+            await queue.put(
+                {
+                    "event": "agent_error",
+                    "data": json.dumps(
+                        {
+                            "agent_id": str(agent.id),
+                            "display_name": display,
+                            "error": str(exc),
+                            "stream_id": str(stream_id),
+                        }
+                    ),
+                }
+            )
+        finally:
+            await queue.put(None)
+
+    tasks = [
+        asyncio.create_task(_worker(idx, group_agent, agent, chat_thread))
+        for idx, group_agent, agent, chat_thread in runs
+    ]
+    remaining = len(tasks)
+    try:
+        while remaining:
+            item = await queue.get()
+            if item is None:
+                remaining -= 1
+                continue
+            yield item
+    finally:
+        pending = [task for task in tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def send_message_stream(
@@ -1472,7 +1669,7 @@ async def send_message_stream(
     resolved = await resolve_all_mentions(db, group, content)
     if not resolved:
         yield {"event": "warning", "data": "no agent matched in this group"}
-        yield {"event": "done", "data": ""}
+        yield {"event": "done", "data": json.dumps({"stream_id": str(user_msg.id)})}
         return
 
     graph = request.app.state.graph
@@ -1501,6 +1698,38 @@ async def send_message_stream(
             round_idx=round_idx,
             last_visible_agent_id=last_visible_agent_id,
         )
+        if _can_parallel_stream_round(group, round_participants):
+            async for event in _stream_agent_round_parallel(
+                db,
+                graph,
+                group,
+                group_id,
+                sender,
+                user_msg,
+                round_participants,
+                human_names,
+                sender_name,
+                pending_dispatches,
+                dispatch_counter,
+                round_idx,
+            ):
+                if event["event"] == "agent_message":
+                    emitted_agent_messages += 1
+                    spoke_this_round = True
+                    payload = json.loads(event["data"])
+                    sender_id = payload.get("sender_id")
+                    if isinstance(sender_id, str):
+                        last_visible_agent_id = UUID(sender_id)
+                elif event["event"] == "agent_handoff":
+                    handoff_dispatched = True
+                    continue
+                elif event["event"] == "waiting_for_user":
+                    waiting_for_user = True
+                yield event
+            if waiting_for_user or handoff_dispatched or not group.proactive_mode:
+                break
+            spoke_previous_round = spoke_this_round
+            continue
         for idx, (group_agent, agent) in enumerate(round_participants):
             if group.proactive_mode and emitted_agent_messages >= proactive_reply_budget:
                 break
@@ -1513,6 +1742,7 @@ async def send_message_stream(
                     "index": idx,
                     "total": len(round_participants),
                     "round": round_idx,
+                    "stream_id": str(user_msg.id),
                 }),
             }
             chat_thread = await thread_service.get_or_create_chat_thread(
@@ -1532,6 +1762,7 @@ async def send_message_stream(
                     sender_name=sender_name,
                     pending_dispatches=pending_dispatches,
                     dispatch_counter=dispatch_counter,
+                    stream_id=user_msg.id,
                 ):
                     if event["event"] == "agent_message":
                         emitted_agent_messages += 1
@@ -1555,6 +1786,7 @@ async def send_message_stream(
                         "agent_id": str(agent.id),
                         "display_name": display,
                         "error": str(exc),
+                        "stream_id": str(user_msg.id),
                     }),
                 }
             if waiting_for_user or handoff_dispatched:
@@ -1583,6 +1815,7 @@ async def send_message_stream(
                 "index": 0,
                 "total": 1,
                 "round": round_idx + 1,
+                "stream_id": str(dispatch_msg.id),
             }),
         }
         helper_thread = await thread_service.get_or_create_chat_thread(
@@ -1602,6 +1835,7 @@ async def send_message_stream(
                 sender_name=sender_name,
                 pending_dispatches=None,
                 dispatch_counter=None,
+                stream_id=dispatch_msg.id,
             ):
                 if event["event"] == "agent_message":
                     emitted_agent_messages += 1
@@ -1624,12 +1858,13 @@ async def send_message_stream(
                     "agent_id": str(dispatch.helper_agent.id),
                     "display_name": display,
                     "error": str(exc),
+                    "stream_id": str(dispatch_msg.id),
                 }),
             }
 
     if group.proactive_mode and emitted_agent_messages == 0:
-        yield {"event": "silence", "data": ""}
-    yield {"event": "done", "data": ""}
+        yield {"event": "silence", "data": json.dumps({"stream_id": str(user_msg.id)})}
+    yield {"event": "done", "data": json.dumps({"stream_id": str(user_msg.id)})}
 
 
 async def _latest_interrupted_message(

@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import type { InfiniteData } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -7,11 +8,16 @@ import { useMessageStore } from '@/stores/messageStore'
 import type { ClearGroupMessagesResponse, Message, MessageSendResponse } from '@/types/api'
 
 const MESSAGE_PAGE_SIZE = 30
+const INITIAL_PAGE_PARAM: string | undefined = undefined
 
-/**
- * Fetches the historical message list and primes the messageStore. Realtime
- * updates flow through the SSE hook, not through this query.
- */
+function emptyMessagePages(): InfiniteData<Message[], string | undefined> {
+  return {
+    // Infinite queries must keep the pages/pageParams envelope even when empty.
+    pages: [[]],
+    pageParams: [INITIAL_PAGE_PARAM],
+  }
+}
+
 export function useClearGroupMessages(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
@@ -24,7 +30,7 @@ export function useClearGroupMessages(groupId: string | undefined) {
       }),
     onSuccess: () => {
       if (groupId) {
-        qc.setQueryData(['groups', groupId, 'messages'], [])
+        qc.setQueryData(['groups', groupId, 'messages'], emptyMessagePages())
         clearGroupMessages(groupId)
         void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
       }
@@ -48,6 +54,10 @@ export function useSendGroupMessage() {
   })
 }
 
+/**
+ * Fetches the historical message list and primes the messageStore. Realtime
+ * updates flow through the SSE hook, not through this query.
+ */
 export function useGroupMessages(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const setHistory = useMessageStore((s) => s.setHistory)
@@ -60,7 +70,7 @@ export function useGroupMessages(groupId: string | undefined) {
       return fetchJson<Message[]>(`/groups/${groupId}/messages?${params.toString()}`, { token })
     },
     enabled: token !== null && groupId !== undefined,
-    initialPageParam: undefined as string | undefined,
+    initialPageParam: INITIAL_PAGE_PARAM,
     getNextPageParam: (lastPage) =>
       lastPage.length === MESSAGE_PAGE_SIZE ? lastPage[0]?.id : undefined,
   })

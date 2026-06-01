@@ -101,18 +101,16 @@ export function Composer({ onSend, onCancel, isStreaming, hint, groupAgents = []
             placeholder="Type a message. Use @ to mention an agent. Enter to send, Shift+Enter for newline."
             rows={2}
             className="resize-none"
-            disabled={isStreaming}
           />
         </div>
-        {isStreaming ? (
+        {isStreaming && (
           <Button variant="outline" size="sm" onClick={onCancel}>
-            Stop
-          </Button>
-        ) : (
-          <Button size="sm" onClick={send} disabled={!value.trim()}>
-            Send
+            Stop all
           </Button>
         )}
+        <Button size="sm" onClick={send} disabled={!value.trim()}>
+          Send
+        </Button>
       </div>
     </div>
   )

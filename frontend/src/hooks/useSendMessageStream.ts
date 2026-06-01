@@ -1,14 +1,10 @@
 /**
- * Stream-send a message to a group.
+ * Stream-send messages to a group.
  *
- * Returns `{ send, cancel, isStreaming, error }`. `send(content)` opens an
- * SSE connection to `/groups/{id}/messages/stream`, dispatches every event
- * into the messageStore (user_message → token → agent_message → done), and
- * resolves when the `done` event arrives or the stream errors.
- *
- * Cancels any in-flight stream when the component unmounts. After cancel,
- * invalidates the messages query so the persisted "interrupted" state from
- * the backend's `finally` block becomes visible after the next refetch.
+ * Multiple sends may be active at once. Each SSE stream carries a backend
+ * `stream_id` (the triggering user message id), which keeps in-flight agent
+ * bubbles separate even when the same agent is replying to more than one user
+ * message.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -20,22 +16,33 @@ import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
-interface TokenPayload {
+interface StreamPayload {
+  stream_id?: string | null
+}
+
+interface TokenPayload extends StreamPayload {
   agent_id: string
   delta: string
 }
 
-interface AgentErrorPayload {
+interface AgentIdentityPayload extends StreamPayload {
+  agent_id: string
+  display_name?: string
+}
+
+interface AgentErrorPayload extends StreamPayload {
   agent_id: string
   display_name: string
   error: string
 }
 
-interface WaitingForUserPayload {
+interface WaitingForUserPayload extends StreamPayload {
   message?: string
 }
 
-interface ToolCallPayload {
+type DonePayload = StreamPayload
+
+interface ToolCallPayload extends StreamPayload {
   agent_id?: string
   display_name?: string
   tool_call_id?: string
@@ -45,7 +52,7 @@ interface ToolCallPayload {
   result_summary?: string
 }
 
-interface ExternalAgentRunPayload {
+interface ExternalAgentRunPayload extends StreamPayload {
   run_id?: string
   agent_id?: string
   display_name?: string
@@ -87,12 +94,17 @@ function externalRunStatus(status: string | undefined): ToolActivityStatus {
   return 'failed'
 }
 
+function requestId(): string {
+  return crypto.randomUUID()
+}
+
 export function useSendMessageStream(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const appendMessage = useMessageStore((s) => s.appendMessage)
   const patchInFlight = useMessageStore((s) => s.patchInFlight)
   const finalizeInFlight = useMessageStore((s) => s.finalizeInFlight)
   const clearInFlight = useMessageStore((s) => s.clearInFlight)
+  const clearStreamInFlight = useMessageStore((s) => s.clearStreamInFlight)
   const clearAgentInFlight = useMessageStore((s) => s.clearAgentInFlight)
   const setActiveAgent = useMessageStore((s) => s.setActiveAgent)
   const clearActiveAgent = useMessageStore((s) => s.clearActiveAgent)
@@ -102,13 +114,24 @@ export function useSendMessageStream(groupId: string | undefined) {
   const clearToolActivity = useMessageStore((s) => s.clearToolActivity)
   const qc = useQueryClient()
 
-  const [isStreaming, setIsStreaming] = useState(false)
+  const [activeStreamCount, setActiveStreamCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const ctrlRef = useRef<AbortController | null>(null)
+  const streamsRef = useRef<Map<string, AbortController>>(new Map())
+  const streamIdsRef = useRef<Map<string, string>>(new Map())
+
+  const refreshActiveCount = useCallback(() => {
+    setActiveStreamCount(streamsRef.current.size)
+  }, [])
 
   useEffect(() => {
+    const streams = streamsRef.current
+    const streamIds = streamIdsRef.current
     return () => {
-      ctrlRef.current?.abort()
+      for (const ctrl of streams.values()) {
+        ctrl.abort()
+      }
+      streams.clear()
+      streamIds.clear()
     }
   }, [])
 
@@ -118,13 +141,29 @@ export function useSendMessageStream(groupId: string | undefined) {
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
   }, [groupId, qc])
 
+  const finishStream = useCallback(
+    (id: string, streamId?: string | null) => {
+      streamsRef.current.delete(id)
+      const resolvedStreamId = streamId ?? streamIdsRef.current.get(id)
+      if (resolvedStreamId && groupId) {
+        clearActiveAgent(groupId, undefined, resolvedStreamId)
+      }
+      streamIdsRef.current.delete(id)
+      refreshActiveCount()
+      if (groupId && streamsRef.current.size === 0) {
+        clearActiveAgent(groupId)
+      }
+      invalidate()
+    },
+    [clearActiveAgent, groupId, invalidate, refreshActiveCount],
+  )
+
   const send = useCallback(
     (content: string) => {
-      if (!groupId || !token || isStreaming) return
+      if (!groupId || !token) return
+      const id = requestId()
       setError(null)
       clearWarnings(groupId)
-      clearToolActivity(groupId)
-      setIsStreaming(true)
 
       const ctrl = openSseStream({
         url: `/api/v1/groups/${groupId}/messages/stream`,
@@ -134,35 +173,49 @@ export function useSendMessageStream(groupId: string | undefined) {
           onEvent: (event, data) => {
             if (event === 'user_message') {
               const msg = safeJson<Message>(data)
-              if (msg) appendMessage(groupId, msg)
+              if (msg) {
+                streamIdsRef.current.set(id, msg.id)
+                appendMessage(groupId, msg)
+              }
               return
             }
             if (event === 'agent_start') {
               const info = safeJson<ActiveAgent>(data)
-              if (info) setActiveAgent(groupId, info)
+              if (info) {
+                if (info.stream_id) streamIdsRef.current.set(id, info.stream_id)
+                setActiveAgent(groupId, info)
+              }
               return
             }
             if (event === 'token') {
               const payload = safeJson<TokenPayload>(data)
               if (payload?.agent_id && payload.delta) {
-                patchInFlight(groupId, payload.agent_id, payload.delta)
+                if (payload.stream_id) streamIdsRef.current.set(id, payload.stream_id)
+                patchInFlight(groupId, payload.agent_id, payload.delta, payload.stream_id ?? null)
               }
               return
             }
             if (event === 'agent_message') {
               const msg = safeJson<Message>(data)
-              if (msg) finalizeInFlight(groupId, msg)
+              if (msg) {
+                finalizeInFlight(groupId, msg)
+              }
               void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
               return
             }
             if (event === 'agent_silent') {
-              const info = safeJson<{ agent_id: string }>(data)
-              if (info?.agent_id) clearAgentInFlight(groupId, info.agent_id)
+              const info = safeJson<AgentIdentityPayload>(data)
+              if (info?.agent_id) {
+                if (info.stream_id) streamIdsRef.current.set(id, info.stream_id)
+                clearAgentInFlight(groupId, info.agent_id, info.stream_id ?? null)
+                clearActiveAgent(groupId, info.agent_id, info.stream_id ?? null)
+              }
               return
             }
             if (event === 'tool_call_start' || event === 'tool_call_result') {
               const payload = safeJson<ToolCallPayload>(data)
               if (payload?.tool_call_id) {
+                if (payload.stream_id) streamIdsRef.current.set(id, payload.stream_id)
                 const status = normalizeToolStatus(payload.status)
                 const activity: ToolActivity = {
                   id: payload.tool_call_id,
@@ -183,6 +236,7 @@ export function useSendMessageStream(groupId: string | undefined) {
             if (event === 'external_agent_run') {
               const payload = safeJson<ExternalAgentRunPayload>(data)
               if (payload?.run_id) {
+                if (payload.stream_id) streamIdsRef.current.set(id, payload.stream_id)
                 pushToolActivity(groupId, {
                   id: payload.run_id,
                   agent_id: payload.agent_id ?? 'unknown-agent',
@@ -204,13 +258,16 @@ export function useSendMessageStream(groupId: string | undefined) {
             }
             if (event === 'waiting_for_user') {
               const payload = safeJson<WaitingForUserPayload>(data)
+              if (payload?.stream_id) streamIdsRef.current.set(id, payload.stream_id)
               pushWarning(groupId, payload?.message || 'Waiting for your input')
-              clearActiveAgent(groupId)
               return
             }
             if (event === 'agent_error') {
               const err = safeJson<AgentErrorPayload>(data)
               if (err) {
+                if (err.stream_id) streamIdsRef.current.set(id, err.stream_id)
+                clearAgentInFlight(groupId, err.agent_id, err.stream_id ?? null)
+                clearActiveAgent(groupId, err.agent_id, err.stream_id ?? null)
                 pushWarning(groupId, `Agent "${err.display_name}" failed: ${err.error}`)
               }
               return
@@ -220,60 +277,69 @@ export function useSendMessageStream(groupId: string | undefined) {
               return
             }
             if (event === 'done') {
-              clearActiveAgent(groupId)
-              setIsStreaming(false)
-              ctrlRef.current = null
+              const payload = safeJson<DonePayload>(data)
+              finishStream(id, payload?.stream_id)
               window.setTimeout(() => clearToolActivity(groupId), 4_000)
-              invalidate()
             }
           },
           onError: (err) => {
             setError(err instanceof Error ? err.message : String(err))
-            setIsStreaming(false)
-            clearInFlight(groupId)
-            ctrlRef.current = null
-            invalidate()
+            const streamId = streamIdsRef.current.get(id)
+            if (streamId) {
+              clearStreamInFlight(groupId, streamId)
+            } else {
+              clearInFlight(groupId)
+            }
+            finishStream(id, streamId)
           },
           onClose: () => {
-            setIsStreaming(false)
-            ctrlRef.current = null
-            invalidate()
+            finishStream(id)
           },
         },
       })
-      ctrlRef.current = ctrl
+      streamsRef.current.set(id, ctrl)
+      refreshActiveCount()
     },
     [
       appendMessage,
       clearActiveAgent,
       clearAgentInFlight,
       clearInFlight,
+      clearStreamInFlight,
       clearToolActivity,
       clearWarnings,
       finalizeInFlight,
+      finishStream,
       groupId,
-      invalidate,
-      isStreaming,
       patchInFlight,
       pushToolActivity,
       pushWarning,
       qc,
+      refreshActiveCount,
       setActiveAgent,
       token,
     ],
   )
 
   const cancel = useCallback(() => {
-    ctrlRef.current?.abort()
-    ctrlRef.current = null
-    setIsStreaming(false)
-    if (groupId) clearInFlight(groupId)
-    // Backend persists the interrupted message and commits inside an
-    // asyncio.shield block after CancelledError. Give it a moment to
-    // land before we refetch — otherwise the refetch hits the DB before
-    // the shielded commit and the bubble appears to vanish.
+    const streamIds = Array.from(streamIdsRef.current.values())
+    for (const ctrl of streamsRef.current.values()) {
+      ctrl.abort()
+    }
+    streamsRef.current.clear()
+    streamIdsRef.current.clear()
+    setActiveStreamCount(0)
+    if (groupId) {
+      if (streamIds.length > 0) {
+        for (const streamId of streamIds) {
+          clearStreamInFlight(groupId, streamId)
+        }
+      } else {
+        clearInFlight(groupId)
+      }
+    }
     window.setTimeout(invalidate, 700)
-  }, [clearInFlight, groupId, invalidate])
+  }, [clearInFlight, clearStreamInFlight, groupId, invalidate])
 
-  return { send, cancel, isStreaming, error }
+  return { send, cancel, isStreaming: activeStreamCount > 0, activeStreamCount, error }
 }
