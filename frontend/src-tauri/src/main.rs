@@ -72,6 +72,12 @@ fn append_launcher_log(log_dir: &Path, message: impl AsRef<str>) {
     append_log(log_dir, "launcher.log", message);
 }
 
+fn append_optional_launcher_log(log_dir: Option<&Path>, message: impl AsRef<str>) {
+    if let Some(log_dir) = log_dir {
+        append_launcher_log(log_dir, message);
+    }
+}
+
 fn app_logs_dir(app: &tauri::AppHandle) -> tauri::Result<PathBuf> {
     let log_dir = app.path().app_data_dir()?.join("logs");
     fs::create_dir_all(&log_dir)?;
@@ -95,13 +101,45 @@ fn open_logs_dir(app: &tauri::AppHandle) {
 }
 
 fn shutdown_backend(app: &tauri::AppHandle) {
-    if let Ok(log_dir) = app_logs_dir(app) {
-        append_launcher_log(&log_dir, "shutting down backend");
-    }
+    let log_dir = app_logs_dir(app).ok();
+    append_optional_launcher_log(log_dir.as_deref(), "shutting down backend");
+
     let state = app.state::<BackendChild>();
     let child = state.0.lock().expect("backend child mutex poisoned").take();
     if let Some(child) = child {
-        let _ = child.kill();
+        terminate_backend_child(log_dir.as_deref(), child);
+    } else {
+        append_optional_launcher_log(
+            log_dir.as_deref(),
+            "backend shutdown requested but no sidecar child was recorded",
+        );
+    }
+}
+
+fn terminate_backend_child(log_dir: Option<&Path>, child: CommandChild) {
+    let pid = child.pid();
+    append_optional_launcher_log(log_dir, format!("shutting down backend sidecar PID {pid}"));
+
+    #[cfg(target_os = "windows")]
+    {
+        if terminate_process_tree_with_taskkill(log_dir, pid) {
+            return;
+        }
+        append_optional_launcher_log(
+            log_dir,
+            format!("falling back to direct kill for backend sidecar PID {pid}"),
+        );
+    }
+
+    match child.kill() {
+        Ok(()) => append_optional_launcher_log(
+            log_dir,
+            format!("direct kill sent to backend sidecar PID {pid}"),
+        ),
+        Err(err) => append_optional_launcher_log(
+            log_dir,
+            format!("failed to directly kill backend sidecar PID {pid}: {err}"),
+        ),
     }
 }
 
@@ -125,6 +163,49 @@ fn pids_listening_on_port(netstat_output: &str, port: u16) -> Vec<u32> {
         }
     }
     pids
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn taskkill_process_tree_args(pid: u32) -> Vec<String> {
+    vec![
+        "/PID".to_string(),
+        pid.to_string(),
+        "/F".to_string(),
+        "/T".to_string(),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_process_tree_with_taskkill(log_dir: Option<&Path>, pid: u32) -> bool {
+    append_optional_launcher_log(
+        log_dir,
+        format!("terminating process tree for backend sidecar PID {pid}"),
+    );
+    let args = taskkill_process_tree_args(pid);
+    match ProcessCommand::new("taskkill")
+        .args(args.iter().map(String::as_str))
+        .output()
+    {
+        Ok(result) => {
+            append_optional_launcher_log(
+                log_dir,
+                format!(
+                    "taskkill process tree PID {pid} status {:?}; stdout: {}; stderr: {}",
+                    result.status.code(),
+                    String::from_utf8_lossy(&result.stdout).trim(),
+                    String::from_utf8_lossy(&result.stderr).trim()
+                ),
+            );
+            result.status.success()
+        }
+        Err(err) => {
+            append_optional_launcher_log(
+                log_dir,
+                format!("failed to taskkill process tree for PID {pid}: {err}"),
+            );
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -168,25 +249,11 @@ fn clear_backend_port(log_dir: &Path, port: u16) {
             log_dir,
             format!("killing PID {pid} listening on TCP port {port}"),
         );
-        let pid_arg = pid.to_string();
-        match ProcessCommand::new("taskkill")
-            .args(["/PID", &pid_arg, "/F", "/T"])
-            .output()
-        {
-            Ok(result) => {
-                append_launcher_log(
-                    log_dir,
-                    format!(
-                        "taskkill PID {pid} status {:?}; stdout: {}; stderr: {}",
-                        result.status.code(),
-                        String::from_utf8_lossy(&result.stdout).trim(),
-                        String::from_utf8_lossy(&result.stderr).trim()
-                    ),
-                );
-            }
-            Err(err) => {
-                append_launcher_log(log_dir, format!("failed to taskkill PID {pid}: {err}"));
-            }
+        if !terminate_process_tree_with_taskkill(Some(log_dir), pid) {
+            append_launcher_log(
+                log_dir,
+                format!("taskkill did not confirm TCP port {port} cleanup for PID {pid}"),
+            );
         }
     }
     thread::sleep(Duration::from_millis(750));
@@ -387,7 +454,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::pids_listening_on_port;
+    use super::{pids_listening_on_port, taskkill_process_tree_args};
 
     #[test]
     fn parses_windows_netstat_listeners_for_exact_port() {
@@ -399,5 +466,13 @@ mod tests {
 "#;
 
         assert_eq!(pids_listening_on_port(output, 8765), vec![27672]);
+    }
+
+    #[test]
+    fn builds_taskkill_args_for_process_tree() {
+        assert_eq!(
+            taskkill_process_tree_args(27672),
+            vec!["/PID", "27672", "/F", "/T"]
+        );
     }
 }
