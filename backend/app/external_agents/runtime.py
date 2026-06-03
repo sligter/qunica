@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -89,11 +90,43 @@ def _read_stderr(stream: TextIO | None, tail: _Tail) -> None:
         tail.append(line)
 
 
-def _start_process(argv: list[str], cwd: str) -> subprocess.Popen[str]:
+def _external_agent_env(isolated_home: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    config_dir = isolated_home / "config"
+    data_dir = isolated_home / "data"
+    cache_dir = isolated_home / "cache"
+    for path in (config_dir, data_dir, cache_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    env.update(
+        {
+            "AG_SWARMER_EXTERNAL_AGENT": "1",
+            "HOME": str(isolated_home),
+            "USERPROFILE": str(isolated_home),
+            "APPDATA": str(config_dir),
+            "LOCALAPPDATA": str(data_dir),
+            "XDG_CONFIG_HOME": str(config_dir),
+            "XDG_DATA_HOME": str(data_dir),
+            "XDG_CACHE_HOME": str(cache_dir),
+            "CODEX_HOME": str(config_dir / "codex"),
+            "CLAUDE_CONFIG_DIR": str(config_dir / "claude"),
+            "CLAUDE_HOME": str(config_dir / "claude"),
+        }
+    )
+    return env
+
+
+def _start_process(
+    argv: list[str],
+    cwd: str,
+    env: dict[str, str],
+) -> subprocess.Popen[str]:
     if sys.platform == "win32":
         return subprocess.Popen(
             argv,
             cwd=cwd,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -107,6 +140,7 @@ def _start_process(argv: list[str], cwd: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         argv,
         cwd=cwd,
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -195,25 +229,27 @@ async def run_external_agent_stream(
         stderr_thread: threading.Thread | None = None
         proc: subprocess.Popen[str] | None = None
         try:
-            proc = _start_process(command.argv, cwd_text)
-            with proc_lock:
-                proc_holder["proc"] = proc
-            if kill_requested.is_set():
-                _kill_process_tree(proc)
-            stderr_thread = threading.Thread(
-                target=_read_stderr,
-                args=(proc.stderr, stderr_tail),
-                daemon=True,
-            )
-            stderr_thread.start()
-            if proc.stdout is not None:
-                for line in proc.stdout:
-                    stdout_tail.append(line)
-                    send_event(_ProcessEvent(kind="stdout", value=line))
-            exit_code = proc.wait()
-            if stderr_thread.is_alive():
-                stderr_thread.join(timeout=1)
-            send_event(_ProcessEvent(kind="done", value=exit_code))
+            with tempfile.TemporaryDirectory(prefix="ag-swarmer-agent-") as home_text:
+                env = _external_agent_env(Path(home_text))
+                proc = _start_process(command.argv, cwd_text, env)
+                with proc_lock:
+                    proc_holder["proc"] = proc
+                if kill_requested.is_set():
+                    _kill_process_tree(proc)
+                stderr_thread = threading.Thread(
+                    target=_read_stderr,
+                    args=(proc.stderr, stderr_tail),
+                    daemon=True,
+                )
+                stderr_thread.start()
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        stdout_tail.append(line)
+                        send_event(_ProcessEvent(kind="stdout", value=line))
+                exit_code = proc.wait()
+                if stderr_thread.is_alive():
+                    stderr_thread.join(timeout=1)
+                send_event(_ProcessEvent(kind="done", value=exit_code))
         except Exception as exc:
             send_event(_ProcessEvent(kind="error", value=str(exc)))
         finally:

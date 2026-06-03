@@ -110,6 +110,7 @@ async def test_create_group_auto_creates_dedicated_workspace(
     assert r.status_code == 200
     assert len(r.json()) == 1
     assert r.json()[0]["display_name"] == "Echo"
+    assert r.json()[0]["share_group_workspace"] is True
 
 
 async def test_create_group_without_root_returns_400(
@@ -258,6 +259,52 @@ async def test_group_agent_topology_fields_and_updates(
     assert order.status_code == 200, order.text
     assert order.json()["topology_role"] is None
     assert order.json()["speaking_order"] == 2
+
+
+async def test_deleted_group_agents_do_not_hold_topology_or_mute_state(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace_id = await _create_workspace(client, auth_headers)
+    deleted_agent_id = await _create_agent(client, auth_headers, "Deleted Hub")
+    active_agent_id = await _create_agent(client, auth_headers, "Active Hub")
+    create = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": "Deleted Hub Group",
+            "communication_mode": "star",
+            "initial_agents": [deleted_agent_id],
+        },
+    )
+    assert create.status_code == 201, create.text
+    group_id = create.json()["id"]
+
+    deleted = await client.delete(
+        f"/api/v1/agents/{deleted_agent_id}",
+        headers=auth_headers,
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    mute = await client.patch(
+        f"/api/v1/groups/{group_id}/agents/{deleted_agent_id}/mute",
+        headers=auth_headers,
+        json={"muted": True},
+    )
+    assert mute.status_code == 404
+
+    added = await client.post(
+        f"/api/v1/groups/{group_id}/agents",
+        headers=auth_headers,
+        json={"agent_id": active_agent_id},
+    )
+    assert added.status_code == 201, added.text
+    assert added.json()["topology_role"] == "hub"
+
+    agents = await client.get(f"/api/v1/groups/{group_id}/agents", headers=auth_headers)
+    assert agents.status_code == 200, agents.text
+    assert [row["agent_id"] for row in agents.json()] == [active_agent_id]
+    assert agents.json()[0]["topology_role"] == "hub"
 
 
 async def test_group_agent_topology_rejects_invalid_mode_payloads(
@@ -911,7 +958,7 @@ async def test_add_agent_to_group_uses_display_name_fallback(
     r = await client.post(
         f"/api/v1/groups/{group_id}/agents",
         headers=auth_headers,
-        json={"agent_id": agent_id, "share_group_workspace": True},
+        json={"agent_id": agent_id},
     )
     assert r.status_code == 201
     assert r.json()["display_name"] == "Helper"

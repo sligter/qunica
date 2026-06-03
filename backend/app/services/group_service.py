@@ -93,7 +93,12 @@ def _sort_topology_rows(rows: list[GroupAgent]) -> list[GroupAgent]:
 async def _active_group_agents(db: AsyncSession, group_id: UUID) -> list[GroupAgent]:
     rows = await db.scalars(
         select(GroupAgent)
-        .where(GroupAgent.group_id == group_id, GroupAgent.status == "active")
+        .join(Agent, Agent.id == GroupAgent.agent_id)
+        .where(
+            GroupAgent.group_id == group_id,
+            GroupAgent.status == "active",
+            Agent.status == "active",
+        )
         .order_by(GroupAgent.joined_at.asc(), GroupAgent.id.asc())
     )
     return list(rows)
@@ -147,18 +152,24 @@ async def _initialize_agent_topology(
         group_agent.speaking_order = None
     elif group.communication_mode == "ring":
         max_order = await db.scalar(
-            select(func.max(GroupAgent.speaking_order)).where(
+            select(func.max(GroupAgent.speaking_order))
+            .join(Agent, Agent.id == GroupAgent.agent_id)
+            .where(
                 GroupAgent.group_id == group.id,
                 GroupAgent.status == "active",
+                Agent.status == "active",
             )
         )
         group_agent.topology_role = None
         group_agent.speaking_order = (max_order or 0) + 1
     elif group.communication_mode == "star":
         has_hub = await db.scalar(
-            select(GroupAgent.id).where(
+            select(GroupAgent.id)
+            .join(Agent, Agent.id == GroupAgent.agent_id)
+            .where(
                 GroupAgent.group_id == group.id,
                 GroupAgent.status == "active",
+                Agent.status == "active",
                 GroupAgent.topology_role == "hub",
             )
         )
@@ -227,7 +238,7 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
     if data.initial_agents:
         for position, agent_id in enumerate(data.initial_agents):
             agent = await db.scalar(select(Agent).where(Agent.id == agent_id))
-            if agent is None:
+            if agent is None or agent.status != "active":
                 raise NotFoundError(f"agent {agent_id}")
             if agent.owner_id != owner.id:
                 raise PermissionDeniedError("agent not accessible")
@@ -237,8 +248,7 @@ async def create_group(db: AsyncSession, data: GroupCreate, owner: User) -> Grou
                 response_mode="mentioned_only",
             )
             ga.joined_at = group.created_at + timedelta(microseconds=position)
-            if agent.workspace_id == workspace.id:
-                _set_group_workspace_sharing(ga, True)
+            _set_group_workspace_sharing(ga, True)
             db.add(ga)
         await _ensure_topology_defaults(db, group)
 
@@ -328,7 +338,7 @@ async def add_agent(
     agent_id: UUID,
     owner: User,
     *,
-    share_group_workspace: bool = False,
+    share_group_workspace: bool = True,
 ) -> tuple[GroupAgent, Agent]:
     await assert_owner(db, group_id, owner)
     group = await db.scalar(select(Group).where(Group.id == group_id, Group.status == "active"))
@@ -336,7 +346,7 @@ async def add_agent(
         raise NotFoundError(f"group {group_id}")
 
     agent = await db.scalar(select(Agent).where(Agent.id == agent_id))
-    if agent is None:
+    if agent is None or agent.status != "active":
         raise NotFoundError(f"agent {agent_id}")
     if agent.owner_id != owner.id:
         raise PermissionDeniedError("agent not accessible")
@@ -371,7 +381,11 @@ async def list_agents_in_group(
     stmt = (
         select(GroupAgent, Agent)
         .join(Agent, Agent.id == GroupAgent.agent_id)
-        .where(GroupAgent.group_id == group_id, GroupAgent.status == "active")
+        .where(
+            GroupAgent.group_id == group_id,
+            GroupAgent.status == "active",
+            Agent.status == "active",
+        )
         .order_by(GroupAgent.joined_at.asc())
     )
     rows = (await db.execute(stmt)).all()
@@ -388,6 +402,7 @@ async def _get_active_group_agent_with_agent(
             GroupAgent.group_id == group_id,
             GroupAgent.agent_id == agent_id,
             GroupAgent.status == "active",
+            Agent.status == "active",
         )
     )
     result = row.one_or_none()
@@ -462,10 +477,13 @@ async def set_agent_topology(
 async def remove_agent(db: AsyncSession, group_id: UUID, agent_id: UUID, user: User) -> None:
     await assert_owner(db, group_id, user)
     group_agent = await db.scalar(
-        select(GroupAgent).where(
+        select(GroupAgent)
+        .join(Agent, Agent.id == GroupAgent.agent_id)
+        .where(
             GroupAgent.group_id == group_id,
             GroupAgent.agent_id == agent_id,
             GroupAgent.status == "active",
+            Agent.status == "active",
         )
     )
     if group_agent is None:
@@ -492,6 +510,7 @@ async def set_agent_muted(
             GroupAgent.group_id == group_id,
             GroupAgent.agent_id == agent_id,
             GroupAgent.status == "active",
+            Agent.status == "active",
         )
     )
     result = row.one_or_none()

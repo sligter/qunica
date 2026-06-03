@@ -261,6 +261,22 @@ async def test_free_speech_skips_muted_agents(
 
 
 @pytest.mark.asyncio
+async def test_resolve_all_mentions_skips_deleted_agents(
+    db_session: AsyncSession,
+) -> None:
+    group, agents = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+    agents[0].status = "deleted"
+    group.free_speech = True
+    await db_session.flush()
+
+    mentioned = await resolve_all_mentions(db_session, group, "@Echo @Mirror")
+    broadcast = await resolve_all_mentions(db_session, group, "hi all")
+
+    assert [agent.name for _, agent in mentioned] == ["Mirror"]
+    assert [agent.name for _, agent in broadcast] == ["Mirror"]
+
+
+@pytest.mark.asyncio
 async def test_no_mention_no_free_speech_returns_empty(
     db_session: AsyncSession,
 ) -> None:

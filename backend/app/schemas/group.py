@@ -79,7 +79,7 @@ class GroupRead(BaseModel):
 
 class GroupAgentAdd(BaseModel):
     agent_id: UUID
-    share_group_workspace: bool = False
+    share_group_workspace: bool = True
 
 
 class GroupAgentWorkspaceSharingUpdate(BaseModel):

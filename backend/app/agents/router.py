@@ -74,7 +74,11 @@ async def _candidate_agents(
     stmt = (
         select(GroupAgent, Agent)
         .join(Agent, Agent.id == GroupAgent.agent_id)
-        .where(GroupAgent.group_id == group.id, GroupAgent.status == "active")
+        .where(
+            GroupAgent.group_id == group.id,
+            GroupAgent.status == "active",
+            Agent.status == "active",
+        )
     )
     rows = (await db.execute(stmt.order_by(GroupAgent.joined_at.asc()))).all()
     seen_names: set[str] = set()

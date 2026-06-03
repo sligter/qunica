@@ -262,11 +262,20 @@ async def get_skill(db: AsyncSession, skill_id: UUID, owner: User) -> Skill:
     return skill
 
 
-async def list_by_ids(db: AsyncSession, skill_ids: list[UUID]) -> list[Skill]:
+async def list_by_ids(
+    db: AsyncSession,
+    skill_ids: list[UUID],
+    *,
+    owner: User,
+) -> list[Skill]:
     """Internal: fetch skills referenced by an agent for prompt assembly."""
     if not skill_ids:
         return []
-    stmt = select(Skill).where(Skill.id.in_(skill_ids), Skill.status == "active")
+    stmt = select(Skill).where(
+        Skill.id.in_(skill_ids),
+        Skill.owner_id == owner.id,
+        Skill.status == "active",
+    )
     rows = list(await db.scalars(stmt))
     by_id = {s.id: s for s in rows}
     return [by_id[i] for i in skill_ids if i in by_id]

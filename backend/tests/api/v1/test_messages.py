@@ -179,12 +179,12 @@ async def test_stream_emits_per_agent_attribution(
     assert set(agent_message_senders) == {echo_id, mirror_id}
 
 
-async def test_stream_mesh_starts_all_agents_before_first_parallel_reply(
+async def test_stream_mesh_runs_agents_sequentially_so_later_agents_see_prior_replies(
     client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
-    fake_llm["messages"] = ["reply"]
+    fake_llm["messages"] = ["echo reply", "mirror reply"]
     group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
-    expected_agent_ids = {agents[0][0], agents[1][0]}
+    echo_id, mirror_id = agents[0][0], agents[1][0]
 
     events: list[tuple[str, str]] = []
     current_event = ""
@@ -202,14 +202,16 @@ async def test_stream_mesh_starts_all_agents_before_first_parallel_reply(
                 events.append((current_event, line[len("data:") :].strip()))
 
     event_names = [event for event, _data in events]
+    first_start_index = event_names.index("agent_start")
     first_reply_index = event_names.index("agent_message")
-    start_payloads = [
-        json.loads(data)
-        for event, data in events[:first_reply_index]
-        if event == "agent_start"
-    ]
+    second_start_index = event_names.index("agent_start", first_start_index + 1)
+    second_reply_index = event_names.index("agent_message", first_reply_index + 1)
+    start_payloads = [json.loads(data) for event, data in events if event == "agent_start"]
+    message_payloads = [json.loads(data) for event, data in events if event == "agent_message"]
 
-    assert {payload["agent_id"] for payload in start_payloads} == expected_agent_ids
+    assert first_start_index < first_reply_index < second_start_index < second_reply_index
+    assert [payload["agent_id"] for payload in start_payloads] == [echo_id, mirror_id]
+    assert [payload["sender_id"] for payload in message_payloads] == [echo_id, mirror_id]
     assert len({payload["stream_id"] for payload in start_payloads}) == 1
 
 

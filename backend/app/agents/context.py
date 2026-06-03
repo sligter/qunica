@@ -23,6 +23,7 @@ from app.agents.builtin_tools import (
 from app.models.agent import Agent
 from app.models.group import Group
 from app.models.group_agent import GroupAgent
+from app.models.group_member import GroupMember
 from app.models.skill import Skill
 from app.models.user import User
 from app.models.workspace import Workspace
@@ -40,6 +41,28 @@ DEFAULT_RUNTIME_LIMITS: dict[str, int] = {
 
 
 @dataclass(frozen=True, slots=True)
+class GroupAgentParticipant:
+    """Active agent visible to the invoked agent in a group chat."""
+
+    agent_id: UUID
+    display_name: str
+    agent_name: str
+    role: str | None
+    topology_role: str | None
+    response_mode: str
+    is_self: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GroupHumanParticipant:
+    """Active human member visible to the invoked agent in a group chat."""
+
+    user_id: UUID
+    display_name: str
+    role: str
+
+
+@dataclass(frozen=True, slots=True)
 class AgentInvocationContext:
     """Prompt context shared by direct invoke and group message flows."""
 
@@ -51,6 +74,8 @@ class AgentInvocationContext:
     setup_required_tools: list[str]
     mounted_skills: list[Skill]
     assistant_agents: list[Agent]
+    group_agent_participants: list[GroupAgentParticipant]
+    group_human_participants: list[GroupHumanParticipant]
     runtime_limits: dict[str, int]
     workspace_source: str
     tavily_search: TavilySearchConfig | None
@@ -95,8 +120,13 @@ async def build_agent_invocation_context(
 
     system_settings = await system_settings_service.get_or_create(db, user)
     tavily_search = system_settings_service.tavily_config_from_settings(system_settings)
-    skills = await _mounted_skills(db, agent)
+    skills = await _mounted_skills(db, agent, user)
     assistant_agents = await _assistant_agents(db, agent)
+    group_agent_participants: list[GroupAgentParticipant] = []
+    group_human_participants: list[GroupHumanParticipant] = []
+    if group is not None:
+        group_agent_participants = await _group_agent_participants(db, group.id, agent.id)
+        group_human_participants = await _group_human_participants(db, group.id)
     selected_tools = selected_tool_names(agent.tool_config)
     executable_tools = executable_tool_names(agent.tool_config)
     saved_only_tools = saved_only_tool_names(agent.tool_config)
@@ -124,6 +154,8 @@ async def build_agent_invocation_context(
         setup_required_tools=setup_required_tools,
         skills=skills,
         assistant_agents=assistant_agents,
+        group_agent_participants=group_agent_participants,
+        group_human_participants=group_human_participants,
         runtime_limits=limits,
     )
     return AgentInvocationContext(
@@ -135,6 +167,8 @@ async def build_agent_invocation_context(
         setup_required_tools=setup_required_tools,
         mounted_skills=skills,
         assistant_agents=assistant_agents,
+        group_agent_participants=group_agent_participants,
+        group_human_participants=group_human_participants,
         runtime_limits=limits,
         workspace_source=workspace_source,
         tavily_search=tavily_search,
@@ -163,11 +197,11 @@ async def build_agent_system_message(
     return context.to_system_message()
 
 
-async def _mounted_skills(db: AsyncSession, agent: Agent) -> list[Skill]:
+async def _mounted_skills(db: AsyncSession, agent: Agent, user: User) -> list[Skill]:
     if not agent.skill_ids:
         return []
     skill_uuids = [UUID(s) if isinstance(s, str) else s for s in agent.skill_ids]
-    return await skill_service.list_by_ids(db, skill_uuids)
+    return await skill_service.list_by_ids(db, skill_uuids, owner=user)
 
 
 async def _assistant_agents(db: AsyncSession, agent: Agent) -> list[Agent]:
@@ -195,6 +229,59 @@ async def _assistant_agents(db: AsyncSession, agent: Agent) -> list[Agent]:
     ]
 
 
+async def _group_agent_participants(
+    db: AsyncSession,
+    group_id: UUID,
+    current_agent_id: UUID,
+) -> list[GroupAgentParticipant]:
+    rows = (
+        await db.execute(
+            select(GroupAgent, Agent)
+            .join(Agent, Agent.id == GroupAgent.agent_id)
+            .where(
+                GroupAgent.group_id == group_id,
+                GroupAgent.status == "active",
+                Agent.status == "active",
+            )
+            .order_by(GroupAgent.joined_at.asc(), GroupAgent.id.asc())
+        )
+    ).all()
+    return [
+        GroupAgentParticipant(
+            agent_id=agent.id,
+            display_name=group_agent.display_name or agent.name,
+            agent_name=agent.name,
+            role=group_agent.role,
+            topology_role=group_agent.topology_role,
+            response_mode=group_agent.response_mode,
+            is_self=agent.id == current_agent_id,
+        )
+        for group_agent, agent in rows
+    ]
+
+
+async def _group_human_participants(
+    db: AsyncSession,
+    group_id: UUID,
+) -> list[GroupHumanParticipant]:
+    rows = (
+        await db.execute(
+            select(GroupMember, User)
+            .join(User, User.id == GroupMember.user_id)
+            .where(GroupMember.group_id == group_id, GroupMember.status == "active")
+            .order_by(GroupMember.joined_at.asc(), GroupMember.id.asc())
+        )
+    ).all()
+    return [
+        GroupHumanParticipant(
+            user_id=user.id,
+            display_name=user.name,
+            role=group_member.role,
+        )
+        for group_member, user in rows
+    ]
+
+
 def _render_system_prompt(
     *,
     agent: Agent,
@@ -207,12 +294,20 @@ def _render_system_prompt(
     setup_required_tools: list[str],
     skills: list[Skill],
     assistant_agents: list[Agent],
+    group_agent_participants: list[GroupAgentParticipant],
+    group_human_participants: list[GroupHumanParticipant],
     runtime_limits: dict[str, int],
 ) -> str:
     parts: list[str] = [agent.system_prompt]
 
     if group is not None:
         parts.append(_render_group_context(group))
+        parts.append(
+            _render_group_participants(
+                group_agent_participants,
+                group_human_participants,
+            )
+        )
     parts.append(
         _render_workspace_context(
             workspace,
@@ -224,8 +319,7 @@ def _render_system_prompt(
         )
     )
     parts.append(_render_runtime_limits(runtime_limits))
-    if skills:
-        parts.append(_render_skills(skills))
+    parts.append(_render_skills(skills))
     if assistant_agents:
         parts.append(_render_assistant_agents(assistant_agents))
 
@@ -252,6 +346,40 @@ def _render_group_context(group: Group) -> str:
             "will skip your turn and not persist a message."
         )
     lines.append(f"- allow_agent_free_mention: {group.allow_agent_free_mention}")
+    return "\n".join(lines)
+
+
+def _render_group_participants(
+    agent_participants: list[GroupAgentParticipant],
+    human_participants: list[GroupHumanParticipant],
+) -> str:
+    lines = ["Group participants:"]
+    if agent_participants:
+        lines.append("Active agents:")
+        for participant in agent_participants:
+            markers = ["you"] if participant.is_self else []
+            details = [f"agent_name={participant.agent_name}"]
+            if participant.role:
+                details.append(f"role={participant.role}")
+            if participant.topology_role:
+                details.append(f"topology_role={participant.topology_role}")
+            details.append(f"response_mode={participant.response_mode}")
+            suffix = f" ({', '.join(markers + details)})"
+            lines.append(f"- @{participant.display_name}{suffix}")
+    else:
+        lines.append("Active agents: none")
+
+    if human_participants:
+        lines.append("Active human members:")
+        for human in human_participants:
+            lines.append(f"- {human.display_name} ({human.role})")
+    else:
+        lines.append("Active human members: none")
+
+    lines.append(
+        "Use the listed @display names when addressing another agent. Do not claim "
+        "that you are the only agent if other active agents are listed."
+    )
     return "\n".join(lines)
 
 
@@ -336,10 +464,19 @@ def _render_runtime_limits(runtime_limits: dict[str, int]) -> str:
 
 
 def _render_skills(skills: list[Skill]) -> str:
+    if not skills:
+        return (
+            "Mounted skills:\n"
+            "- none\n"
+            "Mounted skills are selected on this agent and are independent of "
+            "workspace files."
+        )
     rendered = [
         "Mounted skills:",
         "Full skill instructions are loaded only through SkillManager inspect/activate "
         "runtime tool calls; initial context lists metadata only.",
+        "Mounted skills are selected on this agent and are independent of "
+        "workspace files.",
     ]
     for skill in skills:
         metadata = skill.metadata_ or {}

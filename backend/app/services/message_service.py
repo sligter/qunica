@@ -1526,11 +1526,12 @@ def _can_parallel_stream_round(
     group: Group,
     participants: Sequence[tuple[GroupAgent, Agent]],
 ) -> bool:
-    return (
-        (group.communication_mode or "mesh") == "mesh"
-        and not group.proactive_mode
-        and len(participants) > 1
-    )
+    _ = (group, participants)
+    # Group chat context is a shared transcript: later agents must be able to
+    # see earlier visible replies from the same user send. Parallel streaming
+    # hides sibling replies because each worker builds its prompt from history
+    # before those replies are persisted.
+    return False
 
 
 async def _stream_agent_round_parallel(

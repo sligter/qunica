@@ -110,3 +110,59 @@ async def test_external_run_stream_persists_audit_row(
     assert row.status == "completed"
     assert row.argv[-1] == "<prompt>"
     assert row.stdout_tail == "reply:task\n"
+
+
+@pytest.mark.asyncio
+async def test_external_run_uses_isolated_cli_home(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "fake_agent_env.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import os",
+                "print('codex_home=' + os.environ.get('CODEX_HOME', ''))",
+                "print('claude_home=' + os.environ.get('CLAUDE_HOME', ''))",
+                "print('home=' + os.environ.get('HOME', ''))",
+                "print('marker=' + os.environ.get('AG_SWARMER_EXTERNAL_AGENT', ''))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_build_command(config: ExternalRuntimeConfig, prompt: str) -> AdapterCommand:
+        _ = (config, prompt)
+        return AdapterCommand(
+            argv=[sys.executable, str(script)],
+            redacted_argv=[sys.executable, str(script)],
+        )
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "host-codex"))
+    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "host-claude"))
+    monkeypatch.setattr("app.external_agents.runtime.build_command", fake_build_command)
+    conn = await db_session.connection()
+    await conn.run_sync(cast(Table, ExternalAgentRun.__table__).create, checkfirst=True)
+    chunks: list[str] = []
+
+    async for event in run_external_agent_stream(
+        db_session,
+        owner_id=uuid4(),
+        group_id=uuid4(),
+        agent_id=uuid4(),
+        thread_id=uuid4(),
+        config=ExternalRuntimeConfig(adapter="codex"),
+        cwd=tmp_path,
+        prompt="task",
+    ):
+        if event.kind == "token" and isinstance(event.data, str):
+            chunks.append(event.data)
+
+    output = "".join(chunks)
+    assert "host-codex" not in output
+    assert "host-claude" not in output
+    assert "codex_home=" in output
+    assert "claude_home=" in output
+    assert "marker=1" in output
