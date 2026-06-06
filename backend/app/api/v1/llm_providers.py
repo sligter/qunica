@@ -27,6 +27,7 @@ def _to_read(provider: object) -> LLMProviderRead:
         api_key_masked=mask_api_key(p.api_key),  # type: ignore[attr-defined]
         default_model=p.default_model,  # type: ignore[attr-defined]
         description=p.description,  # type: ignore[attr-defined]
+        reasoning_passback=p.reasoning_passback,  # type: ignore[attr-defined]
         status=p.status,  # type: ignore[attr-defined]
         created_at=p.created_at,  # type: ignore[attr-defined]
     )

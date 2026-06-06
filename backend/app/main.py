@@ -51,6 +51,14 @@ async def _apply_sqlite_schema_patches(conn: AsyncConnection) -> None:
             """
         )
 
+    provider_info = await conn.exec_driver_sql("PRAGMA table_info(llm_providers)")
+    provider_columns = {str(row[1]) for row in provider_info.fetchall()}
+    if "reasoning_passback" not in provider_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE llm_providers "
+            "ADD COLUMN reasoning_passback BOOLEAN NOT NULL DEFAULT 0"
+        )
+
 
 async def _bootstrap_sqlite_schema() -> None:
     async with engine.begin() as conn:

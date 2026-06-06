@@ -171,6 +171,7 @@ export interface LLMProviderRead {
   api_key_masked: string
   default_model: string
   description: string | null
+  reasoning_passback: boolean
   status: string
   created_at: string
 }
@@ -182,6 +183,7 @@ export interface LLMProviderCreate {
   api_key: string
   default_model: string
   description?: string | null
+  reasoning_passback?: boolean
 }
 
 export interface LLMProviderUpdate {
@@ -191,6 +193,7 @@ export interface LLMProviderUpdate {
   api_key?: string | null
   default_model?: string | null
   description?: string | null
+  reasoning_passback?: boolean
 }
 
 export interface SkillFileInfo {

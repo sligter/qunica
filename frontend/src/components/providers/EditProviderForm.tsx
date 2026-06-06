@@ -3,6 +3,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
+import { ReasoningPassbackControl } from '@/components/providers/ReasoningPassbackControl'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -19,6 +20,7 @@ const schema = z.object({
   api_key: z.string().optional(),
   default_model: z.string().min(1, 'Required'),
   description: z.string().optional(),
+  reasoning_passback: z.boolean(),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -78,6 +80,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
       api_key: '',
       default_model: provider.default_model,
       description: provider.description ?? '',
+      reasoning_passback: provider.reasoning_passback,
     },
   })
 
@@ -93,6 +96,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
         api_key: values.api_key ? values.api_key : undefined,
         default_model: values.default_model,
         description: values.description || null,
+        reasoning_passback: values.reasoning_passback,
       })
       onSaved?.(updated.id)
     } catch (err) {
@@ -170,6 +174,13 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
           </p>
         )}
       </div>
+
+      {kind === 'openai-compatible' && (
+        <ReasoningPassbackControl
+          value={form.watch('reasoning_passback')}
+          onChange={(value) => form.setValue('reasoning_passback', value)}
+        />
+      )}
 
       <div className="space-y-1.5">
         <Label htmlFor={`provider-desc-${provider.id}`}>Description (optional)</Label>

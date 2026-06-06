@@ -19,6 +19,7 @@ class LLMProviderCreate(BaseModel):
     api_key: str = Field(min_length=1)
     default_model: str = Field(min_length=1, max_length=200)
     description: str | None = None
+    reasoning_passback: bool = False
 
 
 class LLMProviderUpdate(BaseModel):
@@ -28,6 +29,7 @@ class LLMProviderUpdate(BaseModel):
     api_key: str | None = Field(default=None, min_length=1)
     default_model: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+    reasoning_passback: bool | None = None
 
 
 class LLMProviderRead(BaseModel):
@@ -42,5 +44,6 @@ class LLMProviderRead(BaseModel):
     api_key_masked: str
     default_model: str
     description: str | None
+    reasoning_passback: bool
     status: str
     created_at: datetime

@@ -62,7 +62,16 @@ class ReasoningChatOpenAI(ChatOpenAI):
     Each streamed delta carries only its own slice of reasoning, which LangChain
     concatenates across chunks, so the aggregated final message also ends up with
     the full `reasoning_content`.
+
+    When ``passback_reasoning`` is set, the captured ``reasoning_content`` is also
+    re-sent to the provider on follow-up turns (alongside the assistant's
+    ``tool_calls``). Reasoning models that support tool use — e.g. DeepSeek and
+    Xiaomi MiMo — expect the thinking that produced a tool call to travel back
+    with it across the multi-turn loop. It is a per-provider opt-in (default off)
+    because plain chat models neither emit nor need it.
     """
+
+    passback_reasoning: bool = False
 
     def _convert_chunk_to_generation_chunk(
         self,
@@ -96,6 +105,32 @@ class ReasoningChatOpenAI(ChatOpenAI):
             if reasoning:
                 generation.message.additional_kwargs.setdefault("reasoning_content", reasoning)
         return result
+
+    def _get_request_payload(
+        self,
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if not self.passback_reasoning:
+            return payload
+        serialized = payload.get("messages")
+        if not isinstance(serialized, list):
+            return payload  # Responses-API path or unexpected shape — leave as-is.
+        originals = self._convert_input(input_).to_messages()
+        if len(originals) != len(serialized):
+            return payload  # 1:1 mapping broke; don't risk misattributing reasoning.
+        for original, message_dict in zip(originals, serialized, strict=False):
+            if not isinstance(message_dict, dict) or message_dict.get("role") != "assistant":
+                continue
+            if message_dict.get("reasoning_content"):
+                continue
+            reasoning = _reasoning_text_from_payload(getattr(original, "additional_kwargs", None))
+            if reasoning:
+                message_dict["reasoning_content"] = reasoning
+        return payload
 
 
 def _extract_common_params(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -208,5 +243,6 @@ async def resolve_chat_model(
         base_url=base_url,
         temperature=temperature,
         streaming=streaming,
+        passback_reasoning=bool(provider.reasoning_passback),
         **extra,
     )

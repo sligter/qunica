@@ -43,6 +43,7 @@ async def create_provider(
         api_key=data.api_key,
         default_model=data.default_model,
         description=data.description,
+        reasoning_passback=data.reasoning_passback,
     )
     db.add(provider)
     await db.flush()
@@ -106,6 +107,8 @@ async def update_provider(
         provider.default_model = data.default_model
     if "description" in data.model_fields_set:
         provider.description = data.description
+    if data.reasoning_passback is not None:
+        provider.reasoning_passback = data.reasoning_passback
     await db.flush()
     await db.refresh(provider)
     return provider
