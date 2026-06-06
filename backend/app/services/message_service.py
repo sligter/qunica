@@ -51,7 +51,7 @@ from app.agents.context import (
     AgentInvocationContext,
     build_agent_invocation_context,
 )
-from app.agents.router import resolve_all_mentions
+from app.agents.router import resolve_all_mentions, resolve_explicit_mentions
 from app.agents.runtime import RuntimeAgentHandoff, RuntimeToolEvent, RuntimeWaitForUser
 from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import AgentChatError, ConflictError, NotFoundError
@@ -577,6 +577,45 @@ def _build_agent_tool_dispatch_content(
     return content
 
 
+def _agent_free_mention_dispatch_limit(group: Group) -> int:
+    return max(0, group.agent_free_mention_max_dispatches)
+
+
+async def _append_agent_reply_mentions(
+    db: AsyncSession,
+    group: Group,
+    visible_text: str,
+    *,
+    current_agent_id: UUID,
+    skip_agent_ids: set[UUID],
+    next_participants: list[tuple[GroupAgent, Agent]],
+    next_agent_ids: set[UUID],
+    remaining_dispatches: int,
+    budget_agent_ids: set[UUID] | None = None,
+) -> int:
+    if (
+        not group.allow_agent_free_mention
+        or remaining_dispatches <= 0
+        or "@" not in visible_text
+    ):
+        return 0
+    mentioned = await resolve_explicit_mentions(db, group, visible_text)
+    added = 0
+    for group_agent, agent in mentioned:
+        if added >= remaining_dispatches:
+            break
+        if agent.id == current_agent_id:
+            continue
+        if agent.id in skip_agent_ids or agent.id in next_agent_ids:
+            continue
+        next_participants.append((group_agent, agent))
+        next_agent_ids.add(agent.id)
+        if budget_agent_ids is not None:
+            budget_agent_ids.add(agent.id)
+        added += 1
+    return added
+
+
 def _avoid_immediate_repeat_speaker(
     participants: Sequence[tuple[GroupAgent, Agent]],
     last_visible_agent_id: UUID | None,
@@ -734,13 +773,16 @@ def _agent_identity_payload(
     agent: Agent,
     group_agent: GroupAgent,
     stream_id: UUID | None = None,
-) -> dict[str, str]:
-    payload = {
+    round_idx: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "agent_id": str(agent.id),
         "display_name": group_agent.display_name or agent.name,
     }
     if stream_id is not None:
         payload["stream_id"] = str(stream_id)
+    if round_idx is not None:
+        payload["round"] = round_idx
     return payload
 
 
@@ -757,6 +799,17 @@ def _waiting_message_from_response(response: AIMessage) -> str:
     return str(message) if message else WAITING_FOR_USER_WARNING
 
 
+def _human_input_request_payload(message: str) -> dict[str, Any] | None:
+    prefix = "Human input requested:"
+    stripped = message.strip()
+    if not stripped.casefold().startswith(prefix.casefold()):
+        return None
+    question = stripped[len(prefix) :].strip()
+    if not question:
+        return None
+    return {"question": question, "required": True}
+
+
 def _tool_event_waits_for_user(tool_event: RuntimeToolEvent) -> bool:
     return tool_event.tool_name == "AskUser" and tool_event.status == "input_required"
 
@@ -766,6 +819,7 @@ def _serialize_tool_event(
     agent: Agent,
     group_agent: GroupAgent,
     stream_id: UUID | None = None,
+    round_idx: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "agent_id": str(agent.id),
@@ -778,8 +832,15 @@ def _serialize_tool_event(
         payload["args_summary"] = tool_event.args_summary
     if tool_event.result_summary:
         payload["result_summary"] = tool_event.result_summary
+    if tool_event.input_request is not None:
+        payload["input_request"] = {
+            "question": tool_event.input_request.question,
+            "required": tool_event.input_request.required,
+        }
     if stream_id is not None:
         payload["stream_id"] = str(stream_id)
+    if round_idx is not None:
+        payload["round"] = round_idx
     return payload
 
 
@@ -886,27 +947,51 @@ async def send_message(
     dispatches_created = 0
     waiting_for_user = False
     handoff_dispatched = False
-    proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
+    budget_agent_ids = {agent.id for _group_agent, agent in resolved}
     visible_replies_used = 0
+    mention_dispatches_used = 0
+    mention_participants: list[tuple[GroupAgent, Agent]] = []
     spoke_previous_round = True
     round_idx = 0
     last_visible_agent_id = await _latest_visible_agent_id(db, group_id)
-    while (not group.proactive_mode and round_idx < 1) or (
-        group.proactive_mode
-        and visible_replies_used < proactive_reply_budget
-        and spoke_previous_round
-    ):
-        round_idx += 1
+    while True:
+        if mention_participants:
+            round_idx += 1
+            round_participants = mention_participants
+            mention_participants = []
+            is_mention_round = True
+        else:
+            proactive_reply_budget = len(budget_agent_ids) * group.proactive_reply_multiplier
+            if not group.proactive_mode and round_idx >= 1:
+                break
+            if (
+                group.proactive_mode
+                and (visible_replies_used >= proactive_reply_budget or not spoke_previous_round)
+            ):
+                break
+            round_idx += 1
+            is_mention_round = False
+            round_participants = _order_round_participants(
+                group,
+                resolved,
+                round_idx=round_idx,
+                last_visible_agent_id=last_visible_agent_id,
+            )
         spoke_this_round = False
-        round_participants = _order_round_participants(
-            group,
-            resolved,
-            round_idx=round_idx,
-            last_visible_agent_id=last_visible_agent_id,
-        )
-        for group_agent, agent in round_participants:
+        next_mention_participants: list[tuple[GroupAgent, Agent]] = []
+        next_mention_agent_ids: set[UUID] = set()
+        for idx, (group_agent, agent) in enumerate(round_participants):
+            if is_mention_round:
+                if mention_dispatches_used >= _agent_free_mention_dispatch_limit(group):
+                    break
+                mention_dispatches_used += 1
+            proactive_reply_budget = len(budget_agent_ids) * group.proactive_reply_multiplier
             if group.proactive_mode and visible_replies_used >= proactive_reply_budget:
                 break
+            remaining_round_agent_ids = {
+                remaining_agent.id
+                for _remaining_group_agent, remaining_agent in round_participants[idx + 1 :]
+            }
             chat_thread = await thread_service.get_or_create_chat_thread(
                 db, group_id, agent.id, sender.id
             )
@@ -945,6 +1030,21 @@ async def send_message(
                         visible_replies_used += 1
                         spoke_this_round = True
                         last_visible_agent_id = agent.id
+                        await _append_agent_reply_mentions(
+                            db,
+                            group,
+                            visible_text,
+                            current_agent_id=agent.id,
+                            skip_agent_ids={agent.id, *remaining_round_agent_ids},
+                            next_participants=next_mention_participants,
+                            next_agent_ids=next_mention_agent_ids,
+                            remaining_dispatches=(
+                                _agent_free_mention_dispatch_limit(group)
+                                - mention_dispatches_used
+                                - len(next_mention_participants)
+                            ),
+                            budget_agent_ids=budget_agent_ids if group.proactive_mode else None,
+                        )
                     waiting_for_user = _requests_human_input(
                         visible_text, human_names, sender_name
                     )
@@ -1052,6 +1152,21 @@ async def send_message(
                     visible_replies_used += 1
                     spoke_this_round = True
                     last_visible_agent_id = agent.id
+                    await _append_agent_reply_mentions(
+                        db,
+                        group,
+                        visible_text,
+                        current_agent_id=agent.id,
+                        skip_agent_ids={agent.id, *remaining_round_agent_ids},
+                        next_participants=next_mention_participants,
+                        next_agent_ids=next_mention_agent_ids,
+                        remaining_dispatches=(
+                            _agent_free_mention_dispatch_limit(group)
+                            - mention_dispatches_used
+                            - len(next_mention_participants)
+                        ),
+                        budget_agent_ids=budget_agent_ids if group.proactive_mode else None,
+                    )
                 waiting_for_user = (
                     tool_requested_wait
                     or _is_waiting_for_user_response(response)
@@ -1067,7 +1182,13 @@ async def send_message(
                 await thread_service.mark_failed(db, chat_thread)
                 display = group_agent.display_name or agent.name
                 warnings.append(f"agent '{display}' failed: {exc!s}")
-        if waiting_for_user or handoff_dispatched or not group.proactive_mode:
+        if waiting_for_user or handoff_dispatched:
+            break
+        if next_mention_participants:
+            mention_participants = next_mention_participants
+            spoke_previous_round = spoke_this_round
+            continue
+        if not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
 
@@ -1214,6 +1335,7 @@ async def _stream_one_agent(
     pending_dispatches: list[AgentToolDispatch] | None = None,
     dispatch_counter: list[int] | None = None,
     stream_id: UUID | None = None,
+    round_idx: int | None = None,
     db_lock: asyncio.Lock | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """Stream one agent's reply, persisting on graceful done OR on cancel.
@@ -1245,10 +1367,13 @@ async def _stream_one_agent(
                     if event.kind == "run" and isinstance(event.data, dict):
                         payload = {
                             **event.data,
+                            "agent_id": str(agent.id),
                             "display_name": group_agent.display_name or agent.name,
                         }
                         if stream_id is not None:
                             payload["stream_id"] = str(stream_id)
+                        if round_idx is not None:
+                            payload["round"] = round_idx
                         yield {"event": "external_agent_run", "data": json.dumps(payload)}
                         continue
                     if event.kind != "token" or not isinstance(event.data, str):
@@ -1271,7 +1396,9 @@ async def _stream_one_agent(
             if _is_silent_reply(group, text):
                 yield {
                     "event": "agent_silent",
-                    "data": json.dumps(_agent_identity_payload(agent, group_agent, stream_id)),
+                    "data": json.dumps(
+                        _agent_identity_payload(agent, group_agent, stream_id, round_idx)
+                    ),
                 }
             else:
                 visible_text = _sanitize_agent_visible_content(text)
@@ -1301,7 +1428,10 @@ async def _stream_one_agent(
                         "data": json.dumps(
                             {
                                 "message": WAITING_FOR_USER_WARNING,
+                                "agent_id": str(agent.id),
+                                "display_name": group_agent.display_name or agent.name,
                                 **({"stream_id": str(stream_id)} if stream_id is not None else {}),
+                                **({"round": round_idx} if round_idx is not None else {}),
                             }
                         ),
                     }
@@ -1375,7 +1505,7 @@ async def _stream_one_agent(
                         else "tool_call_result"
                     ),
                     "data": json.dumps(
-                        _serialize_tool_event(payload, agent, group_agent, stream_id)
+                        _serialize_tool_event(payload, agent, group_agent, stream_id, round_idx)
                     ),
                 }
             elif kind == "token":
@@ -1416,7 +1546,9 @@ async def _stream_one_agent(
                 if _is_silent_reply(group, text):
                     yield {
                         "event": "agent_silent",
-                        "data": json.dumps(_agent_identity_payload(agent, group_agent, stream_id)),
+                        "data": json.dumps(
+                            _agent_identity_payload(agent, group_agent, stream_id, round_idx)
+                        ),
                     }
                 else:
                     visible_text = _sanitize_agent_visible_content(text)
@@ -1425,13 +1557,15 @@ async def _stream_one_agent(
                             yield {
                                 "event": "agent_silent",
                                 "data": json.dumps(
-                                    _agent_identity_payload(agent, group_agent, stream_id)
+                                    _agent_identity_payload(
+                                        agent, group_agent, stream_id, round_idx
+                                    )
                                 ),
                             }
                         yield {
                             "event": "agent_handoff",
                             "data": json.dumps(
-                                {"stream_id": str(stream_id)} if stream_id is not None else {}
+                                _agent_identity_payload(agent, group_agent, stream_id, round_idx)
                             ),
                         }
                         continue
@@ -1467,16 +1601,26 @@ async def _stream_one_agent(
                     if _is_waiting_for_user_response(final) or _requests_human_input(
                         visible_text, human_names, sender_name
                     ):
+                        waiting_message = _waiting_message_from_response(final)
+                        input_request = _human_input_request_payload(waiting_message)
                         yield {
                             "event": "waiting_for_user",
                             "data": json.dumps(
                                 {
-                                    "message": _waiting_message_from_response(final),
+                                    "message": waiting_message,
+                                    "agent_id": str(agent.id),
+                                    "display_name": group_agent.display_name or agent.name,
+                                    **(
+                                        {"input_request": input_request}
+                                        if input_request is not None
+                                        else {}
+                                    ),
                                     **(
                                         {"stream_id": str(stream_id)}
                                         if stream_id is not None
                                         else {}
                                     ),
+                                    **({"round": round_idx} if round_idx is not None else {}),
                                 }
                             ),
                         }
@@ -1597,6 +1741,7 @@ async def _stream_agent_round_parallel(
                 pending_dispatches=pending_dispatches,
                 dispatch_counter=dispatch_counter,
                 stream_id=stream_id,
+                round_idx=round_idx,
                 db_lock=db_lock,
             ):
                 await queue.put(event)
@@ -1613,6 +1758,7 @@ async def _stream_agent_round_parallel(
                             "display_name": display,
                             "error": str(exc),
                             "stream_id": str(stream_id),
+                            "round": round_idx,
                         }
                     ),
                 }
@@ -1677,7 +1823,9 @@ async def send_message_stream(
     human_names = await _human_mention_names(db, group_id)
     sender_name = sender.name or ""
     emitted_agent_messages = 0
-    proactive_reply_budget = len(resolved) * group.proactive_reply_multiplier
+    budget_agent_ids = {agent.id for _group_agent, agent in resolved}
+    mention_dispatches_used = 0
+    mention_participants: list[tuple[GroupAgent, Agent]] = []
     spoke_previous_round = True
     round_idx = 0
     last_visible_agent_id = await _latest_visible_agent_id(db, group_id)
@@ -1686,19 +1834,32 @@ async def send_message_stream(
     pending_dispatches: list[AgentToolDispatch] = []
     dispatch_counter = [0]
 
-    while (not group.proactive_mode and round_idx < 1) or (
-        group.proactive_mode
-        and emitted_agent_messages < proactive_reply_budget
-        and spoke_previous_round
-    ):
-        round_idx += 1
+    while True:
+        if mention_participants:
+            round_idx += 1
+            round_participants = mention_participants
+            mention_participants = []
+            is_mention_round = True
+        else:
+            proactive_reply_budget = len(budget_agent_ids) * group.proactive_reply_multiplier
+            if not group.proactive_mode and round_idx >= 1:
+                break
+            if (
+                group.proactive_mode
+                and (emitted_agent_messages >= proactive_reply_budget or not spoke_previous_round)
+            ):
+                break
+            round_idx += 1
+            is_mention_round = False
+            round_participants = _order_round_participants(
+                group,
+                resolved,
+                round_idx=round_idx,
+                last_visible_agent_id=last_visible_agent_id,
+            )
         spoke_this_round = False
-        round_participants = _order_round_participants(
-            group,
-            resolved,
-            round_idx=round_idx,
-            last_visible_agent_id=last_visible_agent_id,
-        )
+        next_mention_participants: list[tuple[GroupAgent, Agent]] = []
+        next_mention_agent_ids: set[UUID] = set()
         if _can_parallel_stream_round(group, round_participants):
             async for event in _stream_agent_round_parallel(
                 db,
@@ -1727,13 +1888,24 @@ async def send_message_stream(
                 elif event["event"] == "waiting_for_user":
                     waiting_for_user = True
                 yield event
-            if waiting_for_user or handoff_dispatched or not group.proactive_mode:
+            if waiting_for_user or handoff_dispatched:
+                break
+            if not group.proactive_mode:
                 break
             spoke_previous_round = spoke_this_round
             continue
         for idx, (group_agent, agent) in enumerate(round_participants):
+            if is_mention_round:
+                if mention_dispatches_used >= _agent_free_mention_dispatch_limit(group):
+                    break
+                mention_dispatches_used += 1
+            proactive_reply_budget = len(budget_agent_ids) * group.proactive_reply_multiplier
             if group.proactive_mode and emitted_agent_messages >= proactive_reply_budget:
                 break
+            remaining_round_agent_ids = {
+                remaining_agent.id
+                for _remaining_group_agent, remaining_agent in round_participants[idx + 1 :]
+            }
             display = group_agent.display_name or agent.name
             yield {
                 "event": "agent_start",
@@ -1764,11 +1936,32 @@ async def send_message_stream(
                     pending_dispatches=pending_dispatches,
                     dispatch_counter=dispatch_counter,
                     stream_id=user_msg.id,
+                    round_idx=round_idx,
                 ):
                     if event["event"] == "agent_message":
                         emitted_agent_messages += 1
                         spoke_this_round = True
                         last_visible_agent_id = agent.id
+                        payload = json.loads(event["data"])
+                        content_value = payload.get("content")
+                        if isinstance(content_value, str):
+                            await _append_agent_reply_mentions(
+                                db,
+                                group,
+                                content_value,
+                                current_agent_id=agent.id,
+                                skip_agent_ids={agent.id, *remaining_round_agent_ids},
+                                next_participants=next_mention_participants,
+                                next_agent_ids=next_mention_agent_ids,
+                                remaining_dispatches=(
+                                    _agent_free_mention_dispatch_limit(group)
+                                    - mention_dispatches_used
+                                    - len(next_mention_participants)
+                                ),
+                                budget_agent_ids=(
+                                    budget_agent_ids if group.proactive_mode else None
+                                ),
+                            )
                     elif event["event"] == "agent_handoff":
                         handoff_dispatched = True
                         continue
@@ -1788,11 +1981,18 @@ async def send_message_stream(
                         "display_name": display,
                         "error": str(exc),
                         "stream_id": str(user_msg.id),
+                        "round": round_idx,
                     }),
                 }
             if waiting_for_user or handoff_dispatched:
                 break
-        if waiting_for_user or handoff_dispatched or not group.proactive_mode:
+        if waiting_for_user or handoff_dispatched:
+            break
+        if next_mention_participants:
+            mention_participants = next_mention_participants
+            spoke_previous_round = spoke_this_round
+            continue
+        if not group.proactive_mode:
             break
         spoke_previous_round = spoke_this_round
 
@@ -1837,6 +2037,7 @@ async def send_message_stream(
                 pending_dispatches=None,
                 dispatch_counter=None,
                 stream_id=dispatch_msg.id,
+                round_idx=round_idx + 1,
             ):
                 if event["event"] == "agent_message":
                     emitted_agent_messages += 1
@@ -1860,6 +2061,7 @@ async def send_message_stream(
                     "display_name": display,
                     "error": str(exc),
                     "stream_id": str(dispatch_msg.id),
+                    "round": round_idx + 1,
                 }),
             }
 

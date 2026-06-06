@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -7,7 +7,8 @@ from uuid import UUID
 import httpx
 from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
 from pydantic import Field
 from sqlalchemy import select
@@ -40,6 +41,30 @@ class RecordingFakeChatModel(GenericFakeChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> "RecordingFakeChatModel":
         return self
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        _ = (messages, stop, kwargs)
+        message = next(self.messages)
+        message_ = AIMessage(content=message) if isinstance(message, str) else message
+        content = message_.content if isinstance(message_.content, str) else str(message_.content)
+        chunks = [content] if content else [""]
+        for index, token in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            chunk = AIMessageChunk(
+                content=token,
+                id=message_.id,
+                tool_calls=message_.tool_calls if is_last else [],
+                chunk_position="last" if is_last else None,
+            )
+            if run_manager is not None:
+                run_manager.on_llm_new_token(token, chunk=chunk)
+            yield ChatGenerationChunk(message=chunk)
 
 
 class NoBindRecordingFakeChatModel(RecordingFakeChatModel):
@@ -1023,6 +1048,10 @@ async def test_stream_ask_user_emits_intermediate_text_tool_result_and_waiting(
         result_payloads[0]["result_summary"]
         == "Human input requested: Please paste the missing outline."
     )
+    assert result_payloads[0]["input_request"] == {
+        "question": "Please paste the missing outline.",
+        "required": True,
+    }
     assert event_names.count("agent_message") == 1
     assert event_names.count("agent_start") == 1
 

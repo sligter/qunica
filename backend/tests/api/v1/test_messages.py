@@ -6,11 +6,22 @@ from typing import Any, cast
 from uuid import UUID
 
 from httpx import AsyncClient
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.message import Message
 from app.models.thread import Thread
+
+
+def _patch_llm_script(monkeypatch: Any, messages: Sequence[str]) -> None:
+    script = iter([AIMessage(content=message) for message in messages])
+
+    async def _resolve_factory(_db: Any, _agent: Any, *, streaming: bool = False) -> Any:
+        return GenericFakeChatModel(messages=script)
+
+    monkeypatch.setattr("app.services.message_service.resolve_chat_model", _resolve_factory)
 
 
 async def _setup(
@@ -137,6 +148,138 @@ async def test_multi_mention_fans_out_in_order_with_distinct_threads(
     assert second["thread_id"] is not None
 
 
+async def test_agent_reply_mention_triggers_follow_up_turn(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["echo opens", "@Echo your turn", "echo follows"])
+    group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
+    echo_id, mirror_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"free_speech": True, "proactive_mode": False},
+    )
+    assert patch.status_code == 200, patch.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "please discuss"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [echo_id, mirror_id, echo_id]
+    assert [reply["content"] for reply in replies] == [
+        "echo opens",
+        "@Echo your turn",
+        "echo follows",
+    ]
+
+
+async def test_agent_reply_mention_respects_free_mention_toggle(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["echo opens", "@Echo your turn", "should not run"])
+    group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
+    echo_id, mirror_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={
+            "free_speech": True,
+            "proactive_mode": False,
+            "allow_agent_free_mention": False,
+        },
+    )
+    assert patch.status_code == 200, patch.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "please discuss"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [echo_id, mirror_id]
+    assert [reply["content"] for reply in replies] == ["echo opens", "@Echo your turn"]
+
+
+async def test_agent_reply_mention_respects_custom_follow_up_limit(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(
+        monkeypatch,
+        ["echo opens", "@Echo your turn", "@Mirror again", "should not run"],
+    )
+    group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
+    echo_id, mirror_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={
+            "free_speech": True,
+            "proactive_mode": False,
+            "agent_free_mention_max_dispatches": 1,
+        },
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["agent_free_mention_max_dispatches"] == 1
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "please discuss"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [echo_id, mirror_id, echo_id]
+    assert [reply["content"] for reply in replies] == [
+        "echo opens",
+        "@Echo your turn",
+        "@Mirror again",
+    ]
+
+
+async def test_agent_reply_mention_limit_zero_disables_follow_up(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["echo opens", "@Echo your turn", "should not run"])
+    group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
+    echo_id, mirror_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={
+            "free_speech": True,
+            "proactive_mode": False,
+            "agent_free_mention_max_dispatches": 0,
+        },
+    )
+    assert patch.status_code == 200, patch.text
+
+    response = await client.post(
+        f"/api/v1/groups/{group_id}/messages",
+        headers=auth_headers,
+        json={"content": "please discuss"},
+    )
+
+    assert response.status_code == 201, response.text
+    replies = response.json()["agent_replies"]
+    assert [reply["sender_id"] for reply in replies] == [echo_id, mirror_id]
+    assert [reply["content"] for reply in replies] == ["echo opens", "@Echo your turn"]
+
+
 async def test_stream_emits_per_agent_attribution(
     client: AsyncClient, auth_headers: dict[str, str], fake_llm: dict[str, Any]
 ) -> None:
@@ -177,6 +320,54 @@ async def test_stream_emits_per_agent_attribution(
     assert echo_id in token_agent_ids
     assert mirror_id in token_agent_ids
     assert set(agent_message_senders) == {echo_id, mirror_id}
+
+
+async def test_stream_agent_reply_mention_triggers_follow_up_turn(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    _patch_llm_script(monkeypatch, ["echo opens", "@Echo your turn", "echo follows"])
+    group_id, agents = await _setup(client, auth_headers, extra_agents=["Mirror"])
+    echo_id, mirror_id = agents[0][0], agents[1][0]
+    patch = await client.patch(
+        f"/api/v1/groups/{group_id}",
+        headers=auth_headers,
+        json={"free_speech": True, "proactive_mode": False},
+    )
+    assert patch.status_code == 200, patch.text
+
+    events: list[tuple[str, str]] = []
+    current_event = ""
+    async with client.stream(
+        "POST",
+        f"/api/v1/groups/{group_id}/messages/stream",
+        headers=auth_headers,
+        json={"content": "please discuss"},
+    ) as resp:
+        assert resp.status_code == 200
+        async for line in resp.aiter_lines():
+            if line.startswith("event:"):
+                current_event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                events.append((current_event, line[len("data:") :].strip()))
+
+    agent_starts = [json.loads(data) for event, data in events if event == "agent_start"]
+    agent_messages = [
+        json.loads(data) for event, data in events if event == "agent_message"
+    ]
+
+    assert [start["agent_id"] for start in agent_starts] == [echo_id, mirror_id, echo_id]
+    assert [message["sender_id"] for message in agent_messages] == [
+        echo_id,
+        mirror_id,
+        echo_id,
+    ]
+    assert [message["content"] for message in agent_messages] == [
+        "echo opens",
+        "@Echo your turn",
+        "echo follows",
+    ]
 
 
 async def test_stream_mesh_runs_agents_sequentially_so_later_agents_see_prior_replies(

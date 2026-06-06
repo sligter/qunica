@@ -1,19 +1,22 @@
 import { useMemo } from 'react'
 
+import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { InterruptedMessageActions } from '@/components/chat/InterruptedMessageActions'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { MessageActions } from '@/components/chat/MessageActions'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
+import { humanInputRequestFromText } from '@/lib/humanInput'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
-import { cn } from '@/lib/utils'
 
 interface MessageItemProps {
   message: Message
   groupId: string
   isStreaming?: boolean
+  onSubmitHumanInput?: (content: string) => void
 }
 
 function initials(name: string): string {
@@ -25,7 +28,12 @@ function initials(name: string): string {
     .join('')
 }
 
-export function MessageItem({ message, groupId, isStreaming }: MessageItemProps) {
+export function MessageItem({
+  message,
+  groupId,
+  isStreaming,
+  onSubmitHumanInput,
+}: MessageItemProps) {
   const groupAgents = useGroupAgents(groupId)
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
@@ -51,6 +59,7 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
   }
 
   const isUser = message.sender_type === 'user'
+  const inputRequest = !isUser ? humanInputRequestFromText(message.content) : null
   const isInterrupted = message.status === 'interrupted'
   const showStreamingDot = isStreaming || isResuming
   const time = new Date(message.created_at).toLocaleTimeString(undefined, {
@@ -101,14 +110,24 @@ export function MessageItem({ message, groupId, isStreaming }: MessageItemProps)
         </div>
         <div
           className={cn(
-            'min-w-0 rounded-lg px-3 py-2',
-            isUser
-              ? 'bg-primary text-primary-foreground'
-              : 'border border-border bg-card text-foreground',
+            'min-w-0 rounded-lg',
+            inputRequest
+              ? 'w-full'
+              : isUser
+                ? 'bg-primary px-3 py-2 text-primary-foreground'
+                : 'border border-border bg-card px-3 py-2 text-foreground',
             isInterrupted && !isResuming && 'border-amber-300/70',
           )}
         >
-          <MarkdownMessage content={message.content || ' '} isUser={isUser} />
+          {inputRequest ? (
+            <HumanInputRequestForm
+              request={inputRequest}
+              targetDisplayName={senderName}
+              onSubmitResponse={onSubmitHumanInput}
+            />
+          ) : (
+            <MarkdownMessage content={message.content || ' '} isUser={isUser} />
+          )}
         </div>
         {isInterrupted && !isResuming && message.thread_id && (
           <InterruptedMessageActions

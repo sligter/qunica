@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.router import (
     parse_mention_tokens,
     resolve_all_mentions,
+    resolve_explicit_mentions,
     resolve_first_mention,
 )
 from app.models.agent import Agent
@@ -244,6 +245,23 @@ async def test_free_speech_with_mention_only_mentioned_respond(
     result = await resolve_all_mentions(db_session, group, "@Nova what do you think?")
     names = [a.name for _, a in result]
     assert names == ["Nova"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_explicit_mentions_has_no_free_speech_fallback(
+    db_session: AsyncSession,
+) -> None:
+    group, _ = await _seed_group_with_agents(db_session, ["Echo", "Mirror"])
+    group.free_speech = True
+    await db_session.flush()
+
+    unmatched = await resolve_explicit_mentions(db_session, group, "@Missing please")
+    plain = await resolve_explicit_mentions(db_session, group, "hello everyone")
+    matched = await resolve_explicit_mentions(db_session, group, "@Mirror please")
+
+    assert unmatched == []
+    assert plain == []
+    assert [agent.name for _group_agent, agent in matched] == ["Mirror"]
 
 
 @pytest.mark.asyncio

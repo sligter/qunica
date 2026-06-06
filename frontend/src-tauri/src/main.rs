@@ -431,15 +431,23 @@ fn main() {
                 }
             });
 
-            if let Err(message) = wait_for_backend(Duration::from_secs(60)) {
-                append_launcher_log(&log_dir, format!("backend startup failed: {message}"));
-                let _ = child.kill();
-                return Err(message.into());
-            }
-            append_launcher_log(&log_dir, "backend healthy");
-
             let state = app.state::<BackendChild>();
             *state.0.lock().expect("backend child mutex poisoned") = Some(child);
+
+            let health_log_dir = log_dir.clone();
+            thread::spawn(move || {
+                append_launcher_log(
+                    &health_log_dir,
+                    "waiting for backend health check in background",
+                );
+                match wait_for_backend(Duration::from_secs(60)) {
+                    Ok(()) => append_launcher_log(&health_log_dir, "backend healthy"),
+                    Err(message) => append_launcher_log(
+                        &health_log_dir,
+                        format!("backend health check is still pending: {message}"),
+                    ),
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

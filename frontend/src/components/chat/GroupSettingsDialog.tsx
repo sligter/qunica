@@ -72,6 +72,9 @@ export function GroupSettingsDialog({
     group.proactive_reply_multiplier,
   )
   const [allowFreeMention, setAllowFreeMention] = useState(group.allow_agent_free_mention)
+  const [freeMentionMaxDispatches, setFreeMentionMaxDispatches] = useState(
+    group.agent_free_mention_max_dispatches,
+  )
   const [communicationMode, setCommunicationMode] = useState<GroupCommunicationMode>(
     group.communication_mode,
   )
@@ -83,6 +86,7 @@ export function GroupSettingsDialog({
     setProactiveMode(group.proactive_mode)
     setProactiveReplyMultiplier(group.proactive_reply_multiplier)
     setAllowFreeMention(group.allow_agent_free_mention)
+    setFreeMentionMaxDispatches(group.agent_free_mention_max_dispatches)
     setCommunicationMode(group.communication_mode)
   }, [group])
 
@@ -94,6 +98,7 @@ export function GroupSettingsDialog({
       proactive_mode: proactiveMode,
       proactive_reply_multiplier: proactiveReplyMultiplier,
       allow_agent_free_mention: allowFreeMention,
+      agent_free_mention_max_dispatches: freeMentionMaxDispatches,
       communication_mode: communicationMode,
     })
     onOpenChange(false)
@@ -125,6 +130,15 @@ export function GroupSettingsDialog({
       return
     }
     setProactiveReplyMultiplier(Math.max(1, next))
+  }
+
+  const setMinimumFreeMentionMaxDispatches = (value: string) => {
+    const next = Number.parseInt(value, 10)
+    if (Number.isNaN(next)) {
+      setFreeMentionMaxDispatches(0)
+      return
+    }
+    setFreeMentionMaxDispatches(Math.max(0, next))
   }
 
   const onDelete = async () => {
@@ -249,6 +263,26 @@ export function GroupSettingsDialog({
                 </p>
               </div>
               <Switch checked={allowFreeMention} onCheckedChange={setAllowFreeMention} />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="gs-free-mention-max">Follow-up limit</Label>
+                <p className="text-xs text-muted-foreground">
+                  Allows up to {freeMentionMaxDispatches} agent-to-agent @mention follow-up
+                  turns per send. Set 0 to disable follow-ups.
+                </p>
+              </div>
+              <Input
+                id="gs-free-mention-max"
+                type="number"
+                min={0}
+                step={1}
+                value={freeMentionMaxDispatches}
+                onChange={(e) => setMinimumFreeMentionMaxDispatches(e.target.value)}
+                disabled={!allowFreeMention}
+                className="w-20"
+              />
             </div>
 
             <Separator />

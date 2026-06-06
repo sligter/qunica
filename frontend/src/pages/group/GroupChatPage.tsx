@@ -106,6 +106,7 @@ export function GroupChatPage() {
             hasOlderMessages={messagesQuery.hasNextPage}
             isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
             onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
+            onSubmitHumanInput={stream.send}
           />
 
           {stream.error && (

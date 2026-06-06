@@ -5,6 +5,8 @@ Phase 1 Week 3-4 expanded API:
   heuristic; coarse — see note below).
 - `resolve_first_mention(...)`: the first @-token that matches an agent in
   the group. Kept for backward compatibility.
+- `resolve_explicit_mentions(...)`: only concrete @matches in textual order,
+  with no free-speech fallback. Used for agent-authored follow-up mentions.
 - `resolve_all_mentions(...)`: ALL matching agents in textual order,
   deduplicated by `agent_id`. Used by the multi-agent fan-out flow in
   `message_service.send_message[_stream]`.
@@ -161,6 +163,16 @@ async def resolve_all_mentions(
         return [(ga, agent) for _name, (ga, agent) in joined_order]
 
     return []
+
+
+async def resolve_explicit_mentions(
+    db: AsyncSession, group: Group, text: str
+) -> list[tuple[GroupAgent, Agent]]:
+    """Resolve only explicit @mentions, without free-speech fan-out fallback."""
+    if "@" not in text:
+        return []
+    candidates = await _candidate_agents(db, group)
+    return _scan_mentions(text, candidates)
 
 
 async def resolve_first_mention(

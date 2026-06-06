@@ -49,12 +49,19 @@ ToolEventStatus = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeHumanInputRequest:
+    question: str
+    required: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeToolEvent:
     tool_call_id: str
     tool_name: str
     status: ToolEventStatus
     args_summary: str | None = None
     result_summary: str | None = None
+    input_request: RuntimeHumanInputRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +242,26 @@ def _json_payload_from_result(result: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _human_input_request_from_result(result: str) -> RuntimeHumanInputRequest | None:
+    payload = _json_payload_from_result(result)
+    if payload is None:
+        return None
+    status = str(payload.get("status") or "").upper()
+    if status not in {"WAITING_FOR_USER", "INPUT_REQUESTED"}:
+        return None
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    prefix = "Human input requested:"
+    question = message.strip()
+    if question.casefold().startswith(prefix.casefold()):
+        question = question[len(prefix) :].strip()
+    return RuntimeHumanInputRequest(
+        question=question or message.strip(),
+        required=status == "WAITING_FOR_USER",
+    )
+
+
 def _wait_for_user_from_result(result: str) -> RuntimeWaitForUser | None:
     payload = _json_payload_from_result(result)
     if payload is None:
@@ -280,6 +307,40 @@ async def _invoke_once(
     if not isinstance(response, AIMessage):
         raise LLMProviderError("agent runtime returned no response")
     return response
+
+
+async def _invoke_once_stream(
+    graph: _Graph,
+    thread_id: str,
+    chat_model: BaseChatModel,
+    input_messages: list[BaseMessage],
+) -> AsyncIterator[tuple[str, Any]]:
+    config = _config_for(thread_id, chat_model)
+    state_input: GroupState = {
+        "input_messages": list(input_messages),
+        "last_response": None,
+    }
+
+    final_response: AIMessage | None = None
+    async for event in graph.astream_events(
+        cast(Any, state_input), config=config, version="v2"
+    ):
+        kind = event.get("event")
+        if kind == "on_chat_model_stream":
+            chunk = event["data"].get("chunk")
+            if chunk is None:
+                continue
+            chunk_content = getattr(chunk, "content", None)
+            if isinstance(chunk_content, str) and chunk_content:
+                yield ("token", chunk_content)
+        elif kind == "on_chat_model_end":
+            output = event["data"].get("output")
+            if isinstance(output, AIMessage):
+                final_response = output
+
+    if final_response is None:
+        raise LLMProviderError("agent runtime stream produced no final response")
+    yield ("done", final_response)
 
 
 def _agent_handoff_tool_call_priority(
@@ -347,6 +408,9 @@ async def _execute_tool_calls(
             tool_name=display_name,
             status=status,
             result_summary=_result_summary(name, result),
+            input_request=(
+                _human_input_request_from_result(result) if name == "AskUser" else None
+            ),
         )
         if tool_event_callback is not None:
             await tool_event_callback(result_event)
@@ -417,94 +481,74 @@ async def run_with_stream(
     tool_event_callback: Any | None = None,
     agent_handoff_tool_names: set[str] | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
-    """Yield live tool events and final tokens when tools are active.
+    """Stream model tokens while preserving the provider-native tool loop."""
+    tools = workspace_tools or {}
+    model = bind_workspace_tools(chat_model, tools)
+    messages = list(input_messages)
+    repeated_call_counts: Counter[tuple[str | None, str]] = Counter()
 
-    Provider-native tool calls are not token-streamed because each tool result
-    must feed a follow-up model invocation. Tool start/result events are yielded
-    immediately, then the final answer is emitted as a token chunk when the loop
-    completes.
-    """
-    if workspace_tools:
-        tools = workspace_tools or {}
-        model = bind_workspace_tools(chat_model, tools)
-        messages = list(input_messages)
-        repeated_call_counts: Counter[tuple[str | None, str]] = Counter()
-        while True:
-            final = await _invoke_once(graph, thread_id, model, messages)
-            tool_calls = list(final.tool_calls or [])
-            if not tool_calls:
-                content = final.content if isinstance(final.content, str) else str(final.content)
-                if content:
-                    yield ("token", content)
-                yield ("done", final)
+    while True:
+        final: AIMessage | None = None
+        emitted_content = False
+        async for kind, payload in _invoke_once_stream(graph, thread_id, model, messages):
+            if kind == "token":
+                emitted_content = True
+                yield ("token", payload)
+            else:
+                final = payload
+        if final is None:
+            raise LLMProviderError("agent runtime stream produced no final response")
+
+        tool_calls = list(final.tool_calls or [])
+        if not tool_calls:
+            content = _message_text(final.content)
+            if content and not emitted_content:
+                yield ("token", content)
+            yield ("done", final)
+            return
+
+        for tool_call in tool_calls:
+            signature = _tool_call_signature(cast(dict[str, Any], tool_call))
+            repeated_call_counts[signature] += 1
+            if repeated_call_counts[signature] > TOOL_LOOP_REPEATED_CALL_LIMIT:
+                guarded = AIMessage(content=_repeated_call_guard_message(signature[0]))
+                yield ("token", guarded.content)
+                yield ("done", guarded)
                 return
-            for tool_call in tool_calls:
-                signature = _tool_call_signature(cast(dict[str, Any], tool_call))
-                repeated_call_counts[signature] += 1
-                if repeated_call_counts[signature] > TOOL_LOOP_REPEATED_CALL_LIMIT:
-                    guarded = AIMessage(content=_repeated_call_guard_message(signature[0]))
-                    yield ("token", guarded.content)
-                    yield ("done", guarded)
-                    return
-            interim_content = _message_text(final.content)
-            if interim_content:
-                yield ("token", interim_content)
-            messages.append(final)
-            async for tool_event, result in _execute_tool_calls(
-                tool_calls=tool_calls,
-                tools=tools,
-                tool_event_callback=tool_event_callback,
-                agent_handoff_tool_names=agent_handoff_tool_names,
-            ):
-                yield ("tool_event", tool_event)
-                if isinstance(result, RuntimeAgentHandoff):
-                    handoff = AIMessage(
-                        content=interim_content.strip(),
-                        additional_kwargs={
-                            "agent_handoff": True,
-                            "handoff_message": result.message,
-                        },
-                    )
-                    yield ("agent_handoff", result)
-                    yield ("done", handoff)
-                    return
-                if isinstance(result, RuntimeWaitForUser):
-                    content = interim_content.strip() or result.message
-                    waiting = AIMessage(
-                        content=content,
-                        additional_kwargs={
-                            "waiting_for_user": True,
-                            "waiting_message": result.message,
-                        },
-                    )
-                    yield ("waiting_for_user", result)
-                    yield ("done", waiting)
-                    return
-                if result is not None:
-                    messages.append(result)
-    config = _config_for(thread_id, chat_model)
-    state_input: GroupState = {
-        "input_messages": list(input_messages),
-        "last_response": None,
-    }
 
-    final_response: AIMessage | None = None
-    async for event in graph.astream_events(
-        cast(Any, state_input), config=config, version="v2"
-    ):
-        kind = event.get("event")
-        if kind == "on_chat_model_stream":
-            chunk = event["data"].get("chunk")
-            if chunk is None:
-                continue
-            chunk_content = getattr(chunk, "content", None)
-            if isinstance(chunk_content, str) and chunk_content:
-                yield ("token", chunk_content)
-        elif kind == "on_chat_model_end":
-            output = event["data"].get("output")
-            if isinstance(output, AIMessage):
-                final_response = output
-
-    if final_response is None:
-        raise LLMProviderError("agent runtime stream produced no final response")
-    yield ("done", final_response)
+        interim_content = _message_text(final.content)
+        if interim_content and not emitted_content:
+            yield ("token", interim_content)
+        messages.append(final)
+        async for tool_event, result in _execute_tool_calls(
+            tool_calls=tool_calls,
+            tools=tools,
+            tool_event_callback=tool_event_callback,
+            agent_handoff_tool_names=agent_handoff_tool_names,
+        ):
+            yield ("tool_event", tool_event)
+            if isinstance(result, RuntimeAgentHandoff):
+                handoff = AIMessage(
+                    content=interim_content.strip(),
+                    additional_kwargs={
+                        "agent_handoff": True,
+                        "handoff_message": result.message,
+                    },
+                )
+                yield ("agent_handoff", result)
+                yield ("done", handoff)
+                return
+            if isinstance(result, RuntimeWaitForUser):
+                content = interim_content.strip() or result.message
+                waiting = AIMessage(
+                    content=content,
+                    additional_kwargs={
+                        "waiting_for_user": True,
+                        "waiting_message": result.message,
+                    },
+                )
+                yield ("waiting_for_user", result)
+                yield ("done", waiting)
+                return
+            if result is not None:
+                messages.append(result)

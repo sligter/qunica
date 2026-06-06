@@ -44,7 +44,7 @@ export function RequireAuth() {
   if (!hydrated || meQuery.isLoading) {
     return (
       <div className="flex h-screen items-center justify-center text-muted-foreground">
-        Loading…
+        Opening workspace...
       </div>
     )
   }

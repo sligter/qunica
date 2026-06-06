@@ -346,6 +346,9 @@ def _render_group_context(group: Group) -> str:
             "will skip your turn and not persist a message."
         )
     lines.append(f"- allow_agent_free_mention: {group.allow_agent_free_mention}")
+    lines.append(
+        f"- agent_free_mention_max_dispatches: {group.agent_free_mention_max_dispatches}"
+    )
     return "\n".join(lines)
 
 

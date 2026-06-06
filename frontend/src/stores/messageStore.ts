@@ -11,6 +11,7 @@
 
 import { create } from 'zustand'
 
+import type { HumanInputRequest } from '@/lib/humanInput'
 import type { Message } from '@/types/api'
 
 export interface StreamingBubble {
@@ -25,6 +26,7 @@ export interface ActiveAgent {
   display_name: string
   index: number
   total: number
+  round?: number
   stream_id?: string | null
 }
 
@@ -46,6 +48,92 @@ export interface ToolActivity {
   status: ToolActivityStatus
   args_summary?: string
   result_summary?: string
+  input_request?: HumanInputRequest
+}
+
+export type StreamRunStatus = 'active' | 'completed' | 'error' | 'cancelled'
+
+interface StreamTimelineEventBase {
+  id: string
+  stream_id: string
+  created_at: string
+  updated_at?: string
+}
+
+export interface StreamAgentStartEvent extends StreamTimelineEventBase {
+  type: 'agent_start'
+  agent_id: string
+  display_name: string
+  index?: number
+  total?: number
+  round?: number
+}
+
+export interface StreamResponseDraftEvent extends StreamTimelineEventBase {
+  type: 'response_draft'
+  agent_id: string
+  display_name: string
+  content: string
+  status: 'streaming' | 'finalized'
+  message_id?: string
+}
+
+export interface StreamToolEvent extends StreamTimelineEventBase {
+  type: 'tool'
+  agent_id: string
+  display_name: string
+  tool_call_id: string
+  tool_name: string
+  status: ToolActivityStatus
+  args_summary?: string
+  result_summary?: string
+  input_request?: HumanInputRequest
+}
+
+export interface StreamExternalRunEvent extends StreamTimelineEventBase {
+  type: 'external_run'
+  run_id: string
+  agent_id: string
+  display_name: string
+  adapter?: string
+  status?: string
+  cwd?: string
+  exit_code?: number
+  summary?: string
+}
+
+export interface StreamAgentMessageEvent extends StreamTimelineEventBase {
+  type: 'agent_message'
+  message_id: string
+  agent_id: string
+  display_name: string
+  content: string
+}
+
+export interface StreamNoticeEvent extends StreamTimelineEventBase {
+  type: 'agent_silent' | 'agent_handoff' | 'waiting_for_user' | 'warning' | 'agent_error' | 'done'
+  message: string
+  agent_id?: string
+  display_name?: string
+  input_request?: HumanInputRequest
+}
+
+export type StreamTimelineEvent =
+  | StreamAgentStartEvent
+  | StreamResponseDraftEvent
+  | StreamToolEvent
+  | StreamExternalRunEvent
+  | StreamAgentMessageEvent
+  | StreamNoticeEvent
+
+export interface StreamRun {
+  id: string
+  group_id: string
+  user_message_id: string
+  status: StreamRunStatus
+  created_at: string
+  updated_at: string
+  events: StreamTimelineEvent[]
 }
 
 interface MessageState {
@@ -54,6 +142,8 @@ interface MessageState {
   activeAgentsByGroup: Record<string, Record<string, ActiveAgent>>
   warningsByGroup: Record<string, string[]>
   toolActivityByGroup: Record<string, ToolActivity[]>
+  streamRunsByGroup: Record<string, Record<string, StreamRun>>
+  streamRunOrderByGroup: Record<string, string[]>
   resumingMessageIds: Set<string>
 
   setHistory: (groupId: string, messages: Message[]) => void
@@ -71,14 +161,71 @@ interface MessageState {
   clearWarnings: (groupId: string) => void
   pushToolActivity: (groupId: string, activity: ToolActivity) => void
   clearToolActivity: (groupId: string) => void
+  startStreamRun: (groupId: string, userMessage: Message) => void
+  addStreamAgentStart: (groupId: string, streamId: string, agent: ActiveAgent) => void
+  patchStreamDraft: (
+    groupId: string,
+    streamId: string,
+    agentId: string,
+    delta: string,
+    displayName?: string,
+  ) => void
+  finalizeStreamDraft: (groupId: string, streamId: string, message: Message, displayName?: string) => void
+  upsertStreamTool: (groupId: string, streamId: string, activity: ToolActivity) => void
+  upsertStreamExternalRun: (
+    groupId: string,
+    streamId: string,
+    event: Omit<StreamExternalRunEvent, 'id' | 'type' | 'stream_id' | 'created_at' | 'updated_at'>,
+  ) => void
+  appendStreamNotice: (
+    groupId: string,
+    streamId: string,
+    event: Omit<StreamNoticeEvent, 'id' | 'stream_id' | 'created_at'>,
+  ) => void
+  markStreamRunDone: (groupId: string, streamId: string) => void
+  markStreamRunError: (groupId: string, streamId: string, message: string) => void
+  markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
   appendToMessage: (groupId: string, messageId: string, delta: string) => void
   replaceMessage: (groupId: string, message: Message) => void
   startResume: (messageId: string) => void
   endResume: (messageId: string) => void
 }
 
+const MAX_COMPLETED_STREAM_RUNS_PER_GROUP = 12
+
 function inFlightKey(agentId: string, streamId: string | null | undefined): string {
   return `${streamId ?? 'default'}:${agentId}`
+}
+
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function upsertTimelineEvent(
+  events: StreamTimelineEvent[],
+  event: StreamTimelineEvent,
+): StreamTimelineEvent[] {
+  const index = events.findIndex((item) => item.id === event.id)
+  if (index === -1) return [...events, event]
+  return events.map((item, itemIndex) => (itemIndex === index ? event : item))
+}
+
+function pruneStreamRuns(
+  runs: Record<string, StreamRun>,
+  order: string[],
+): { runs: Record<string, StreamRun>; order: string[] } {
+  const completedIds = order.filter((id) => {
+    const run = runs[id]
+    return run !== undefined && run.status !== 'active'
+  })
+  const removeCount = Math.max(0, completedIds.length - MAX_COMPLETED_STREAM_RUNS_PER_GROUP)
+  if (removeCount === 0) return { runs, order }
+  const removeIds = new Set(completedIds.slice(0, removeCount))
+  const nextRuns = Object.fromEntries(
+    Object.entries(runs).filter(([id]) => !removeIds.has(id)),
+  )
+  const nextOrder = order.filter((id) => !removeIds.has(id))
+  return { runs: nextRuns, order: nextOrder }
 }
 
 export const useMessageStore = create<MessageState>((set) => ({
@@ -87,6 +234,8 @@ export const useMessageStore = create<MessageState>((set) => ({
   activeAgentsByGroup: {},
   warningsByGroup: {},
   toolActivityByGroup: {},
+  streamRunsByGroup: {},
+  streamRunOrderByGroup: {},
   resumingMessageIds: new Set(),
 
   setHistory: (groupId, messages) =>
@@ -115,6 +264,8 @@ export const useMessageStore = create<MessageState>((set) => ({
       activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
+      streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: {} },
+      streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: [] },
     })),
 
   appendMessage: (groupId, message) =>
@@ -289,6 +440,419 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => ({
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
+
+  startStreamRun: (groupId, userMessage) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const existing = groupRuns[userMessage.id]
+      const run: StreamRun = {
+        id: userMessage.id,
+        group_id: groupId,
+        user_message_id: userMessage.id,
+        status: 'active',
+        created_at: existing?.created_at ?? userMessage.created_at,
+        updated_at: timestamp,
+        events: existing?.events ?? [],
+      }
+      const nextRuns = { ...groupRuns, [userMessage.id]: run }
+      const nextOrder = groupOrder.includes(userMessage.id)
+        ? groupOrder
+        : [...groupOrder, userMessage.id]
+      const pruned = pruneStreamRuns(nextRuns, nextOrder)
+      return {
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
+      }
+    }),
+
+  addStreamAgentStart: (groupId, streamId, agent) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const event: StreamAgentStartEvent = {
+        id: `agent-start:${streamId}:${agent.agent_id}:${agent.round ?? 0}:${agent.index}`,
+        type: 'agent_start',
+        stream_id: streamId,
+        agent_id: agent.agent_id,
+        display_name: agent.display_name,
+        index: agent.index,
+        total: agent.total,
+        round: agent.round,
+        created_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'active',
+        updated_at: timestamp,
+        events: upsertTimelineEvent(run.events, event),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  patchStreamDraft: (groupId, streamId, agentId, delta, displayName) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const eventId = `response:${streamId}:${agentId}`
+      const existing = run.events.find(
+        (event): event is StreamResponseDraftEvent =>
+          event.id === eventId && event.type === 'response_draft',
+      )
+      const event: StreamResponseDraftEvent = existing
+        ? {
+            ...existing,
+            display_name: displayName ?? existing.display_name,
+            content: existing.content + delta,
+            status: 'streaming',
+            updated_at: timestamp,
+          }
+        : {
+            id: eventId,
+            type: 'response_draft',
+            stream_id: streamId,
+            agent_id: agentId,
+            display_name: displayName ?? 'Agent',
+            content: delta,
+            status: 'streaming',
+            created_at: timestamp,
+            updated_at: timestamp,
+          }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'active',
+        updated_at: timestamp,
+        events: upsertTimelineEvent(run.events, event),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  finalizeStreamDraft: (groupId, streamId, message, displayName) =>
+    set((s) => {
+      const agentId = message.sender_id ?? 'unknown-agent'
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const draftId = `response:${streamId}:${agentId}`
+      const existing = run.events.find(
+        (event): event is StreamResponseDraftEvent =>
+          event.id === draftId && event.type === 'response_draft',
+      )
+      const event: StreamTimelineEvent = existing
+        ? {
+            ...existing,
+            content: message.content ?? existing.content,
+            display_name: displayName ?? existing.display_name,
+            status: 'finalized',
+            message_id: message.id,
+            updated_at: timestamp,
+          }
+        : {
+            id: `agent-message:${streamId}:${message.id}`,
+            type: 'agent_message',
+            stream_id: streamId,
+            message_id: message.id,
+            agent_id: agentId,
+            display_name: displayName ?? 'Agent',
+            content: message.content ?? '',
+            created_at: timestamp,
+            updated_at: timestamp,
+          }
+      const nextRun: StreamRun = {
+        ...run,
+        updated_at: timestamp,
+        events: upsertTimelineEvent(run.events, event),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  upsertStreamTool: (groupId, streamId, activity) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const eventId = `tool:${streamId}:${activity.id}`
+      const existing = run.events.find(
+        (event): event is StreamToolEvent => event.id === eventId && event.type === 'tool',
+      )
+      const event: StreamToolEvent = {
+        id: eventId,
+        type: 'tool',
+        stream_id: streamId,
+        agent_id: activity.agent_id,
+        display_name: activity.display_name,
+        tool_call_id: activity.id,
+        tool_name: activity.tool_name,
+        status: activity.status,
+        args_summary: activity.args_summary ?? existing?.args_summary,
+        result_summary: activity.result_summary ?? existing?.result_summary,
+        input_request: activity.input_request ?? existing?.input_request,
+        created_at: existing?.created_at ?? timestamp,
+        updated_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'active',
+        updated_at: timestamp,
+        events: upsertTimelineEvent(run.events, event),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  upsertStreamExternalRun: (groupId, streamId, eventInput) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const eventId = `external:${streamId}:${eventInput.run_id}`
+      const existing = run.events.find(
+        (event): event is StreamExternalRunEvent =>
+          event.id === eventId && event.type === 'external_run',
+      )
+      const event: StreamExternalRunEvent = {
+        id: eventId,
+        type: 'external_run',
+        stream_id: streamId,
+        run_id: eventInput.run_id,
+        agent_id: eventInput.agent_id,
+        display_name: eventInput.display_name,
+        adapter: eventInput.adapter ?? existing?.adapter,
+        status: eventInput.status ?? existing?.status,
+        cwd: eventInput.cwd ?? existing?.cwd,
+        exit_code: eventInput.exit_code ?? existing?.exit_code,
+        summary: eventInput.summary ?? existing?.summary,
+        created_at: existing?.created_at ?? timestamp,
+        updated_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'active',
+        updated_at: timestamp,
+        events: upsertTimelineEvent(run.events, event),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  appendStreamNotice: (groupId, streamId, eventInput) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const event: StreamNoticeEvent = {
+        ...eventInput,
+        id: `${eventInput.type}:${streamId}:${run.events.length}:${timestamp}`,
+        stream_id: streamId,
+        created_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        updated_at: timestamp,
+        events: [...run.events, event],
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  markStreamRunDone: (groupId, streamId) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const run = groupRuns[streamId]
+      if (!run) return {}
+      const timestamp = nowIso()
+      const doneExists = run.events.some((event) => event.type === 'done')
+      const doneEvent: StreamNoticeEvent = {
+        id: `done:${streamId}`,
+        type: 'done',
+        stream_id: streamId,
+        message: 'Stream completed',
+        created_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'completed',
+        updated_at: timestamp,
+        events: doneExists ? run.events : [...run.events, doneEvent],
+      }
+      const pruned = pruneStreamRuns({ ...groupRuns, [streamId]: nextRun }, groupOrder)
+      return {
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
+      }
+    }),
+
+  markStreamRunError: (groupId, streamId, message) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const run = groupRuns[streamId]
+      if (!run) return {}
+      const timestamp = nowIso()
+      const errorEvent: StreamNoticeEvent = {
+        id: `stream-error:${streamId}:${timestamp}`,
+        type: 'agent_error',
+        stream_id: streamId,
+        message,
+        created_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'error',
+        updated_at: timestamp,
+        events: [...run.events, errorEvent],
+      }
+      const pruned = pruneStreamRuns({ ...groupRuns, [streamId]: nextRun }, groupOrder)
+      return {
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
+      }
+    }),
+
+  markStreamRunCancelled: (groupId, streamIds) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const ids = streamIds && streamIds.length > 0
+        ? streamIds
+        : Object.values(groupRuns)
+            .filter((run) => run.status === 'active')
+            .map((run) => run.id)
+      if (ids.length === 0) return {}
+      const timestamp = nowIso()
+      const nextRuns = { ...groupRuns }
+      for (const streamId of ids) {
+        const run = nextRuns[streamId]
+        if (!run) continue
+        const event: StreamNoticeEvent = {
+          id: `cancelled:${streamId}:${timestamp}`,
+          type: 'warning',
+          stream_id: streamId,
+          message: 'Stream cancelled',
+          created_at: timestamp,
+        }
+        nextRuns[streamId] = {
+          ...run,
+          status: 'cancelled',
+          updated_at: timestamp,
+          events: [...run.events, event],
+        }
+      }
+      const pruned = pruneStreamRuns(nextRuns, groupOrder)
+      return {
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
+      }
+    }),
 
   appendToMessage: (groupId, messageId, delta) =>
     set((s) => {

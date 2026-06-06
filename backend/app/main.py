@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.agents.runtime import compile_graph
 from app.api.v1 import api_router
@@ -38,9 +39,24 @@ def _sqlite_path(sqlite_url: str) -> str:
     return str(path)
 
 
+async def _apply_sqlite_schema_patches(conn: AsyncConnection) -> None:
+    result = await conn.exec_driver_sql("PRAGMA table_info(groups)")
+    columns = {str(row[1]) for row in result.fetchall()}
+    if "agent_free_mention_max_dispatches" not in columns:
+        await conn.exec_driver_sql(
+            """
+            ALTER TABLE groups
+            ADD COLUMN agent_free_mention_max_dispatches INTEGER NOT NULL DEFAULT 8
+            CHECK (agent_free_mention_max_dispatches >= 0)
+            """
+        )
+
+
 async def _bootstrap_sqlite_schema() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _apply_sqlite_schema_patches(conn)
+
 
 
 @asynccontextmanager

@@ -19,6 +19,10 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
             name="ck_groups_proactive_reply_multiplier_min",
         ),
         CheckConstraint(
+            "agent_free_mention_max_dispatches >= 0",
+            name="ck_groups_agent_free_mention_max_dispatches_min",
+        ),
+        CheckConstraint(
             "communication_mode IN ('mesh', 'star', 'hierarchical', 'ring')",
             name="ck_groups_communication_mode",
         ),
@@ -65,6 +69,9 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     )
     allow_agent_free_mention: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
+    )
+    agent_free_mention_max_dispatches: Mapped[int] = mapped_column(
+        Integer, default=8, server_default=text("8"), nullable=False
     )
     communication_mode: Mapped[str] = mapped_column(
         String(30), default="mesh", server_default=text("'mesh'"), nullable=False

@@ -306,6 +306,8 @@ async def update_group(
         group.proactive_reply_multiplier = data.proactive_reply_multiplier
     if data.allow_agent_free_mention is not None:
         group.allow_agent_free_mention = data.allow_agent_free_mention
+    if data.agent_free_mention_max_dispatches is not None:
+        group.agent_free_mention_max_dispatches = data.agent_free_mention_max_dispatches
     if data.communication_mode is not None:
         group.communication_mode = data.communication_mode
         await _ensure_topology_defaults(db, group)

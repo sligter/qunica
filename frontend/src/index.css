@@ -30,3 +30,18 @@
     background-color: var(--color-background);
   }
 }
+
+@keyframes startup-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+@layer utilities {
+  .animate-startup-progress {
+    animation: startup-progress 1.4s ease-in-out infinite;
+  }
+}

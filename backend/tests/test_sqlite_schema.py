@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agents.runtime import compile_graph
 from app.desktop_server import _configure_env
+from app.main import _apply_sqlite_schema_patches
 from app.models import Agent, Base
 from app.models.workspace import Workspace
 
@@ -48,6 +49,29 @@ async def test_sqlite_metadata_round_trips_uuid_and_json() -> None:
         assert loaded is not None
         assert loaded.owner_id == owner_id
         assert loaded.external_runtime == {"adapter": "codex", "timeout_seconds": 3600}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_schema_patch_adds_agent_free_mention_limit() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql("CREATE TABLE groups (id CHAR(36) PRIMARY KEY)")
+
+            await _apply_sqlite_schema_patches(conn)
+            await _apply_sqlite_schema_patches(conn)
+
+            columns_result = await conn.exec_driver_sql("PRAGMA table_info(groups)")
+            columns = {str(row[1]): row for row in columns_result.fetchall()}
+            assert "agent_free_mention_max_dispatches" in columns
+
+            await conn.exec_driver_sql("INSERT INTO groups (id) VALUES ('legacy-group')")
+            value_result = await conn.exec_driver_sql(
+                "SELECT agent_free_mention_max_dispatches FROM groups WHERE id = 'legacy-group'"
+            )
+            assert value_result.scalar_one() == 8
     finally:
         await engine.dispose()
 

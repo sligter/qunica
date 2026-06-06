@@ -244,6 +244,7 @@ export interface GroupRead {
   proactive_max_rounds: number
   proactive_reply_multiplier: number
   allow_agent_free_mention: boolean
+  agent_free_mention_max_dispatches: number
   communication_mode: GroupCommunicationMode
   muted_agent_ids: string[] | null
   admin_agent_ids: string[] | null
@@ -270,6 +271,7 @@ export interface GroupUpdate {
   proactive_max_rounds?: number
   proactive_reply_multiplier?: number
   allow_agent_free_mention?: boolean
+  agent_free_mention_max_dispatches?: number
   communication_mode?: GroupCommunicationMode
 }
 
