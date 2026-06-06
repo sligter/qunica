@@ -1,5 +1,5 @@
 import { CheckCircle2, SendHorizontal } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { Button } from '@/components/ui/button'
@@ -22,16 +22,24 @@ export function HumanInputRequestForm({
   className,
   compact = false,
 }: HumanInputRequestFormProps) {
+  const inputId = useId()
   const [value, setValue] = useState('')
+  const [selectedChoice, setSelectedChoice] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const trimmed = value.trim()
-  const canSubmit = Boolean(trimmed) && Boolean(onSubmitResponse) && !submitted
+  const choices = request.choices ?? []
+  const hasChoices = choices.length > 0 || request.input_type === 'choice'
+  const answer = selectedChoice
+    ? [selectedChoice, trimmed].filter(Boolean).join('\n\n')
+    : trimmed
+  const canSubmit = Boolean(answer) && Boolean(onSubmitResponse) && !submitted
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!canSubmit) return
-    onSubmitResponse?.(formatHumanInputResponse(trimmed, targetDisplayName))
+    onSubmitResponse?.(formatHumanInputResponse(answer, targetDisplayName))
     setValue('')
+    setSelectedChoice('')
     setSubmitted(true)
   }
 
@@ -58,23 +66,57 @@ export function HumanInputRequestForm({
         ) : null}
       </div>
 
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-        <Textarea
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          placeholder="Type your response..."
-          rows={compact ? 2 : 3}
-          disabled={submitted || !onSubmitResponse}
-          className="min-h-0 resize-none bg-background"
-        />
-        <Button type="submit" size="sm" className="shrink-0" disabled={!canSubmit}>
-          {submitted ? (
-            <CheckCircle2 className="h-3.5 w-3.5" />
-          ) : (
-            <SendHorizontal className="h-3.5 w-3.5" />
-          )}
-          {submitted ? 'Sent' : 'Submit'}
-        </Button>
+      <div className="mt-3 flex flex-col gap-3">
+        {choices.length > 0 ? (
+          <div className="grid gap-1.5">
+            <div className="text-xs font-medium text-muted-foreground">Choose an option</div>
+            <div className="flex flex-wrap gap-1.5">
+              {choices.map((choice) => {
+                const selected = choice === selectedChoice
+                return (
+                  <button
+                    key={choice}
+                    type="button"
+                    aria-pressed={selected}
+                    disabled={submitted || !onSubmitResponse}
+                    className={cn(
+                      'rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
+                      selected
+                        ? 'border-amber-400 bg-amber-100 text-amber-950'
+                        : 'border-amber-200 bg-background text-foreground hover:bg-amber-100/70',
+                      'disabled:cursor-not-allowed disabled:opacity-60',
+                    )}
+                    onClick={() => setSelectedChoice(selected ? '' : choice)}
+                  >
+                    {choice}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : null}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <label className="sr-only" htmlFor={inputId}>
+            {hasChoices ? 'Additional details' : 'Response'}
+          </label>
+          <Textarea
+            id={inputId}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={hasChoices ? 'Add details (optional)...' : 'Type your response...'}
+            rows={compact ? 2 : 3}
+            disabled={submitted || !onSubmitResponse}
+            className="min-h-0 resize-none bg-background"
+          />
+          <Button type="submit" size="sm" className="shrink-0" disabled={!canSubmit}>
+            {submitted ? (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            ) : (
+              <SendHorizontal className="h-3.5 w-3.5" />
+            )}
+            {submitted ? 'Sent' : 'Submit'}
+          </Button>
+        </div>
       </div>
     </form>
   )

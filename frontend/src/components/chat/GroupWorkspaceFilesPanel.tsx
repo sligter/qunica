@@ -1,5 +1,15 @@
-import { useRef, useState } from 'react'
-import { ChevronLeft, Download, File, Folder, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import {
+  ChevronLeft,
+  Download,
+  File,
+  Folder,
+  FolderOpen,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  Upload,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -15,11 +25,15 @@ import {
   useDeleteGroupWorkspaceFile,
   useGroupWorkspaceFilePreview,
   useGroupWorkspaceFiles,
+  useGroupWorkspaceRoot,
   useRenameGroupWorkspaceFile,
   useUploadGroupWorkspaceFile,
 } from '@/hooks/useGroupFiles'
+import { isDesktopRuntime, revealInFileManager } from '@/lib/desktop'
 import { cn } from '@/lib/utils'
+import { joinWorkspaceAbsPath } from '@/lib/workspaceFileLink'
 import { useAuthStore } from '@/stores/authStore'
+import { useFileNavStore } from '@/stores/fileNavStore'
 import type { GroupWorkspaceFileRead } from '@/types/api'
 
 interface GroupWorkspaceFilesPanelProps {
@@ -52,17 +66,71 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
   const [renameValue, setRenameValue] = useState('')
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; file: GroupWorkspaceFileRead } | null>(
+    null,
+  )
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const token = useAuthStore((s) => s.token)
   const files = useGroupWorkspaceFiles(groupId, currentPath)
   const preview = useGroupWorkspaceFilePreview(groupId, selectedPath)
+  const root = useGroupWorkspaceRoot(groupId)
   const upload = useUploadGroupWorkspaceFile(groupId)
   const rename = useRenameGroupWorkspaceFile(groupId)
   const del = useDeleteGroupWorkspaceFile(groupId)
+  const navRequest = useFileNavStore((s) => s.request)
+  const clearNav = useFileNavStore((s) => s.clear)
+  const desktop = isDesktopRuntime()
   const hasGroupId = groupId !== undefined && groupId.length > 0
 
   const title = currentPath || 'Workspace root'
   const sortedFiles = files.data ?? []
+
+  const openEntry = (file: GroupWorkspaceFileRead) => {
+    if (file.is_dir) {
+      setCurrentPath(file.path)
+    } else {
+      setSelectedPath(file.path)
+      setIsPreviewOpen(true)
+    }
+  }
+
+  const absPathFor = (file: GroupWorkspaceFileRead) =>
+    file.abs_path ?? joinWorkspaceAbsPath(root.data?.root, root.data?.separator, file.path)
+
+  const revealEntry = (file: GroupWorkspaceFileRead) => {
+    setDownloadError(null)
+    void revealInFileManager(absPathFor(file)).catch((error: unknown) =>
+      setDownloadError(displayError(error)),
+    )
+  }
+
+  // Open a file when a chat link requests it (locate folder + preview).
+  useEffect(() => {
+    if (!navRequest || navRequest.groupId !== groupId) return
+    setCurrentPath(parentPath(navRequest.path))
+    setSelectedPath(navRequest.path)
+    setIsPreviewOpen(true)
+    clearNav()
+  }, [navRequest, groupId, clearNav])
+
+  // Dismiss the right-click menu on any outside interaction.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenu(null)
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   const startRename = (file: GroupWorkspaceFileRead) => {
     setRenaming(file)
@@ -208,18 +276,18 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
         {sortedFiles.length > 0 && (
           <ul className="divide-y divide-border">
             {sortedFiles.map((file) => (
-              <li key={file.path} className="group flex items-center gap-2 px-3 py-2 hover:bg-muted/70">
+              <li
+                key={file.path}
+                className="group flex items-center gap-2 px-3 py-2 hover:bg-muted/70"
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  setMenu({ x: event.clientX, y: event.clientY, file })
+                }}
+              >
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  onClick={() => {
-                    if (file.is_dir) {
-                      setCurrentPath(file.path)
-                    } else {
-                      setSelectedPath(file.path)
-                      setIsPreviewOpen(true)
-                    }
-                  }}
+                  onClick={() => openEntry(file)}
                 >
                   {file.is_dir ? (
                     <Folder className="h-4 w-4 shrink-0 text-blue-500" />
@@ -324,6 +392,78 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
             </Button>
           </div>
           {rename.error && <p className="mt-2 text-xs text-destructive">{displayError(rename.error)}</p>}
+        </div>
+      )}
+
+      {menu && (
+        <div
+          className="fixed z-50 min-w-44 overflow-hidden rounded-md border border-border bg-background py-1 text-sm text-foreground shadow-md"
+          style={{ top: menu.y, left: menu.x }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+            onClick={() => {
+              openEntry(menu.file)
+              setMenu(null)
+            }}
+          >
+            {menu.file.is_dir ? (
+              <FolderOpen className="h-3.5 w-3.5" />
+            ) : (
+              <File className="h-3.5 w-3.5" />
+            )}
+            {menu.file.is_dir ? 'Open folder' : 'Open preview'}
+          </button>
+          {desktop && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+              onClick={() => {
+                revealEntry(menu.file)
+                setMenu(null)
+              }}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Reveal in File Explorer
+            </button>
+          )}
+          {!menu.file.is_dir && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+              onClick={() => {
+                downloadFile(menu.file)
+                setMenu(null)
+              }}
+            >
+              <Download className="h-3.5 w-3.5" />
+              Download
+            </button>
+          )}
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+            onClick={() => {
+              startRename(menu.file)
+              setMenu(null)
+            }}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            Rename
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-destructive hover:bg-muted"
+            onClick={() => {
+              deletePath(menu.file)
+              setMenu(null)
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
         </div>
       )}
     </aside>

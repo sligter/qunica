@@ -78,6 +78,14 @@ export interface StreamResponseDraftEvent extends StreamTimelineEventBase {
   message_id?: string
 }
 
+export interface StreamReasoningEvent extends StreamTimelineEventBase {
+  type: 'reasoning'
+  agent_id: string
+  display_name: string
+  content: string
+  status: 'streaming' | 'done'
+}
+
 export interface StreamToolEvent extends StreamTimelineEventBase {
   type: 'tool'
   agent_id: string
@@ -121,6 +129,7 @@ export interface StreamNoticeEvent extends StreamTimelineEventBase {
 export type StreamTimelineEvent =
   | StreamAgentStartEvent
   | StreamResponseDraftEvent
+  | StreamReasoningEvent
   | StreamToolEvent
   | StreamExternalRunEvent
   | StreamAgentMessageEvent
@@ -170,6 +179,13 @@ interface MessageState {
     delta: string,
     displayName?: string,
   ) => void
+  patchStreamReasoning: (
+    groupId: string,
+    streamId: string,
+    agentId: string,
+    delta: string,
+    displayName?: string,
+  ) => void
   finalizeStreamDraft: (groupId: string, streamId: string, message: Message, displayName?: string) => void
   upsertStreamTool: (groupId: string, streamId: string, activity: ToolActivity) => void
   upsertStreamExternalRun: (
@@ -208,6 +224,69 @@ function upsertTimelineEvent(
   const index = events.findIndex((item) => item.id === event.id)
   if (index === -1) return [...events, event]
   return events.map((item, itemIndex) => (itemIndex === index ? event : item))
+}
+
+/**
+ * Auto-collapse the most recent still-streaming reasoning block for an agent.
+ * Called whenever a non-reasoning part (text, tool, notice) arrives for that
+ * agent, so the "Thinking" disclosure closes once the model starts answering.
+ */
+function markReasoningDone(
+  events: StreamTimelineEvent[],
+  agentId: string,
+): StreamTimelineEvent[] {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type === 'reasoning' && event.agent_id === agentId) {
+      if (event.status === 'streaming') {
+        const next = events.slice()
+        next[index] = { ...event, status: 'done' }
+        return next
+      }
+      return events
+    }
+  }
+  return events
+}
+
+/** Append a model-text delta, opening a new segment after any tool/reasoning break. */
+function appendTextSegment(
+  events: StreamTimelineEvent[],
+  streamId: string,
+  agentId: string,
+  delta: string,
+  displayName: string | undefined,
+  timestamp: string,
+): StreamTimelineEvent[] {
+  const base = markReasoningDone(events, agentId)
+  const last = base[base.length - 1]
+  if (
+    last &&
+    last.type === 'response_draft' &&
+    last.agent_id === agentId &&
+    last.status === 'streaming'
+  ) {
+    const next = base.slice()
+    next[base.length - 1] = {
+      ...last,
+      display_name: displayName ?? last.display_name,
+      content: last.content + delta,
+      updated_at: timestamp,
+    }
+    return next
+  }
+  const segment: StreamResponseDraftEvent = {
+    id: `response:${streamId}:${agentId}:${base.length}`,
+    type: 'response_draft',
+    stream_id: streamId,
+    agent_id: agentId,
+    display_name: displayName ?? 'Agent',
+    content: delta,
+    status: 'streaming',
+    created_at: timestamp,
+    updated_at: timestamp,
+  }
+  return [...base, segment]
 }
 
 function pruneStreamRuns(
@@ -524,35 +603,72 @@ export const useMessageStore = create<MessageState>((set) => ({
         updated_at: timestamp,
         events: [],
       }
-      const eventId = `response:${streamId}:${agentId}`
-      const existing = run.events.find(
-        (event): event is StreamResponseDraftEvent =>
-          event.id === eventId && event.type === 'response_draft',
-      )
-      const event: StreamResponseDraftEvent = existing
-        ? {
-            ...existing,
-            display_name: displayName ?? existing.display_name,
-            content: existing.content + delta,
-            status: 'streaming',
-            updated_at: timestamp,
-          }
-        : {
-            id: eventId,
-            type: 'response_draft',
-            stream_id: streamId,
-            agent_id: agentId,
-            display_name: displayName ?? 'Agent',
-            content: delta,
-            status: 'streaming',
-            created_at: timestamp,
-            updated_at: timestamp,
-          }
       const nextRun: StreamRun = {
         ...run,
         status: 'active',
         updated_at: timestamp,
-        events: upsertTimelineEvent(run.events, event),
+        events: appendTextSegment(run.events, streamId, agentId, delta, displayName, timestamp),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  patchStreamReasoning: (groupId, streamId, agentId, delta, displayName) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? {
+        id: streamId,
+        group_id: groupId,
+        user_message_id: streamId,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+        events: [],
+      }
+      const last = run.events[run.events.length - 1]
+      let events: StreamTimelineEvent[]
+      if (
+        last &&
+        last.type === 'reasoning' &&
+        last.agent_id === agentId &&
+        last.status === 'streaming'
+      ) {
+        events = run.events.slice()
+        events[run.events.length - 1] = {
+          ...last,
+          display_name: displayName ?? last.display_name,
+          content: last.content + delta,
+          updated_at: timestamp,
+        }
+      } else {
+        const reasoning: StreamReasoningEvent = {
+          id: `reasoning:${streamId}:${agentId}:${run.events.length}`,
+          type: 'reasoning',
+          stream_id: streamId,
+          agent_id: agentId,
+          display_name: displayName ?? 'Agent',
+          content: delta,
+          status: 'streaming',
+          created_at: timestamp,
+          updated_at: timestamp,
+        }
+        events = [...run.events, reasoning]
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'active',
+        updated_at: timestamp,
+        events,
       }
       return {
         streamRunsByGroup: {
@@ -581,35 +697,45 @@ export const useMessageStore = create<MessageState>((set) => ({
         updated_at: timestamp,
         events: [],
       }
-      const draftId = `response:${streamId}:${agentId}`
-      const existing = run.events.find(
-        (event): event is StreamResponseDraftEvent =>
-          event.id === draftId && event.type === 'response_draft',
-      )
-      const event: StreamTimelineEvent = existing
-        ? {
-            ...existing,
-            content: message.content ?? existing.content,
-            display_name: displayName ?? existing.display_name,
-            status: 'finalized',
-            message_id: message.id,
-            updated_at: timestamp,
+      let events = markReasoningDone(run.events, agentId)
+      const segmentIds = events
+        .filter(
+          (event): event is StreamResponseDraftEvent =>
+            event.type === 'response_draft' && event.agent_id === agentId,
+        )
+        .map((event) => event.id)
+      if (segmentIds.length > 0) {
+        const lastSegmentId = segmentIds[segmentIds.length - 1]
+        events = events.map((event) => {
+          if (event.type === 'response_draft' && event.agent_id === agentId) {
+            return {
+              ...event,
+              display_name: displayName ?? event.display_name,
+              status: 'finalized',
+              message_id: event.id === lastSegmentId ? message.id : event.message_id,
+              updated_at: timestamp,
+            }
           }
-        : {
-            id: `agent-message:${streamId}:${message.id}`,
-            type: 'agent_message',
-            stream_id: streamId,
-            message_id: message.id,
-            agent_id: agentId,
-            display_name: displayName ?? 'Agent',
-            content: message.content ?? '',
-            created_at: timestamp,
-            updated_at: timestamp,
-          }
+          return event
+        })
+      } else {
+        const event: StreamAgentMessageEvent = {
+          id: `agent-message:${streamId}:${message.id}`,
+          type: 'agent_message',
+          stream_id: streamId,
+          message_id: message.id,
+          agent_id: agentId,
+          display_name: displayName ?? 'Agent',
+          content: message.content ?? '',
+          created_at: timestamp,
+          updated_at: timestamp,
+        }
+        events = upsertTimelineEvent(events, event)
+      }
       const nextRun: StreamRun = {
         ...run,
         updated_at: timestamp,
-        events: upsertTimelineEvent(run.events, event),
+        events,
       }
       return {
         streamRunsByGroup: {
@@ -660,7 +786,7 @@ export const useMessageStore = create<MessageState>((set) => ({
         ...run,
         status: 'active',
         updated_at: timestamp,
-        events: upsertTimelineEvent(run.events, event),
+        events: upsertTimelineEvent(markReasoningDone(run.events, activity.agent_id), event),
       }
       return {
         streamRunsByGroup: {
@@ -712,7 +838,7 @@ export const useMessageStore = create<MessageState>((set) => ({
         ...run,
         status: 'active',
         updated_at: timestamp,
-        events: upsertTimelineEvent(run.events, event),
+        events: upsertTimelineEvent(markReasoningDone(run.events, eventInput.agent_id), event),
       }
       return {
         streamRunsByGroup: {
@@ -746,10 +872,13 @@ export const useMessageStore = create<MessageState>((set) => ({
         stream_id: streamId,
         created_at: timestamp,
       }
+      const baseEvents = eventInput.agent_id
+        ? markReasoningDone(run.events, eventInput.agent_id)
+        : run.events
       const nextRun: StreamRun = {
         ...run,
         updated_at: timestamp,
-        events: [...run.events, event],
+        events: [...baseEvents, event],
       }
       return {
         streamRunsByGroup: {

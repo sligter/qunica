@@ -810,6 +810,29 @@ def _human_input_request_payload(message: str) -> dict[str, Any] | None:
     return {"question": question, "required": True}
 
 
+def _human_input_request_from_response(response: AIMessage) -> dict[str, Any] | None:
+    value = response.additional_kwargs.get("human_input_request")
+    if not isinstance(value, dict):
+        return None
+    question = value.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    payload: dict[str, Any] = {
+        "question": question.strip(),
+        "required": value.get("required") is not False,
+    }
+    choices = value.get("choices")
+    if isinstance(choices, list):
+        normalized_choices = [
+            choice.strip()
+            for choice in choices
+            if isinstance(choice, str) and choice.strip()
+        ][:8]
+        if normalized_choices:
+            payload["choices"] = normalized_choices
+    return payload
+
+
 def _tool_event_waits_for_user(tool_event: RuntimeToolEvent) -> bool:
     return tool_event.tool_name == "AskUser" and tool_event.status == "input_required"
 
@@ -833,10 +856,13 @@ def _serialize_tool_event(
     if tool_event.result_summary:
         payload["result_summary"] = tool_event.result_summary
     if tool_event.input_request is not None:
-        payload["input_request"] = {
+        input_request: dict[str, Any] = {
             "question": tool_event.input_request.question,
             "required": tool_event.input_request.required,
         }
+        if tool_event.input_request.choices:
+            input_request["choices"] = list(tool_event.input_request.choices)
+        payload["input_request"] = input_request
     if stream_id is not None:
         payload["stream_id"] = str(stream_id)
     if round_idx is not None:
@@ -1508,6 +1534,19 @@ async def _stream_one_agent(
                         _serialize_tool_event(payload, agent, group_agent, stream_id, round_idx)
                     ),
                 }
+            elif kind == "reasoning":
+                if isinstance(payload, str) and payload:
+                    yield {
+                        "event": "reasoning",
+                        "data": json.dumps(
+                            {
+                                "agent_id": agent_id_str,
+                                "delta": payload,
+                                **({"stream_id": str(stream_id)} if stream_id is not None else {}),
+                                **({"round": round_idx} if round_idx is not None else {}),
+                            }
+                        ),
+                    }
             elif kind == "token":
                 chunks.append(str(payload))
                 visible_so_far = _sanitize_streaming_visible_content("".join(chunks))
@@ -1602,7 +1641,9 @@ async def _stream_one_agent(
                         visible_text, human_names, sender_name
                     ):
                         waiting_message = _waiting_message_from_response(final)
-                        input_request = _human_input_request_payload(waiting_message)
+                        input_request = _human_input_request_from_response(
+                            final
+                        ) or _human_input_request_payload(waiting_message)
                         yield {
                             "event": "waiting_for_user",
                             "data": json.dumps(

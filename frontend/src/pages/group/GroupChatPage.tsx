@@ -11,6 +11,7 @@ import { useGroup } from '@/hooks/useGroups'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useGroupMessages } from '@/hooks/useGroupMessages'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
+import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
 
 export function GroupChatPage() {
@@ -20,12 +21,20 @@ export function GroupChatPage() {
   const groupAgents = useGroupAgents(groupId)
   const stream = useSendMessageStream(groupId)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
+  const fileNavRequest = useFileNavStore((s) => s.request)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(true)
 
   useEffect(() => {
     if (groupId) clearWarnings(groupId)
   }, [groupId, clearWarnings])
+
+  // A chat file link wants to show a file — make sure the panel is visible.
+  useEffect(() => {
+    if (fileNavRequest && fileNavRequest.groupId === groupId) {
+      setWorkspaceFilesOpen(true)
+    }
+  }, [fileNavRequest, groupId])
 
   if (!groupId) {
     return <div className="p-6 text-sm text-muted-foreground">No group selected.</div>

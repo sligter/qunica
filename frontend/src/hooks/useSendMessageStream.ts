@@ -26,6 +26,12 @@ interface TokenPayload extends StreamPayload {
   delta: string
 }
 
+interface ReasoningPayload extends StreamPayload {
+  agent_id: string
+  delta: string
+  round?: number
+}
+
 interface AgentIdentityPayload extends StreamPayload {
   agent_id: string
   display_name?: string
@@ -125,6 +131,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const startStreamRun = useMessageStore((s) => s.startStreamRun)
   const addStreamAgentStart = useMessageStore((s) => s.addStreamAgentStart)
   const patchStreamDraft = useMessageStore((s) => s.patchStreamDraft)
+  const patchStreamReasoning = useMessageStore((s) => s.patchStreamReasoning)
   const finalizeStreamDraft = useMessageStore((s) => s.finalizeStreamDraft)
   const upsertStreamTool = useMessageStore((s) => s.upsertStreamTool)
   const upsertStreamExternalRun = useMessageStore((s) => s.upsertStreamExternalRun)
@@ -253,6 +260,23 @@ export function useSendMessageStream(groupId: string | undefined) {
                   )
                 }
                 patchInFlight(groupId, payload.agent_id, payload.delta, streamId)
+              }
+              return
+            }
+            if (event === 'reasoning') {
+              const payload = safeJson<ReasoningPayload>(data)
+              if (payload?.agent_id && payload.delta) {
+                const streamId = streamIdFor(payload)
+                if (streamId) {
+                  streamIdsRef.current.set(id, streamId)
+                  patchStreamReasoning(
+                    groupId,
+                    streamId,
+                    payload.agent_id,
+                    payload.delta,
+                    agentDisplayName(streamId, payload.agent_id),
+                  )
+                }
               }
               return
             }
@@ -478,6 +502,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       markStreamRunError,
       patchInFlight,
       patchStreamDraft,
+      patchStreamReasoning,
       pushToolActivity,
       pushWarning,
       qc,

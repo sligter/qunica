@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
 
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { InterruptedMessageActions } from '@/components/chat/InterruptedMessageActions'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { MessageActions } from '@/components/chat/MessageActions'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { cn } from '@/lib/utils'
@@ -17,15 +17,6 @@ interface MessageItemProps {
   groupId: string
   isStreaming?: boolean
   onSubmitHumanInput?: (content: string) => void
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((s) => s[0]?.toUpperCase() ?? '')
-    .join('')
 }
 
 export function MessageItem({
@@ -75,9 +66,11 @@ export function MessageItem({
         isUser ? 'flex-row-reverse' : 'flex-row',
       )}
     >
-      <Avatar className="mt-0.5 h-8 w-8 shrink-0">
-        <AvatarFallback>{initials(senderName)}</AvatarFallback>
-      </Avatar>
+      <AgentAvatar
+        name={senderName}
+        kind={isUser ? 'user' : 'agent'}
+        className="mt-0.5"
+      />
       <div
         className={cn(
           'flex max-w-[78%] flex-col gap-1',
@@ -126,7 +119,7 @@ export function MessageItem({
               onSubmitResponse={onSubmitHumanInput}
             />
           ) : (
-            <MarkdownMessage content={message.content || ' '} isUser={isUser} />
+            <MarkdownMessage content={message.content || ' '} isUser={isUser} groupId={groupId} />
           )}
         </div>
         {isInterrupted && !isResuming && message.thread_id && (

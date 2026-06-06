@@ -1056,6 +1056,55 @@ async def test_stream_ask_user_emits_intermediate_text_tool_result_and_waiting(
     assert event_names.count("agent_start") == 1
 
 
+async def test_stream_ask_user_emits_choice_input_request(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
+) -> None:
+    _patch_ai_message_script(
+        monkeypatch,
+        [
+            AIMessage(
+                content="Please choose how I should continue.",
+                tool_calls=[
+                    {
+                        "name": "AskUser",
+                        "args": {
+                            "question": "Which direction should I take?",
+                            "required": True,
+                            "choices": ["Research first", "Draft now"],
+                        },
+                        "id": "ask-choice-1",
+                    }
+                ],
+            ),
+        ],
+    )
+    group_id, agents = await _setup(
+        client,
+        auth_headers,
+        ("Echo",),
+        free_speech=True,
+        workspace_path=tmp_path,
+    )
+    patch = await client.patch(
+        f"/api/v1/agents/{agents[0][0]}",
+        headers=auth_headers,
+        json={"tool_config": {"tools": {"ask_user": {"enabled": True}}}},
+    )
+    assert patch.status_code == 200, patch.text
+
+    events = await _stream_events(client, auth_headers, group_id, "hello group")
+    result_payloads = [json.loads(data) for event, data in events if event == "tool_call_result"]
+    waiting_payloads = [json.loads(data) for event, data in events if event == "waiting_for_user"]
+
+    expected_request = {
+        "question": "Which direction should I take?",
+        "required": True,
+        "choices": ["Research first", "Draft now"],
+    }
+    assert result_payloads[0]["input_request"] == expected_request
+    assert waiting_payloads[0]["input_request"] == expected_request
+
+
 async def test_stream_native_tool_loop_emits_intermediate_text_before_tool_events(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any, tmp_path: Path
 ) -> None:

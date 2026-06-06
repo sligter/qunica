@@ -33,6 +33,7 @@ from app.schemas.group_workspace_file import (
     GroupWorkspaceFilePreview,
     GroupWorkspaceFileRead,
     GroupWorkspaceFileRename,
+    GroupWorkspaceRoot,
 )
 from app.schemas.message import MessageCreate, MessageRead, MessageSendResponse
 from app.schemas.user import UserRead
@@ -413,6 +414,15 @@ async def list_group_workspace_files(
     return await group_workspace_file_service.list_workspace_files(
         db, group_id, current_user, path
     )
+
+
+@router.get("/{group_id}/workspace-files/root", response_model=GroupWorkspaceRoot)
+async def get_group_workspace_root(
+    group_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GroupWorkspaceRoot:
+    return await group_workspace_file_service.get_workspace_root(db, group_id, current_user)
 
 
 @router.get("/{group_id}/workspace-files/preview", response_model=GroupWorkspaceFilePreview)

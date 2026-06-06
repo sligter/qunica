@@ -15,7 +15,11 @@ from app.models.group import Group
 from app.models.group_member import GroupMember
 from app.models.user import User
 from app.models.workspace import Workspace
-from app.schemas.group_workspace_file import GroupWorkspaceFilePreview, GroupWorkspaceFileRead
+from app.schemas.group_workspace_file import (
+    GroupWorkspaceFilePreview,
+    GroupWorkspaceFileRead,
+    GroupWorkspaceRoot,
+)
 
 MAX_PREVIEW_BYTES = 64 * 1024
 TEXT_PREVIEW_CHARS = 20_000
@@ -145,6 +149,7 @@ def _file_read(path: Path, root: Path) -> GroupWorkspaceFileRead:
         is_dir=path.is_dir(),
         size=None if path.is_dir() else stat.st_size,
         modified_at=datetime.fromtimestamp(stat.st_mtime, UTC),
+        abs_path=str(path),
     )
 
 
@@ -161,6 +166,13 @@ def _looks_text(path: Path, sample: bytes) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+async def get_workspace_root(
+    db: AsyncSession, group_id: UUID, user: User
+) -> GroupWorkspaceRoot:
+    root = await _workspace_root(db, group_id, user)
+    return GroupWorkspaceRoot(root=str(root), separator=os.sep)
 
 
 async def list_workspace_files(

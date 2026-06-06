@@ -1,27 +1,29 @@
+import { useEffect, useRef, useState } from 'react'
 import {
-  Bot,
-  CheckCircle2,
-  CircleAlert,
-  Clock3,
+  Brain,
+  ChevronRight,
   GitBranch,
-  MessageSquareText,
   PauseCircle,
   Terminal,
   Wrench,
   XCircle,
 } from 'lucide-react'
-import type { ReactNode } from 'react'
 
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
-import { humanInputRequestFromText, normalizeHumanInputRequest } from '@/lib/humanInput'
+import {
+  humanInputRequestFromText,
+  normalizeHumanInputRequest,
+  type HumanInputRequest,
+} from '@/lib/humanInput'
 import { cn } from '@/lib/utils'
 import type {
   StreamExternalRunEvent,
   StreamNoticeEvent,
+  StreamReasoningEvent,
   StreamResponseDraftEvent,
   StreamRun,
-  StreamRunStatus,
   StreamTimelineEvent,
   StreamToolEvent,
   ToolActivityStatus,
@@ -37,20 +39,6 @@ function timeLabel(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function runStatusLabel(status: StreamRunStatus): string {
-  if (status === 'active') return 'Running'
-  if (status === 'completed') return 'Completed'
-  if (status === 'cancelled') return 'Cancelled'
-  return 'Needs attention'
-}
-
-function runStatusClasses(status: StreamRunStatus): string {
-  if (status === 'active') return 'border-blue-200 bg-blue-50 text-blue-700'
-  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (status === 'cancelled') return 'border-amber-200 bg-amber-50 text-amber-700'
-  return 'border-red-200 bg-red-50 text-red-700'
 }
 
 function toolStatusLabel(status: ToolActivityStatus): string {
@@ -77,18 +65,10 @@ function externalStatusClasses(status: string | undefined): string {
   return 'border-border bg-muted text-muted-foreground'
 }
 
-function NoticeIcon({ event }: { event: StreamNoticeEvent }) {
-  if (event.type === 'done') return <CheckCircle2 className="h-3.5 w-3.5" />
-  if (event.type === 'agent_error') return <XCircle className="h-3.5 w-3.5" />
-  if (event.type === 'waiting_for_user') return <PauseCircle className="h-3.5 w-3.5" />
-  if (event.type === 'agent_handoff') return <GitBranch className="h-3.5 w-3.5" />
-  return <CircleAlert className="h-3.5 w-3.5" />
-}
-
 function DetailBlock({ label, value }: { label: string; value: string | undefined }) {
   if (!value) return null
   return (
-    <details className="mt-2 rounded-md border border-border bg-background">
+    <details className="mt-1.5 rounded-md border border-border bg-background">
       <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground">
         {label}
       </summary>
@@ -99,108 +79,77 @@ function DetailBlock({ label, value }: { label: string; value: string | undefine
   )
 }
 
-function EventShell({
-  icon,
-  children,
-  muted = false,
-}: {
-  icon: ReactNode
-  children: ReactNode
-  muted?: boolean
-}) {
+function StatusBadge({ label, className }: { label: string; className: string }) {
   return (
-    <div className="relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-2.5">
-      <div className="relative flex justify-center">
-        <span
-          className={cn(
-            'z-10 mt-1 flex h-6 w-6 items-center justify-center rounded-full border bg-background',
-            muted ? 'border-border text-muted-foreground' : 'border-primary/30 text-primary',
-          )}
-        >
-          {icon}
-        </span>
-      </div>
-      <div className="min-w-0 pb-3">{children}</div>
-    </div>
+    <span
+      className={cn(
+        'rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize',
+        className,
+      )}
+    >
+      {label}
+    </span>
   )
 }
 
-function MetaLine({
-  title,
-  time,
-  detail,
-  badge,
-  badgeClassName,
-}: {
-  title: string
-  time: string
-  detail?: string
-  badge?: string
-  badgeClassName?: string
-}) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-      <span className="font-medium text-foreground">{title}</span>
-      {detail ? <span className="min-w-0 break-words text-muted-foreground">{detail}</span> : null}
-      <span className="text-muted-foreground">{time}</span>
-      {badge ? (
-        <span
-          className={cn(
-            'rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize',
-            badgeClassName,
-          )}
-        >
-          {badge}
-        </span>
-      ) : null}
-    </div>
-  )
+function inputRequestKey(request: HumanInputRequest): string {
+  const question = request.question.trim().replace(/\s+/g, ' ')
+  const choices = (request.choices ?? []).map((choice) => choice.trim()).join('\u0000')
+  return `${question}\u0000${choices}`
 }
 
-function ResponseEvent({
-  event,
-  onSubmitHumanInput,
-}: {
-  event: StreamResponseDraftEvent
-  onSubmitHumanInput?: (content: string) => void
-}) {
-  const isStreaming = event.status === 'streaming'
-  const inputRequest = humanInputRequestFromText(event.content)
+function shouldRenderInputRequest(
+  request: HumanInputRequest,
+  renderedInputRequests: Set<string>,
+): boolean {
+  const key = inputRequestKey(request)
+  if (renderedInputRequests.has(key)) return false
+  renderedInputRequests.add(key)
+  return true
+}
+
+/** Collapsible chain-of-thought. Stays open while streaming, auto-collapses when done. */
+function ReasoningBlock({ event }: { event: StreamReasoningEvent }) {
+  const streaming = event.status === 'streaming'
+  const [open, setOpen] = useState(true)
+  const wasStreaming = useRef(streaming)
+
+  useEffect(() => {
+    if (wasStreaming.current && !streaming) setOpen(false)
+    wasStreaming.current = streaming
+  }, [streaming])
+
   return (
-    <EventShell icon={<MessageSquareText className="h-3.5 w-3.5" />}>
-      <MetaLine
-        title={event.display_name}
-        detail={isStreaming ? 'is responding' : 'responded'}
-        time={timeLabel(event.updated_at ?? event.created_at)}
-        badge={isStreaming ? 'streaming' : 'final'}
-        badgeClassName={
-          isStreaming
-            ? 'border-amber-200 bg-amber-50 text-amber-700'
-            : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-        }
-      />
-      {inputRequest ? (
-        <HumanInputRequestForm
-          className="mt-2"
-          request={inputRequest}
-          targetDisplayName={event.display_name}
-          onSubmitResponse={onSubmitHumanInput}
+    <div className="min-w-0 rounded-md border border-dashed border-border bg-muted/40">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+      >
+        <Brain className="h-3.5 w-3.5" />
+        <span>{streaming ? 'Thinking…' : 'Thinking'}</span>
+        {streaming && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />}
+        <ChevronRight
+          className={cn('ml-auto h-3.5 w-3.5 transition-transform', open && 'rotate-90')}
         />
-      ) : (
-        <div className="mt-2 min-w-0 rounded-md border border-border bg-card px-3 py-2">
-          <MarkdownMessage content={event.content || ' '} />
+      </button>
+      {open && (
+        <div className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-border px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+          {event.content || ' '}
         </div>
       )}
-    </EventShell>
+    </div>
   )
 }
 
-function ToolEvent({
+function ToolCard({
   event,
   onSubmitHumanInput,
+  renderedInputRequests,
 }: {
   event: StreamToolEvent
   onSubmitHumanInput?: (content: string) => void
+  renderedInputRequests: Set<string>
 }) {
   const inputRequest = normalizeHumanInputRequest(
     event.input_request,
@@ -208,15 +157,16 @@ function ToolEvent({
     event.args_summary,
   )
   return (
-    <EventShell icon={<Wrench className="h-3.5 w-3.5" />}>
-      <MetaLine
-        title={event.display_name}
-        detail={`used ${event.tool_name}`}
-        time={timeLabel(event.updated_at ?? event.created_at)}
-        badge={toolStatusLabel(event.status)}
-        badgeClassName={toolStatusClasses(event.status)}
-      />
-      {inputRequest ? (
+    <div className="min-w-0 rounded-md border border-border bg-background px-2.5 py-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="font-medium text-foreground">{event.tool_name}</span>
+        <StatusBadge
+          label={toolStatusLabel(event.status)}
+          className={toolStatusClasses(event.status)}
+        />
+      </div>
+      {inputRequest && shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
         <HumanInputRequestForm
           className="mt-2"
           compact
@@ -230,135 +180,270 @@ function ToolEvent({
           <DetailBlock label="Result" value={event.result_summary} />
         </>
       )}
-    </EventShell>
+    </div>
   )
 }
 
-function ExternalRunEvent({ event }: { event: StreamExternalRunEvent }) {
+function ExternalCard({ event }: { event: StreamExternalRunEvent }) {
   const adapter = event.adapter ? `External CLI: ${event.adapter}` : 'External CLI'
   const exitCode = event.exit_code === undefined ? '' : `exit ${event.exit_code}`
+  const statusLabel = event.status ?? exitCode
   return (
-    <EventShell icon={<Terminal className="h-3.5 w-3.5" />}>
-      <MetaLine
-        title={event.display_name}
-        detail={adapter}
-        time={timeLabel(event.updated_at ?? event.created_at)}
-        badge={event.status ?? exitCode}
-        badgeClassName={externalStatusClasses(event.status)}
-      />
+    <div className="min-w-0 rounded-md border border-border bg-background px-2.5 py-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="font-medium text-foreground">{adapter}</span>
+        <StatusBadge
+          label={statusLabel || 'running'}
+          className={externalStatusClasses(event.status)}
+        />
+      </div>
       <DetailBlock label="Working directory" value={event.cwd} />
       <DetailBlock label="Summary" value={event.summary} />
-    </EventShell>
+    </div>
   )
 }
 
-function NoticeEvent({
+function TextPart({
+  event,
+  groupId,
+  onSubmitHumanInput,
+  renderedInputRequests,
+}: {
+  event: StreamResponseDraftEvent | { content: string; display_name: string }
+  groupId: string
+  onSubmitHumanInput?: (content: string) => void
+  renderedInputRequests: Set<string>
+}) {
+  const content = event.content
+  const inputRequest = humanInputRequestFromText(content)
+  if (inputRequest) {
+    if (!shouldRenderInputRequest(inputRequest, renderedInputRequests)) return null
+    return (
+      <HumanInputRequestForm
+        request={inputRequest}
+        targetDisplayName={event.display_name}
+        onSubmitResponse={onSubmitHumanInput}
+      />
+    )
+  }
+  return (
+    <div className="min-w-0 rounded-lg border border-border bg-card px-3 py-2 text-foreground">
+      <MarkdownMessage content={content || ' '} groupId={groupId} />
+    </div>
+  )
+}
+
+function AgentNotice({
   event,
   onSubmitHumanInput,
+  renderedInputRequests,
 }: {
   event: StreamNoticeEvent
   onSubmitHumanInput?: (content: string) => void
+  renderedInputRequests: Set<string>
 }) {
-  const title = event.display_name ?? 'Stream'
-  const inputRequest =
-    event.type === 'waiting_for_user'
-      ? normalizeHumanInputRequest(event.input_request, event.message)
-      : null
-  return (
-    <EventShell icon={<NoticeIcon event={event} />} muted={event.type === 'done'}>
-      <MetaLine
-        title={title}
-        detail={inputRequest ? 'waiting for your response' : event.message}
-        time={timeLabel(event.created_at)}
-      />
-      {inputRequest ? (
+  if (event.type === 'waiting_for_user') {
+    const inputRequest = normalizeHumanInputRequest(event.input_request, event.message)
+    if (inputRequest) {
+      if (!shouldRenderInputRequest(inputRequest, renderedInputRequests)) return null
+      return (
         <HumanInputRequestForm
-          className="mt-2"
           compact
           request={inputRequest}
           targetDisplayName={event.display_name}
           onSubmitResponse={onSubmitHumanInput}
         />
-      ) : null}
-    </EventShell>
+      )
+    }
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-amber-700">
+        <PauseCircle className="h-3.5 w-3.5" />
+        {event.message}
+      </div>
+    )
+  }
+  if (event.type === 'agent_error') {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-red-700">
+        <XCircle className="h-3.5 w-3.5" />
+        {event.message}
+      </div>
+    )
+  }
+  if (event.type === 'agent_handoff') {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <GitBranch className="h-3.5 w-3.5" />
+        {event.message}
+      </div>
+    )
+  }
+  // agent_silent
+  return <div className="text-xs italic text-muted-foreground">{event.message}</div>
+}
+
+interface AgentBlock {
+  kind: 'agent'
+  agentId: string
+  displayName: string
+  events: StreamTimelineEvent[]
+  lastAt: string
+}
+
+interface NoticeBlock {
+  kind: 'notice'
+  event: StreamNoticeEvent
+}
+
+type RenderBlock = AgentBlock | NoticeBlock
+
+function eventAgentId(event: StreamTimelineEvent): string | undefined {
+  if ('agent_id' in event && event.agent_id) return event.agent_id
+  return undefined
+}
+
+function eventTime(event: StreamTimelineEvent): string {
+  return ('updated_at' in event ? event.updated_at : undefined) ?? event.created_at
+}
+
+function buildBlocks(events: StreamTimelineEvent[]): RenderBlock[] {
+  const blocks: RenderBlock[] = []
+  for (const event of events) {
+    const agentId = eventAgentId(event)
+    if (!agentId) {
+      // Stream-level notices (done / warning / silence) without an agent owner.
+      blocks.push({ kind: 'notice', event: event as StreamNoticeEvent })
+      continue
+    }
+    const displayName = 'display_name' in event ? event.display_name : 'Agent'
+    const last = blocks[blocks.length - 1]
+    if (last && last.kind === 'agent' && last.agentId === agentId) {
+      last.events.push(event)
+      last.lastAt = eventTime(event)
+      if (displayName) last.displayName = displayName
+    } else {
+      blocks.push({
+        kind: 'agent',
+        agentId,
+        displayName: displayName || 'Agent',
+        events: [event],
+        lastAt: eventTime(event),
+      })
+    }
+  }
+  return blocks
+}
+
+function blockIsStreaming(block: AgentBlock): boolean {
+  return block.events.some(
+    (event) =>
+      (event.type === 'reasoning' && event.status === 'streaming') ||
+      (event.type === 'response_draft' && event.status === 'streaming') ||
+      (event.type === 'tool' && event.status === 'started'),
   )
 }
 
-function renderEvent(
-  event: StreamTimelineEvent,
-  onSubmitHumanInput?: (content: string) => void,
-) {
-  if (event.type === 'agent_start') {
-    const progress =
-      event.total && event.total > 1
-        ? `agent ${event.index === undefined ? '?' : event.index + 1}/${event.total}`
-        : undefined
-    const round = event.round ? `round ${event.round}` : undefined
-    return (
-      <EventShell key={event.id} icon={<Bot className="h-3.5 w-3.5" />}>
-        <MetaLine
-          title={event.display_name}
-          detail={[progress, round, 'started'].filter(Boolean).join(' / ')}
-          time={timeLabel(event.created_at)}
-        />
-      </EventShell>
-    )
-  }
-  if (event.type === 'response_draft') {
-    return <ResponseEvent key={event.id} event={event} onSubmitHumanInput={onSubmitHumanInput} />
-  }
-  if (event.type === 'tool') {
-    return <ToolEvent key={event.id} event={event} onSubmitHumanInput={onSubmitHumanInput} />
-  }
-  if (event.type === 'external_run') {
-    return <ExternalRunEvent key={event.id} event={event} />
-  }
-  if (event.type === 'agent_message') {
-    const inputRequest = humanInputRequestFromText(event.content)
-    return (
-      <EventShell key={event.id} icon={<MessageSquareText className="h-3.5 w-3.5" />}>
-        <MetaLine title={event.display_name} detail="responded" time={timeLabel(event.created_at)} />
-        {inputRequest ? (
-          <HumanInputRequestForm
-            className="mt-2"
-            request={inputRequest}
-            targetDisplayName={event.display_name}
-            onSubmitResponse={onSubmitHumanInput}
-          />
-        ) : (
-          <div className="mt-2 min-w-0 rounded-md border border-border bg-card px-3 py-2">
-            <MarkdownMessage content={event.content || ' '} />
-          </div>
-        )}
-      </EventShell>
-    )
-  }
-  return <NoticeEvent key={event.id} event={event} onSubmitHumanInput={onSubmitHumanInput} />
+function AgentBlockView({
+  block,
+  groupId,
+  onSubmitHumanInput,
+  renderedInputRequests,
+}: {
+  block: AgentBlock
+  groupId: string
+  onSubmitHumanInput?: (content: string) => void
+  renderedInputRequests: Set<string>
+}) {
+  const streaming = blockIsStreaming(block)
+  return (
+    <div className="flex w-full gap-3 px-4 py-2">
+      <AgentAvatar name={block.displayName} className="mt-0.5" />
+      <div className="flex min-w-0 max-w-[85%] flex-col gap-1.5">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">{block.displayName}</span>
+          {streaming ? (
+            <span className="inline-flex items-center gap-1 text-amber-600">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+              streaming
+            </span>
+          ) : (
+            <span>{timeLabel(block.lastAt)}</span>
+          )}
+        </div>
+        <div className="flex min-w-0 flex-col gap-2">
+          {block.events.map((event) => {
+            if (event.type === 'agent_start') return null
+            if (event.type === 'reasoning') {
+              return <ReasoningBlock key={event.id} event={event} />
+            }
+            if (event.type === 'response_draft' || event.type === 'agent_message') {
+              return (
+                <TextPart
+                  key={event.id}
+                  event={event}
+                  groupId={groupId}
+                  onSubmitHumanInput={onSubmitHumanInput}
+                  renderedInputRequests={renderedInputRequests}
+                />
+              )
+            }
+            if (event.type === 'tool') {
+              return (
+                <ToolCard
+                  key={event.id}
+                  event={event}
+                  onSubmitHumanInput={onSubmitHumanInput}
+                  renderedInputRequests={renderedInputRequests}
+                />
+              )
+            }
+            if (event.type === 'external_run') {
+              return <ExternalCard key={event.id} event={event} />
+            }
+            if (event.type === 'done') return null
+            return (
+              <AgentNotice
+                key={event.id}
+                event={event}
+                onSubmitHumanInput={onSubmitHumanInput}
+                renderedInputRequests={renderedInputRequests}
+              />
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps) {
+  const blocks = buildBlocks(run.events)
+  const renderedInputRequests = new Set<string>()
   return (
-    <section className="mx-3 mb-2 ml-12 max-w-3xl pr-3 sm:mx-4 sm:ml-14">
-      <div className="relative rounded-md border border-border bg-muted/30 px-3 py-3">
-        <div className="absolute bottom-3 left-[1.62rem] top-11 w-px bg-border" />
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Clock3 className="h-3.5 w-3.5" />
-            <span>Execution timeline</span>
-          </div>
-          <span
-            className={cn(
-              'rounded-full border px-2 py-0.5 text-[10px] font-medium',
-              runStatusClasses(run.status),
-            )}
-          >
-            {runStatusLabel(run.status)}
-          </span>
-        </div>
-        <div className="relative">
-          {run.events.map((event) => renderEvent(event, onSubmitHumanInput))}
-        </div>
-      </div>
-    </section>
+    <div className="flex w-full flex-col">
+      {blocks.map((block, index) => {
+        if (block.kind === 'notice') {
+          if (block.event.type === 'done') return null
+          return (
+            <div
+              key={`${block.event.id}-${index}`}
+              className="px-4 py-1 text-center text-xs text-muted-foreground"
+            >
+              {block.event.message}
+            </div>
+          )
+        }
+        return (
+          <AgentBlockView
+            key={`${block.agentId}-${index}`}
+            block={block}
+            groupId={run.group_id}
+            onSubmitHumanInput={onSubmitHumanInput}
+            renderedInputRequests={renderedInputRequests}
+          />
+        )
+      })}
+    </div>
   )
 }

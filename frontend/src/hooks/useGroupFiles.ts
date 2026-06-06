@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError, fetchFormData, fetchJson } from '@/lib/api'
+import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
+import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
 import type {
   GroupFileRead,
   GroupWorkspaceFilePreview,
   GroupWorkspaceFileRead,
+  GroupWorkspaceRoot,
 } from '@/types/api'
 
 export function useGroupFiles(groupId: string | undefined) {
@@ -66,6 +69,18 @@ export function useGroupWorkspaceFiles(groupId: string | undefined, path = '') {
   })
 }
 
+export function useGroupWorkspaceRoot(groupId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: ['groups', groupId, 'workspace-files', 'root'],
+    queryFn: () =>
+      fetchJson<GroupWorkspaceRoot>(`/groups/${groupId}/workspace-files/root`, { token }),
+    enabled: token !== null && !!groupId,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
 export function useGroupWorkspaceFilePreview(
   groupId: string | undefined,
   path: string | null,
@@ -110,7 +125,7 @@ export async function downloadGroupWorkspaceFile(
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
   const response = await fetch(
-    `/api/v1/groups/${groupId}/workspace-files/download?${withPath(path)}`,
+    apiUrl(`/api/v1/groups/${groupId}/workspace-files/download?${withPath(path)}`),
     { headers },
   )
   if (!response.ok) {
@@ -123,11 +138,19 @@ export async function downloadGroupWorkspaceFile(
     }
     throw new ApiError(response.status, 'http_error', message)
   }
+  const fileName = path.split('/').pop() || 'download'
   const blob = await response.blob()
+  // Desktop: the WebView2/WKWebView download path is unreliable for blob URLs,
+  // so route through a native "Save As" dialog instead.
+  if (isDesktopRuntime()) {
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    await saveFileViaDialog(fileName, bytes)
+    return
+  }
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = path.split('/').pop() || 'download'
+  link.download = fileName
   document.body.appendChild(link)
   link.click()
   link.remove()

@@ -19,7 +19,7 @@ Two public entrypoints:
 
 import json
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -52,6 +52,7 @@ ToolEventStatus = Literal[
 class RuntimeHumanInputRequest:
     question: str
     required: bool
+    choices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ class RuntimeToolEvent:
 @dataclass(frozen=True, slots=True)
 class RuntimeWaitForUser:
     message: str
+    input_request: RuntimeHumanInputRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,10 +258,33 @@ def _human_input_request_from_result(result: str) -> RuntimeHumanInputRequest | 
     question = message.strip()
     if question.casefold().startswith(prefix.casefold()):
         question = question[len(prefix) :].strip()
+    raw_choices = payload.get("choices")
+    choices = (
+        tuple(
+            choice.strip()
+            for choice in raw_choices
+            if isinstance(choice, str) and choice.strip()
+        )[:8]
+        if isinstance(raw_choices, list)
+        else ()
+    )
     return RuntimeHumanInputRequest(
         question=question or message.strip(),
         required=status == "WAITING_FOR_USER",
+        choices=choices,
     )
+
+
+def _human_input_request_payload(
+    request: RuntimeHumanInputRequest,
+) -> dict[str, str | bool | list[str]]:
+    payload: dict[str, str | bool | list[str]] = {
+        "question": request.question,
+        "required": request.required,
+    }
+    if request.choices:
+        payload["choices"] = list(request.choices)
+    return payload
 
 
 def _wait_for_user_from_result(result: str) -> RuntimeWaitForUser | None:
@@ -270,7 +295,10 @@ def _wait_for_user_from_result(result: str) -> RuntimeWaitForUser | None:
     if status != "WAITING_FOR_USER":
         return None
     message = payload.get("message")
-    return RuntimeWaitForUser(str(message) if message else "Waiting for your input")
+    return RuntimeWaitForUser(
+        str(message) if message else "Waiting for your input",
+        input_request=_human_input_request_from_result(result),
+    )
 
 
 def _agent_handoff_from_result(
@@ -289,6 +317,47 @@ def _agent_handoff_from_result(
         return None
     message = payload.get("message")
     return RuntimeAgentHandoff(str(message) if message else "Agent handoff dispatched")
+
+
+def _iter_stream_chunk_parts(chunk: Any) -> Iterator[tuple[str, str]]:
+    """Split a streamed model chunk into ordered ("reasoning"|"token", text) parts.
+
+    Handles three provider shapes:
+    - OpenAI-compatible reasoning models (e.g. DeepSeek-R1) stream the chain of
+      thought in ``additional_kwargs["reasoning_content"]`` while ``content`` is
+      the visible answer.
+    - Anthropic Claude (extended thinking) streams ``content`` as a list of
+      blocks: ``{"type": "thinking", "thinking": ...}`` and
+      ``{"type": "text", "text": ...}``.
+    - Plain providers stream ``content`` as a string (visible text only).
+    """
+    extra = getattr(chunk, "additional_kwargs", None)
+    if isinstance(extra, dict):
+        reasoning = extra.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            yield ("reasoning", reasoning)
+    content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        if content:
+            yield ("token", content)
+        return
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                if block:
+                    yield ("token", block)
+                continue
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type in {"thinking", "reasoning", "reasoning_content", "thinking_delta"}:
+                text = block.get("thinking") or block.get("reasoning") or block.get("text")
+                if isinstance(text, str) and text:
+                    yield ("reasoning", text)
+            elif "text" in block:
+                text = block.get("text")
+                if isinstance(text, str) and text:
+                    yield ("token", text)
 
 
 async def _invoke_once(
@@ -330,9 +399,8 @@ async def _invoke_once_stream(
             chunk = event["data"].get("chunk")
             if chunk is None:
                 continue
-            chunk_content = getattr(chunk, "content", None)
-            if isinstance(chunk_content, str) and chunk_content:
-                yield ("token", chunk_content)
+            for part_kind, part_text in _iter_stream_chunk_parts(chunk):
+                yield (part_kind, part_text)
         elif kind == "on_chat_model_end":
             output = event["data"].get("output")
             if isinstance(output, AIMessage):
@@ -464,9 +532,17 @@ async def run(
                 )
             if isinstance(result, RuntimeWaitForUser):
                 content = _message_text(response.content).strip() or result.message
+                additional_kwargs: dict[str, Any] = {
+                    "waiting_for_user": True,
+                    "waiting_message": result.message,
+                }
+                if result.input_request is not None:
+                    additional_kwargs["human_input_request"] = _human_input_request_payload(
+                        result.input_request
+                    )
                 return AIMessage(
                     content=content,
-                    additional_kwargs={"waiting_for_user": True, "waiting_message": result.message},
+                    additional_kwargs=additional_kwargs,
                 )
             if result is not None:
                 messages.append(result)
@@ -494,6 +570,8 @@ async def run_with_stream(
             if kind == "token":
                 emitted_content = True
                 yield ("token", payload)
+            elif kind == "reasoning":
+                yield ("reasoning", payload)
             else:
                 final = payload
         if final is None:
@@ -540,12 +618,17 @@ async def run_with_stream(
                 return
             if isinstance(result, RuntimeWaitForUser):
                 content = interim_content.strip() or result.message
+                additional_kwargs: dict[str, Any] = {
+                    "waiting_for_user": True,
+                    "waiting_message": result.message,
+                }
+                if result.input_request is not None:
+                    additional_kwargs["human_input_request"] = _human_input_request_payload(
+                        result.input_request
+                    )
                 waiting = AIMessage(
                     content=content,
-                    additional_kwargs={
-                        "waiting_for_user": True,
-                        "waiting_message": result.message,
-                    },
+                    additional_kwargs=additional_kwargs,
                 )
                 yield ("waiting_for_user", result)
                 yield ("done", waiting)

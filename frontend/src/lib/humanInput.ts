@@ -1,6 +1,8 @@
 export interface HumanInputRequest {
   question: string
   required?: boolean
+  input_type?: 'text' | 'choice'
+  choices?: string[]
 }
 
 const HUMAN_INPUT_PREFIX = 'Human input requested:'
@@ -29,10 +31,36 @@ function questionFromArgsSummary(value: string | undefined): HumanInputRequest |
   const rawQuestion = singleQuoted?.[1] ?? doubleQuoted?.[1]
   if (!rawQuestion) return null
   const required = !/\brequired=False\b/.test(value)
+  const choices = choicesFromArgsSummary(value)
   return {
     question: unescapeSummaryValue(rawQuestion),
     required,
+    choices: choices.length > 0 ? choices : undefined,
   }
+}
+
+function choicesFromArgsSummary(value: string): string[] {
+  const choicesMatch = value.match(/choices=\[((?:.|\n)*?)\]/)
+  const choicesBody = choicesMatch?.[1]
+  if (!choicesBody) return []
+
+  const choices: string[] = []
+  const quotedValuePattern = /'((?:\\'|[^'])*)'|"((?:\\"|[^"])*)"/g
+  for (const match of choicesBody.matchAll(quotedValuePattern)) {
+    const rawChoice = match[1] ?? match[2]
+    const choice = unescapeSummaryValue(rawChoice)
+    if (choice) choices.push(choice)
+    if (choices.length >= 8) break
+  }
+  return choices
+}
+
+function normalizeChoices(value: string[] | undefined): string[] | undefined {
+  const choices = (value ?? [])
+    .map((choice) => choice.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+  return choices.length > 0 ? choices : undefined
 }
 
 export function humanInputRequestFromText(value: string | null | undefined): HumanInputRequest | null {
@@ -48,9 +76,12 @@ export function normalizeHumanInputRequest(
 ): HumanInputRequest | null {
   if (value?.question?.trim()) {
     const question = stripHumanInputPrefix(value.question) ?? value.question.trim()
+    const choices = normalizeChoices(value.choices)
     return {
       question,
       required: value.required,
+      input_type: choices ? 'choice' : value.input_type,
+      choices,
     }
   }
   return humanInputRequestFromText(fallbackText) ?? questionFromArgsSummary(argsSummary)

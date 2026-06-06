@@ -1,4 +1,4 @@
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -6,11 +6,21 @@ import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useGroupWorkspaceRoot } from '@/hooks/useGroupFiles'
 import { cn } from '@/lib/utils'
+import {
+  WORKSPACE_FILE_SCHEME,
+  joinWorkspaceAbsPath,
+  parseWorkspaceFileHref,
+  remarkWorkspaceFiles,
+} from '@/lib/workspaceFileLink'
+import { useFileNavStore } from '@/stores/fileNavStore'
 
 interface MarkdownMessageProps {
   content: string
   isUser?: boolean
+  /** When set, file paths in the text become links that open the group's workspace panel. */
+  groupId?: string
 }
 
 function extractText(node: unknown): string {
@@ -58,7 +68,13 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
   )
 }
 
-export function MarkdownMessage({ content, isUser = false }: MarkdownMessageProps) {
+export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMessageProps) {
+  const openFile = useFileNavStore((s) => s.openFile)
+  const rootQuery = useGroupWorkspaceRoot(groupId)
+  const root = rootQuery.data
+  const remarkPlugins = groupId
+    ? [remarkGfm, remarkMath, remarkWorkspaceFiles]
+    : [remarkGfm, remarkMath]
   return (
     <div
       className={cn(
@@ -67,23 +83,44 @@ export function MarkdownMessage({ content, isUser = false }: MarkdownMessageProp
       )}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex]}
+        urlTransform={(url) =>
+          url.startsWith(WORKSPACE_FILE_SCHEME) ? url : defaultUrlTransform(url)
+        }
         components={{
           p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-          a: ({ children, href }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer"
-              className={cn(
-                'font-medium underline underline-offset-4',
-                isUser ? 'text-primary-foreground' : 'text-primary',
-              )}
-            >
-              {children}
-            </a>
-          ),
+          a: ({ children, href }) => {
+            const rel = groupId ? parseWorkspaceFileHref(href) : null
+            if (rel && groupId) {
+              return (
+                <button
+                  type="button"
+                  title={joinWorkspaceAbsPath(root?.root, root?.separator, rel)}
+                  onClick={() => openFile(groupId, rel)}
+                  className={cn(
+                    'inline cursor-pointer break-all font-medium underline underline-offset-4',
+                    isUser ? 'text-primary-foreground' : 'text-primary',
+                  )}
+                >
+                  {children}
+                </button>
+              )
+            }
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className={cn(
+                  'font-medium underline underline-offset-4',
+                  isUser ? 'text-primary-foreground' : 'text-primary',
+                )}
+              >
+                {children}
+              </a>
+            )
+          },
           ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
           ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
           li: ({ children }) => <li className="pl-1">{children}</li>,

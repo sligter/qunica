@@ -54,6 +54,70 @@ async fn pick_workspace_folder(app: tauri::AppHandle) -> Result<Option<String>, 
     .map_err(|err| err.to_string())?
 }
 
+fn reveal_path(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        ProcessCommand::new("explorer")
+            .arg(format!("/select,{path}"))
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ProcessCommand::new("open")
+            .args(["-R", path])
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let target = Path::new(path)
+            .parent()
+            .map(|parent| parent.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        ProcessCommand::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+}
+
+/// Reveal (and select) an absolute path in the OS file manager.
+#[tauri::command]
+async fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || reveal_path(&path))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+/// Show a native "Save As" dialog and write the base64-encoded bytes to disk.
+/// Returns the saved path, or None if the user cancelled.
+#[tauri::command]
+async fn save_file(
+    app: tauri::AppHandle,
+    name: String,
+    contents_b64: String,
+) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(contents_b64.as_bytes())
+        .map_err(|err| err.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = app.dialog().file().set_file_name(name).blocking_save_file();
+        let Some(file_path) = chosen else {
+            return Ok(None);
+        };
+        let path_str = file_path.simplified().to_string();
+        std::fs::write(Path::new(&path_str), &bytes).map_err(|err| err.to_string())?;
+        Ok(Some(path_str))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
 fn log_timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -370,7 +434,9 @@ fn main() {
         .manage(BackendChild(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             backend_base_url,
-            pick_workspace_folder
+            pick_workspace_folder,
+            reveal_in_file_manager,
+            save_file
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;

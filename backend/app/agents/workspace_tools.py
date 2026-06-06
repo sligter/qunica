@@ -296,9 +296,17 @@ def _truncate_output(output: str) -> str:
     return f"{output[:MAX_BASH_OUTPUT_CHARS]}\n[output truncated]"
 
 
-def _controlled_tool_result(tool_name: str, message: str, status: str = "SETUP_REQUIRED") -> str:
+def _controlled_tool_result(
+    tool_name: str,
+    message: str,
+    status: str = "SETUP_REQUIRED",
+    extra: dict[str, Any] | None = None,
+) -> str:
+    payload: dict[str, Any] = {"tool": tool_name, "status": status, "message": message}
+    if extra:
+        payload.update(extra)
     return json.dumps(
-        {"tool": tool_name, "status": status, "message": message},
+        payload,
         ensure_ascii=False,
     )
 
@@ -439,14 +447,24 @@ def build_workspace_tools(
     if "AskUser" in enabled:
 
         @tool("AskUser")
-        def ask_user(question: str, required: bool = True) -> str:
+        def ask_user(
+            question: str,
+            required: bool = True,
+            choices: list[str] | None = None,
+        ) -> str:
             """Request bounded human input without blocking server execution."""
 
             status = "WAITING_FOR_USER" if required else "INPUT_REQUESTED"
+            normalized_choices = [
+                choice.strip()
+                for choice in (choices or [])
+                if isinstance(choice, str) and choice.strip()
+            ][:8]
             return _controlled_tool_result(
                 "AskUser",
                 f"Human input requested: {question[:1000]}",
                 status=status,
+                extra={"choices": normalized_choices} if normalized_choices else None,
             )
 
         tools["AskUser"] = ask_user

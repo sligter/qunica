@@ -414,6 +414,12 @@ export interface GroupWorkspaceFileRead {
   is_dir: boolean
   size: number | null
   modified_at: string | null
+  abs_path?: string | null
+}
+
+export interface GroupWorkspaceRoot {
+  root: string
+  separator: string
 }
 
 export interface GroupWorkspaceFilePreview {

@@ -9,6 +9,12 @@ class GroupWorkspaceFileRead(BaseModel):
     is_dir: bool
     size: int | None = None
     modified_at: datetime | None = None
+    abs_path: str | None = None
+
+
+class GroupWorkspaceRoot(BaseModel):
+    root: str
+    separator: str
 
 
 class GroupWorkspaceFilePreview(BaseModel):
