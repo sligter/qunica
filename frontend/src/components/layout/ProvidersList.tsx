@@ -5,6 +5,21 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { useProviders } from '@/hooks/useProviders'
 import { cn } from '@/lib/utils'
+import type { ProviderKind } from '@/types/api'
+
+function kindColor(kind: ProviderKind): string {
+  if (kind === 'anthropic') return 'bg-orange-500/90 text-white'
+  if (kind === 'anthropic-compatible') return 'bg-amber-500/90 text-white'
+  if (kind === 'gemini') return 'bg-blue-500/90 text-white'
+  return 'bg-violet-500/90 text-white'
+}
+
+function kindInitial(kind: ProviderKind, name: string): string {
+  if (kind === 'anthropic') return 'A'
+  if (kind === 'anthropic-compatible') return 'C'
+  if (kind === 'gemini') return 'G'
+  return name.slice(0, 1).toUpperCase()
+}
 
 export function ProvidersList() {
   const providers = useProviders()
@@ -28,20 +43,20 @@ export function ProvidersList() {
 
       <div className="flex-1 overflow-y-auto py-2">
         {providers.isLoading && (
-          <p className="px-4 text-xs text-muted-foreground">Loading…</p>
+          <p className="px-4 text-xs text-muted-foreground">Loading...</p>
         )}
         {providers.error && (
           <p className="px-4 text-xs text-red-600">Failed to load providers.</p>
         )}
         {providers.data && providers.data.length === 0 && (
           <p className="px-4 text-xs text-muted-foreground">
-            No providers yet. Click + to register one (OpenAI / Anthropic / DeepSeek / …).
+            No providers yet. Click + to register OpenAI, Anthropic-compatible, or Gemini.
           </p>
         )}
 
         {isCreateView && providers.data && providers.data.length > 0 && (
-          <p className="mb-2 px-3 text-[10px] uppercase tracking-wider text-muted-foreground">
-            New provider — fill the form on the right.
+          <p className="mb-2 px-3 text-[10px] uppercase text-muted-foreground">
+            New provider - fill the form on the right.
           </p>
         )}
 
@@ -59,8 +74,8 @@ export function ProvidersList() {
                   )}
                 >
                   <Avatar className="h-9 w-9 shrink-0">
-                    <AvatarFallback className="bg-violet-500/90 text-white">
-                      {p.name.slice(0, 1).toUpperCase()}
+                    <AvatarFallback className={kindColor(p.kind)}>
+                      {kindInitial(p.kind, p.name)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -73,7 +88,7 @@ export function ProvidersList() {
                       {p.name}
                     </span>
                     <p className="line-clamp-1 text-xs text-muted-foreground">
-                      {p.kind} · {p.default_model}
+                      {p.kind} - {p.default_model}
                     </p>
                   </div>
                 </button>

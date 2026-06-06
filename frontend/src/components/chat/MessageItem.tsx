@@ -108,7 +108,7 @@ export function MessageItem({
               ? 'w-full'
               : isUser
                 ? 'bg-primary px-3 py-2 text-primary-foreground'
-                : 'border border-border bg-card px-3 py-2 text-foreground',
+                : 'border border-l-4 border-border border-l-primary/60 bg-card/90 px-3 py-2 text-foreground shadow-sm',
             isInterrupted && !isResuming && 'border-amber-300/70',
           )}
         >

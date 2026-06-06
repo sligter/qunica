@@ -13,7 +13,7 @@ export function ProviderDetailRightPane() {
   const [editing, setEditing] = useState(false)
 
   if (provider.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+    return <div className="p-6 text-sm text-muted-foreground">Loading...</div>
   }
   if (provider.error) {
     return (
@@ -65,7 +65,7 @@ export function ProviderDetailRightPane() {
           <div className="space-y-1">
             <h1 className="text-xl font-semibold tracking-tight">{p.name}</h1>
             <p className="text-sm text-muted-foreground">
-              {p.kind} · {p.default_model}
+              {p.kind} - {p.default_model}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -78,7 +78,7 @@ export function ProviderDetailRightPane() {
               onClick={onDelete}
               disabled={del.isPending}
             >
-              {del.isPending ? 'Deleting…' : 'Delete'}
+              {del.isPending ? 'Deleting...' : 'Delete'}
             </Button>
           </div>
         </header>
@@ -86,7 +86,7 @@ export function ProviderDetailRightPane() {
         <section className="grid grid-cols-2 gap-4 text-sm">
           <Field label="Kind" value={p.kind} />
           <Field label="Default model" value={p.default_model} />
-          <Field label="Base URL" value={p.base_url ?? '—'} />
+          <Field label="Base URL" value={p.base_url ?? '-'} />
           <Field label="API key" value={p.api_key_masked} mono />
         </section>
 

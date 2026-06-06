@@ -77,6 +77,12 @@ class RuntimeAgentHandoff:
 
 
 MAX_TOOL_SUMMARY_LENGTH = 240
+_REASONING_KEYS = (
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+    "thinking_content",
+)
 
 # StateGraph and CompiledStateGraph are highly generic in langgraph 1.x; we
 # pin the state type and let the rest fall to Any to avoid leaking internal
@@ -319,6 +325,44 @@ def _agent_handoff_from_result(
     return RuntimeAgentHandoff(str(message) if message else "Agent handoff dispatched")
 
 
+def _text_from_provider_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_text_from_provider_value(item) for item in value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "thinking", "reasoning"):
+            text = _text_from_provider_value(value.get(key))
+            if text:
+                return text
+        summary = value.get("summary")
+        if isinstance(summary, list):
+            return "".join(_text_from_provider_value(item) for item in summary)
+    return ""
+
+
+def _reasoning_from_mapping(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in _REASONING_KEYS:
+        text = _text_from_provider_value(value.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _unemitted_text(value: str, emitted: str) -> str:
+    if not value:
+        return ""
+    if not emitted:
+        return value
+    if value.startswith(emitted):
+        return value[len(emitted) :]
+    if emitted.endswith(value) or value in emitted:
+        return ""
+    return value
+
+
 def _iter_stream_chunk_parts(chunk: Any) -> Iterator[tuple[str, str]]:
     """Split a streamed model chunk into ordered ("reasoning"|"token", text) parts.
 
@@ -332,10 +376,12 @@ def _iter_stream_chunk_parts(chunk: Any) -> Iterator[tuple[str, str]]:
     - Plain providers stream ``content`` as a string (visible text only).
     """
     extra = getattr(chunk, "additional_kwargs", None)
-    if isinstance(extra, dict):
-        reasoning = extra.get("reasoning_content")
-        if isinstance(reasoning, str) and reasoning:
-            yield ("reasoning", reasoning)
+    reasoning = _reasoning_from_mapping(extra)
+    if reasoning:
+        yield ("reasoning", reasoning)
+    metadata_reasoning = _reasoning_from_mapping(getattr(chunk, "response_metadata", None))
+    if metadata_reasoning and metadata_reasoning != reasoning:
+        yield ("reasoning", metadata_reasoning)
     content = getattr(chunk, "content", None)
     if isinstance(content, str):
         if content:
@@ -351,12 +397,12 @@ def _iter_stream_chunk_parts(chunk: Any) -> Iterator[tuple[str, str]]:
                 continue
             block_type = block.get("type")
             if block_type in {"thinking", "reasoning", "reasoning_content", "thinking_delta"}:
-                text = block.get("thinking") or block.get("reasoning") or block.get("text")
-                if isinstance(text, str) and text:
+                text = _text_from_provider_value(block)
+                if text:
                     yield ("reasoning", text)
-            elif "text" in block:
-                text = block.get("text")
-                if isinstance(text, str) and text:
+            elif "text" in block or block_type in {"text", "output_text"}:
+                text = _text_from_provider_value(block)
+                if text:
                     yield ("token", text)
 
 
@@ -391,6 +437,7 @@ async def _invoke_once_stream(
     }
 
     final_response: AIMessage | None = None
+    emitted_reasoning = ""
     async for event in graph.astream_events(
         cast(Any, state_input), config=config, version="v2"
     ):
@@ -400,6 +447,8 @@ async def _invoke_once_stream(
             if chunk is None:
                 continue
             for part_kind, part_text in _iter_stream_chunk_parts(chunk):
+                if part_kind == "reasoning":
+                    emitted_reasoning += part_text
                 yield (part_kind, part_text)
         elif kind == "on_chat_model_end":
             output = event["data"].get("output")
@@ -408,6 +457,12 @@ async def _invoke_once_stream(
 
     if final_response is None:
         raise LLMProviderError("agent runtime stream produced no final response")
+    final_reasoning = _reasoning_from_mapping(
+        final_response.additional_kwargs
+    ) or _reasoning_from_mapping(final_response.response_metadata)
+    reasoning_delta = _unemitted_text(final_reasoning, emitted_reasoning)
+    if reasoning_delta:
+        yield ("reasoning", reasoning_delta)
     yield ("done", final_response)
 
 
@@ -565,10 +620,10 @@ async def run_with_stream(
 
     while True:
         final: AIMessage | None = None
-        emitted_content = False
+        emitted_content = ""
         async for kind, payload in _invoke_once_stream(graph, thread_id, model, messages):
             if kind == "token":
-                emitted_content = True
+                emitted_content += str(payload)
                 yield ("token", payload)
             elif kind == "reasoning":
                 yield ("reasoning", payload)
@@ -580,8 +635,9 @@ async def run_with_stream(
         tool_calls = list(final.tool_calls or [])
         if not tool_calls:
             content = _message_text(final.content)
-            if content and not emitted_content:
-                yield ("token", content)
+            content_delta = _unemitted_text(content, emitted_content)
+            if content_delta:
+                yield ("token", content_delta)
             yield ("done", final)
             return
 
@@ -595,8 +651,9 @@ async def run_with_stream(
                 return
 
         interim_content = _message_text(final.content)
-        if interim_content and not emitted_content:
-            yield ("token", interim_content)
+        interim_delta = _unemitted_text(interim_content, emitted_content)
+        if interim_delta:
+            yield ("token", interim_delta)
         messages.append(final)
         async for tool_event, result in _execute_tool_calls(
             tool_calls=tool_calls,

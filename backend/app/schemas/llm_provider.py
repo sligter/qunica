@@ -1,12 +1,20 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+ProviderKind = Literal[
+    "openai-compatible",
+    "anthropic",
+    "anthropic-compatible",
+    "gemini",
+]
+
 
 class LLMProviderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    kind: str = Field(min_length=1, max_length=50)  # 'openai-compatible' | 'anthropic'
+    kind: ProviderKind
     base_url: str | None = None
     api_key: str = Field(min_length=1)
     default_model: str = Field(min_length=1, max_length=200)
@@ -15,7 +23,7 @@ class LLMProviderCreate(BaseModel):
 
 class LLMProviderUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    kind: str | None = None
+    kind: ProviderKind | None = None
     base_url: str | None = None
     api_key: str | None = Field(default=None, min_length=1)
     default_model: str | None = Field(default=None, min_length=1, max_length=200)
@@ -29,7 +37,7 @@ class LLMProviderRead(BaseModel):
 
     id: UUID
     name: str
-    kind: str
+    kind: ProviderKind
     base_url: str | None
     api_key_masked: str
     default_model: str

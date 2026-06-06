@@ -19,7 +19,7 @@ from app.models.llm_provider import LLMProvider
 from app.models.user import User
 from app.schemas.llm_provider import LLMProviderCreate, LLMProviderUpdate
 
-VALID_KINDS = ("openai-compatible", "anthropic", "gemini")
+VALID_KINDS = ("openai-compatible", "anthropic", "anthropic-compatible", "gemini")
 
 
 def mask_api_key(api_key: str) -> str:
@@ -127,9 +127,14 @@ async def list_models(
     db: AsyncSession, provider_id: UUID, owner: User
 ) -> list[dict[str, str]]:
     """Fetch available models from the provider's API."""
+    provider = await get_provider(db, provider_id, owner)
+    return await _fetch_provider_models(provider)
+
+
+async def _fetch_provider_models(provider: LLMProvider) -> list[dict[str, str]]:
+    """Fetch available models from one provider record."""
     import httpx
 
-    provider = await get_provider(db, provider_id, owner)
     models: list[dict[str, str]] = []
 
     try:
@@ -144,7 +149,7 @@ async def list_models(
                 data = resp.json().get("data", [])
                 models = [{"id": m["id"], "name": m.get("id", "")} for m in data]
 
-            elif provider.kind == "anthropic":
+            elif provider.kind in {"anthropic", "anthropic-compatible"}:
                 base = (provider.base_url or "https://api.anthropic.com").rstrip("/")
                 resp = await client.get(
                     f"{base}/v1/models",

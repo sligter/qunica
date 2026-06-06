@@ -14,7 +14,7 @@ import type { LLMProviderRead, ProviderKind } from '@/types/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
-  kind: z.enum(['openai-compatible', 'anthropic', 'gemini']),
+  kind: z.enum(['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().optional(),
   default_model: z.string().min(1, 'Required'),
@@ -32,19 +32,38 @@ const KIND_OPTIONS: { value: ProviderKind; label: string; hint: string }[] = [
   {
     value: 'openai-compatible',
     label: 'OpenAI-compatible',
-    hint: 'OpenAI · DeepSeek · Qwen · MiMo · Together · OpenRouter',
+    hint: 'OpenAI, DeepSeek, Qwen, MiMo, Together, OpenRouter',
   },
   {
     value: 'anthropic',
     label: 'Anthropic',
-    hint: 'Claude (api.anthropic.com)',
+    hint: 'Claude direct API at api.anthropic.com',
+  },
+  {
+    value: 'anthropic-compatible',
+    label: 'Anthropic-compatible',
+    hint: 'Claude-compatible gateways using Anthropic message format',
   },
   {
     value: 'gemini',
     label: 'Gemini',
-    hint: 'Google Gemini (generativelanguage.googleapis.com)',
+    hint: 'Google Gemini at generativelanguage.googleapis.com',
   },
 ]
+
+function baseUrlPlaceholder(kind: ProviderKind): string {
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') {
+    return 'https://api.anthropic.com'
+  }
+  if (kind === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta'
+  return 'https://api.openai.com/v1'
+}
+
+function modelPlaceholder(kind: ProviderKind): string {
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') return 'claude-sonnet-4-5'
+  if (kind === 'gemini') return 'gemini-2.5-pro or gemini-2.5-flash'
+  return 'gpt-4o-mini or mimo-v2.5-pro or deepseek-chat'
+}
 
 export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
   const update = useUpdateProvider(provider.id)
@@ -93,7 +112,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
 
       <div className="space-y-1.5">
         <Label>Kind</Label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {KIND_OPTIONS.map((opt) => {
             const checked = kind === opt.value
             return (
@@ -102,12 +121,14 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
                 key={opt.value}
                 onClick={() => form.setValue('kind', opt.value, { shouldDirty: true })}
                 className={cn(
-                  'flex flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                  'flex min-h-20 flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
                   checked ? 'border-primary bg-primary/10' : 'border-border hover:bg-card-hover',
                 )}
               >
                 <span className="text-sm font-medium">{opt.label}</span>
-                <span className="text-[11px] text-muted-foreground">{opt.hint}</span>
+                <span className="text-[11px] leading-snug text-muted-foreground">
+                  {opt.hint}
+                </span>
               </button>
             )
           })}
@@ -118,13 +139,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
         <Label htmlFor={`provider-base-url-${provider.id}`}>Base URL (optional)</Label>
         <Input
           id={`provider-base-url-${provider.id}`}
-          placeholder={
-            kind === 'anthropic'
-              ? 'https://api.anthropic.com'
-              : kind === 'gemini'
-                ? 'https://generativelanguage.googleapis.com/v1beta'
-                : 'https://api.openai.com/v1'
-          }
+          placeholder={baseUrlPlaceholder(kind)}
           {...form.register('base_url')}
         />
       </div>
@@ -144,7 +159,11 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
 
       <div className="space-y-1.5">
         <Label htmlFor={`provider-model-${provider.id}`}>Default model</Label>
-        <Input id={`provider-model-${provider.id}`} {...form.register('default_model')} />
+        <Input
+          id={`provider-model-${provider.id}`}
+          placeholder={modelPlaceholder(kind)}
+          {...form.register('default_model')}
+        />
         {form.formState.errors.default_model && (
           <p className="text-xs text-red-600">
             {form.formState.errors.default_model.message}
@@ -163,7 +182,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
         </p>
       )}
       <Button type="submit" disabled={update.isPending}>
-        {update.isPending ? 'Saving…' : 'Save changes'}
+        {update.isPending ? 'Saving...' : 'Save changes'}
       </Button>
     </form>
   )

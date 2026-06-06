@@ -6,6 +6,8 @@ import { z } from 'zod'
 
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
+import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
+import { isThinkingLevel, thinkingLevelValues } from '@/components/agents/thinkingLevel'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
@@ -42,6 +44,7 @@ const schema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),
   max_tokens: z.number().int().min(1).optional(),
+  reasoning_effort: z.enum(thinkingLevelValues),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -62,6 +65,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
   const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(agent.tool_config)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const savedThinkingLevel = agent.llm_config?.reasoning_effort
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -79,6 +83,9 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       temperature: (agent.llm_config?.temperature as number) ?? 0.7,
       top_p: (agent.llm_config?.top_p as number) ?? 1,
       max_tokens: (agent.llm_config?.max_tokens as number) ?? undefined,
+      reasoning_effort: isThinkingLevel(savedThinkingLevel)
+        ? savedThinkingLevel
+        : 'default',
     },
   })
 
@@ -103,6 +110,9 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.max_tokens) llm_config.max_tokens = values.max_tokens
+      if (values.reasoning_effort !== 'default') {
+        llm_config.reasoning_effort = values.reasoning_effort
+      }
 
       await update.mutateAsync({
         name: values.name,
@@ -313,6 +323,10 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                     {...form.register('max_tokens', { valueAsNumber: true })}
                   />
                 </div>
+                <ThinkingLevelControl
+                  value={form.watch('reasoning_effort')}
+                  onChange={(value) => form.setValue('reasoning_effort', value)}
+                />
               </div>
             )}
           </div>

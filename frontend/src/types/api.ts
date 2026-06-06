@@ -157,7 +157,11 @@ export interface AgentUpdate {
   skill_ids?: string[]
 }
 
-export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini'
+export type ProviderKind =
+  | 'openai-compatible'
+  | 'anthropic'
+  | 'anthropic-compatible'
+  | 'gemini'
 
 export interface LLMProviderRead {
   id: string

@@ -8,12 +8,20 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { useProviders } from '@/hooks/useProviders'
-import type { LLMProviderRead } from '@/types/api'
+import type { LLMProviderRead, ProviderKind } from '@/types/api'
 
-function kindColor(kind: string) {
+function kindColor(kind: ProviderKind) {
   if (kind === 'anthropic') return 'bg-orange-500/90 text-white'
+  if (kind === 'anthropic-compatible') return 'bg-amber-500/90 text-white'
   if (kind === 'gemini') return 'bg-blue-500/90 text-white'
   return 'bg-violet-500/90 text-white'
+}
+
+function kindInitial(kind: ProviderKind): string {
+  if (kind === 'anthropic') return 'A'
+  if (kind === 'anthropic-compatible') return 'C'
+  if (kind === 'gemini') return 'G'
+  return 'O'
 }
 
 export function ProvidersPage() {
@@ -40,7 +48,7 @@ export function ProvidersPage() {
 
       <div className="flex-1 overflow-y-auto p-6">
         {providers.isLoading && (
-          <p className="text-sm text-muted-foreground">Loading providers…</p>
+          <p className="text-sm text-muted-foreground">Loading providers...</p>
         )}
         {providers.error && (
           <p className="text-sm text-red-600">Failed to load providers.</p>
@@ -52,7 +60,7 @@ export function ProvidersPage() {
             </div>
             <h2 className="text-base font-medium">No providers yet</h2>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Register an OpenAI-compatible, Anthropic, or Gemini endpoint to power your agents.
+              Register an OpenAI-compatible, Anthropic-compatible, Anthropic, or Gemini endpoint.
             </p>
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               <Plus className="mr-1 h-4 w-4" />
@@ -75,7 +83,7 @@ export function ProvidersPage() {
                 <CardHeader className="flex flex-row items-start gap-3 space-y-0 pb-3">
                   <Avatar className="h-10 w-10 shrink-0">
                     <AvatarFallback className={kindColor(p.kind)}>
-                      {p.kind === 'anthropic' ? 'A' : p.kind === 'gemini' ? 'G' : 'O'}
+                      {kindInitial(p.kind)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">

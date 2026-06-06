@@ -71,7 +71,7 @@ export function ProviderDetailDialog({
                 onClick={onDelete}
                 disabled={del.isPending}
               >
-                {del.isPending ? 'Deleting…' : 'Delete'}
+                {del.isPending ? 'Deleting...' : 'Delete'}
               </Button>
             </div>
           </div>
@@ -82,7 +82,7 @@ export function ProviderDetailDialog({
         <div className="grid grid-cols-2 gap-4 text-sm">
           <Field label="Kind" value={provider.kind} />
           <Field label="Default model" value={provider.default_model} />
-          <Field label="Base URL" value={provider.base_url ?? '—'} />
+          <Field label="Base URL" value={provider.base_url ?? '-'} />
           <Field label="API key" value={provider.api_key_masked} mono />
           <Field label="Status">
             <Badge variant={provider.status === 'active' ? 'default' : 'secondary'}>

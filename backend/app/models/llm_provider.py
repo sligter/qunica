@@ -13,7 +13,7 @@ class LLMProvider(Base, UUIDPkMixin):
 
     owner_id: Mapped[UUID] = mapped_column(GUID(), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    # 'openai-compatible' | 'anthropic' | 'gemini'
+    # 'openai-compatible' | 'anthropic' | 'anthropic-compatible' | 'gemini'
     kind: Mapped[str] = mapped_column(String(50), nullable=False)
     base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key: Mapped[str] = mapped_column(Text, nullable=False)

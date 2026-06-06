@@ -92,6 +92,33 @@ class ReasoningContentGraph:
         yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="final")}}
 
 
+class ToolPreludeGraph:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def astream_events(
+        self, _state_input: Any, config: Any, *, version: str
+    ) -> Any:
+        assert config is not None
+        assert version == "v2"
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "event": "on_chat_model_end",
+                "data": {
+                    "output": AIMessage(
+                        content="I will inspect the workspace first.",
+                        tool_calls=[{"name": "MissingTool", "args": {}, "id": "missing-1"}],
+                    )
+                },
+            }
+            return
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="The inspection is complete.")},
+        }
+
+
 @pytest.mark.asyncio
 async def test_run_with_stream_streams_model_chunks_when_tools_are_bound() -> None:
     events = [
@@ -147,3 +174,29 @@ async def test_run_with_stream_emits_reasoning_from_reasoning_content() -> None:
         ("token", "final"),
     ]
     assert events[-1][0] == "done"
+
+
+@pytest.mark.asyncio
+async def test_run_with_stream_emits_prelude_text_before_tool_events() -> None:
+    events = [
+        event
+        async for event in runtime.run_with_stream(
+            graph=cast(Any, ToolPreludeGraph()),
+            thread_id="thread-1",
+            chat_model=cast(Any, object()),
+            input_messages=[HumanMessage(content="hi")],
+            workspace_tools={},
+        )
+    ]
+
+    visible = [
+        (kind, getattr(payload, "tool_name", payload))
+        for kind, payload in events
+        if kind != "done"
+    ]
+    assert visible == [
+        ("token", "I will inspect the workspace first."),
+        ("tool_event", "MissingTool"),
+        ("tool_event", "MissingTool"),
+        ("token", "The inspection is complete."),
+    ]

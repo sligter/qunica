@@ -6,6 +6,8 @@ import { z } from 'zod'
 
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
+import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
+import { thinkingLevelValues } from '@/components/agents/thinkingLevel'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { createDefaultToolConfig } from '@/components/agents/toolConfig'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
@@ -37,6 +39,7 @@ const schema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),
   max_tokens: z.number().int().min(1).optional(),
+  reasoning_effort: z.enum(thinkingLevelValues),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -74,6 +77,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       temperature: 0.7,
       top_p: 1,
       max_tokens: undefined,
+      reasoning_effort: 'default',
     },
   })
 
@@ -99,6 +103,9 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.max_tokens) llm_config.max_tokens = values.max_tokens
+      if (values.reasoning_effort !== 'default') {
+        llm_config.reasoning_effort = values.reasoning_effort
+      }
 
       const created = await createAgent.mutateAsync({
         name: values.name,
@@ -319,6 +326,10 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                     {...form.register('max_tokens', { valueAsNumber: true })}
                   />
                 </div>
+                <ThinkingLevelControl
+                  value={form.watch('reasoning_effort')}
+                  onChange={(value) => form.setValue('reasoning_effort', value)}
+                />
               </div>
             )}
           </div>

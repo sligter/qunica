@@ -14,7 +14,7 @@ import type { ProviderKind } from '@/types/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
-  kind: z.enum(['openai-compatible', 'anthropic', 'gemini']),
+  kind: z.enum(['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().min(1, 'Required'),
   default_model: z.string().min(1, 'Required'),
@@ -31,19 +31,49 @@ const KIND_OPTIONS: { value: ProviderKind; label: string; hint: string }[] = [
   {
     value: 'openai-compatible',
     label: 'OpenAI-compatible',
-    hint: 'OpenAI · DeepSeek · Qwen · MiMo · Together · OpenRouter',
+    hint: 'OpenAI, DeepSeek, Qwen, MiMo, Together, OpenRouter',
   },
   {
     value: 'anthropic',
     label: 'Anthropic',
-    hint: 'Claude (api.anthropic.com)',
+    hint: 'Claude direct API at api.anthropic.com',
+  },
+  {
+    value: 'anthropic-compatible',
+    label: 'Anthropic-compatible',
+    hint: 'Claude-compatible gateways using Anthropic message format',
   },
   {
     value: 'gemini',
     label: 'Gemini',
-    hint: 'Google Gemini (generativelanguage.googleapis.com)',
+    hint: 'Google Gemini at generativelanguage.googleapis.com',
   },
 ]
+
+function baseUrlPlaceholder(kind: ProviderKind): string {
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') {
+    return 'https://api.anthropic.com'
+  }
+  if (kind === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta'
+  return 'https://api.openai.com/v1'
+}
+
+function baseUrlHint(kind: ProviderKind): string {
+  if (kind === 'openai-compatible') {
+    return 'Examples: https://api.deepseek.com/v1, https://token-plan-cn.xiaomimimo.com/v1.'
+  }
+  if (kind === 'anthropic-compatible') {
+    return 'Use a gateway base URL exposing Anthropic-compatible /v1/messages and /v1/models routes.'
+  }
+  if (kind === 'anthropic') return 'Leave empty for default api.anthropic.com.'
+  return 'Leave empty for default Google AI endpoint.'
+}
+
+function modelPlaceholder(kind: ProviderKind): string {
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') return 'claude-sonnet-4-5'
+  if (kind === 'gemini') return 'gemini-2.5-pro or gemini-2.5-flash'
+  return 'gpt-4o-mini or mimo-v2.5-pro or deepseek-chat'
+}
 
 export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) {
   const create = useCreateProvider()
@@ -97,7 +127,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
 
       <div className="space-y-1.5">
         <Label>Kind</Label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {KIND_OPTIONS.map((opt) => {
             const checked = kind === opt.value
             return (
@@ -106,14 +136,16 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
                 key={opt.value}
                 onClick={() => form.setValue('kind', opt.value)}
                 className={cn(
-                  'flex flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                  'flex min-h-20 flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
                   checked
                     ? 'border-primary bg-primary/10'
                     : 'border-border hover:bg-card-hover',
                 )}
               >
                 <span className="text-sm font-medium">{opt.label}</span>
-                <span className="text-[11px] text-muted-foreground">{opt.hint}</span>
+                <span className="text-[11px] leading-snug text-muted-foreground">
+                  {opt.hint}
+                </span>
               </button>
             )
           })}
@@ -124,22 +156,10 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         <Label htmlFor="provider-base-url">Base URL (optional)</Label>
         <Input
           id="provider-base-url"
-          placeholder={
-            kind === 'anthropic'
-              ? 'https://api.anthropic.com'
-              : kind === 'gemini'
-                ? 'https://generativelanguage.googleapis.com/v1beta'
-                : 'https://api.openai.com/v1'
-          }
+          placeholder={baseUrlPlaceholder(kind)}
           {...form.register('base_url')}
         />
-        <p className="text-[11px] text-muted-foreground">
-          {kind === 'openai-compatible' && (
-            <>Examples: <code>https://api.deepseek.com/v1</code>, <code>https://token-plan-cn.xiaomimimo.com/v1</code>.</>
-          )}
-          {kind === 'anthropic' && 'Leave empty for default api.anthropic.com.'}
-          {kind === 'gemini' && 'Leave empty for default Google AI endpoint.'}
-        </p>
+        <p className="text-[11px] text-muted-foreground">{baseUrlHint(kind)}</p>
       </div>
 
       <div className="space-y-1.5">
@@ -147,7 +167,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         <Input
           id="provider-api-key"
           type="password"
-          placeholder="sk-…"
+          placeholder="sk-..."
           {...form.register('api_key')}
         />
         {form.formState.errors.api_key && (
@@ -161,13 +181,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         <Label htmlFor="provider-model">Default model</Label>
         <Input
           id="provider-model"
-          placeholder={
-            kind === 'anthropic'
-              ? 'claude-sonnet-4-5'
-              : kind === 'gemini'
-                ? 'gemini-2.5-pro · gemini-2.5-flash'
-                : 'gpt-4o-mini · mimo-v2.5-pro · deepseek-chat'
-          }
+          placeholder={modelPlaceholder(kind)}
           {...form.register('default_model')}
         />
         {form.formState.errors.default_model && (
@@ -192,7 +206,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         </p>
       )}
       <Button type="submit" disabled={create.isPending}>
-        {create.isPending ? 'Saving…' : 'Add provider'}
+        {create.isPending ? 'Saving...' : 'Add provider'}
       </Button>
     </form>
   )
