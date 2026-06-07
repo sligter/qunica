@@ -42,7 +42,7 @@ def _sqlite_path(sqlite_url: str) -> str:
 async def _apply_sqlite_schema_patches(conn: AsyncConnection) -> None:
     result = await conn.exec_driver_sql("PRAGMA table_info(groups)")
     columns = {str(row[1]) for row in result.fetchall()}
-    if "agent_free_mention_max_dispatches" not in columns:
+    if columns and "agent_free_mention_max_dispatches" not in columns:
         await conn.exec_driver_sql(
             """
             ALTER TABLE groups
@@ -50,13 +50,68 @@ async def _apply_sqlite_schema_patches(conn: AsyncConnection) -> None:
             CHECK (agent_free_mention_max_dispatches >= 0)
             """
         )
+    if columns and "context_summary" not in columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE groups ADD COLUMN context_summary TEXT"
+        )
+    if columns and "context_summary_message_id" not in columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE groups ADD COLUMN context_summary_message_id CHAR(36)"
+        )
+    if columns and "context_summary_updated_at" not in columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE groups ADD COLUMN context_summary_updated_at DATETIME"
+        )
 
     provider_info = await conn.exec_driver_sql("PRAGMA table_info(llm_providers)")
     provider_columns = {str(row[1]) for row in provider_info.fetchall()}
-    if "reasoning_passback" not in provider_columns:
+    if provider_columns and "reasoning_passback" not in provider_columns:
         await conn.exec_driver_sql(
             "ALTER TABLE llm_providers "
             "ADD COLUMN reasoning_passback BOOLEAN NOT NULL DEFAULT 0"
+        )
+    if provider_columns and "context_window_tokens" not in provider_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE llm_providers ADD COLUMN context_window_tokens INTEGER"
+        )
+    if provider_columns and "context_output_reserve_ratio" not in provider_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE llm_providers ADD COLUMN context_output_reserve_ratio FLOAT"
+        )
+
+    group_agent_info = await conn.exec_driver_sql("PRAGMA table_info(group_agents)")
+    group_agent_columns = {str(row[1]) for row in group_agent_info.fetchall()}
+    if group_agent_columns and "last_context_input_tokens" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_input_tokens INTEGER"
+        )
+    if group_agent_columns and "last_context_output_tokens" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_output_tokens INTEGER"
+        )
+    if group_agent_columns and "last_context_total_tokens" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_total_tokens INTEGER"
+        )
+    if group_agent_columns and "last_context_window_tokens" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_window_tokens INTEGER"
+        )
+    if group_agent_columns and "last_context_output_reserve_tokens" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_output_reserve_tokens INTEGER"
+        )
+    if group_agent_columns and "last_context_message_id" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_message_id CHAR(36)"
+        )
+    if group_agent_columns and "last_context_usage_source" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_usage_source VARCHAR(30)"
+        )
+    if group_agent_columns and "last_context_updated_at" not in group_agent_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE group_agents ADD COLUMN last_context_updated_at DATETIME"
         )
 
 

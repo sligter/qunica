@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, String, Text, false, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDPkMixin
@@ -18,6 +18,8 @@ class LLMProvider(Base, UUIDPkMixin):
     base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key: Mapped[str] = mapped_column(Text, nullable=False)
     default_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    context_window_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_output_reserve_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Re-send the model's prior `reasoning_content` on follow-up turns of a
     # multi-turn tool loop. Reasoning models with tool use (e.g. DeepSeek, Xiaomi

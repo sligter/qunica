@@ -36,6 +36,16 @@ class GroupAgent(Base, UUIDPkMixin):
     context_scope: Mapped[dict[str, Any] | None] = mapped_column(JSONData, nullable=True)
     file_scope: Mapped[dict[str, Any] | None] = mapped_column(JSONData, nullable=True)
     approval_policy: Mapped[dict[str, Any] | None] = mapped_column(JSONData, nullable=True)
+    last_context_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_context_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_context_total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_context_window_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_context_output_reserve_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_context_message_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
+    last_context_usage_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_context_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

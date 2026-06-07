@@ -57,6 +57,7 @@ export function useResumeStream(
     if (messageId) endResume(messageId)
     if (groupId) {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
     }
   }, [endResume, groupId, messageId, qc])
 

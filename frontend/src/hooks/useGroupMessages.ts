@@ -33,6 +33,9 @@ export function useClearGroupMessages(groupId: string | undefined) {
         qc.setQueryData(['groups', groupId, 'messages'], emptyMessagePages())
         clearGroupMessages(groupId)
         void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+        // The backend resets each agent's last-known context usage on clear;
+        // refetch so the avatar ring/tooltip drop the stale baseline immediately.
+        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
       }
     },
   })

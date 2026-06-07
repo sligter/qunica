@@ -66,6 +66,9 @@ async def test_sqlite_schema_patch_adds_agent_free_mention_limit() -> None:
             columns_result = await conn.exec_driver_sql("PRAGMA table_info(groups)")
             columns = {str(row[1]): row for row in columns_result.fetchall()}
             assert "agent_free_mention_max_dispatches" in columns
+            assert "context_summary" in columns
+            assert "context_summary_message_id" in columns
+            assert "context_summary_updated_at" in columns
 
             await conn.exec_driver_sql("INSERT INTO groups (id) VALUES ('legacy-group')")
             value_result = await conn.exec_driver_sql(

@@ -31,3 +31,10 @@ class Message(Base, UUIDPkMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
     )
+
+    @property
+    def context_usage(self) -> dict[str, Any] | None:
+        if not isinstance(self.content_json, dict):
+            return None
+        value = self.content_json.get("context_usage")
+        return value if isinstance(value, dict) else None

@@ -19,6 +19,11 @@ const schema = z.object({
   base_url: z.string().optional(),
   api_key: z.string().min(1, 'Required'),
   default_model: z.string().min(1, 'Required'),
+  context_window_tokens: z.preprocess(
+    (value) => (value === '' || Number.isNaN(value) ? undefined : value),
+    z.number().int().min(1).optional(),
+  ),
+  context_output_reserve_percent: z.number().min(1).max(90),
   description: z.string().optional(),
   reasoning_passback: z.boolean(),
 })
@@ -89,6 +94,8 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
       base_url: '',
       api_key: '',
       default_model: '',
+      context_window_tokens: undefined,
+      context_output_reserve_percent: 30,
       description: '',
       reasoning_passback: false,
     },
@@ -105,6 +112,8 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         base_url: values.base_url || null,
         api_key: values.api_key,
         default_model: values.default_model,
+        context_window_tokens: values.context_window_tokens ?? null,
+        context_output_reserve_ratio: values.context_output_reserve_percent / 100,
         description: values.description || null,
         reasoning_passback: values.reasoning_passback,
       })
@@ -193,6 +202,39 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
             {form.formState.errors.default_model.message}
           </p>
         )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="provider-context-window">Context window tokens</Label>
+          <Input
+            id="provider-context-window"
+            type="number"
+            min={1}
+            placeholder="Auto from model"
+            {...form.register('context_window_tokens', { valueAsNumber: true })}
+          />
+          {form.formState.errors.context_window_tokens && (
+            <p className="text-xs text-red-600">
+              {form.formState.errors.context_window_tokens.message}
+            </p>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="provider-output-reserve">Output reserve %</Label>
+          <Input
+            id="provider-output-reserve"
+            type="number"
+            min={1}
+            max={90}
+            {...form.register('context_output_reserve_percent', { valueAsNumber: true })}
+          />
+          {form.formState.errors.context_output_reserve_percent && (
+            <p className="text-xs text-red-600">
+              {form.formState.errors.context_output_reserve_percent.message}
+            </p>
+          )}
+        </div>
       </div>
 
       {kind === 'openai-compatible' && (

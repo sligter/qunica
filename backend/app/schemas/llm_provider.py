@@ -18,6 +18,8 @@ class LLMProviderCreate(BaseModel):
     base_url: str | None = None
     api_key: str = Field(min_length=1)
     default_model: str = Field(min_length=1, max_length=200)
+    context_window_tokens: int | None = Field(default=None, gt=0)
+    context_output_reserve_ratio: float | None = Field(default=None, gt=0, lt=1)
     description: str | None = None
     reasoning_passback: bool = False
 
@@ -28,6 +30,8 @@ class LLMProviderUpdate(BaseModel):
     base_url: str | None = None
     api_key: str | None = Field(default=None, min_length=1)
     default_model: str | None = Field(default=None, min_length=1, max_length=200)
+    context_window_tokens: int | None = Field(default=None, gt=0)
+    context_output_reserve_ratio: float | None = Field(default=None, gt=0, lt=1)
     description: str | None = None
     reasoning_passback: bool | None = None
 
@@ -43,6 +47,8 @@ class LLMProviderRead(BaseModel):
     base_url: str | None
     api_key_masked: str
     default_model: str
+    context_window_tokens: int | None
+    context_output_reserve_ratio: float | None
     description: str | None
     reasoning_passback: bool
     status: str

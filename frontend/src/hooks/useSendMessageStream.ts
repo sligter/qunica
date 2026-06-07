@@ -15,7 +15,7 @@ import { openSseStream } from '@/lib/sse'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
-import type { Message } from '@/types/api'
+import type { ContextUsage, Message } from '@/types/api'
 
 interface StreamPayload {
   stream_id?: string | null
@@ -36,6 +36,12 @@ interface AgentIdentityPayload extends StreamPayload {
   agent_id: string
   display_name?: string
   round?: number
+}
+
+interface ContextUsagePayload extends StreamPayload {
+  agent_id?: string
+  round?: number
+  context_usage?: ContextUsage | null
 }
 
 interface AgentErrorPayload extends StreamPayload {
@@ -130,6 +136,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const clearToolActivity = useMessageStore((s) => s.clearToolActivity)
   const startStreamRun = useMessageStore((s) => s.startStreamRun)
   const addStreamAgentStart = useMessageStore((s) => s.addStreamAgentStart)
+  const setStreamAgentContextUsage = useMessageStore((s) => s.setStreamAgentContextUsage)
   const patchStreamDraft = useMessageStore((s) => s.patchStreamDraft)
   const patchStreamReasoning = useMessageStore((s) => s.patchStreamReasoning)
   const finalizeStreamDraft = useMessageStore((s) => s.finalizeStreamDraft)
@@ -245,6 +252,22 @@ export function useSendMessageStream(groupId: string | undefined) {
               }
               return
             }
+            if (event === 'context_usage') {
+              const payload = safeJson<ContextUsagePayload>(data)
+              if (payload?.agent_id && payload.context_usage) {
+                const streamId = streamIdFor(payload)
+                if (streamId) {
+                  streamIdsRef.current.set(id, streamId)
+                  setStreamAgentContextUsage(
+                    groupId,
+                    streamId,
+                    payload.agent_id,
+                    payload.context_usage,
+                  )
+                }
+              }
+              return
+            }
             if (event === 'token') {
               const payload = safeJson<TokenPayload>(data)
               if (payload?.agent_id && payload.delta) {
@@ -296,6 +319,7 @@ export function useSendMessageStream(groupId: string | undefined) {
                 finalizeInFlight(groupId, msg)
               }
               void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+              void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
               return
             }
             if (event === 'agent_silent') {
@@ -508,6 +532,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       qc,
       refreshActiveCount,
       setActiveAgent,
+      setStreamAgentContextUsage,
       startStreamRun,
       token,
       upsertStreamExternalRun,

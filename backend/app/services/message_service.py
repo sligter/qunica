@@ -32,6 +32,7 @@ import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -42,7 +43,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
 )
-from sqlalchemy import select, tuple_
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import runtime
@@ -50,6 +51,18 @@ from app.agents.context import (
     DEFAULT_RUNTIME_LIMITS,
     AgentInvocationContext,
     build_agent_invocation_context,
+)
+from app.agents.context_budget import (
+    ContextHistoryItem,
+    build_budgeted_context,
+    estimate_message_tokens,
+    merge_rolling_summary,
+    resolve_context_budget,
+)
+from app.agents.context_usage import (
+    ContextUsage,
+    extract_context_usage,
+    fallback_context_usage,
 )
 from app.agents.router import resolve_all_mentions, resolve_explicit_mentions
 from app.agents.runtime import RuntimeAgentHandoff, RuntimeToolEvent, RuntimeWaitForUser
@@ -69,11 +82,11 @@ from app.models.group_member import GroupMember
 from app.models.message import Message
 from app.models.thread import Thread
 from app.models.user import User
-from app.services import group_service, thread_service
+from app.services import group_service, llm_provider_service, thread_service
 
 logger = logging.getLogger(__name__)
 
-CONTEXT_WINDOW = 20
+CONTEXT_HISTORY_CANDIDATE_LIMIT = 200
 SILENT_MARKER = "<SILENT>"
 PSEUDO_TOOL_PLACEHOLDER = (
     "[Non-executed tool markup removed: this runtime did not execute a tool call.]"
@@ -106,6 +119,21 @@ class AgentToolDispatch:
     helper_group_agent: GroupAgent
     helper_agent: Agent
     content: str
+
+
+@dataclass
+class BuiltAgentInvocation:
+    input_messages: list[BaseMessage]
+    context: AgentInvocationContext
+    fallback_context_usage: ContextUsage
+    context_message_id: UUID | None
+
+
+@dataclass(frozen=True)
+class ProviderContextConfig:
+    model_name: str | None
+    context_window_tokens: int | None
+    output_reserve_ratio: float | None
 
 
 @dataclass
@@ -173,6 +201,7 @@ async def list_messages(
 
 async def clear_group_history(db: AsyncSession, group_id: UUID, user: User) -> int:
     await group_service.assert_owner(db, group_id, user)
+    group = await group_service.get_group(db, group_id, user)
     visible_statuses = ("visible", "interrupted")
     visible_message_thread_ids = (
         select(Message.thread_id)
@@ -216,6 +245,26 @@ async def clear_group_history(db: AsyncSession, group_id: UUID, user: User) -> i
     thread_ids = {m.thread_id for m in messages if m.thread_id is not None}
     for message in messages:
         message.status = "cleared"
+    group.context_summary = None
+    group.context_summary_message_id = None
+    group.context_summary_updated_at = None
+    # Clearing the conversation resets each agent's context, so the last-known
+    # usage baseline is no longer meaningful — drop it so the UI doesn't show
+    # stale token counts for the fresh (empty) context.
+    await db.execute(
+        update(GroupAgent)
+        .where(GroupAgent.group_id == group_id)
+        .values(
+            last_context_input_tokens=None,
+            last_context_output_tokens=None,
+            last_context_total_tokens=None,
+            last_context_window_tokens=None,
+            last_context_output_reserve_tokens=None,
+            last_context_message_id=None,
+            last_context_usage_source=None,
+            last_context_updated_at=None,
+        )
+    )
     if thread_ids:
         threads_with_remaining_visible_messages = (
             select(Message.thread_id)
@@ -265,7 +314,11 @@ async def _persist_agent_message(
     thread_id: UUID | None,
     reply_to: UUID | None,
     status: str = "visible",
+    context_usage: ContextUsage | None = None,
 ) -> Message:
+    content_json: dict[str, Any] | None = None
+    if context_usage is not None:
+        content_json = {"context_usage": context_usage.to_payload()}
     msg = Message(
         group_id=group_id,
         thread_id=thread_id,
@@ -273,6 +326,7 @@ async def _persist_agent_message(
         sender_id=agent.id,
         message_type="text",
         content=content,
+        content_json=content_json,
         reply_to_message_id=reply_to,
         status=status,
     )
@@ -406,19 +460,196 @@ def _requests_human_input(text: str, human_names: set[str], sender_name: str) ->
     return False
 
 
+def _agent_model_override(agent: Agent) -> str | None:
+    config = agent.llm_config
+    if not isinstance(config, dict):
+        return None
+    model = config.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
+async def _resolve_provider_context_config(
+    db: AsyncSession,
+    agent: Agent,
+) -> ProviderContextConfig:
+    model_override = _agent_model_override(agent)
+    if model_override is not None:
+        return ProviderContextConfig(
+            model_name=model_override,
+            context_window_tokens=None,
+            output_reserve_ratio=None,
+        )
+    if agent.llm_provider_id is None:
+        return ProviderContextConfig(
+            model_name=None,
+            context_window_tokens=None,
+            output_reserve_ratio=None,
+        )
+    provider = await llm_provider_service.get_for_use(db, agent.llm_provider_id)
+    return ProviderContextConfig(
+        model_name=provider.default_model,
+        context_window_tokens=provider.context_window_tokens,
+        output_reserve_ratio=provider.context_output_reserve_ratio,
+    )
+
+
+def _history_sender_label(message: Message, sender_names: dict[str, str]) -> str:
+    sid = str(message.sender_id) if message.sender_id else None
+    if sid:
+        name = sender_names.get(sid)
+        if name:
+            return name
+    if message.sender_type == "agent":
+        return "Agent"
+    if message.sender_type == "user":
+        return "User"
+    return "System"
+
+
+def _context_history_item(
+    message: Message,
+    *,
+    my_agent_id: str,
+    sender_names: dict[str, str],
+) -> ContextHistoryItem | None:
+    if message.content is None:
+        return None
+    sid = str(message.sender_id) if message.sender_id else None
+    label = _history_sender_label(message, sender_names)
+    if message.sender_type == "agent" and sid == my_agent_id:
+        lc_message: BaseMessage = AIMessage(content=message.content)
+    else:
+        prefix = f"[{label}]: " if label else ""
+        lc_message = HumanMessage(content=f"{prefix}{message.content}")
+    return ContextHistoryItem(
+        message_id=message.id,
+        created_at=message.created_at,
+        sender_label=label,
+        message=lc_message,
+        raw_content=message.content,
+    )
+
+
+def _is_message_after_summary_boundary(item: ContextHistoryItem, boundary: Message) -> bool:
+    if item.created_at > boundary.created_at:
+        return True
+    if item.created_at < boundary.created_at:
+        return False
+    return str(item.message_id) > str(boundary.id)
+
+
+async def _dropped_items_after_summary_boundary(
+    db: AsyncSession,
+    group: Group,
+    dropped_items: list[ContextHistoryItem],
+) -> list[ContextHistoryItem]:
+    if not dropped_items:
+        return []
+    if group.context_summary_message_id is None:
+        return dropped_items
+    boundary = await db.scalar(
+        select(Message).where(
+            Message.id == group.context_summary_message_id,
+            Message.group_id == group.id,
+        )
+    )
+    if boundary is None:
+        return dropped_items
+    return [
+        item
+        for item in dropped_items
+        if _is_message_after_summary_boundary(item, boundary)
+    ]
+
+
+async def _update_group_context_summary(
+    db: AsyncSession,
+    group: Group,
+    dropped_items: list[ContextHistoryItem],
+) -> tuple[str | None, bool]:
+    new_dropped_items = await _dropped_items_after_summary_boundary(db, group, dropped_items)
+    if not new_dropped_items:
+        return group.context_summary, False
+    summary = merge_rolling_summary(group.context_summary, new_dropped_items)
+    if summary is None:
+        return group.context_summary, False
+    group.context_summary = summary
+    group.context_summary_message_id = new_dropped_items[-1].message_id
+    group.context_summary_updated_at = datetime.now(UTC)
+    await db.flush()
+    return summary, True
+
+
+async def _record_context_usage(
+    db: AsyncSession,
+    group_agent: GroupAgent,
+    usage: ContextUsage,
+    context_message_id: UUID | None,
+) -> None:
+    group_agent.last_context_input_tokens = usage.input_tokens
+    group_agent.last_context_output_tokens = usage.output_tokens
+    group_agent.last_context_total_tokens = usage.total_tokens
+    group_agent.last_context_window_tokens = usage.context_window_tokens
+    group_agent.last_context_output_reserve_tokens = usage.output_reserve_tokens
+    group_agent.last_context_message_id = context_message_id
+    group_agent.last_context_usage_source = usage.source
+    group_agent.last_context_updated_at = datetime.now(UTC)
+    await db.flush()
+
+
+def _fallback_usage_from_previous(
+    group_agent: GroupAgent,
+    history_items: list[ContextHistoryItem],
+    dropped_items: list[ContextHistoryItem],
+    full_fallback_input_tokens: int,
+) -> tuple[int, str]:
+    if (
+        group_agent.last_context_input_tokens is None
+        or group_agent.last_context_message_id is None
+        or group_agent.last_context_usage_source
+        not in {"provider", "previous_provider_delta"}
+    ):
+        return full_fallback_input_tokens, "fallback_tokenizer"
+
+    boundary_index = next(
+        (
+            index
+            for index, item in enumerate(history_items)
+            if item.message_id == group_agent.last_context_message_id
+        ),
+        None,
+    )
+    if boundary_index is None:
+        return full_fallback_input_tokens, "fallback_tokenizer"
+
+    dropped_ids = {item.message_id for item in dropped_items}
+    delta_tokens = sum(
+        estimate_message_tokens(item.message)
+        for item in history_items[boundary_index + 1 :]
+        if item.message_id not in dropped_ids
+    )
+    return (
+        group_agent.last_context_input_tokens + delta_tokens,
+        "previous_provider_delta",
+    )
+
+
 async def _build_invocation(
     db: AsyncSession,
     group: Group,
     group_agent: GroupAgent,
     agent: Agent,
     extra_user_text: str | None = None,
+    required_message_id: UUID | None = None,
     history_statuses: tuple[str, ...] = ("visible", "interrupted"),
-) -> tuple[list[BaseMessage], AgentInvocationContext]:
+) -> BuiltAgentInvocation:
     """Build the LangChain message list for an agent invocation.
 
     - system = shared agent context (prompt, group, workspace, tools, skills).
-    - history = last `CONTEXT_WINDOW` group messages (visible OR interrupted)
-      in chronological order. All group members share the same history.
+    - history = recent group messages (visible OR interrupted) in chronological
+      order, selected by token budget. All group members share the same history.
       - Current agent's own messages → AIMessage (so the LLM sees them as
         its own prior turns).
       - Other agents' / users' messages → HumanMessage with a `[Name]: `
@@ -430,13 +661,26 @@ async def _build_invocation(
     owner = await db.scalar(select(User).where(User.id == agent.owner_id))
     if owner is None:
         raise NotFoundError(f"user {agent.owner_id}")
+    provider_context = await _resolve_provider_context_config(db, agent)
+    context_budget = resolve_context_budget(
+        agent,
+        model_name=provider_context.model_name,
+        provider_context_window_tokens=provider_context.context_window_tokens,
+        provider_output_reserve_ratio=provider_context.output_reserve_ratio,
+    )
     context = await build_agent_invocation_context(
         db,
         agent,
         owner,
         group=group,
         group_agent=group_agent,
-        runtime_limits={**DEFAULT_RUNTIME_LIMITS, "context_history_messages": CONTEXT_WINDOW},
+        runtime_limits={
+            **DEFAULT_RUNTIME_LIMITS,
+            "context_history_messages": CONTEXT_HISTORY_CANDIDATE_LIMIT,
+            "context_window_tokens": context_budget.context_window_tokens,
+            "context_input_budget_tokens": context_budget.input_budget_tokens,
+            "context_output_reserve_tokens": context_budget.output_reserve_tokens,
+        },
     )
     system_message = context.to_system_message()
 
@@ -454,25 +698,62 @@ async def _build_invocation(
         # sort DESC + LIMIT then `.reverse()`, so both keys must be DESC
         # here to keep the post-reverse ASC ordering self-consistent.
         .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(CONTEXT_WINDOW)
+        .limit(CONTEXT_HISTORY_CANDIDATE_LIMIT)
     )
     history = list(await db.scalars(history_stmt))
     history.reverse()
 
-    out: list[BaseMessage] = [system_message]
+    history_items: list[ContextHistoryItem] = []
     for m in history:
-        if m.content is None:
-            continue
-        sid = str(m.sender_id) if m.sender_id else None
-        if m.sender_type == "agent" and sid == my_id:
-            out.append(AIMessage(content=m.content))
-        else:
-            name = sender_names.get(sid or "", None) if sid else None
-            prefix = f"[{name}]: " if name else ""
-            out.append(HumanMessage(content=f"{prefix}{m.content}"))
-    if extra_user_text:
-        out.append(HumanMessage(content=extra_user_text))
-    return out, context
+        item = _context_history_item(
+            m,
+            my_agent_id=my_id,
+            sender_names=sender_names,
+        )
+        if item is not None:
+            history_items.append(item)
+
+    budgeted = build_budgeted_context(
+        system_message=system_message,
+        history_items=history_items,
+        rolling_summary=group.context_summary,
+        context_budget=context_budget,
+        required_message_id=required_message_id,
+        extra_user_text=extra_user_text,
+    )
+    for _ in range(2):
+        updated_summary, summary_changed = await _update_group_context_summary(
+            db,
+            group,
+            budgeted.dropped_items,
+        )
+        if not summary_changed:
+            break
+        budgeted = build_budgeted_context(
+            system_message=system_message,
+            history_items=history_items,
+            rolling_summary=updated_summary,
+            context_budget=context_budget,
+            required_message_id=required_message_id,
+            extra_user_text=extra_user_text,
+        )
+    context_message_id = history_items[-1].message_id if history_items else required_message_id
+    fallback_input_tokens, fallback_source = _fallback_usage_from_previous(
+        group_agent,
+        history_items,
+        budgeted.dropped_items,
+        budgeted.fallback_input_tokens,
+    )
+    return BuiltAgentInvocation(
+        input_messages=budgeted.messages,
+        context=context,
+        fallback_context_usage=fallback_context_usage(
+            input_tokens=fallback_input_tokens,
+            context_budget=budgeted.context_budget,
+            source=fallback_source,
+        ),
+        context_message_id=context_message_id,
+    )
 
 
 async def _build_lc_input(
@@ -482,10 +763,10 @@ async def _build_lc_input(
     agent: Agent,
     extra_user_text: str | None = None,
 ) -> list[BaseMessage]:
-    messages, _context = await _build_invocation(
+    invocation = await _build_invocation(
         db, group, group_agent, agent, extra_user_text=extra_user_text
     )
-    return messages
+    return invocation.input_messages
 
 
 def _is_silent_reply(group: Group, text: str) -> bool:
@@ -880,6 +1161,7 @@ def _serialize_msg(m: Message) -> dict[str, Any]:
         "message_type": m.message_type,
         "content": m.content,
         "status": m.status,
+        "context_usage": m.context_usage,
         "reply_to_message_id": (
             str(m.reply_to_message_id) if m.reply_to_message_id else None
         ),
@@ -1023,7 +1305,15 @@ async def send_message(
             )
             await thread_service.mark_running(db, chat_thread)
             try:
-                input_messages, context = await _build_invocation(db, group, group_agent, agent)
+                invocation = await _build_invocation(
+                    db,
+                    group,
+                    group_agent,
+                    agent,
+                    required_message_id=user_msg.id,
+                )
+                input_messages = invocation.input_messages
+                context = invocation.context
                 if agent.runtime_kind == "external_cli":
                     text = await _run_external_agent_once(
                         db,
@@ -1044,6 +1334,12 @@ async def send_message(
                         continue
                     visible_text = _sanitize_agent_visible_content(text)
                     if visible_text:
+                        await _record_context_usage(
+                            db,
+                            group_agent,
+                            invocation.fallback_context_usage,
+                            invocation.context_message_id,
+                        )
                         agent_msg = await _persist_agent_message(
                             db,
                             group_id,
@@ -1051,6 +1347,7 @@ async def send_message(
                             visible_text,
                             chat_thread.id,
                             reply_to=user_msg.id,
+                            context_usage=invocation.fallback_context_usage,
                         )
                         agent_replies.append(agent_msg)
                         visible_replies_used += 1
@@ -1151,6 +1448,16 @@ async def send_message(
                     tool_event_callback=_record_tool_event,
                     agent_handoff_tool_names={"AgentAsTool"},
                 )
+                context_usage = extract_context_usage(
+                    response,
+                    fallback_usage=invocation.fallback_context_usage,
+                )
+                await _record_context_usage(
+                    db,
+                    group_agent,
+                    context_usage,
+                    invocation.context_message_id,
+                )
                 text = (
                     response.content
                     if isinstance(response.content, str)
@@ -1172,7 +1479,13 @@ async def send_message(
                     break
                 if visible_text:
                     agent_msg = await _persist_agent_message(
-                        db, group_id, agent, visible_text, chat_thread.id, reply_to=user_msg.id
+                        db,
+                        group_id,
+                        agent,
+                        visible_text,
+                        chat_thread.id,
+                        reply_to=user_msg.id,
+                        context_usage=context_usage,
                     )
                     agent_replies.append(agent_msg)
                     visible_replies_used += 1
@@ -1234,12 +1547,15 @@ async def send_message(
         )
         await thread_service.mark_running(db, helper_thread)
         try:
-            input_messages, context = await _build_invocation(
+            invocation = await _build_invocation(
                 db,
                 group,
                 dispatch.helper_group_agent,
                 dispatch.helper_agent,
+                required_message_id=dispatch_msg.id,
             )
+            input_messages = invocation.input_messages
+            context = invocation.context
             if dispatch.helper_agent.runtime_kind == "external_cli":
                 text = await _run_external_agent_once(
                     db,
@@ -1263,6 +1579,12 @@ async def send_message(
                     continue
                 visible_text = _sanitize_agent_visible_content(text)
                 if visible_text:
+                    await _record_context_usage(
+                        db,
+                        dispatch.helper_group_agent,
+                        invocation.fallback_context_usage,
+                        invocation.context_message_id,
+                    )
                     agent_msg = await _persist_agent_message(
                         db,
                         group_id,
@@ -1270,6 +1592,7 @@ async def send_message(
                         visible_text,
                         helper_thread.id,
                         reply_to=dispatch_msg.id,
+                        context_usage=invocation.fallback_context_usage,
                     )
                     agent_replies.append(agent_msg)
                 waiting_for_user = _requests_human_input(
@@ -1295,6 +1618,16 @@ async def send_message(
                 workspace_tools=build_workspace_tools(context),
                 tool_event_callback=_record_tool_event,
             )
+            context_usage = extract_context_usage(
+                response,
+                fallback_usage=invocation.fallback_context_usage,
+            )
+            await _record_context_usage(
+                db,
+                dispatch.helper_group_agent,
+                context_usage,
+                invocation.context_message_id,
+            )
             text = response.content if isinstance(response.content, str) else str(response.content)
             if _is_silent_reply(group, text):
                 silent_turns.append(
@@ -1316,6 +1649,7 @@ async def send_message(
                     visible_text,
                     helper_thread.id,
                     reply_to=dispatch_msg.id,
+                    context_usage=context_usage,
                 )
                 agent_replies.append(agent_msg)
             waiting_for_user = (
@@ -1375,7 +1709,28 @@ async def _stream_one_agent(
     cancelled = False
     try:
         async with _db_lock_section(db_lock):
-            input_messages, context = await _build_invocation(db, group, group_agent, agent)
+            invocation = await _build_invocation(
+                db,
+                group,
+                group_agent,
+                agent,
+                required_message_id=reply_to,
+            )
+            input_messages = invocation.input_messages
+            context = invocation.context
+        # Emit the per-turn context usage as soon as the prompt is assembled, so
+        # the avatar ring reflects THIS turn's input size in real time instead of
+        # waiting for the final message (or showing a stale previous baseline).
+        usage_payload: dict[str, Any] = {
+            "agent_id": agent_id_str,
+            "display_name": group_agent.display_name or agent.name,
+            "context_usage": invocation.fallback_context_usage.to_payload(),
+        }
+        if stream_id is not None:
+            usage_payload["stream_id"] = str(stream_id)
+        if round_idx is not None:
+            usage_payload["round"] = round_idx
+        yield {"event": "context_usage", "data": json.dumps(usage_payload)}
         if agent.runtime_kind == "external_cli":
             config = normalize_external_runtime(agent.external_runtime)
             async with _db_lock_section(db_lock):
@@ -1441,8 +1796,20 @@ async def _stream_one_agent(
                     }
                 if visible_text:
                     async with _db_lock_section(db_lock):
+                        await _record_context_usage(
+                            db,
+                            group_agent,
+                            invocation.fallback_context_usage,
+                            invocation.context_message_id,
+                        )
                         agent_msg = await _persist_agent_message(
-                            db, group.id, agent, visible_text, chat_thread.id, reply_to=reply_to
+                            db,
+                            group.id,
+                            agent,
+                            visible_text,
+                            chat_thread.id,
+                            reply_to=reply_to,
+                            context_usage=invocation.fallback_context_usage,
                         )
                     yield {
                         "event": "agent_message",
@@ -1534,6 +1901,24 @@ async def _stream_one_agent(
                         _serialize_tool_event(payload, agent, group_agent, stream_id, round_idx)
                     ),
                 }
+            elif kind == "usage" and isinstance(payload, AIMessage):
+                # One usage signal per model call in the tool loop — emit the
+                # provider-reported context usage so the avatar ring climbs in
+                # real time as the turn grows (persisted only on "done" below).
+                step_usage = extract_context_usage(
+                    payload,
+                    fallback_usage=invocation.fallback_context_usage,
+                )
+                step_usage_payload: dict[str, Any] = {
+                    "agent_id": agent_id_str,
+                    "display_name": group_agent.display_name or agent.name,
+                    "context_usage": step_usage.to_payload(),
+                }
+                if stream_id is not None:
+                    step_usage_payload["stream_id"] = str(stream_id)
+                if round_idx is not None:
+                    step_usage_payload["round"] = round_idx
+                yield {"event": "context_usage", "data": json.dumps(step_usage_payload)}
             elif kind == "reasoning":
                 if isinstance(payload, str) and payload:
                     yield {
@@ -1577,6 +1962,17 @@ async def _stream_one_agent(
                 continue
             elif kind == "done":
                 final: AIMessage = payload
+                context_usage = extract_context_usage(
+                    final,
+                    fallback_usage=invocation.fallback_context_usage,
+                )
+                async with _db_lock_section(db_lock):
+                    await _record_context_usage(
+                        db,
+                        group_agent,
+                        context_usage,
+                        invocation.context_message_id,
+                    )
                 text = (
                     final.content
                     if isinstance(final.content, str)
@@ -1632,6 +2028,7 @@ async def _stream_one_agent(
                                 visible_text,
                                 chat_thread.id,
                                 reply_to=reply_to,
+                                context_usage=context_usage,
                             )
                         yield {
                             "event": "agent_message",
@@ -2151,9 +2548,16 @@ async def resume_thread_stream(
     chunks: list[str] = []
     agent_id_str = str(agent.id)
     try:
-        input_messages, context = await _build_invocation(
-            db, group, group_agent, agent, extra_user_text=RESUME_CONTINUATION_PROMPT
+        invocation = await _build_invocation(
+            db,
+            group,
+            group_agent,
+            agent,
+            extra_user_text=RESUME_CONTINUATION_PROMPT,
+            required_message_id=interrupted_msg.id,
         )
+        input_messages = invocation.input_messages
+        context = invocation.context
         chat_model = await resolve_chat_model(db, agent, streaming=True)
         async for kind, payload in runtime.run_with_stream(
             graph=graph,
@@ -2171,8 +2575,23 @@ async def resume_thread_stream(
                     ),
                 }
             elif kind == "done":
+                final: AIMessage = payload
+                context_usage = extract_context_usage(
+                    final,
+                    fallback_usage=invocation.fallback_context_usage,
+                )
+                await _record_context_usage(
+                    db,
+                    group_agent,
+                    context_usage,
+                    invocation.context_message_id,
+                )
                 addition = "".join(chunks)
                 interrupted_msg.content = (interrupted_msg.content or "") + addition
+                interrupted_msg.content_json = {
+                    **(interrupted_msg.content_json or {}),
+                    "context_usage": context_usage.to_payload(),
+                }
                 interrupted_msg.status = "visible"
                 await db.flush()
                 await db.refresh(interrupted_msg)

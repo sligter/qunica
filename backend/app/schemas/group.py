@@ -97,6 +97,17 @@ class ClearGroupMessagesResponse(BaseModel):
     cleared_count: int
 
 
+class ContextUsageRead(BaseModel):
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    context_window_tokens: int | None
+    output_reserve_tokens: int | None
+    ratio: float | None
+    source: str | None
+    updated_at: datetime | None = None
+
+
 class GroupAgentRead(BaseModel):
     """Resolved view of a group_agent row.
 
@@ -113,5 +124,6 @@ class GroupAgentRead(BaseModel):
     speaking_order: int | None
     response_mode: str
     share_group_workspace: bool
+    context_usage: ContextUsageRead | None = None
     status: str
     joined_at: datetime

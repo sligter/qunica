@@ -133,7 +133,10 @@ async def test_run_with_stream_streams_model_chunks_when_tools_are_bound() -> No
     ]
 
     assert [payload for kind, payload in events if kind == "token"] == ["hel", "lo"]
-    assert [kind for kind, _payload in events] == ["token", "token", "done"]
+    assert [kind for kind, _payload in events] == ["token", "token", "usage", "done"]
+    # `usage` carries the model's final AIMessage so callers can report context use.
+    assert events[-2][0] == "usage"
+    assert isinstance(events[-2][1], AIMessage)
 
 
 @pytest.mark.asyncio
@@ -149,7 +152,7 @@ async def test_run_with_stream_emits_reasoning_from_thinking_blocks() -> None:
         )
     ]
 
-    assert [(kind, payload) for kind, payload in events if kind != "done"] == [
+    assert [(kind, payload) for kind, payload in events if kind not in {"done", "usage"}] == [
         ("reasoning", "let me think"),
         ("token", "answer"),
     ]
@@ -169,7 +172,7 @@ async def test_run_with_stream_emits_reasoning_from_reasoning_content() -> None:
         )
     ]
 
-    assert [(kind, payload) for kind, payload in events if kind != "done"] == [
+    assert [(kind, payload) for kind, payload in events if kind not in {"done", "usage"}] == [
         ("reasoning", "thinking..."),
         ("token", "final"),
     ]
@@ -192,7 +195,7 @@ async def test_run_with_stream_emits_prelude_text_before_tool_events() -> None:
     visible = [
         (kind, getattr(payload, "tool_name", payload))
         for kind, payload in events
-        if kind != "done"
+        if kind not in {"done", "usage"}
     ]
     assert visible == [
         ("token", "I will inspect the workspace first."),

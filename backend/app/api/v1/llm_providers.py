@@ -26,6 +26,8 @@ def _to_read(provider: object) -> LLMProviderRead:
         base_url=p.base_url,  # type: ignore[attr-defined]
         api_key_masked=mask_api_key(p.api_key),  # type: ignore[attr-defined]
         default_model=p.default_model,  # type: ignore[attr-defined]
+        context_window_tokens=p.context_window_tokens,  # type: ignore[attr-defined]
+        context_output_reserve_ratio=p.context_output_reserve_ratio,  # type: ignore[attr-defined]
         description=p.description,  # type: ignore[attr-defined]
         reasoning_passback=p.reasoning_passback,  # type: ignore[attr-defined]
         status=p.status,  # type: ignore[attr-defined]

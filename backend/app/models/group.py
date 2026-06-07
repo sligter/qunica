@@ -1,6 +1,7 @@
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, Integer, String, Text, false, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, Text, false, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDPkMixin
@@ -38,6 +39,13 @@ class Group(Base, UUIDPkMixin, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     announcement: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summary_message_id: Mapped[UUID | None] = mapped_column(
+        GUID(), nullable=True
+    )
+    context_summary_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     memory_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     allow_agent_suggest_invite: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False

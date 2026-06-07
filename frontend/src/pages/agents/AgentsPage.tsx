@@ -9,17 +9,22 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { useAgents } from '@/hooks/useAgents'
 import { useProviders } from '@/hooks/useProviders'
+import { useSkills } from '@/hooks/useSkills'
 import type { AgentRead } from '@/types/api'
 
 export function AgentsPage() {
   const agents = useAgents()
   const providers = useProviders()
+  const skills = useSkills()
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<AgentRead | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
 
   const getProvider = (id: string | null) =>
     id ? providers.data?.find((p) => p.id === id) : null
+  // Count only skills that still exist — deleted skills linger in skill_ids
+  // until pruned, which otherwise inflates the card count vs. the detail view.
+  const existingSkillIds = new Set((skills.data ?? []).map((s) => s.id))
 
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
@@ -64,6 +69,9 @@ export function AgentsPage() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {agents.data.map((a) => {
               const prov = getProvider(a.llm_provider_id)
+              const mountedSkillCount = a.skill_ids.filter((id) =>
+                existingSkillIds.has(id),
+              ).length
               return (
                 <Card
                   key={a.id}
@@ -105,9 +113,9 @@ export function AgentsPage() {
                         {a.status}
                       </Badge>
                     </div>
-                    {a.skill_ids.length > 0 && (
+                    {mountedSkillCount > 0 && (
                       <p className="text-[10px] text-muted-foreground">
-                        {a.skill_ids.length} skill{a.skill_ids.length > 1 ? 's' : ''} mounted
+                        {mountedSkillCount} skill{mountedSkillCount > 1 ? 's' : ''} mounted
                       </p>
                     )}
                   </CardContent>

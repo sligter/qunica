@@ -42,6 +42,8 @@ async def create_provider(
         base_url=data.base_url,
         api_key=data.api_key,
         default_model=data.default_model,
+        context_window_tokens=data.context_window_tokens,
+        context_output_reserve_ratio=data.context_output_reserve_ratio,
         description=data.description,
         reasoning_passback=data.reasoning_passback,
     )
@@ -105,6 +107,10 @@ async def update_provider(
         provider.api_key = data.api_key
     if data.default_model is not None:
         provider.default_model = data.default_model
+    if "context_window_tokens" in data.model_fields_set:
+        provider.context_window_tokens = data.context_window_tokens
+    if "context_output_reserve_ratio" in data.model_fields_set:
+        provider.context_output_reserve_ratio = data.context_output_reserve_ratio
     if "description" in data.model_fields_set:
         provider.description = data.description
     if data.reasoning_passback is not None:

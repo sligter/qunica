@@ -21,6 +21,7 @@ from app.core.exceptions import (
     NotFoundError,
     PermissionDeniedError,
 )
+from app.models.agent import Agent
 from app.models.skill import Skill
 from app.models.user import User
 from app.schemas.skill import SkillCreate, SkillGithubImport
@@ -649,4 +650,15 @@ async def update_skill_resource(
 async def delete_skill(db: AsyncSession, skill_id: UUID, owner: User) -> None:
     skill = await get_skill(db, skill_id, owner)
     skill.status = "deleted"
+    # Prune the deleted skill from any agents that still reference it, so mounted
+    # counts and prompt assembly never carry a dangling id. (Skills are
+    # owner-scoped, so only this owner's agents can reference it.)
+    skill_id_str = str(skill_id)
+    agents = list(await db.scalars(select(Agent).where(Agent.owner_id == owner.id)))
+    for agent in agents:
+        if not agent.skill_ids:
+            continue
+        pruned = [s for s in agent.skill_ids if str(s) != skill_id_str]
+        if len(pruned) != len(agent.skill_ids):
+            agent.skill_ids = pruned
     await db.flush()

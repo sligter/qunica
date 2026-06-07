@@ -12,7 +12,7 @@
 import { create } from 'zustand'
 
 import type { HumanInputRequest } from '@/lib/humanInput'
-import type { Message } from '@/types/api'
+import type { ContextUsage, Message } from '@/types/api'
 
 export interface StreamingBubble {
   id: string
@@ -28,6 +28,7 @@ export interface ActiveAgent {
   total: number
   round?: number
   stream_id?: string | null
+  context_usage?: ContextUsage | null
 }
 
 export type ToolActivityStatus =
@@ -67,6 +68,7 @@ export interface StreamAgentStartEvent extends StreamTimelineEventBase {
   index?: number
   total?: number
   round?: number
+  context_usage?: ContextUsage | null
 }
 
 export interface StreamResponseDraftEvent extends StreamTimelineEventBase {
@@ -76,6 +78,7 @@ export interface StreamResponseDraftEvent extends StreamTimelineEventBase {
   content: string
   status: 'streaming' | 'finalized'
   message_id?: string
+  context_usage?: ContextUsage | null
 }
 
 export interface StreamReasoningEvent extends StreamTimelineEventBase {
@@ -116,6 +119,7 @@ export interface StreamAgentMessageEvent extends StreamTimelineEventBase {
   agent_id: string
   display_name: string
   content: string
+  context_usage?: ContextUsage | null
 }
 
 export interface StreamNoticeEvent extends StreamTimelineEventBase {
@@ -172,6 +176,12 @@ interface MessageState {
   clearToolActivity: (groupId: string) => void
   startStreamRun: (groupId: string, userMessage: Message) => void
   addStreamAgentStart: (groupId: string, streamId: string, agent: ActiveAgent) => void
+  setStreamAgentContextUsage: (
+    groupId: string,
+    streamId: string,
+    agentId: string,
+    usage: ContextUsage,
+  ) => void
   patchStreamDraft: (
     groupId: string,
     streamId: string,
@@ -569,6 +579,7 @@ export const useMessageStore = create<MessageState>((set) => ({
         index: agent.index,
         total: agent.total,
         round: agent.round,
+        context_usage: agent.context_usage,
         created_at: timestamp,
       }
       const nextRun: StreamRun = {
@@ -585,6 +596,35 @@ export const useMessageStore = create<MessageState>((set) => ({
         streamRunOrderByGroup: {
           ...s.streamRunOrderByGroup,
           [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
+  // Live per-turn usage: the backend emits `context_usage` right after the
+  // prompt is built (before any tokens). Patch the latest agent_start event for
+  // this agent so the avatar ring updates immediately; the final agent_message
+  // later overrides it with the provider-exact figure.
+  setStreamAgentContextUsage: (groupId, streamId, agentId, usage) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId]
+      const run = groupRuns?.[streamId]
+      if (!run) return {}
+      let patchedIndex = -1
+      for (let i = run.events.length - 1; i >= 0; i -= 1) {
+        const ev = run.events[i]
+        if (ev.type === 'agent_start' && ev.agent_id === agentId) {
+          patchedIndex = i
+          break
+        }
+      }
+      if (patchedIndex === -1) return {}
+      const events = run.events.map((ev, i) =>
+        i === patchedIndex ? { ...ev, context_usage: usage } : ev,
+      )
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: { ...run, events } },
         },
       }
     }),
@@ -713,6 +753,7 @@ export const useMessageStore = create<MessageState>((set) => ({
               display_name: displayName ?? event.display_name,
               status: 'finalized',
               message_id: event.id === lastSegmentId ? message.id : event.message_id,
+              context_usage: message.context_usage ?? event.context_usage,
               updated_at: timestamp,
             }
           }
@@ -727,6 +768,7 @@ export const useMessageStore = create<MessageState>((set) => ({
           agent_id: agentId,
           display_name: displayName ?? 'Agent',
           content: message.content ?? '',
+          context_usage: message.context_usage,
           created_at: timestamp,
           updated_at: timestamp,
         }

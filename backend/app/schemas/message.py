@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.group import ContextUsageRead
+
 
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1)
@@ -21,6 +23,7 @@ class MessageRead(BaseModel):
     content: str | None
     status: str
     refs: dict[str, Any] | None
+    context_usage: ContextUsageRead | None = None
     reply_to_message_id: UUID | None
     created_at: datetime
 

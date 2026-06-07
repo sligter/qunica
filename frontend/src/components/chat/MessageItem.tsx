@@ -28,6 +28,10 @@ export function MessageItem({
   const groupAgents = useGroupAgents(groupId)
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
+  const groupAgent = useMemo(() => {
+    if (message.sender_type !== 'agent') return undefined
+    return groupAgents.data?.find((g) => g.agent_id === message.sender_id)
+  }, [groupAgents.data, message.sender_id, message.sender_type])
 
   const senderName = useMemo(() => {
     if (message.sender_type === 'user') {
@@ -35,11 +39,10 @@ export function MessageItem({
       return 'User'
     }
     if (message.sender_type === 'agent') {
-      const ga = groupAgents.data?.find((g) => g.agent_id === message.sender_id)
-      return ga?.display_name ?? 'Agent'
+      return groupAgent?.display_name ?? 'Agent'
     }
     return 'System'
-  }, [currentUser, groupAgents.data, message.sender_id, message.sender_type])
+  }, [currentUser, groupAgent?.display_name, message.sender_id, message.sender_type])
 
   if (message.sender_type === 'system') {
     return (
@@ -70,6 +73,7 @@ export function MessageItem({
         name={senderName}
         kind={isUser ? 'user' : 'agent'}
         className="mt-0.5"
+        contextUsage={message.context_usage ?? groupAgent?.context_usage ?? null}
       />
       <div
         className={cn(

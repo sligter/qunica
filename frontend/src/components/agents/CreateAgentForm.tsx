@@ -52,6 +52,14 @@ const schema = z.object({
     .optional(),
   top_p: z.number().min(0).max(1).optional(),
   reasoning_effort: z.enum(thinkingLevelValues),
+  context_window_tokens: z.preprocess(
+    (value) => (value === '' || Number.isNaN(value) ? undefined : value),
+    z.number().int().min(1).optional(),
+  ),
+  context_output_reserve_percent: z.preprocess(
+    (value) => (value === '' || Number.isNaN(value) ? undefined : value),
+    z.number().min(1).max(90).optional(),
+  ),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -89,6 +97,8 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       temperature: DEFAULT_AGENT_TEMPERATURE,
       top_p: 1,
       reasoning_effort: 'default',
+      context_window_tokens: undefined,
+      context_output_reserve_percent: undefined,
     },
   })
 
@@ -115,6 +125,13 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
         llm_config.reasoning_effort = values.reasoning_effort
+      }
+      if (values.context_window_tokens !== undefined) {
+        llm_config.context_window_tokens = values.context_window_tokens
+      }
+      if (values.context_output_reserve_percent !== undefined) {
+        llm_config.context_output_reserve_ratio =
+          values.context_output_reserve_percent / 100
       }
 
       const created = await createAgent.mutateAsync({
@@ -333,6 +350,31 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                   value={form.watch('reasoning_effort')}
                   onChange={(value) => form.setValue('reasoning_effort', value)}
                 />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="agent-context-window">Context window override</Label>
+                    <Input
+                      id="agent-context-window"
+                      type="number"
+                      min={1}
+                      placeholder="Inherit provider"
+                      {...form.register('context_window_tokens', { valueAsNumber: true })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="agent-output-reserve">Output reserve % override</Label>
+                    <Input
+                      id="agent-output-reserve"
+                      type="number"
+                      min={1}
+                      max={90}
+                      placeholder="Inherit provider"
+                      {...form.register('context_output_reserve_percent', {
+                        valueAsNumber: true,
+                      })}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>

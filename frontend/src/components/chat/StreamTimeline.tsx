@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Brain,
   ChevronRight,
@@ -12,6 +12,7 @@ import {
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { useGroupAgents } from '@/hooks/useGroupAgents'
 import {
   humanInputRequestFromText,
   normalizeHumanInputRequest,
@@ -28,6 +29,7 @@ import type {
   StreamToolEvent,
   ToolActivityStatus,
 } from '@/stores/messageStore'
+import type { ContextUsage } from '@/types/api'
 
 interface StreamTimelineProps {
   run: StreamRun
@@ -442,6 +444,7 @@ interface AgentBlock {
   kind: 'agent'
   agentId: string
   displayName: string
+  contextUsage?: ContextUsage | null
   events: StreamTimelineEvent[]
   lastAt: string
 }
@@ -462,6 +465,11 @@ function eventTime(event: StreamTimelineEvent): string {
   return ('updated_at' in event ? event.updated_at : undefined) ?? event.created_at
 }
 
+function eventContextUsage(event: StreamTimelineEvent): ContextUsage | null | undefined {
+  if ('context_usage' in event) return event.context_usage
+  return undefined
+}
+
 function buildBlocks(events: StreamTimelineEvent[]): RenderBlock[] {
   const blocks: RenderBlock[] = []
   for (const event of events) {
@@ -472,16 +480,19 @@ function buildBlocks(events: StreamTimelineEvent[]): RenderBlock[] {
       continue
     }
     const displayName = 'display_name' in event ? event.display_name : 'Agent'
+    const contextUsage = eventContextUsage(event)
     const last = blocks[blocks.length - 1]
     if (last && last.kind === 'agent' && last.agentId === agentId) {
       last.events.push(event)
       last.lastAt = eventTime(event)
       if (displayName) last.displayName = displayName
+      if (contextUsage !== undefined) last.contextUsage = contextUsage
     } else {
       blocks.push({
         kind: 'agent',
         agentId,
         displayName: displayName || 'Agent',
+        contextUsage,
         events: [event],
         lastAt: eventTime(event),
       })
@@ -590,12 +601,14 @@ function AgentBlockView({
   block,
   runStatus,
   groupId,
+  fallbackUsage,
   onSubmitHumanInput,
   renderedInputRequests,
 }: {
   block: AgentBlock
   runStatus: StreamRun['status']
   groupId: string
+  fallbackUsage: ContextUsage | null
   onSubmitHumanInput?: (content: string) => void
   renderedInputRequests: Set<string>
 }) {
@@ -647,7 +660,11 @@ function AgentBlockView({
 
   return (
     <div className="flex w-full gap-3 px-4 py-1.5">
-      <AgentAvatar name={block.displayName} className="mt-0.5" />
+      <AgentAvatar
+        name={block.displayName}
+        className="mt-0.5"
+        contextUsage={block.contextUsage ?? fallbackUsage}
+      />
       <div className="flex min-w-0 max-w-[88%] flex-col gap-1 md:max-w-[82%]">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{block.displayName}</span>
@@ -681,6 +698,17 @@ function AgentBlockView({
 }
 
 export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps) {
+  const groupAgents = useGroupAgents(run.group_id)
+  // Last-known usage per group-agent. The live `agent_start` events don't carry
+  // context_usage (it's computed only after the LLM responds), so without this
+  // fallback the avatar ring stays blank for the whole streaming turn.
+  const usageByAgentId = useMemo(() => {
+    const map = new Map<string, ContextUsage>()
+    for (const agent of groupAgents.data ?? []) {
+      if (agent.context_usage) map.set(agent.agent_id, agent.context_usage)
+    }
+    return map
+  }, [groupAgents.data])
   const blocks = buildBlocks(run.events)
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
@@ -720,6 +748,7 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
             block={block}
             runStatus={run.status}
             groupId={run.group_id}
+            fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
             onSubmitHumanInput={onSubmitHumanInput}
             renderedInputRequests={renderedInputRequests}
           />

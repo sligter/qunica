@@ -632,6 +632,11 @@ async def run_with_stream(
         if final is None:
             raise LLMProviderError("agent runtime stream produced no final response")
 
+        # Surface this LLM call's usage so the UI can update the context meter
+        # mid-turn: the tool loop below may run several more model calls before
+        # the terminal ("done") response, each one growing the prompt.
+        yield ("usage", final)
+
         tool_calls = list(final.tool_calls or [])
         if not tool_calls:
             content = _message_text(final.content)

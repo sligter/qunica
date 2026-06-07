@@ -82,6 +82,22 @@ export function ProviderDetailDialog({
         <div className="grid grid-cols-2 gap-4 text-sm">
           <Field label="Kind" value={provider.kind} />
           <Field label="Default model" value={provider.default_model} />
+          <Field
+            label="Context window"
+            value={
+              provider.context_window_tokens !== null
+                ? provider.context_window_tokens.toLocaleString()
+                : 'Auto'
+            }
+          />
+          <Field
+            label="Output reserve"
+            value={
+              provider.context_output_reserve_ratio !== null
+                ? `${Math.round(provider.context_output_reserve_ratio * 100)}%`
+                : '30%'
+            }
+          />
           <Field label="Base URL" value={provider.base_url ?? '-'} />
           <Field label="API key" value={provider.api_key_masked} mono />
           <Field label="Status">

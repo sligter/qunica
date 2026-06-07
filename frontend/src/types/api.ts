@@ -131,6 +131,17 @@ export interface AgentRead {
   created_at: string
 }
 
+export interface ContextUsage {
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  context_window_tokens: number | null
+  output_reserve_tokens: number | null
+  ratio: number | null
+  source: string | null
+  updated_at?: string | null
+}
+
 export interface AgentCreate {
   name: string
   description?: string
@@ -170,6 +181,8 @@ export interface LLMProviderRead {
   base_url: string | null
   api_key_masked: string
   default_model: string
+  context_window_tokens: number | null
+  context_output_reserve_ratio: number | null
   description: string | null
   reasoning_passback: boolean
   status: string
@@ -182,6 +195,8 @@ export interface LLMProviderCreate {
   base_url?: string | null
   api_key: string
   default_model: string
+  context_window_tokens?: number | null
+  context_output_reserve_ratio?: number | null
   description?: string | null
   reasoning_passback?: boolean
 }
@@ -192,6 +207,8 @@ export interface LLMProviderUpdate {
   base_url?: string | null
   api_key?: string | null
   default_model?: string | null
+  context_window_tokens?: number | null
+  context_output_reserve_ratio?: number | null
   description?: string | null
   reasoning_passback?: boolean
 }
@@ -317,6 +334,7 @@ export interface GroupAgentRead {
   speaking_order: number | null
   response_mode: string
   share_group_workspace: boolean
+  context_usage: ContextUsage | null
   status: string
   joined_at: string
 }
@@ -380,6 +398,7 @@ export interface Message {
   content: string | null
   status: string
   refs: Record<string, unknown> | null
+  context_usage: ContextUsage | null
   reply_to_message_id: string | null
   created_at: string
 }

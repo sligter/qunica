@@ -15,6 +15,7 @@ from app.models.message import Message
 from app.models.user import User
 from app.schemas.group import (
     ClearGroupMessagesResponse,
+    ContextUsageRead,
     GroupAgentAdd,
     GroupAgentMuteUpdate,
     GroupAgentRead,
@@ -72,6 +73,23 @@ async def list_groups(
 
 
 def _to_group_agent_read(ga: GroupAgent, agent: Agent) -> GroupAgentRead:
+    context_usage = None
+    if ga.last_context_window_tokens is not None:
+        ratio = (
+            min(1.0, ga.last_context_input_tokens / ga.last_context_window_tokens)
+            if ga.last_context_input_tokens is not None and ga.last_context_window_tokens > 0
+            else None
+        )
+        context_usage = ContextUsageRead(
+            input_tokens=ga.last_context_input_tokens,
+            output_tokens=ga.last_context_output_tokens,
+            total_tokens=ga.last_context_total_tokens,
+            context_window_tokens=ga.last_context_window_tokens,
+            output_reserve_tokens=ga.last_context_output_reserve_tokens,
+            ratio=ratio,
+            source=ga.last_context_usage_source,
+            updated_at=ga.last_context_updated_at,
+        )
     return GroupAgentRead(
         id=ga.id,
         group_id=ga.group_id,
@@ -82,6 +100,7 @@ def _to_group_agent_read(ga: GroupAgent, agent: Agent) -> GroupAgentRead:
         speaking_order=ga.speaking_order,
         response_mode=ga.response_mode,
         share_group_workspace=group_service.is_group_workspace_shared(ga),
+        context_usage=context_usage,
         status=ga.status,
         joined_at=ga.joined_at,
     )
