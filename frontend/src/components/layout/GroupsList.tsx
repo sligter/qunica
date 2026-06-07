@@ -8,6 +8,11 @@ import { Button } from '@/components/ui/button'
 import { useGroups } from '@/hooks/useGroups'
 import { cn } from '@/lib/utils'
 
+interface GroupsListProps {
+  width?: number
+  className?: string
+}
+
 function avatarColor(seed: string): string {
   // Stable hue from the first chars of the group id/name. Limited to a few
   // pleasing pastels so the rail looks calm.
@@ -36,14 +41,21 @@ function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString()
 }
 
-export function GroupsList() {
+export function GroupsList({ width, className }: GroupsListProps) {
   const groups = useGroups()
   const { groupId: activeId } = useParams<{ groupId: string }>()
   const navigate = useNavigate()
   const [dialogOpen, setDialogOpen] = useState(false)
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-r border-border bg-background">
+    <div
+      className={cn(
+        'flex h-full shrink-0 flex-col border-r border-border bg-background',
+        width === undefined && 'w-72',
+        className,
+      )}
+      style={width === undefined ? undefined : { width }}
+    >
       <div className="flex h-14 items-center justify-between border-b border-border px-4">
         <h2 className="text-sm font-semibold">Groups</h2>
         <Button

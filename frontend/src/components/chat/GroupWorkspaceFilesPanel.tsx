@@ -38,6 +38,7 @@ import type { GroupWorkspaceFileRead } from '@/types/api'
 
 interface GroupWorkspaceFilesPanelProps {
   groupId: string | undefined
+  width?: number
   className?: string
 }
 
@@ -58,7 +59,11 @@ function displayError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceFilesPanelProps) {
+export function GroupWorkspaceFilesPanel({
+  groupId,
+  width,
+  className,
+}: GroupWorkspaceFilesPanelProps) {
   const [currentPath, setCurrentPath] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
@@ -199,7 +204,14 @@ export function GroupWorkspaceFilesPanel({ groupId, className }: GroupWorkspaceF
   }
 
   return (
-    <aside className={cn('flex h-full w-80 shrink-0 flex-col border-l border-border bg-card', className)}>
+    <aside
+      className={cn(
+        'flex h-full shrink-0 flex-col border-l border-border bg-card',
+        width === undefined && 'w-80',
+        className,
+      )}
+      style={width === undefined ? undefined : { width }}
+    >
       <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold">Workspace files</h2>

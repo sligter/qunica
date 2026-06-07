@@ -6,10 +6,12 @@ import { Composer } from '@/components/chat/Composer'
 import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
 import { GroupWorkspaceFilesPanel } from '@/components/chat/GroupWorkspaceFilesPanel'
 import { MessageList } from '@/components/chat/MessageList'
+import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
 import { useGroup } from '@/hooks/useGroups'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useGroupMessages } from '@/hooks/useGroupMessages'
+import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
@@ -24,6 +26,12 @@ export function GroupChatPage() {
   const fileNavRequest = useFileNavStore((s) => s.request)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(true)
+  const workspaceFilesPane = usePersistentPaneWidth({
+    storageKey: 'ag-swarmer:layout:workspace-files-pane-width',
+    defaultWidth: 320,
+    minWidth: 260,
+    maxWidth: 560,
+  })
 
   useEffect(() => {
     if (groupId) clearWarnings(groupId)
@@ -132,7 +140,23 @@ export function GroupChatPage() {
             groupAgents={agents}
           />
         </div>
-        {workspaceFilesOpen && <GroupWorkspaceFilesPanel groupId={groupId} />}
+        {workspaceFilesOpen && (
+          <>
+            <VerticalResizeHandle
+              label="Resize workspace files column"
+              value={workspaceFilesPane.width}
+              min={workspaceFilesPane.minWidth}
+              max={workspaceFilesPane.maxWidth}
+              increaseOnArrowRight={false}
+              onResizeStart={(event) => workspaceFilesPane.startResize(event, -1)}
+              onStep={workspaceFilesPane.resizeBy}
+            />
+            <GroupWorkspaceFilesPanel
+              groupId={groupId}
+              width={workspaceFilesPane.width}
+            />
+          </>
+        )}
       </div>
 
       {group.data && (

@@ -79,6 +79,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
     <div
       className={cn(
         'min-w-0 break-words text-sm leading-6',
+        isUser && 'whitespace-pre-wrap',
         isUser ? 'text-primary-foreground' : 'text-foreground',
       )}
     >

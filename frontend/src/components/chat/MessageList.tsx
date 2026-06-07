@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MessageItem } from '@/components/chat/MessageItem'
@@ -18,6 +18,7 @@ interface MessageListProps {
 const EMPTY_MESSAGES: readonly Message[] = []
 const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_STREAM_RUNS: Record<string, never> = {}
+const BOTTOM_PROXIMITY_PX = 120
 
 function timelineMessageIds(runs: Record<string, StreamRun>): Set<string> {
   const ids = new Set<string>()
@@ -61,14 +62,22 @@ export function MessageList({
     [streamRuns],
   )
 
-  const updateNearBottom = () => {
+  const getScrollState = useCallback(() => {
     const node = scrollRef.current
-    if (!node) return
+    if (!node) return { canScroll: false, isNearBottom: true }
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight
-    const isNearBottom = distance < 120
+    const canScroll = node.scrollHeight - node.clientHeight > 1
+    return {
+      canScroll,
+      isNearBottom: !canScroll || distance < BOTTOM_PROXIMITY_PX,
+    }
+  }, [])
+
+  const updateNearBottom = useCallback(() => {
+    const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
-    if (isNearBottom) setShowJumpToLatest(false)
-  }
+    setShowJumpToLatest(hasActiveStreamRun && canScroll && !isNearBottom)
+  }, [getScrollState, hasActiveStreamRun])
 
   const jumpToLatest = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -77,14 +86,20 @@ export function MessageList({
   }
 
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const { canScroll, isNearBottom } = getScrollState()
+    const shouldStickToBottom = isNearBottomRef.current || isNearBottom
+    if (shouldStickToBottom) {
+      endRef.current?.scrollIntoView({
+        behavior: hasActiveStreamRun ? 'auto' : 'smooth',
+        block: 'end',
+      })
+      isNearBottomRef.current = true
+      setShowJumpToLatest(false)
       return
     }
-    if (hasActiveStreamRun) {
-      setShowJumpToLatest(true)
-    }
-  }, [messages, streamRuns, warnings, hasActiveStreamRun])
+    isNearBottomRef.current = false
+    setShowJumpToLatest(hasActiveStreamRun && canScroll)
+  }, [messages, streamRuns, warnings, hasActiveStreamRun, getScrollState])
 
   return (
     <div

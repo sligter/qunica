@@ -97,12 +97,12 @@ function DetailBlock({
   return (
     <details
       open={defaultOpen}
-      className="mt-1.5 rounded-md border border-border bg-background"
+      className="mt-1 rounded-md border border-border bg-background"
     >
-      <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+      <summary className="cursor-pointer px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
         {label}
       </summary>
-      <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words border-t border-border px-2.5 py-2 text-xs leading-relaxed text-foreground">
+      <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words border-t border-border px-2 py-1.5 text-xs leading-snug text-foreground">
         {value}
       </pre>
     </details>
@@ -113,7 +113,7 @@ function StatusBadge({ label, className }: { label: string; className: string })
   return (
     <span
       className={cn(
-        'rounded-[3px] border px-2 py-0.5 text-[10px] font-medium capitalize',
+        'rounded-[3px] border px-1.5 py-0.5 text-[10px] font-medium capitalize leading-none',
         className,
       )}
     >
@@ -152,9 +152,15 @@ function WaitingHint({ label }: { label: string }) {
 }
 
 /** Collapsible reasoning content. Stays open while streaming, auto-collapses when done. */
-function ReasoningBlock({ event }: { event: StreamReasoningEvent }) {
+function ReasoningBlock({
+  event,
+  defaultOpen = true,
+}: {
+  event: StreamReasoningEvent
+  defaultOpen?: boolean
+}) {
   const streaming = event.status === 'streaming'
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(defaultOpen)
   const wasStreaming = useRef(streaming)
 
   useEffect(() => {
@@ -165,16 +171,16 @@ function ReasoningBlock({ event }: { event: StreamReasoningEvent }) {
   return (
     <div
       className={cn(
-        'min-w-0 overflow-hidden rounded-md border border-dashed bg-amber-50/45',
+        'w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-dashed bg-amber-50/45',
         streaming ? 'border-amber-300' : 'border-amber-200/80',
       )}
     >
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100/60"
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100/60"
       >
-        <Brain className="h-3.5 w-3.5" />
+        <Brain className="h-3 w-3" />
         <span>{streaming ? 'Reasoning...' : 'Reasoning'}</span>
         {streaming && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />}
         <span className="ml-auto truncate text-[10px] font-normal text-amber-700/70">
@@ -185,7 +191,7 @@ function ReasoningBlock({ event }: { event: StreamReasoningEvent }) {
         />
       </button>
       {open && (
-        <div className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-amber-200/80 px-2.5 py-2 text-xs leading-relaxed text-amber-950/80">
+        <div className="max-h-44 overflow-auto whitespace-pre-wrap break-words border-t border-amber-200/80 px-2 py-1.5 text-xs leading-snug text-amber-950/80">
           {event.content || ' '}
         </div>
       )}
@@ -214,16 +220,17 @@ function ToolCard({
     event.status === 'approval_required' ||
     event.status === 'failed'
   const hasDetails = Boolean(event.args_summary || event.result_summary)
+  const summary = toolSummary(event.status)
   return (
     <div
       className={cn(
-        'min-w-0 overflow-hidden rounded-md border border-l-4 bg-background shadow-sm',
+        'w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-l-2 bg-background',
         toolRailClasses(event.status),
       )}
     >
       <details open={openByDefault} className="group/tool">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-xs [&::-webkit-details-marker]:hidden">
-          <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1.5 text-[11px] [&::-webkit-details-marker]:hidden">
+          <Wrench className="h-3 w-3 text-muted-foreground" />
           <span className="min-w-0 truncate font-mono text-[11px] font-semibold text-foreground">
             {event.tool_name}
           </span>
@@ -231,12 +238,19 @@ function ToolCard({
             label={toolStatusLabel(event.status)}
             className={toolStatusClasses(event.status)}
           />
-          <span className="ml-auto min-w-fit text-[11px] text-muted-foreground">
-            {toolSummary(event.status)}
-          </span>
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open/tool:rotate-90" />
+          {event.status !== 'completed' && (
+            <span className="ml-auto hidden min-w-fit text-[10px] text-muted-foreground sm:inline">
+              {summary}
+            </span>
+          )}
+          <ChevronRight
+            className={cn(
+              'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open/tool:rotate-90',
+              event.status === 'completed' && 'ml-auto',
+            )}
+          />
         </summary>
-        <div className="border-t border-border bg-muted/20 px-2.5 py-2">
+        <div className="border-t border-border bg-muted/20 px-2 py-1.5">
           {inputRequest && shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
             <HumanInputRequestForm
               compact
@@ -264,10 +278,10 @@ function ExternalCard({ event }: { event: StreamExternalRunEvent }) {
   const statusLabel = event.status ?? exitCode
   const running = event.status === 'running' || statusLabel === ''
   return (
-    <div className="min-w-0 overflow-hidden rounded-md border border-l-4 border-border border-l-sky-400 bg-background shadow-sm">
+    <div className="w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-l-2 border-border border-l-sky-400 bg-background">
       <details open={running} className="group/external">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-xs [&::-webkit-details-marker]:hidden">
-          <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1.5 text-[11px] [&::-webkit-details-marker]:hidden">
+          <Terminal className="h-3 w-3 text-muted-foreground" />
           <span className="min-w-0 truncate font-medium text-foreground">{adapter}</span>
           <StatusBadge
             label={statusLabel || 'running'}
@@ -275,9 +289,45 @@ function ExternalCard({ event }: { event: StreamExternalRunEvent }) {
           />
           <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open/external:rotate-90" />
         </summary>
-        <div className="border-t border-border bg-muted/20 px-2.5 py-2">
+        <div className="border-t border-border bg-muted/20 px-2 py-1.5">
           <DetailBlock label="Working directory" value={event.cwd} defaultOpen={running} />
           <DetailBlock label="Summary" value={event.summary} defaultOpen={!running} />
+        </div>
+      </details>
+    </div>
+  )
+}
+
+function ToolHistoryGroup({
+  events,
+  renderEvent,
+}: {
+  events: StreamTimelineEvent[]
+  renderEvent: (event: StreamTimelineEvent, options?: { historical?: boolean }) => ReactNode
+}) {
+  if (events.length === 0) return null
+  const callCount = events.filter(
+    (event) => event.type === 'tool' || event.type === 'external_run',
+  ).length
+
+  return (
+    <div className="w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-border bg-muted/20">
+      <details className="group/history">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1.5 text-[11px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+          <Wrench className="h-3 w-3" />
+          <span className="font-medium">Previous tool calls</span>
+          <StatusBadge
+            label={`${callCount} ${callCount === 1 ? 'call' : 'calls'}`}
+            className="border-border bg-background text-muted-foreground normal-case"
+          />
+          <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 transition-transform group-open/history:rotate-90" />
+        </summary>
+        <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5 border-t border-border px-2 py-1.5">
+          {events.map((event) => (
+            <div key={event.id} className="max-w-full">
+              {renderEvent(event, { historical: true })}
+            </div>
+          ))}
         </div>
       </details>
     </div>
@@ -308,7 +358,7 @@ function TextPart({
     )
   }
   return (
-    <div className="min-w-0 rounded-md border border-l-4 border-border border-l-primary/60 bg-card/90 px-3 py-2 text-foreground shadow-sm">
+    <div className="w-fit max-w-full min-w-0 rounded-md border border-l-4 border-border border-l-primary/60 bg-card/90 px-3 py-2 text-foreground shadow-sm">
       <MarkdownMessage content={content || ' '} groupId={groupId} />
     </div>
   )
@@ -330,7 +380,7 @@ function NoticeShell({
   return (
     <div
       className={cn(
-        'flex min-w-0 items-center gap-1.5 rounded-md border border-l-4 px-2.5 py-1.5 text-xs shadow-sm',
+        'flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-md border border-l-4 px-2.5 py-1.5 text-xs shadow-sm',
         classes,
       )}
     >
@@ -453,6 +503,89 @@ function blockIsWaiting(block: AgentBlock): boolean {
   return block.events.every((event) => event.type === 'agent_start')
 }
 
+function isToolCallEvent(event: StreamTimelineEvent): boolean {
+  return event.type === 'tool' || event.type === 'external_run'
+}
+
+function isFoldableToolStatus(status: ToolActivityStatus): boolean {
+  return (
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'unavailable' ||
+    status === 'setup_required' ||
+    status === 'workspace_required'
+  )
+}
+
+function isFoldableCallTraceEvent(event: StreamTimelineEvent): boolean {
+  if (event.type === 'reasoning') return event.status === 'done'
+  if (event.type === 'tool') return isFoldableToolStatus(event.status)
+  if (event.type === 'external_run') {
+    return (event.status !== undefined && event.status !== 'running') || event.exit_code !== undefined
+  }
+  return false
+}
+
+function latestCallTraceStart(events: StreamTimelineEvent[]): number {
+  let latestCallIndex = -1
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (isToolCallEvent(events[index]!)) {
+      latestCallIndex = index
+      break
+    }
+  }
+  if (latestCallIndex === -1) return -1
+
+  let start = latestCallIndex
+  for (let index = latestCallIndex - 1; index >= 0; index -= 1) {
+    const event = events[index]!
+    if (event.type !== 'reasoning') break
+    start = index
+  }
+  return start
+}
+
+interface ToolHistoryRenderItem {
+  kind: 'tool_history'
+  id: string
+  events: StreamTimelineEvent[]
+}
+
+type TimelineRenderItem = StreamTimelineEvent | ToolHistoryRenderItem
+
+function compactToolHistory(events: StreamTimelineEvent[]): TimelineRenderItem[] {
+  const latestTraceStart = latestCallTraceStart(events)
+  if (latestTraceStart <= 0) return events
+
+  const items: TimelineRenderItem[] = []
+  const historyEvents: StreamTimelineEvent[] = []
+  let insertedHistory = false
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!
+    if (index < latestTraceStart && isFoldableCallTraceEvent(event)) {
+      historyEvents.push(event)
+      continue
+    }
+
+    if (!insertedHistory && historyEvents.length > 0) {
+      items.push({
+        kind: 'tool_history',
+        id: `tool-history-${historyEvents[0]!.id}-${historyEvents.length}`,
+        events: historyEvents,
+      })
+      insertedHistory = true
+    }
+    items.push(event)
+  }
+
+  return items
+}
+
+function isToolHistoryRenderItem(item: TimelineRenderItem): item is ToolHistoryRenderItem {
+  return 'kind' in item && item.kind === 'tool_history'
+}
+
 function AgentBlockView({
   block,
   runStatus,
@@ -468,10 +601,54 @@ function AgentBlockView({
 }) {
   const waiting = runStatus === 'active' && blockIsWaiting(block)
   const streaming = blockIsStreaming(block) || waiting
+  const renderEvent = (
+    event: StreamTimelineEvent,
+    options?: { historical?: boolean },
+  ): ReactNode => {
+    if (event.type === 'agent_start') return null
+    if (event.type === 'reasoning') {
+      return <ReasoningBlock key={event.id} event={event} defaultOpen={!options?.historical} />
+    }
+    if (event.type === 'response_draft' || event.type === 'agent_message') {
+      return (
+        <TextPart
+          key={event.id}
+          event={event}
+          groupId={groupId}
+          onSubmitHumanInput={onSubmitHumanInput}
+          renderedInputRequests={renderedInputRequests}
+        />
+      )
+    }
+    if (event.type === 'tool') {
+      return (
+        <ToolCard
+          key={event.id}
+          event={event}
+          onSubmitHumanInput={onSubmitHumanInput}
+          renderedInputRequests={renderedInputRequests}
+        />
+      )
+    }
+    if (event.type === 'external_run') {
+      return <ExternalCard key={event.id} event={event} />
+    }
+    if (event.type === 'done') return null
+    return (
+      <AgentNotice
+        key={event.id}
+        event={event}
+        onSubmitHumanInput={onSubmitHumanInput}
+        renderedInputRequests={renderedInputRequests}
+      />
+    )
+  }
+  const renderItems = compactToolHistory(block.events)
+
   return (
-    <div className="flex w-full gap-3 px-4 py-2.5">
+    <div className="flex w-full gap-3 px-4 py-1.5">
       <AgentAvatar name={block.displayName} className="mt-0.5" />
-      <div className="flex min-w-0 max-w-[88%] flex-col gap-1.5 md:max-w-[82%]">
+      <div className="flex min-w-0 max-w-[88%] flex-col gap-1 md:max-w-[82%]">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{block.displayName}</span>
           {streaming ? (
@@ -483,46 +660,19 @@ function AgentBlockView({
             <span>{timeLabel(block.lastAt)}</span>
           )}
         </div>
-        <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
           {waiting ? <WaitingHint label="Preparing response..." /> : null}
-          {block.events.map((event) => {
-            if (event.type === 'agent_start') return null
-            if (event.type === 'reasoning') {
-              return <ReasoningBlock key={event.id} event={event} />
-            }
-            if (event.type === 'response_draft' || event.type === 'agent_message') {
+          {renderItems.map((item) => {
+            if (isToolHistoryRenderItem(item)) {
               return (
-                <TextPart
-                  key={event.id}
-                  event={event}
-                  groupId={groupId}
-                  onSubmitHumanInput={onSubmitHumanInput}
-                  renderedInputRequests={renderedInputRequests}
+                <ToolHistoryGroup
+                  key={item.id}
+                  events={item.events}
+                  renderEvent={renderEvent}
                 />
               )
             }
-            if (event.type === 'tool') {
-              return (
-                <ToolCard
-                  key={event.id}
-                  event={event}
-                  onSubmitHumanInput={onSubmitHumanInput}
-                  renderedInputRequests={renderedInputRequests}
-                />
-              )
-            }
-            if (event.type === 'external_run') {
-              return <ExternalCard key={event.id} event={event} />
-            }
-            if (event.type === 'done') return null
-            return (
-              <AgentNotice
-                key={event.id}
-                event={event}
-                onSubmitHumanInput={onSubmitHumanInput}
-                renderedInputRequests={renderedInputRequests}
-              />
-            )
+            return renderEvent(item)
           })}
         </div>
       </div>
