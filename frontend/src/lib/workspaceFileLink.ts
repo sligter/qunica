@@ -12,7 +12,7 @@ export const WORKSPACE_FILE_SCHEME = 'workspace-file:'
 // Filenames / relative paths ending in a known file extension. Optional leading
 // directory segments use either posix or windows separators.
 const FILE_PATH_RE =
-  /(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:md|markdown|txt|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|jsx?|tsx?|vue|py|sh|bash|bat|ps1|sql|rst|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|svg|webp|mp4|mp3|wav|zip|gz|tar|rs|go|java|rb|php|c|cpp|h|hpp|kt|swift)\b/gi
+  /(?:[\w.-]+[/\\])*[\w.-]+\.(?:md|markdown|txt|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|jsx?|tsx?|vue|py|sh|bash|bat|ps1|sql|rst|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|svg|webp|mp4|mp3|wav|zip|gz|tar|rs|go|java|rb|php|c|cpp|h|hpp|kt|swift)\b/gi
 
 interface MdastNode {
   type: string

@@ -75,9 +75,9 @@ class ReasoningChatOpenAI(ChatOpenAI):
 
     def _convert_chunk_to_generation_chunk(
         self,
-        chunk: dict,
-        default_chunk_class: type,
-        base_generation_info: dict | None,
+        chunk: dict[str, Any],
+        default_chunk_class: type[Any],
+        base_generation_info: dict[str, Any] | None,
     ) -> ChatGenerationChunk | None:
         generation_chunk = super()._convert_chunk_to_generation_chunk(
             chunk, default_chunk_class, base_generation_info
@@ -95,7 +95,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
     def _create_chat_result(
         self,
         response: Any,
-        generation_info: dict | None = None,
+        generation_info: dict[str, Any] | None = None,
     ) -> ChatResult:
         result = super()._create_chat_result(response, generation_info)
         response_dict = response if isinstance(response, dict) else response.model_dump()
@@ -112,7 +112,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
         *,
         stop: list[str] | None = None,
         **kwargs: Any,
-    ) -> dict:
+    ) -> dict[str, Any]:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         if not self.passback_reasoning:
             return payload
@@ -140,8 +140,6 @@ def _extract_common_params(cfg: dict[str, Any]) -> dict[str, Any]:
         params["temperature"] = float(cfg["temperature"])
     if "top_p" in cfg:
         params["top_p"] = float(cfg["top_p"])
-    if "max_tokens" in cfg:
-        params["max_tokens"] = int(cfg["max_tokens"])
     return params
 
 
@@ -183,8 +181,6 @@ def make_chat_model(
     }
     if "top_p" in cfg:
         kwargs["top_p"] = float(cfg["top_p"])
-    if "max_tokens" in cfg:
-        kwargs["max_tokens"] = int(cfg["max_tokens"])
     kwargs.update(_provider_reasoning_params("openai-compatible", cfg))
 
     return ReasoningChatOpenAI(**kwargs)

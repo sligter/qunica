@@ -19,8 +19,8 @@ export function ImportSkillDialog({ open, onOpenChange }: ImportSkillDialogProps
         <DialogHeader>
           <DialogTitle>Import Skill</DialogTitle>
           <DialogDescription>
-            Upload a skill package (.zip) or paste a SKILL.md file. The skill body will be
-            appended to an agent's system prompt when mounted.
+            Upload a skill package, paste a SKILL.md file, or install from GitHub.
+            The skill body will be appended to an agent's system prompt when mounted.
           </DialogDescription>
         </DialogHeader>
         <ImportSkillForm onCreated={() => onOpenChange(false)} />

@@ -7,6 +7,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from pydantic import Field
 
+from app.agents.defaults import DEFAULT_AGENT_SYSTEM_PROMPT
+
 JsonObject = dict[str, Any]
 
 
@@ -115,6 +117,79 @@ async def test_create_agent_requires_workspace(
             "system_prompt": "You are missing a workspace.",
         },
     )
+    assert r.status_code == 422
+
+
+async def test_create_agent_uses_default_system_prompt(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "DefaultPrompt",
+            "workspace_id": workspace["id"],
+        },
+    )
+
+    assert r.status_code == 201, r.text
+    assert r.json()["system_prompt"] == DEFAULT_AGENT_SYSTEM_PROMPT
+
+
+async def test_create_agent_accepts_temperature_005_increment(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "FineTemp",
+            "system_prompt": "Use exact temperature.",
+            "workspace_id": workspace["id"],
+            "llm_config": {"temperature": 0.05},
+        },
+    )
+
+    assert r.status_code == 201, r.text
+    assert r.json()["llm_config"]["temperature"] == 0.05
+
+
+async def test_create_agent_drops_max_tokens_from_llm_config(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "NoMaxTokens",
+            "system_prompt": "Do not cap output.",
+            "workspace_id": workspace["id"],
+            "llm_config": {"temperature": 0.05, "max_tokens": 4096},
+        },
+    )
+
+    assert r.status_code == 201, r.text
+    assert r.json()["llm_config"] == {"temperature": 0.05}
+
+
+async def test_create_agent_rejects_temperature_below_005_granularity(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "BadTemp",
+            "system_prompt": "Reject bad temperature.",
+            "workspace_id": workspace["id"],
+            "llm_config": {"temperature": 0.07},
+        },
+    )
+
     assert r.status_code == 422
 
 

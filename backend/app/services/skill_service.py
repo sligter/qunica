@@ -7,8 +7,10 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import quote, unquote, urlparse
 from uuid import UUID
 
+import httpx
 import yaml  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +23,7 @@ from app.core.exceptions import (
 )
 from app.models.skill import Skill
 from app.models.user import User
-from app.schemas.skill import SkillCreate
+from app.schemas.skill import SkillCreate, SkillGithubImport
 from app.services import system_settings_service
 
 _FRONTMATTER_RE = re.compile(
@@ -56,6 +58,9 @@ _TEXT_EXTENSIONS = {
     ".cfg",
 }
 _MAX_TEXT_FILE_BYTES = 1_000_000
+_MAX_GITHUB_ARCHIVE_BYTES = 25_000_000
+_MAX_GITHUB_SKILL_BYTES = 50_000_000
+_GITHUB_REPO_PART_RE = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +69,14 @@ class ParsedSkillMarkdown:
     description: str | None
     body_markdown: str
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class GithubSkillSource:
+    owner: str
+    repo: str
+    branch: str
+    path: str
 
 
 def _parse_skill_md(raw: str) -> ParsedSkillMarkdown:
@@ -133,6 +146,168 @@ def _validate_zip_names(names: list[str]) -> None:
     unsafe = [name for name in names if _zip_entry_is_unsafe(name)]
     if unsafe:
         raise AgentChatError(f"zip package contains unsafe path: {unsafe[0]}")
+
+
+def _normalize_github_path(path: str | None) -> str:
+    normalized = (path or "").replace("\\", "/").strip("/")
+    if not normalized or normalized == ".":
+        return ""
+    if _zip_entry_is_unsafe(normalized) or normalized.endswith("/"):
+        raise AgentChatError("GitHub skill path is not allowed")
+    if normalized == "SKILL.md":
+        return ""
+    if normalized.endswith("/SKILL.md"):
+        return normalized.removesuffix("/SKILL.md")
+    return normalized
+
+
+def _validate_github_ref(ref: str) -> str:
+    branch = ref.strip() or "main"
+    if branch.startswith("/") or branch.endswith("/") or "\x00" in branch:
+        raise AgentChatError("GitHub branch is not allowed")
+    if any(part == ".." for part in PurePosixPath(branch).parts):
+        raise AgentChatError("GitHub branch is not allowed")
+    return branch
+
+
+def _validate_github_repo_part(value: str, label: str) -> str:
+    cleaned = value.removesuffix(".git")
+    if not cleaned or not _GITHUB_REPO_PART_RE.fullmatch(cleaned):
+        raise AgentChatError(f"GitHub {label} is not allowed")
+    return cleaned
+
+
+def _parse_github_skill_source(data: SkillGithubImport) -> GithubSkillSource:
+    raw_url = data.url.strip()
+    if not raw_url:
+        raise AgentChatError("GitHub URL is required")
+    if not raw_url.startswith(("http://", "https://")):
+        raw_url = f"https://github.com/{raw_url}"
+    parsed = urlparse(raw_url)
+    if parsed.scheme != "https" or parsed.netloc.lower() not in {
+        "github.com",
+        "www.github.com",
+    }:
+        raise AgentChatError("GitHub URL must point to github.com")
+    parts = [unquote(part) for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        raise AgentChatError("GitHub URL must include owner and repository")
+
+    owner = _validate_github_repo_part(parts[0], "owner")
+    repo = _validate_github_repo_part(parts[1], "repository")
+    branch = data.branch or ""
+    path = data.path or ""
+    if len(parts) >= 5 and parts[2] in {"tree", "blob"}:
+        if not branch:
+            branch = parts[3]
+        if not path:
+            path = "/".join(parts[4:])
+    return GithubSkillSource(
+        owner=owner,
+        repo=repo,
+        branch=_validate_github_ref(branch),
+        path=_normalize_github_path(path),
+    )
+
+
+def _github_archive_url(source: GithubSkillSource) -> str:
+    owner = quote(source.owner, safe="")
+    repo = quote(source.repo, safe="")
+    branch = quote(source.branch, safe="/._-")
+    return f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{branch}"
+
+
+def _strip_github_archive_root(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    parts = PurePosixPath(normalized).parts
+    if len(parts) <= 1:
+        return ""
+    return "/".join(parts[1:])
+
+
+def _path_within(path: str, root: str) -> bool:
+    if not root:
+        return True
+    return path == root or path.startswith(f"{root}/")
+
+
+def _rel_path(path: str, root: str) -> str:
+    return path[len(root) + 1 :] if root else path
+
+
+def _find_github_skill_root(rel_paths: list[str], requested_path: str) -> str:
+    if requested_path:
+        skill_md = f"{requested_path}/SKILL.md"
+        if skill_md not in rel_paths:
+            raise AgentChatError(f"No SKILL.md found under {requested_path}")
+        return requested_path
+
+    candidates = [
+        path
+        for path in rel_paths
+        if path == "SKILL.md" or path.endswith("/SKILL.md")
+    ]
+    if not candidates:
+        raise AgentChatError("No SKILL.md found in GitHub repository")
+    selected = sorted(
+        candidates,
+        key=lambda path: (len(PurePosixPath(path).parts), path),
+    )[0]
+    return str(PurePosixPath(selected).parent) if "/" in selected else ""
+
+
+def _github_skill_zip_from_archive(archive_bytes: bytes, requested_path: str) -> bytes:
+    if not zipfile.is_zipfile(io.BytesIO(archive_bytes)):
+        raise AgentChatError("GitHub archive is not a valid zip file")
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as source_zip:
+        names = source_zip.namelist()
+        _validate_zip_names(names)
+        file_names = [name for name in names if not name.endswith("/")]
+        rel_by_name = {
+            name: _strip_github_archive_root(name)
+            for name in file_names
+        }
+        rel_paths = [rel for rel in rel_by_name.values() if rel]
+        skill_root = _find_github_skill_root(rel_paths, requested_path)
+
+        total_size = 0
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as target_zip:
+            for name, repo_rel in sorted(rel_by_name.items(), key=lambda item: item[1]):
+                if not repo_rel or not _path_within(repo_rel, skill_root):
+                    continue
+                rel = _rel_path(repo_rel, skill_root)
+                if not rel:
+                    continue
+                info = source_zip.getinfo(name)
+                total_size += info.file_size
+                if total_size > _MAX_GITHUB_SKILL_BYTES:
+                    raise AgentChatError("GitHub skill package is too large")
+                target_zip.writestr(rel, source_zip.read(name))
+    return buffer.getvalue()
+
+
+async def _download_github_archive(source: GithubSkillSource) -> bytes:
+    url = _github_archive_url(source)
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(url)
+    if response.status_code == 404:
+        raise AgentChatError("GitHub repository or branch was not found")
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise AgentChatError(f"GitHub download failed: HTTP {response.status_code}") from exc
+    content_length = response.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > _MAX_GITHUB_ARCHIVE_BYTES:
+                raise AgentChatError("GitHub archive is too large")
+        except ValueError:
+            pass
+    if len(response.content) > _MAX_GITHUB_ARCHIVE_BYTES:
+        raise AgentChatError("GitHub archive is too large")
+    return response.content
 
 
 def _classify_zip_entry(rel_path: str) -> str:
@@ -302,7 +477,12 @@ async def _resolve_skill_storage_dir(
 
 
 async def import_skill_from_zip(
-    db: AsyncSession, file_bytes: bytes, owner: User
+    db: AsyncSession,
+    file_bytes: bytes,
+    owner: User,
+    *,
+    source: str = "package",
+    metadata_patch: dict[str, Any] | None = None,
 ) -> Skill:
     """Import a skill from a .zip package with safe path handling."""
 
@@ -336,8 +516,8 @@ async def import_skill_from_zip(
         name=parsed.name,
         description=parsed.description,
         body_markdown=parsed.body_markdown,
-        metadata_=parsed.metadata,
-        source="package",
+        metadata_={**parsed.metadata, **(metadata_patch or {})},
+        source=source,
         files=file_list,
     )
     db.add(skill)
@@ -354,6 +534,35 @@ async def import_skill_from_zip(
     await db.flush()
     await db.refresh(skill)
     return skill
+
+
+async def import_skill_from_github(
+    db: AsyncSession,
+    data: SkillGithubImport,
+    owner: User,
+) -> Skill:
+    source = _parse_github_skill_source(data)
+    archive = await _download_github_archive(source)
+    skill_zip = _github_skill_zip_from_archive(archive, source.path)
+    source_label = (
+        f"github:{source.owner}/{source.repo}@{source.branch}"
+        f"{'/' + source.path if source.path else ''}"
+    )
+    return await import_skill_from_zip(
+        db,
+        skill_zip,
+        owner,
+        source="github",
+        metadata_patch={
+            "source": source_label,
+            "github": {
+                "owner": source.owner,
+                "repo": source.repo,
+                "branch": source.branch,
+                "path": source.path,
+            },
+        },
+    )
 
 
 async def list_skill_resources(

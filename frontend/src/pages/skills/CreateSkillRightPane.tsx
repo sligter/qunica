@@ -10,9 +10,9 @@ export function CreateSkillRightPane() {
         <header className="space-y-1">
           <h1 className="text-xl font-semibold tracking-tight">Import a skill</h1>
           <p className="text-sm text-muted-foreground">
-            Paste an Anthropic-style SKILL.md (YAML frontmatter +
-            markdown body). When mounted on an agent, the body is appended to
-            that agent's system prompt for every invocation.
+            Import a skill from a zip package, GitHub repository, or Anthropic-style
+            SKILL.md. When mounted on an agent, the body is appended to that agent's
+            system prompt for every invocation.
           </p>
         </header>
         <ImportSkillForm onCreated={(id) => void navigate(`/skills/${id}`)} />

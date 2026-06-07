@@ -1,6 +1,7 @@
 import io
 import zipfile
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import PROJECT_ROOT
 from app.models.skill import Skill
+from app.services import skill_service
 
 
 def _zip_bytes(entries: dict[str, bytes]) -> bytes:
@@ -97,6 +99,86 @@ async def test_skill_resource_list_read_and_update(
     )
     assert response.status_code == 200, response.text
     assert response.json()["content"] == "# Updated\n"
+
+
+async def test_import_skill_from_github_downloads_and_installs_package(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    archive = _zip_bytes(
+        {
+            "repo-main/docs/readme.md": b"# Not a skill\n",
+            "repo-main/skills/demo/SKILL.md": (
+                b"---\nname: GitHub Demo\ndescription: From GitHub\n---\nBody\n"
+            ),
+            "repo-main/skills/demo/references/guide.md": b"# Guide\n",
+        }
+    )
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-length": str(len(archive))}
+        content = archive
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = args, kwargs
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            _ = args
+
+        async def get(self, url: str) -> FakeResponse:
+            calls.append(url)
+            return FakeResponse()
+
+    monkeypatch.setattr(skill_service.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await client.post(
+        "/api/v1/skills/import-github",
+        headers=auth_headers,
+        json={
+            "url": "https://github.com/example/repo/tree/main/skills/demo",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["name"] == "GitHub Demo"
+    assert body["source"] == "github"
+    assert body["metadata"]["github"] == {
+        "owner": "example",
+        "repo": "repo",
+        "branch": "main",
+        "path": "skills/demo",
+    }
+    assert [item["path"] for item in body["files"]] == [
+        "SKILL.md",
+        "references/guide.md",
+    ]
+    assert calls == [
+        "https://codeload.github.com/example/repo/zip/refs/heads/main"
+    ]
+
+
+async def test_import_skill_from_github_rejects_non_github_url(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    response = await client.post(
+        "/api/v1/skills/import-github",
+        headers=auth_headers,
+        json={"url": "https://example.com/owner/repo"},
+    )
+
+    assert response.status_code == 400
 
 
 async def test_skill_resource_survives_backend_cwd_changes(

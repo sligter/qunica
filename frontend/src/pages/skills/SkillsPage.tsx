@@ -46,7 +46,8 @@ export function SkillsPage() {
             </div>
             <h2 className="text-base font-medium">No skills yet</h2>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Import a skill package (.zip) or paste a SKILL.md to extend your agents' capabilities.
+              Import a skill package, GitHub repository, or SKILL.md to extend your agents'
+              capabilities.
             </p>
             <Button size="sm" onClick={() => setImportOpen(true)}>
               <Plus className="mr-1 h-4 w-4" />

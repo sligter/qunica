@@ -2,7 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchFormData, fetchJson } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
-import type { SkillCreate, SkillImport, SkillRead, SkillResourceRead } from '@/types/api'
+import type {
+  SkillCreate,
+  SkillGithubImport,
+  SkillImport,
+  SkillRead,
+  SkillResourceRead,
+} from '@/types/api'
 
 function encodeResourcePath(path: string) {
   return path.split('/').map(encodeURIComponent).join('/')
@@ -119,6 +125,22 @@ export function useImportSkillPackage() {
       fd.append('file', file)
       return fetchFormData<SkillRead>('/skills/import-package', fd, { token })
     },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+}
+
+export function useImportSkillFromGithub() {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: SkillGithubImport) =>
+      fetchJson<SkillRead>('/skills/import-github', {
+        token,
+        method: 'POST',
+        body: data,
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['skills'] })
     },

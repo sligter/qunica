@@ -8,6 +8,7 @@ from app.db import get_db
 from app.models.user import User
 from app.schemas.skill import (
     SkillCreate,
+    SkillGithubImport,
     SkillImport,
     SkillRead,
     SkillResourceRead,
@@ -50,6 +51,18 @@ async def import_skill_package(
 ) -> SkillRead:
     content = await file.read()
     skill = await skill_service.import_skill_from_zip(db, content, current_user)
+    return SkillRead.model_validate(skill)
+
+
+@router.post(
+    "/import-github", response_model=SkillRead, status_code=status.HTTP_201_CREATED
+)
+async def import_skill_github(
+    data: SkillGithubImport,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SkillRead:
+    skill = await skill_service.import_skill_from_github(db, data, current_user)
     return SkillRead.model_validate(skill)
 
 

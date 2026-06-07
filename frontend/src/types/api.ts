@@ -237,6 +237,12 @@ export interface SkillImport {
   raw: string
 }
 
+export interface SkillGithubImport {
+  url: string
+  branch?: string | null
+  path?: string | null
+}
+
 export type GroupCommunicationMode = 'mesh' | 'star' | 'hierarchical' | 'ring'
 export type GroupTopologyRole = 'hub' | 'leader' | 'worker'
 

@@ -1,11 +1,16 @@
 import { useRef, useState } from 'react'
-import { FileArchive, Upload } from 'lucide-react'
+import { FileArchive, Github, Upload } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { useImportSkill, useImportSkillPackage } from '@/hooks/useSkills'
+import {
+  useImportSkill,
+  useImportSkillFromGithub,
+  useImportSkillPackage,
+} from '@/hooks/useSkills'
 import { ApiError } from '@/lib/api'
 
 interface ImportSkillFormProps {
@@ -26,9 +31,13 @@ verbatim when this skill is mounted on the agent.
 export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
   const importSkill = useImportSkill()
   const importPackage = useImportSkillPackage()
+  const importGithub = useImportSkillFromGithub()
   const [raw, setRaw] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [githubUrl, setGithubUrl] = useState('')
+  const [githubBranch, setGithubBranch] = useState('main')
+  const [githubPath, setGithubPath] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const onSubmitMd = async (e: React.FormEvent) => {
@@ -64,6 +73,28 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     }
   }
 
+  const onSubmitGithub = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    if (!githubUrl.trim()) {
+      setError('Enter a GitHub repository URL first.')
+      return
+    }
+    try {
+      const created = await importGithub.mutateAsync({
+        url: githubUrl.trim(),
+        branch: githubBranch.trim() || null,
+        path: githubPath.trim() || null,
+      })
+      setGithubUrl('')
+      setGithubBranch('main')
+      setGithubPath('')
+      onCreated?.(created.id)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Network error')
+    }
+  }
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
@@ -75,7 +106,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     }
   }
 
-  const isPending = importSkill.isPending || importPackage.isPending
+  const isPending = importSkill.isPending || importPackage.isPending || importGithub.isPending
 
   return (
     <Tabs defaultValue="package" className="space-y-4">
@@ -86,6 +117,10 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
         </TabsTrigger>
         <TabsTrigger value="markdown" className="flex-1">
           Paste SKILL.md
+        </TabsTrigger>
+        <TabsTrigger value="github" className="flex-1">
+          <Github className="mr-1.5 h-3.5 w-3.5" />
+          GitHub
         </TabsTrigger>
       </TabsList>
 
@@ -133,6 +168,51 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
           )}
           <Button type="submit" disabled={isPending || !selectedFile}>
             {importPackage.isPending ? 'Importing…' : 'Import package'}
+          </Button>
+        </form>
+      </TabsContent>
+
+      <TabsContent value="github">
+        <form onSubmit={onSubmitGithub} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-github-url">GitHub repository</Label>
+            <Input
+              id="skill-github-url"
+              placeholder="https://github.com/user/repo or user/repo"
+              value={githubUrl}
+              onChange={(e) => setGithubUrl(e.target.value)}
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+            <div className="space-y-1.5">
+              <Label htmlFor="skill-github-branch">Branch</Label>
+              <Input
+                id="skill-github-branch"
+                placeholder="main"
+                value={githubBranch}
+                onChange={(e) => setGithubBranch(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="skill-github-path">Skill path</Label>
+              <Input
+                id="skill-github-path"
+                placeholder="skills/calculator"
+                value={githubPath}
+                onChange={(e) => setGithubPath(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            The repository, or selected directory, must contain a <code>SKILL.md</code>.
+          </p>
+          {error && (
+            <p className="text-sm text-red-600" role="alert">
+              {error}
+            </p>
+          )}
+          <Button type="submit" disabled={isPending || !githubUrl.trim()}>
+            {importGithub.isPending ? 'Installing...' : 'Fetch and install'}
           </Button>
         </form>
       </TabsContent>

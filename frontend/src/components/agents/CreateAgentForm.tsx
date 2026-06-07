@@ -7,6 +7,14 @@ import { z } from 'zod'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
+import {
+  AGENT_TEMPERATURE_STEP,
+  DEFAULT_AGENT_SYSTEM_PROMPT,
+  DEFAULT_AGENT_TEMPERATURE,
+  formatAgentTemperature,
+  isAgentTemperatureStep,
+  normalizeAgentTemperature,
+} from '@/components/agents/defaults'
 import { thinkingLevelValues } from '@/components/agents/thinkingLevel'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { createDefaultToolConfig } from '@/components/agents/toolConfig'
@@ -36,9 +44,13 @@ const schema = z.object({
   external_max_turns: z.number().int().min(1).max(100),
   llm_provider_id: z.string().optional(),
   workspace_id: z.string().min(1, 'Workspace is required'),
-  temperature: z.number().min(0).max(2).optional(),
+  temperature: z
+    .number()
+    .min(0)
+    .max(2)
+    .refine(isAgentTemperatureStep, 'Must use 0.05 increments')
+    .optional(),
   top_p: z.number().min(0).max(1).optional(),
-  max_tokens: z.number().int().min(1).optional(),
   reasoning_effort: z.enum(thinkingLevelValues),
 })
 
@@ -66,7 +78,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
     defaultValues: {
       name: '',
       description: '',
-      system_prompt: '',
+      system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT,
       runtime_kind: 'llm_chat',
       external_adapter: 'codex',
       external_executable: '',
@@ -74,9 +86,8 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       external_max_turns: 20,
       llm_provider_id: '',
       workspace_id: '',
-      temperature: 0.7,
+      temperature: DEFAULT_AGENT_TEMPERATURE,
       top_p: 1,
-      max_tokens: undefined,
       reasoning_effort: 'default',
     },
   })
@@ -102,7 +113,6 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       const llm_config: Record<string, unknown> = {}
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
-      if (values.max_tokens) llm_config.max_tokens = values.max_tokens
       if (values.reasoning_effort !== 'default') {
         llm_config.reasoning_effort = values.reasoning_effort
       }
@@ -291,15 +301,17 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                   <div className="flex items-center justify-between">
                     <Label>Temperature</Label>
                     <span className="text-xs text-muted-foreground">
-                      {form.watch('temperature')?.toFixed(1)}
+                      {formatAgentTemperature(form.watch('temperature'))}
                     </span>
                   </div>
                   <Slider
                     min={0}
                     max={2}
-                    step={0.1}
-                    value={[form.watch('temperature') ?? 0.7]}
-                    onValueChange={([v]) => form.setValue('temperature', v)}
+                    step={AGENT_TEMPERATURE_STEP}
+                    value={[form.watch('temperature') ?? DEFAULT_AGENT_TEMPERATURE]}
+                    onValueChange={([v]) =>
+                      form.setValue('temperature', normalizeAgentTemperature(v))
+                    }
                   />
                 </div>
                 <div className="space-y-2">
@@ -315,15 +327,6 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                     step={0.01}
                     value={[form.watch('top_p') ?? 1]}
                     onValueChange={([v]) => form.setValue('top_p', v)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="agent-max-tokens">Max tokens (optional)</Label>
-                  <Input
-                    id="agent-max-tokens"
-                    type="number"
-                    placeholder="e.g. 4096"
-                    {...form.register('max_tokens', { valueAsNumber: true })}
                   />
                 </div>
                 <ThinkingLevelControl

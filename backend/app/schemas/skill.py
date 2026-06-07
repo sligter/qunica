@@ -18,6 +18,14 @@ class SkillImport(BaseModel):
     raw: str = Field(min_length=1)
 
 
+class SkillGithubImport(BaseModel):
+    """Import a skill package from a GitHub repository archive."""
+
+    url: str = Field(min_length=1, max_length=500)
+    branch: str | None = Field(default=None, max_length=200)
+    path: str | None = Field(default=None, max_length=500)
+
+
 class SkillFileInfo(BaseModel):
     path: str
     size: int
