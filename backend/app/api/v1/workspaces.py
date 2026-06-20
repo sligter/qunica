@@ -47,3 +47,12 @@ async def update_workspace(
     current_user: User = Depends(get_current_user),
 ) -> Workspace:
     return await workspace_service.update_workspace(db, workspace_id, data, current_user)
+
+
+@router.delete("/{workspace_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workspace(
+    workspace_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    await workspace_service.delete_workspace(db, workspace_id, current_user)

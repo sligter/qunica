@@ -1,10 +1,12 @@
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AgentChatError, NotFoundError, PermissionDeniedError
+from app.models.agent import Agent
+from app.models.group import Group
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.schemas.workspace import WorkspaceCreate, WorkspaceUpdate
@@ -112,6 +114,34 @@ async def update_workspace(
     await db.flush()
     await db.refresh(workspace)
     return workspace
+
+
+async def delete_workspace(
+    db: AsyncSession,
+    workspace_id: UUID,
+    owner: User,
+) -> None:
+    workspace = await get_workspace(db, workspace_id, owner)
+    workspace.status = "deleted"
+    await db.execute(
+        update(Agent)
+        .where(
+            Agent.owner_id == owner.id,
+            Agent.workspace_id == workspace_id,
+            Agent.status == "active",
+        )
+        .values(workspace_id=None)
+    )
+    await db.execute(
+        update(Group)
+        .where(
+            Group.owner_id == owner.id,
+            Group.workspace_id == workspace_id,
+            Group.status == "active",
+        )
+        .values(workspace_id=None)
+    )
+    await db.flush()
 
 
 async def get_active_workspace(

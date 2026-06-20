@@ -15,6 +15,7 @@ import { ProvidersPage } from '@/pages/providers/ProvidersPage'
 import { SettingsRedirectPage } from '@/pages/settings/SettingsRedirectPage'
 import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
 import { SkillsPage } from '@/pages/skills/SkillsPage'
+import { WorkspacesPage } from '@/pages/workspace/WorkspacesPage'
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
           { path: '/agents', element: <AgentsPage /> },
           { path: '/providers', element: <ProvidersPage /> },
           { path: '/skills', element: <SkillsPage /> },
+          { path: '/workspaces', element: <WorkspacesPage /> },
           { path: '/settings', element: <SettingsRedirectPage /> },
           { path: '/settings/system', element: <SystemSettingsPage /> },
         ],

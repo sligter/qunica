@@ -45,3 +45,21 @@ export function useUpdateWorkspace(workspaceId: string | undefined) {
     },
   })
 }
+
+export function useDeleteWorkspace() {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (workspaceId: string) =>
+      fetchJson<void>(`/workspaces/${workspaceId}`, {
+        token,
+        method: 'DELETE',
+      }),
+    onSuccess: (_data, workspaceId) => {
+      void qc.invalidateQueries({ queryKey: ['workspaces'] })
+      void qc.invalidateQueries({ queryKey: ['groups'] })
+      void qc.invalidateQueries({ queryKey: ['agents'] })
+      qc.removeQueries({ queryKey: ['workspaces', workspaceId] })
+    },
+  })
+}
