@@ -312,6 +312,12 @@ async def _persist_user_message(
     return msg
 
 
+async def _commit_stream_checkpoint(db: AsyncSession) -> None:
+    # SSE streams can be cancelled after an event reaches the client; commit
+    # emitted chat rows immediately so request teardown cannot roll them back.
+    await db.commit()
+
+
 async def _persist_agent_message(
     db: AsyncSession,
     group_id: UUID,
@@ -1912,6 +1918,7 @@ async def _stream_one_agent(
                             reply_to=reply_to,
                             context_usage=context_usage,
                         )
+                        await _commit_stream_checkpoint(db)
                     yield {
                         "event": "agent_message",
                         "data": json.dumps(_serialize_msg(agent_msg)),
@@ -2131,6 +2138,7 @@ async def _stream_one_agent(
                                 reply_to=reply_to,
                                 context_usage=context_usage,
                             )
+                            await _commit_stream_checkpoint(db)
                         yield {
                             "event": "agent_message",
                             "data": json.dumps(_serialize_msg(agent_msg)),
@@ -2267,6 +2275,7 @@ async def _stream_agent_round_parallel(
         try:
             async with _db_lock_section(db_lock):
                 await thread_service.mark_running(db, chat_thread)
+                await _commit_stream_checkpoint(db)
             async for event in _stream_one_agent(
                 db,
                 graph,
@@ -2350,6 +2359,7 @@ async def send_message_stream(
     """
     group = await group_service.get_group(db, group_id, sender)
     user_msg = await _persist_user_message(db, group_id, sender, content)
+    await _commit_stream_checkpoint(db)
     yield {"event": "user_message", "data": json.dumps(_serialize_msg(user_msg))}
 
     resolved = await resolve_all_mentions(db, group, content)
@@ -2461,6 +2471,7 @@ async def send_message_stream(
                 db, group_id, agent.id, sender.id
             )
             await thread_service.mark_running(db, chat_thread)
+            await _commit_stream_checkpoint(db)
             try:
                 async for event in _stream_one_agent(
                     db,
@@ -2545,6 +2556,7 @@ async def send_message_stream(
             thread_id=None,
             reply_to=user_msg.id,
         )
+        await _commit_stream_checkpoint(db)
         yield {"event": "agent_message", "data": json.dumps(_serialize_msg(dispatch_msg))}
         display = dispatch.helper_group_agent.display_name or dispatch.helper_agent.name
         yield {
@@ -2562,6 +2574,7 @@ async def send_message_stream(
             db, group_id, dispatch.helper_agent.id, sender.id
         )
         await thread_service.mark_running(db, helper_thread)
+        await _commit_stream_checkpoint(db)
         try:
             async for event in _stream_one_agent(
                 db,

@@ -341,6 +341,35 @@ async def test_acp_run_stream_persists_audit_row(
 
 
 @pytest.mark.asyncio
+async def test_acp_run_stream_accepts_large_single_line_message(
+    acp_db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    script = _write_large_message_acp_agent(tmp_path)
+    chunks: list[str] = []
+
+    async for event in run_acp_agent_stream(
+        acp_db_session,
+        owner_id=uuid4(),
+        group_id=uuid4(),
+        agent_id=uuid4(),
+        thread_id=uuid4(),
+        config=AcpRuntimeConfig(
+            command=sys.executable,
+            args=[str(script)],
+            env={},
+            timeout_seconds=10,
+        ),
+        cwd=tmp_path,
+        prompt="task",
+    ):
+        if event.kind == "token" and isinstance(event.data, str):
+            chunks.append(event.data)
+
+    assert "".join(chunks) == "x" * (128 * 1024)
+
+
+@pytest.mark.asyncio
 async def test_acp_run_stream_emits_usage_update(
     acp_db_session: AsyncSession,
     tmp_path: Path,
@@ -556,6 +585,24 @@ def _write_usage_acp_agent(tmp_path: Path) -> Path:
                 "        await self._conn.session_update(\n"
                 "            session_id=session_id,\n"
                 "            update=update_agent_message(text_block('done')),\n"
+                "        )"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    return script
+
+
+def _write_large_message_acp_agent(tmp_path: Path) -> Path:
+    script = tmp_path / "large_message_acp_agent.py"
+    script.write_text(
+        _FAKE_AGENT_SOURCE.format(
+            extra_methods="",
+            prompt_body=(
+                "text = 'x' * (128 * 1024)\n"
+                "        await self._conn.session_update(\n"
+                "            session_id=session_id,\n"
+                "            update=update_agent_message(text_block(text)),\n"
                 "        )"
             ),
         ),

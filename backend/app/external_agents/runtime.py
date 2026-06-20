@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from acp import PROTOCOL_VERSION, Client, RequestError, spawn_agent_process, text_block
+from acp import PROTOCOL_VERSION, Client, RequestError, text_block
 from acp.core import ClientSideConnection
 from acp.schema import (
     AgentMessageChunk,
@@ -59,6 +59,7 @@ from app.models.external_agent_run import ExternalAgentRun
 
 MAX_TAIL_CHARS = 12_000
 MAX_METADATA_CHARS = 1_000
+ACP_READ_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,31 @@ class _Tail:
 
     def snapshot(self) -> str:
         return self.value
+
+
+class _UnboundedLineStreamReader(asyncio.StreamReader):
+    def __init__(self, source: asyncio.StreamReader) -> None:
+        super().__init__()
+        self._source = source
+        self._pending = bytearray()
+
+    async def readline(self) -> bytes:
+        while True:
+            newline_index = self._pending.find(b"\n")
+            if newline_index >= 0:
+                line = bytes(self._pending[: newline_index + 1])
+                del self._pending[: newline_index + 1]
+                return line
+
+            chunk = await self._source.read(ACP_READ_CHUNK_BYTES)
+            if not chunk:
+                if self._pending:
+                    line = bytes(self._pending)
+                    self._pending.clear()
+                    return line
+                return b""
+
+            self._pending.extend(chunk)
 
 
 class _AgSwarmerAcpClient(Client):
@@ -380,17 +406,12 @@ async def _spawn_acp_agent_process(
     env: dict[str, str] | None = None,
     cwd: str | Path | None = None,
 ) -> AsyncIterator[tuple[Any, asyncio.subprocess.Process]]:
-    if sys.platform != "win32":
-        async with spawn_agent_process(to_client, command, *args, env=env, cwd=cwd) as active:
-            yield active
-        return
-
     async with _spawn_hidden_stdio_transport(command, *args, env=env, cwd=cwd) as (
         reader,
         writer,
         process,
     ):
-        conn = ClientSideConnection(to_client, writer, reader)
+        conn = ClientSideConnection(to_client, writer, _UnboundedLineStreamReader(reader))
         try:
             yield conn, process
         finally:

@@ -11,7 +11,7 @@ import asyncio
 import os
 import secrets
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from uvicorn import Config, Server
@@ -68,7 +68,7 @@ def _redirect_windowed_output(app_data_dir: Path) -> None:
     log_file = log_file_path.open("a", encoding="utf-8", buffering=1)
     sys.stdout = log_file
     sys.stderr = log_file
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     print(f"[{timestamp}] backend log started: {log_file_path}", flush=True)
 
 
