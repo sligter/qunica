@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form'
 import { Link } from 'react-router-dom'
 import { z } from 'zod'
 
+import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -30,6 +31,7 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
   const settings = useSystemSettings()
   const createGroup = useCreateGroup()
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const form = useForm<FormValues>({
@@ -50,12 +52,14 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
     try {
       const created = await createGroup.mutateAsync({
         name: values.name,
+        workspace_id: selectedWorkspaceId || undefined,
         description: values.description || null,
         announcement: values.announcement || null,
         initial_agents: selectedAgentIds.length ? selectedAgentIds : undefined,
       })
       form.reset()
       setSelectedAgentIds([])
+      setSelectedWorkspaceId('')
       onCreated(created.id)
     } catch (err) {
       setSubmitError(err instanceof ApiError ? err.message : 'Network error')
@@ -73,7 +77,16 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
       </div>
       <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
         <p className="font-medium">Workspace</p>
-        {settings.isLoading ? (
+        <p className="mb-2 text-muted-foreground">
+          Choose an existing workspace or create a local one. Leave it empty to
+          auto-create from the system root.
+        </p>
+        <WorkspaceField value={selectedWorkspaceId} onChange={setSelectedWorkspaceId} />
+        {selectedWorkspaceId ? (
+          <p className="mt-2 text-muted-foreground">
+            The selected workspace will be used for this group.
+          </p>
+        ) : settings.isLoading ? (
           <p className="text-muted-foreground">Loading system settings…</p>
         ) : rootConfigured ? (
           <p className="text-muted-foreground">
@@ -143,7 +156,10 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
       )}
       <Button
         type="submit"
-        disabled={createGroup.isPending || settings.isLoading || !rootConfigured}
+        disabled={
+          createGroup.isPending ||
+          (!selectedWorkspaceId && (settings.isLoading || !rootConfigured))
+        }
       >
         {createGroup.isPending ? 'Creating…' : 'Create group'}
       </Button>

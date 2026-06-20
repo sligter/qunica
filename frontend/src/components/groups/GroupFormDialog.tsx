@@ -16,6 +16,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { useAgents } from '@/hooks/useAgents'
 import { useCreateGroup } from '@/hooks/useCreateGroup'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
@@ -77,6 +78,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
   const settings = useSystemSettings()
   const createGroup = useCreateGroup()
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const form = useForm<FormValues>({
@@ -103,6 +105,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
         allow_agent_free_mention: true,
       })
       setSelectedAgentIds([])
+      setSelectedWorkspaceId('')
       setSubmitError(null)
     }
   }, [open, form])
@@ -123,6 +126,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
         description: values.description ?? null,
         announcement: values.announcement ?? null,
         communication_mode: values.communication_mode,
+        workspace_id: selectedWorkspaceId || undefined,
         initial_agents: selectedAgentIds.length ? selectedAgentIds : undefined,
       })
       onOpenChange(false)
@@ -134,17 +138,18 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] w-[95vw] flex-col gap-4 overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Create a new group</DialogTitle>
           <DialogDescription>
             A group is the shared context where users and agents collaborate.
-            A dedicated workspace is auto-created under your configured group
-            workspace root.
+            Choose an existing workspace, create a local workspace, or let the
+            app auto-create one under your configured group workspace root.
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={onSubmit} className="space-y-4">
+        <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col gap-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <div className="space-y-1.5">
             <Label htmlFor="gd-name">Name</Label>
             <Input id="gd-name" {...form.register('name')} />
@@ -157,7 +162,16 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
 
           <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
             <p className="font-medium">Group workspace</p>
-            {settings.isLoading ? (
+            <p className="mb-2 text-muted-foreground">
+              Choose an existing workspace or create a local one. Leave it empty
+              to auto-create from the system root.
+            </p>
+            <WorkspaceField value={selectedWorkspaceId} onChange={setSelectedWorkspaceId} />
+            {selectedWorkspaceId ? (
+              <p className="mt-2 text-muted-foreground">
+                The selected workspace will be used for this group.
+              </p>
+            ) : settings.isLoading ? (
               <p className="text-muted-foreground">Loading system settings…</p>
             ) : rootConfigured ? (
               <p className="text-muted-foreground">
@@ -254,7 +268,9 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             </p>
           )}
 
-          <DialogFooter>
+          </div>
+
+          <DialogFooter className="shrink-0">
             <Button
               type="button"
               variant="outline"
@@ -266,7 +282,8 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             <Button
               type="submit"
               disabled={
-                createGroup.isPending || settings.isLoading || !rootConfigured
+                createGroup.isPending ||
+                (!selectedWorkspaceId && (settings.isLoading || !rootConfigured))
               }
             >
               {createGroup.isPending ? 'Creating…' : 'Create group'}

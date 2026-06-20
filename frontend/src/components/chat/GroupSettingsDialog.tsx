@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
+import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,7 +18,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
-import { useWorkspaces } from '@/hooks/useWorkspaces'
 import type { GroupCommunicationMode, GroupRead } from '@/types/api'
 
 const communicationModeOptions: Array<{
@@ -61,10 +61,10 @@ export function GroupSettingsDialog({
   const update = useUpdateGroup(group.id)
   const del = useDeleteGroup()
   const clearMessages = useClearGroupMessages(group.id)
-  const workspaces = useWorkspaces()
   const navigate = useNavigate()
 
   const [name, setName] = useState(group.name)
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(group.workspace_id ?? '')
   const [announcement, setAnnouncement] = useState(group.announcement ?? '')
   const [freeSpeech, setFreeSpeech] = useState(group.free_speech)
   const [proactiveMode, setProactiveMode] = useState(group.proactive_mode)
@@ -81,6 +81,7 @@ export function GroupSettingsDialog({
 
   useEffect(() => {
     setName(group.name)
+    setSelectedWorkspaceId(group.workspace_id ?? '')
     setAnnouncement(group.announcement ?? '')
     setFreeSpeech(group.free_speech)
     setProactiveMode(group.proactive_mode)
@@ -93,6 +94,9 @@ export function GroupSettingsDialog({
   const onSave = async () => {
     await update.mutateAsync({
       name,
+      ...(selectedWorkspaceId && selectedWorkspaceId !== group.workspace_id
+        ? { workspace_id: selectedWorkspaceId }
+        : {}),
       announcement: announcement || null,
       free_speech: freeSpeech,
       proactive_mode: proactiveMode,
@@ -122,7 +126,6 @@ export function GroupSettingsDialog({
     }
   }
 
-  const workspace = workspaces.data?.find((item) => item.id === group.workspace_id)
   const setMinimumProactiveReplyMultiplier = (value: string) => {
     const next = Number.parseInt(value, 10)
     if (Number.isNaN(next)) {
@@ -180,13 +183,16 @@ export function GroupSettingsDialog({
 
             <div className="space-y-1.5">
               <Label>Workspace</Label>
-              <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-                {workspace ? `${workspace.name} (${workspace.backend_type})` : group.workspace_id ?? 'Legacy group without workspace'}
-              </div>
+              <WorkspaceField
+                value={selectedWorkspaceId}
+                onChange={(workspaceId) => {
+                  if (workspaceId) setSelectedWorkspaceId(workspaceId)
+                }}
+              />
               <p className="text-xs text-muted-foreground">
-                Each group gets a dedicated workspace auto-created from your group
-                workspace root. Group files live under this workspace; rebinding
-                is not supported.
+                Group files live in this workspace. Choose another existing
+                workspace or create a local workspace to move future group file
+                operations to that folder.
               </p>
             </div>
 

@@ -23,6 +23,7 @@ class GroupCreate(BaseModel):
 
 class GroupUpdate(BaseModel):
     name: str | None = None
+    workspace_id: UUID | None = None
     description: str | None = None
     announcement: str | None = None
     free_speech: bool | None = None

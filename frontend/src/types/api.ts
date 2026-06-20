@@ -318,6 +318,7 @@ export interface GroupCreate {
 
 export interface GroupUpdate {
   name?: string
+  workspace_id?: string | null
   description?: string | null
   announcement?: string | null
   free_speech?: boolean

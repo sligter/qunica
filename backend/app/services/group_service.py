@@ -292,6 +292,13 @@ async def update_group(
 
     if data.name is not None:
         group.name = data.name
+    if "workspace_id" in data.model_fields_set:
+        if data.workspace_id is None:
+            raise AgentChatError("group workspace is required")
+        workspace = await workspace_service.get_active_workspace(
+            db, data.workspace_id, user
+        )
+        group.workspace_id = workspace.id
     if data.description is not None:
         group.description = data.description
     if data.announcement is not None:
