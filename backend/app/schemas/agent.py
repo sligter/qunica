@@ -3,13 +3,21 @@ from math import isfinite
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from app.agents.builtin_tools import AgentToolConfig, BuiltinToolRead
 from app.agents.defaults import DEFAULT_AGENT_SYSTEM_PROMPT
 
-AgentRuntimeKind = Literal["llm_chat", "external_cli"]
-ExternalRuntimeAdapter = Literal["codex", "claude_code"]
+AgentRuntimeKind = Literal["llm_chat", "acp"]
+AcpRuntimeProfile = Literal["custom", "codex", "claude"]
+AcpPermissionPolicy = Literal["deny", "auto_allow"]
+AcpConfigValue = str | bool
 TEMPERATURE_STEP = 0.05
 TEMPERATURE_MIN = 0.0
 TEMPERATURE_MAX = 2.0
@@ -39,26 +47,48 @@ def _normalize_llm_config(value: dict[str, Any] | None) -> dict[str, Any] | None
     return normalized
 
 
-class ExternalRuntimeConfig(BaseModel):
-    adapter: ExternalRuntimeAdapter
-    executable: str | None = None
+class AcpRuntimeConfig(BaseModel):
+    profile: AcpRuntimeProfile = "custom"
+    command: str = Field(min_length=1)
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=3600, ge=1, le=21600)
-    max_turns: int | None = Field(default=20, ge=1, le=100)
+    permission_policy: AcpPermissionPolicy = "deny"
+    model: str | None = None
+    mode: str | None = None
+    thinking_effort: str | None = None
+    config_options: dict[str, AcpConfigValue] | None = None
 
 
-class ExternalAdapterStatusRead(BaseModel):
-    adapter: ExternalRuntimeAdapter
+class AcpRuntimeChoice(BaseModel):
+    value: str
     label: str
-    executable: str
-    configured_path: str | None
-    resolved_path: str | None
-    available: bool
-    version: str | None = None
-    error: str | None = None
+    description: str | None = None
 
 
-class ExternalAdapterStatusResponse(BaseModel):
-    adapters: list[ExternalAdapterStatusRead]
+class AcpRuntimePresetRead(BaseModel):
+    id: Literal["codex", "claude"]
+    name: str
+    description: str
+    profile: Literal["codex", "claude"]
+    installed: bool
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout_seconds: int = 3600
+    permission_policy: AcpPermissionPolicy = "deny"
+    default_model: str | None = None
+    default_mode: str | None = None
+    default_thinking_effort: str | None = None
+    model_options: list[AcpRuntimeChoice] = Field(default_factory=list)
+    mode_options: list[AcpRuntimeChoice] = Field(default_factory=list)
+    thinking_effort_options: list[AcpRuntimeChoice] = Field(default_factory=list)
+    install_hint: str
+    source: str | None = None
+
+
+class AcpRuntimePresetListResponse(BaseModel):
+    presets: list[AcpRuntimePresetRead]
 
 
 class AgentCreate(BaseModel):
@@ -68,10 +98,17 @@ class AgentCreate(BaseModel):
     llm_config: dict[str, Any] | None = None
     tool_config: AgentToolConfig | None = None
     runtime_kind: AgentRuntimeKind = "llm_chat"
-    external_runtime: ExternalRuntimeConfig | None = None
+    acp_runtime: AcpRuntimeConfig | None = None
     workspace_id: UUID
     llm_provider_id: UUID | None = None
     skill_ids: list[UUID] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_external_runtime(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "external_runtime" in value:
+            raise ValueError("external_runtime is deprecated; use acp_runtime")
+        return value
 
     @field_validator("llm_config")
     @classmethod
@@ -86,10 +123,17 @@ class AgentUpdate(BaseModel):
     llm_config: dict[str, Any] | None = None
     tool_config: AgentToolConfig | None = None
     runtime_kind: AgentRuntimeKind | None = None
-    external_runtime: ExternalRuntimeConfig | None = None
+    acp_runtime: AcpRuntimeConfig | None = None
     workspace_id: UUID | None = None
     llm_provider_id: UUID | None = None
     skill_ids: list[UUID] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_external_runtime(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "external_runtime" in value:
+            raise ValueError("external_runtime is deprecated; use acp_runtime")
+        return value
 
     @field_validator("llm_config")
     @classmethod
@@ -107,7 +151,10 @@ class AgentRead(BaseModel):
     llm_config: dict[str, Any] | None = None
     tool_config: AgentToolConfig | None = None
     runtime_kind: AgentRuntimeKind = "llm_chat"
-    external_runtime: ExternalRuntimeConfig | None = None
+    acp_runtime: AcpRuntimeConfig | None = Field(
+        default=None,
+        validation_alias="external_runtime",
+    )
     workspace_id: UUID | None = None
     llm_provider_id: UUID | None = None
     skill_ids: list[UUID] = Field(default_factory=list)

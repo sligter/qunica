@@ -96,12 +96,17 @@ export function AgentsPage() {
                   </CardHeader>
                   <CardContent className="space-y-2">
                     <div className="flex flex-wrap gap-1.5">
-                      {prov && (
+                      {a.runtime_kind === 'acp' && (
+                        <Badge variant="outline" className="text-[10px]">
+                          ACP
+                        </Badge>
+                      )}
+                      {a.runtime_kind === 'llm_chat' && prov && (
                         <Badge variant="outline" className="text-[10px]">
                           {prov.kind} · {prov.default_model}
                         </Badge>
                       )}
-                      {!prov && (
+                      {a.runtime_kind === 'llm_chat' && !prov && (
                         <Badge variant="outline" className="text-[10px]">
                           Default LLM
                         </Badge>

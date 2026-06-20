@@ -38,8 +38,8 @@ async def test_sqlite_metadata_round_trips_uuid_and_json() -> None:
                 name="Codex",
                 system_prompt="Work carefully",
                 workspace_id=workspace.id,
-                runtime_kind="external_cli",
-                external_runtime={"adapter": "codex", "timeout_seconds": 3600},
+                runtime_kind="acp",
+                external_runtime={"command": "codex-acp", "timeout_seconds": 3600},
                 tool_config={"tools": {}, "assistant_agents": []},
                 skill_ids=[],
             )
@@ -48,7 +48,7 @@ async def test_sqlite_metadata_round_trips_uuid_and_json() -> None:
             loaded = await session.scalar(select(Agent).where(Agent.id == agent.id))
         assert loaded is not None
         assert loaded.owner_id == owner_id
-        assert loaded.external_runtime == {"adapter": "codex", "timeout_seconds": 3600}
+        assert loaded.external_runtime == {"command": "codex-acp", "timeout_seconds": 3600}
     finally:
         await engine.dispose()
 

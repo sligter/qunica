@@ -1,118 +1,327 @@
-import { AlertTriangle, CheckCircle2, Terminal, XCircle } from 'lucide-react'
+import { CircleAlert, Terminal } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { useExternalRuntimes } from '@/hooks/useExternalRuntimes'
-import { cn } from '@/lib/utils'
-import type { ExternalRuntimeAdapter } from '@/types/api'
+import type {
+  AcpPermissionPolicy,
+  AcpRuntimeChoice,
+  AcpRuntimePresetRead,
+  AcpRuntimeProfile,
+} from '@/types/api'
 
 interface ExternalRuntimeFieldsProps {
-  adapter: ExternalRuntimeAdapter
-  executable: string
+  presets?: AcpRuntimePresetRead[]
+  selectedProfile: AcpRuntimeProfile
+  command: string
+  argsText: string
+  envText: string
   timeoutSeconds: number
-  maxTurns: number
-  onAdapterChange: (adapter: ExternalRuntimeAdapter) => void
-  onExecutableChange: (value: string) => void
+  permissionPolicy: AcpPermissionPolicy
+  model: string
+  mode: string
+  thinkingEffort: string
+  onProfileChange: (value: AcpRuntimeProfile) => void
+  onPresetSelect: (preset: AcpRuntimePresetRead) => void
+  onCommandChange: (value: string) => void
+  onArgsTextChange: (value: string) => void
+  onEnvTextChange: (value: string) => void
   onTimeoutSecondsChange: (value: number) => void
-  onMaxTurnsChange: (value: number) => void
+  onPermissionPolicyChange: (value: AcpPermissionPolicy) => void
+  onModelChange: (value: string) => void
+  onModeChange: (value: string) => void
+  onThinkingEffortChange: (value: string) => void
 }
 
-const ADAPTER_OPTIONS: { value: ExternalRuntimeAdapter; label: string; command: string }[] = [
-  { value: 'codex', label: 'Codex CLI', command: 'codex exec' },
-  { value: 'claude_code', label: 'Claude Code', command: 'claude -p' },
-]
+function optionsWithCurrentValue(
+  options: AcpRuntimeChoice[],
+  value: string,
+): AcpRuntimeChoice[] {
+  if (!value || options.some((option) => option.value === value)) {
+    return options
+  }
+  return [...options, { value, label: value, description: 'Saved custom value' }]
+}
+
+interface RuntimeChoiceFieldProps {
+  id: string
+  label: string
+  value: string
+  options: AcpRuntimeChoice[]
+  placeholder: string
+  onChange: (value: string) => void
+}
+
+function RuntimeChoiceField({
+  id,
+  label,
+  value,
+  options,
+  placeholder,
+  onChange,
+}: RuntimeChoiceFieldProps) {
+  const choices = optionsWithCurrentValue(options, value)
+  const hasEmptyChoice = choices.some((option) => option.value === '')
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <select
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {!hasEmptyChoice && <option value="">{placeholder}</option>}
+        {choices.map((option, index) => (
+          <option key={`${option.value}-${index}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+function RuntimeTextField({
+  id,
+  label,
+  value,
+  placeholder,
+  onChange,
+}: {
+  id: string
+  label: string
+  value: string
+  placeholder: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+    </div>
+  )
+}
 
 export function ExternalRuntimeFields({
-  adapter,
-  executable,
+  presets = [],
+  selectedProfile,
+  command,
+  argsText,
+  envText,
   timeoutSeconds,
-  maxTurns,
-  onAdapterChange,
-  onExecutableChange,
+  permissionPolicy,
+  model,
+  mode,
+  thinkingEffort,
+  onProfileChange,
+  onPresetSelect,
+  onCommandChange,
+  onArgsTextChange,
+  onEnvTextChange,
   onTimeoutSecondsChange,
-  onMaxTurnsChange,
+  onPermissionPolicyChange,
+  onModelChange,
+  onModeChange,
+  onThinkingEffortChange,
 }: ExternalRuntimeFieldsProps) {
-  const status = useExternalRuntimes()
-  const selectedStatus = status.data?.adapters.find((item) => item.adapter === adapter)
+  const selectedPreset =
+    selectedProfile === 'custom'
+      ? null
+      : presets.find((preset) => preset.profile === selectedProfile) ?? null
+  const installedPresets = presets.filter((preset) => preset.installed)
+  const missingPresets = presets.filter((preset) => !preset.installed)
+  const modelOptions = selectedPreset?.model_options ?? []
+  const modeOptions = selectedPreset?.mode_options ?? []
+  const thinkingOptions = selectedPreset?.thinking_effort_options ?? []
+
+  const handlePresetChange = (value: string) => {
+    if (value === 'custom') {
+      onProfileChange('custom')
+      return
+    }
+    const preset = presets.find((item) => item.profile === value)
+    if (preset) {
+      onPresetSelect(preset)
+    }
+  }
 
   return (
     <section className="space-y-3 rounded-md border border-border bg-card p-3">
       <div className="flex items-start gap-2">
         <Terminal className="mt-0.5 h-4 w-4 text-muted-foreground" />
         <div>
-          <h3 className="text-sm font-medium">External CLI runtime</h3>
+          <h3 className="text-sm font-medium">ACP runtime</h3>
           <p className="text-[11px] text-muted-foreground">
-            Runs in the selected workspace with full-auto CLI permissions.
+            Launches an Agent Client Protocol process for the selected workspace.
           </p>
         </div>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2">
-        {ADAPTER_OPTIONS.map((option) => {
-          const checked = adapter === option.value
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => onAdapterChange(option.value)}
-              className={cn(
-                'rounded-md border px-3 py-2 text-left transition-colors',
-                checked ? 'border-primary bg-primary/10' : 'border-border bg-background hover:bg-muted',
-              )}
-            >
-              <span className="block text-sm font-medium">{option.label}</span>
-              <span className="block text-[11px] text-muted-foreground">{option.command}</span>
-            </button>
-          )
-        })}
-      </div>
-
-      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-        <div className="flex gap-2">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          <p>
-            This runtime can edit files and run commands through the selected CLI. Use a workspace
-            dedicated to the task.
-          </p>
-        </div>
-      </div>
-
-      {selectedStatus && (
-        <div className="flex items-start gap-2 rounded-md border border-border bg-background p-3 text-xs">
-          {selectedStatus.available ? (
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-          ) : (
-            <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
-          )}
-          <div>
-            <p className="font-medium">
-              {selectedStatus.available ? 'CLI detected' : 'CLI not detected'}
-            </p>
-            <p className="text-muted-foreground">
-              {selectedStatus.resolved_path ?? selectedStatus.error ?? selectedStatus.executable}
-            </p>
-            {selectedStatus.version && (
-              <p className="text-muted-foreground">{selectedStatus.version}</p>
-            )}
+      <div className="space-y-1.5">
+        <Label htmlFor="acp-profile">Runtime preset</Label>
+        <select
+          id="acp-profile"
+          value={selectedProfile}
+          onChange={(event) => handlePresetChange(event.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <option value="custom">Custom ACP command</option>
+          {presets.map((preset) => (
+            <option key={preset.id} value={preset.profile}>
+              {preset.name}
+              {preset.installed ? '' : ' (npx fallback)'}
+            </option>
+          ))}
+        </select>
+        {presets.length > 0 && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {presets.map((preset) => {
+              const selected = selectedProfile === preset.profile
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => onPresetSelect(preset)}
+                  className={[
+                    'rounded-md border px-3 py-2 text-left text-sm transition-colors',
+                    selected
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-border bg-background hover:bg-muted',
+                  ].join(' ')}
+                >
+                  <span className="block font-medium">{preset.name}</span>
+                  <span className="block text-[11px] text-muted-foreground">
+                    {preset.installed ? 'Local adapter detected' : 'Uses npx fallback'}
+                  </span>
+                </button>
+              )
+            })}
           </div>
+        )}
+        {installedPresets.length > 0 && (
+          <p className="text-[11px] text-muted-foreground">
+            Detected: {installedPresets.map((preset) => preset.name).join(', ')}
+          </p>
+        )}
+        {installedPresets.length === 0 && presets.length > 0 && (
+          <p className="text-[11px] text-muted-foreground">
+            No local ACP adapter executable was detected. Presets are still selectable
+            and will use editable fallback commands.
+          </p>
+        )}
+      </div>
+
+      {missingPresets.length > 0 && (
+        <div className="space-y-1 rounded-md border border-dashed border-border p-2">
+          {missingPresets.map((preset) => (
+            <p key={preset.id} className="flex gap-2 text-[11px] text-muted-foreground">
+              <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                {preset.name}: {preset.install_hint}
+              </span>
+            </p>
+          ))}
         </div>
       )}
 
+      <div className="grid gap-3 sm:grid-cols-3">
+        {selectedPreset ? (
+          <>
+            <RuntimeChoiceField
+              id="acp-model"
+              label="Model"
+              value={model}
+              options={modelOptions}
+              placeholder="Adapter default"
+              onChange={onModelChange}
+            />
+            <RuntimeChoiceField
+              id="acp-mode"
+              label="Mode"
+              value={mode}
+              options={modeOptions}
+              placeholder="Adapter default"
+              onChange={onModeChange}
+            />
+            <RuntimeChoiceField
+              id="acp-thinking"
+              label="Thinking"
+              value={thinkingEffort}
+              options={thinkingOptions}
+              placeholder="Adapter default"
+              onChange={onThinkingEffortChange}
+            />
+          </>
+        ) : (
+          <>
+            <RuntimeTextField
+              id="acp-model"
+              label="Model"
+              value={model}
+              placeholder="Default"
+              onChange={onModelChange}
+            />
+            <RuntimeTextField
+              id="acp-mode"
+              label="Mode"
+              value={mode}
+              placeholder="Default"
+              onChange={onModeChange}
+            />
+            <RuntimeTextField
+              id="acp-thinking"
+              label="Thinking"
+              value={thinkingEffort}
+              placeholder="Default"
+              onChange={onThinkingEffortChange}
+            />
+          </>
+        )}
+      </div>
+
       <div className="space-y-1.5">
-        <Label htmlFor="external-executable">Executable override (optional)</Label>
+        <Label htmlFor="acp-command">Command</Label>
         <Input
-          id="external-executable"
-          value={executable}
-          onChange={(event) => onExecutableChange(event.target.value)}
-          placeholder={adapter === 'codex' ? 'codex' : 'claude'}
+          id="acp-command"
+          value={command}
+          onChange={(event) => onCommandChange(event.target.value)}
+          placeholder="python"
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="acp-args">Arguments</Label>
+        <Input
+          id="acp-args"
+          value={argsText}
+          onChange={(event) => onArgsTextChange(event.target.value)}
+          placeholder="-m my_acp_agent"
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="acp-env">Environment</Label>
+        <textarea
+          id="acp-env"
+          value={envText}
+          onChange={(event) => onEnvTextChange(event.target.value)}
+          rows={3}
+          placeholder="KEY=value"
+          className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor="external-timeout">Timeout seconds</Label>
+          <Label htmlFor="acp-timeout">Timeout seconds</Label>
           <Input
-            id="external-timeout"
+            id="acp-timeout"
             type="number"
             min={1}
             max={21600}
@@ -121,16 +330,18 @@ export function ExternalRuntimeFields({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="external-max-turns">Max turns</Label>
-          <Input
-            id="external-max-turns"
-            type="number"
-            min={1}
-            max={100}
-            value={maxTurns}
-            onChange={(event) => onMaxTurnsChange(Number(event.target.value) || 20)}
-            disabled={adapter !== 'claude_code'}
-          />
+          <Label htmlFor="acp-permission">Permission requests</Label>
+          <select
+            id="acp-permission"
+            value={permissionPolicy}
+            onChange={(event) =>
+              onPermissionPolicyChange(event.target.value as AcpPermissionPolicy)
+            }
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="deny">Deny requests</option>
+            <option value="auto_allow">Auto allow</option>
+          </select>
         </div>
       </div>
     </section>

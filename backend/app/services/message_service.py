@@ -29,7 +29,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -61,6 +61,7 @@ from app.agents.context_budget import (
 )
 from app.agents.context_usage import (
     ContextUsage,
+    acp_context_usage,
     extract_context_usage,
     fallback_context_usage,
 )
@@ -70,9 +71,8 @@ from app.agents.workspace_tools import build_workspace_tools
 from app.core.exceptions import AgentChatError, ConflictError, NotFoundError
 from app.db import SessionLocal
 from app.external_agents import (
-    normalize_external_runtime,
-    run_external_agent,
-    run_external_agent_stream,
+    normalize_acp_runtime,
+    run_acp_agent_stream,
 )
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
@@ -127,6 +127,12 @@ class BuiltAgentInvocation:
     context: AgentInvocationContext
     fallback_context_usage: ContextUsage
     context_message_id: UUID | None
+
+
+@dataclass
+class AcpAgentTurn:
+    text: str
+    context_usage: ContextUsage | None
 
 
 @dataclass(frozen=True)
@@ -1169,14 +1175,14 @@ def _serialize_msg(m: Message) -> dict[str, Any]:
     }
 
 
-def _external_workspace_path(context: AgentInvocationContext) -> Path:
+def _acp_workspace_path(context: AgentInvocationContext) -> Path:
     workspace = context.workspace
     if workspace is None or workspace.backend_type != "local" or not workspace.local_path:
-        raise AgentChatError("external CLI agents require a local workspace")
+        raise AgentChatError("ACP agents require a local workspace")
     return Path(workspace.local_path).resolve()
 
 
-def _render_external_prompt(input_messages: list[BaseMessage]) -> str:
+def _render_acp_prompt(input_messages: list[BaseMessage]) -> str:
     rendered: list[str] = []
     for message in input_messages:
         role = "Message"
@@ -1201,25 +1207,48 @@ def _render_external_prompt(input_messages: list[BaseMessage]) -> str:
     return "\n\n".join(rendered)
 
 
-async def _run_external_agent_once(
+def _context_usage_from_acp_event(
+    data: object,
+    *,
+    fallback_context_usage: ContextUsage,
+) -> ContextUsage | None:
+    if not isinstance(data, Mapping):
+        return None
+    return acp_context_usage(data, fallback_usage=fallback_context_usage)
+
+
+async def _run_acp_agent_once(
     db: AsyncSession,
     group: Group | None,
     agent: Agent,
     chat_thread: Thread | None,
     input_messages: list[BaseMessage],
     context: AgentInvocationContext,
-) -> str:
-    config = normalize_external_runtime(agent.external_runtime)
-    return await run_external_agent(
+    fallback_context_usage: ContextUsage,
+) -> AcpAgentTurn:
+    config = normalize_acp_runtime(agent.external_runtime)
+    chunks: list[str] = []
+    context_usage: ContextUsage | None = None
+    async for event in run_acp_agent_stream(
         db,
         owner_id=agent.owner_id,
         group_id=group.id if group is not None else None,
         agent_id=agent.id,
         thread_id=chat_thread.id if chat_thread is not None else None,
         config=config,
-        cwd=_external_workspace_path(context),
-        prompt=_render_external_prompt(input_messages),
-    )
+        cwd=_acp_workspace_path(context),
+        prompt=_render_acp_prompt(input_messages),
+    ):
+        if event.kind == "token" and isinstance(event.data, str):
+            chunks.append(event.data)
+        elif event.kind == "usage":
+            event_usage = _context_usage_from_acp_event(
+                event.data,
+                fallback_context_usage=fallback_context_usage,
+            )
+            if event_usage is not None:
+                context_usage = event_usage
+    return AcpAgentTurn(text="".join(chunks).strip(), context_usage=context_usage)
 
 
 async def send_message(
@@ -1315,14 +1344,21 @@ async def send_message(
                 input_messages = invocation.input_messages
                 context = invocation.context
                 if agent.runtime_kind == "external_cli":
-                    text = await _run_external_agent_once(
+                    raise AgentChatError(
+                        "external CLI agents are deprecated; reconfigure this agent "
+                        "with an ACP runtime"
+                    )
+                if agent.runtime_kind == "acp":
+                    acp_turn = await _run_acp_agent_once(
                         db,
                         group,
                         agent,
                         chat_thread,
                         input_messages,
                         context,
+                        invocation.fallback_context_usage,
                     )
+                    text = acp_turn.text
                     if _is_silent_reply(group, text):
                         silent_turns.append(
                             SilentAgentTurn(
@@ -1334,10 +1370,11 @@ async def send_message(
                         continue
                     visible_text = _sanitize_agent_visible_content(text)
                     if visible_text:
+                        context_usage = acp_turn.context_usage or invocation.fallback_context_usage
                         await _record_context_usage(
                             db,
                             group_agent,
-                            invocation.fallback_context_usage,
+                            context_usage,
                             invocation.context_message_id,
                         )
                         agent_msg = await _persist_agent_message(
@@ -1347,7 +1384,7 @@ async def send_message(
                             visible_text,
                             chat_thread.id,
                             reply_to=user_msg.id,
-                            context_usage=invocation.fallback_context_usage,
+                            context_usage=context_usage,
                         )
                         agent_replies.append(agent_msg)
                         visible_replies_used += 1
@@ -1557,14 +1594,21 @@ async def send_message(
             input_messages = invocation.input_messages
             context = invocation.context
             if dispatch.helper_agent.runtime_kind == "external_cli":
-                text = await _run_external_agent_once(
+                raise AgentChatError(
+                    "external CLI agents are deprecated; reconfigure this agent "
+                    "with an ACP runtime"
+                )
+            if dispatch.helper_agent.runtime_kind == "acp":
+                acp_turn = await _run_acp_agent_once(
                     db,
                     group,
                     dispatch.helper_agent,
                     helper_thread,
                     input_messages,
                     context,
+                    invocation.fallback_context_usage,
                 )
+                text = acp_turn.text
                 if _is_silent_reply(group, text):
                     silent_turns.append(
                         SilentAgentTurn(
@@ -1579,10 +1623,11 @@ async def send_message(
                     continue
                 visible_text = _sanitize_agent_visible_content(text)
                 if visible_text:
+                    context_usage = acp_turn.context_usage or invocation.fallback_context_usage
                     await _record_context_usage(
                         db,
                         dispatch.helper_group_agent,
-                        invocation.fallback_context_usage,
+                        context_usage,
                         invocation.context_message_id,
                     )
                     agent_msg = await _persist_agent_message(
@@ -1592,7 +1637,7 @@ async def send_message(
                         visible_text,
                         helper_thread.id,
                         reply_to=dispatch_msg.id,
-                        context_usage=invocation.fallback_context_usage,
+                        context_usage=context_usage,
                     )
                     agent_replies.append(agent_msg)
                 waiting_for_user = _requests_human_input(
@@ -1718,33 +1763,40 @@ async def _stream_one_agent(
             )
             input_messages = invocation.input_messages
             context = invocation.context
-        # Emit the per-turn context usage as soon as the prompt is assembled, so
-        # the avatar ring reflects THIS turn's input size in real time instead of
-        # waiting for the final message (or showing a stale previous baseline).
-        usage_payload: dict[str, Any] = {
-            "agent_id": agent_id_str,
-            "display_name": group_agent.display_name or agent.name,
-            "context_usage": invocation.fallback_context_usage.to_payload(),
-        }
-        if stream_id is not None:
-            usage_payload["stream_id"] = str(stream_id)
-        if round_idx is not None:
-            usage_payload["round"] = round_idx
-        yield {"event": "context_usage", "data": json.dumps(usage_payload)}
+        # Provider-native agents get a prompt-size estimate before the final
+        # provider usage arrives. ACP runtimes report their own used/window
+        # values via UsageUpdate, so avoid showing an estimated 32K-style window
+        # while we wait for the adapter's real data.
+        if agent.runtime_kind != "acp":
+            usage_payload: dict[str, Any] = {
+                "agent_id": agent_id_str,
+                "display_name": group_agent.display_name or agent.name,
+                "context_usage": invocation.fallback_context_usage.to_payload(),
+            }
+            if stream_id is not None:
+                usage_payload["stream_id"] = str(stream_id)
+            if round_idx is not None:
+                usage_payload["round"] = round_idx
+            yield {"event": "context_usage", "data": json.dumps(usage_payload)}
         if agent.runtime_kind == "external_cli":
-            config = normalize_external_runtime(agent.external_runtime)
+            raise AgentChatError(
+                "external CLI agents are deprecated; reconfigure this agent with an ACP runtime"
+            )
+        if agent.runtime_kind == "acp":
+            config = normalize_acp_runtime(agent.external_runtime)
+            context_usage = invocation.fallback_context_usage
             async with _db_lock_section(db_lock):
-                external_events = run_external_agent_stream(
+                acp_events = run_acp_agent_stream(
                     db,
                     owner_id=agent.owner_id,
                     group_id=group.id,
                     agent_id=agent.id,
                     thread_id=chat_thread.id,
                     config=config,
-                    cwd=_external_workspace_path(context),
-                    prompt=_render_external_prompt(input_messages),
+                    cwd=_acp_workspace_path(context),
+                    prompt=_render_acp_prompt(input_messages),
                 )
-                async for event in external_events:
+                async for event in acp_events:
                     if event.kind == "run" and isinstance(event.data, dict):
                         payload = {
                             **event.data,
@@ -1755,7 +1807,56 @@ async def _stream_one_agent(
                             payload["stream_id"] = str(stream_id)
                         if round_idx is not None:
                             payload["round"] = round_idx
-                        yield {"event": "external_agent_run", "data": json.dumps(payload)}
+                        yield {"event": "acp_agent_run", "data": json.dumps(payload)}
+                        continue
+                    if event.kind == "reasoning" and isinstance(event.data, str):
+                        yield {
+                            "event": "reasoning",
+                            "data": json.dumps(
+                                {
+                                    "agent_id": agent_id_str,
+                                    "delta": event.data,
+                                    **(
+                                        {"stream_id": str(stream_id)}
+                                        if stream_id is not None
+                                        else {}
+                                    ),
+                                    **({"round": round_idx} if round_idx is not None else {}),
+                                }
+                            ),
+                        }
+                        continue
+                    if event.kind in {"tool_call_start", "tool_call_result"} and isinstance(
+                        event.data, dict
+                    ):
+                        payload = {
+                            **event.data,
+                            "agent_id": agent_id_str,
+                            "display_name": group_agent.display_name or agent.name,
+                        }
+                        if stream_id is not None:
+                            payload["stream_id"] = str(stream_id)
+                        if round_idx is not None:
+                            payload["round"] = round_idx
+                        yield {"event": event.kind, "data": json.dumps(payload)}
+                        continue
+                    if event.kind == "usage":
+                        event_usage = _context_usage_from_acp_event(
+                            event.data,
+                            fallback_context_usage=invocation.fallback_context_usage,
+                        )
+                        if event_usage is not None:
+                            context_usage = event_usage
+                            payload = {
+                                "agent_id": agent_id_str,
+                                "display_name": group_agent.display_name or agent.name,
+                                "context_usage": context_usage.to_payload(),
+                            }
+                            if stream_id is not None:
+                                payload["stream_id"] = str(stream_id)
+                            if round_idx is not None:
+                                payload["round"] = round_idx
+                            yield {"event": "context_usage", "data": json.dumps(payload)}
                         continue
                     if event.kind != "token" or not isinstance(event.data, str):
                         continue
@@ -1799,7 +1900,7 @@ async def _stream_one_agent(
                         await _record_context_usage(
                             db,
                             group_agent,
-                            invocation.fallback_context_usage,
+                            context_usage,
                             invocation.context_message_id,
                         )
                         agent_msg = await _persist_agent_message(
@@ -1809,7 +1910,7 @@ async def _stream_one_agent(
                             visible_text,
                             chat_thread.id,
                             reply_to=reply_to,
-                            context_usage=invocation.fallback_context_usage,
+                            context_usage=context_usage,
                         )
                     yield {
                         "event": "agent_message",

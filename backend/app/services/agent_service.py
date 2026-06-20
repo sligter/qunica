@@ -6,9 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.builtin_tools import AgentToolConfig, normalize_tool_config
 from app.core.exceptions import AgentChatError, NotFoundError, PermissionDeniedError
-from app.external_agents import normalize_external_runtime
+from app.external_agents import normalize_acp_runtime
 from app.models.agent import Agent
+from app.models.group import Group
 from app.models.user import User
+from app.models.workspace import Workspace
 from app.schemas.agent import AgentCreate, AgentUpdate
 from app.services import llm_provider_service, skill_service, workspace_service
 
@@ -49,19 +51,17 @@ async def _validate_assistant_agents(
 
 
 async def create_agent(db: AsyncSession, data: AgentCreate, owner: User) -> Agent:
-    external_runtime = (
-        normalize_external_runtime(
-            data.external_runtime.model_dump(mode="json")
-            if data.external_runtime
-            else None
+    acp_runtime = (
+        normalize_acp_runtime(
+            data.acp_runtime.model_dump(mode="json") if data.acp_runtime else None
         )
-        if data.runtime_kind == "external_cli"
+        if data.runtime_kind == "acp"
         else None
     )
     await _validate_provider_and_skills(
         db,
         owner,
-        llm_provider_id=None if data.runtime_kind == "external_cli" else data.llm_provider_id,
+        llm_provider_id=None if data.runtime_kind == "acp" else data.llm_provider_id,
         skill_ids=data.skill_ids,
     )
     await _validate_assistant_agents(db, owner, data.tool_config)
@@ -74,9 +74,9 @@ async def create_agent(db: AsyncSession, data: AgentCreate, owner: User) -> Agen
         llm_config=data.llm_config,
         tool_config=normalize_tool_config(data.tool_config),
         runtime_kind=data.runtime_kind,
-        external_runtime=asdict(external_runtime) if external_runtime else None,
+        external_runtime=asdict(acp_runtime) if acp_runtime else None,
         workspace_id=data.workspace_id,
-        llm_provider_id=None if data.runtime_kind == "external_cli" else data.llm_provider_id,
+        llm_provider_id=None if data.runtime_kind == "acp" else data.llm_provider_id,
         skill_ids=[str(s) for s in data.skill_ids],
     )
     db.add(agent)
@@ -111,20 +111,20 @@ async def update_agent(
 ) -> Agent:
     agent = await get_agent(db, agent_id, owner)
     next_runtime_kind = data.runtime_kind or agent.runtime_kind
-    next_external_runtime = (
-        data.external_runtime.model_dump(mode="json")
-        if data.external_runtime is not None
+    next_acp_runtime = (
+        data.acp_runtime.model_dump(mode="json")
+        if data.acp_runtime is not None
         else agent.external_runtime
     )
-    external_runtime = (
-        normalize_external_runtime(next_external_runtime)
-        if next_runtime_kind == "external_cli"
+    acp_runtime = (
+        normalize_acp_runtime(next_acp_runtime)
+        if next_runtime_kind == "acp"
         else None
     )
     await _validate_provider_and_skills(
         db,
         owner,
-        llm_provider_id=None if next_runtime_kind == "external_cli" else data.llm_provider_id,
+        llm_provider_id=None if next_runtime_kind == "acp" else data.llm_provider_id,
         skill_ids=data.skill_ids,
     )
     if data.name is not None:
@@ -140,8 +140,8 @@ async def update_agent(
         agent.tool_config = normalize_tool_config(data.tool_config)
     if data.runtime_kind is not None:
         agent.runtime_kind = data.runtime_kind
-    if data.external_runtime is not None or data.runtime_kind == "external_cli":
-        agent.external_runtime = asdict(external_runtime) if external_runtime else None
+    if data.acp_runtime is not None or data.runtime_kind == "acp":
+        agent.external_runtime = asdict(acp_runtime) if acp_runtime else None
     if next_runtime_kind == "llm_chat" and data.runtime_kind == "llm_chat":
         agent.external_runtime = None
     if data.workspace_id is not None:
@@ -151,7 +151,7 @@ async def update_agent(
     # check via the model_fields_set machinery.
     if "llm_provider_id" in data.model_fields_set:
         agent.llm_provider_id = (
-            None if next_runtime_kind == "external_cli" else data.llm_provider_id
+            None if next_runtime_kind == "acp" else data.llm_provider_id
         )
     if data.skill_ids is not None:
         agent.skill_ids = [str(s) for s in data.skill_ids]
@@ -160,7 +160,60 @@ async def update_agent(
     return agent
 
 
+async def _cleanup_deleted_agent_workspace(
+    db: AsyncSession,
+    *,
+    workspace_id: UUID | None,
+    owner_id: UUID,
+    deleted_agent_id: UUID,
+) -> None:
+    if workspace_id is None:
+        return
+
+    group_workspace = await db.scalar(
+        select(Group.id)
+        .where(
+            Group.owner_id == owner_id,
+            Group.workspace_id == workspace_id,
+        )
+        .limit(1)
+    )
+    if group_workspace is not None:
+        return
+
+    other_agent_workspace = await db.scalar(
+        select(Agent.id)
+        .where(
+            Agent.owner_id == owner_id,
+            Agent.workspace_id == workspace_id,
+            Agent.id != deleted_agent_id,
+            Agent.status == "active",
+        )
+        .limit(1)
+    )
+    if other_agent_workspace is not None:
+        return
+
+    workspace = await db.scalar(
+        select(Workspace).where(
+            Workspace.id == workspace_id,
+            Workspace.owner_id == owner_id,
+            Workspace.status == "active",
+        )
+    )
+    if workspace is not None:
+        workspace.status = "deleted"
+
+
 async def delete_agent(db: AsyncSession, agent_id: UUID, owner: User) -> None:
     agent = await get_agent(db, agent_id, owner)
+    workspace_id = agent.workspace_id
     agent.status = "deleted"
+    agent.workspace_id = None
+    await _cleanup_deleted_agent_workspace(
+        db,
+        workspace_id=workspace_id,
+        owner_id=owner.id,
+        deleted_agent_id=agent.id,
+    )
     await db.flush()

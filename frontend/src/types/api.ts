@@ -89,29 +89,53 @@ export interface AgentToolConfig {
   assistant_agents?: AgentAssistantToolSelection[]
 }
 
-export type AgentRuntimeKind = 'llm_chat' | 'external_cli'
-export type ExternalRuntimeAdapter = 'codex' | 'claude_code'
+export type AgentRuntimeKind = 'llm_chat' | 'acp'
+export type AcpRuntimeProfile = 'custom' | 'codex' | 'claude'
+export type AcpPermissionPolicy = 'deny' | 'auto_allow'
+export type AcpConfigValue = string | boolean
 
-export interface ExternalRuntimeConfig {
-  adapter: ExternalRuntimeAdapter
-  executable?: string | null
+export interface AcpRuntimeConfig {
+  profile?: AcpRuntimeProfile
+  command: string
+  args?: string[]
+  env?: Record<string, string>
   timeout_seconds?: number | null
-  max_turns?: number | null
+  permission_policy?: AcpPermissionPolicy
+  model?: string | null
+  mode?: string | null
+  thinking_effort?: string | null
+  config_options?: Record<string, AcpConfigValue> | null
 }
 
-export interface ExternalAdapterStatusRead {
-  adapter: ExternalRuntimeAdapter
+export interface AcpRuntimeChoice {
+  value: string
   label: string
-  executable: string
-  configured_path: string | null
-  resolved_path: string | null
-  available: boolean
-  version: string | null
-  error: string | null
+  description?: string | null
 }
 
-export interface ExternalAdapterStatusResponse {
-  adapters: ExternalAdapterStatusRead[]
+export interface AcpRuntimePresetRead {
+  id: 'codex' | 'claude'
+  name: string
+  description: string
+  profile: 'codex' | 'claude'
+  installed: boolean
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  timeout_seconds: number
+  permission_policy: AcpPermissionPolicy
+  default_model: string | null
+  default_mode: string | null
+  default_thinking_effort: string | null
+  model_options: AcpRuntimeChoice[]
+  mode_options: AcpRuntimeChoice[]
+  thinking_effort_options: AcpRuntimeChoice[]
+  install_hint: string
+  source: string | null
+}
+
+export interface AcpRuntimePresetListResponse {
+  presets: AcpRuntimePresetRead[]
 }
 
 export interface AgentRead {
@@ -122,7 +146,7 @@ export interface AgentRead {
   llm_config: Record<string, unknown> | null
   tool_config: AgentToolConfig | null
   runtime_kind: AgentRuntimeKind
-  external_runtime: ExternalRuntimeConfig | null
+  acp_runtime: AcpRuntimeConfig | null
   workspace_id: string | null
   llm_provider_id: string | null
   skill_ids: string[]
@@ -149,7 +173,7 @@ export interface AgentCreate {
   llm_config?: Record<string, unknown> | null
   tool_config?: AgentToolConfig | null
   runtime_kind?: AgentRuntimeKind
-  external_runtime?: ExternalRuntimeConfig | null
+  acp_runtime?: AcpRuntimeConfig | null
   workspace_id: string
   llm_provider_id?: string | null
   skill_ids?: string[]
@@ -162,7 +186,7 @@ export interface AgentUpdate {
   llm_config?: Record<string, unknown> | null
   tool_config?: AgentToolConfig | null
   runtime_kind?: AgentRuntimeKind
-  external_runtime?: ExternalRuntimeConfig | null
+  acp_runtime?: AcpRuntimeConfig | null
   workspace_id?: string | null
   llm_provider_id?: string | null
   skill_ids?: string[]

@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -8,6 +9,8 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from pydantic import Field
 
 from app.agents.defaults import DEFAULT_AGENT_SYSTEM_PROMPT
+from app.api.v1 import agents as agents_api
+from app.external_agents.discovery import AcpRuntimeChoice, AcpRuntimePreset
 
 JsonObject = dict[str, Any]
 
@@ -106,6 +109,37 @@ async def test_tool_catalog_returns_builtin_tools(
     assert all(status == "available" for status in status_by_id.values())
 
 
+async def test_acp_runtime_presets_serializes_discovered_dataclasses(
+    monkeypatch: Any,
+) -> None:
+    def _discover() -> list[AcpRuntimePreset]:
+        return [
+            AcpRuntimePreset(
+                id="codex",
+                name="Codex",
+                description="Codex adapter",
+                profile="codex",
+                installed=True,
+                command="codex-acp.cmd",
+                default_mode="read-only",
+                model_options=[AcpRuntimeChoice("", "Default")],
+                install_hint="Install Codex ACP.",
+                source="PATH",
+            )
+        ]
+
+    monkeypatch.setattr(agents_api, "discover_acp_runtime_presets", _discover)
+
+    response = await agents_api.get_acp_runtime_presets()
+
+    body = response.model_dump()
+    assert body["presets"][0]["id"] == "codex"
+    assert body["presets"][0]["command"] == "codex-acp.cmd"
+    assert body["presets"][0]["model_options"] == [
+        {"value": "", "label": "Default", "description": None}
+    ]
+
+
 async def test_create_agent_requires_workspace(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
@@ -135,6 +169,52 @@ async def test_create_agent_uses_default_system_prompt(
 
     assert r.status_code == 201, r.text
     assert r.json()["system_prompt"] == DEFAULT_AGENT_SYSTEM_PROMPT
+
+
+async def test_create_agent_accepts_acp_runtime(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "ACP",
+            "workspace_id": workspace["id"],
+            "runtime_kind": "acp",
+            "acp_runtime": {
+                "command": sys.executable,
+                "args": ["agent.py", "--acp"],
+                "timeout_seconds": 10,
+                "permission_policy": "deny",
+            },
+        },
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["runtime_kind"] == "acp"
+    assert body["acp_runtime"]["command"] == sys.executable
+    assert body["acp_runtime"]["args"] == ["agent.py", "--acp"]
+    assert body["llm_provider_id"] is None
+
+
+async def test_create_agent_rejects_external_cli_runtime(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "Old CLI",
+            "workspace_id": workspace["id"],
+            "runtime_kind": "external_cli",
+            "external_runtime": {"adapter": "codex"},
+        },
+    )
+
+    assert r.status_code == 422
 
 
 async def test_create_agent_accepts_temperature_005_increment(
@@ -318,6 +398,90 @@ async def test_get_other_users_agent_forbidden(client: AsyncClient) -> None:
     assert r.status_code == 403
 
 
+async def test_delete_agent_deletes_own_workspace_but_keeps_group_workspace(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    group_workspace = await _create_workspace(client, auth_headers)
+    agent_workspace = await _create_workspace(client, auth_headers)
+    agent_response = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "Scoped Delete",
+            "system_prompt": "You have your own workspace.",
+            "workspace_id": agent_workspace["id"],
+        },
+    )
+    assert agent_response.status_code == 201, agent_response.text
+    agent = agent_response.json()
+    group_response = await client.post(
+        "/api/v1/groups",
+        headers=auth_headers,
+        json={
+            "name": "Keep Group Workspace",
+            "workspace_id": group_workspace["id"],
+            "initial_agents": [agent["id"]],
+        },
+    )
+    assert group_response.status_code == 201, group_response.text
+
+    response = await client.delete(f"/api/v1/agents/{agent['id']}", headers=auth_headers)
+    assert response.status_code == 204, response.text
+
+    own_workspace = await client.get(
+        f"/api/v1/workspaces/{agent_workspace['id']}",
+        headers=auth_headers,
+    )
+    assert own_workspace.status_code == 200, own_workspace.text
+    assert own_workspace.json()["status"] == "deleted"
+
+    still_group_workspace = await client.get(
+        f"/api/v1/workspaces/{group_workspace['id']}",
+        headers=auth_headers,
+    )
+    assert still_group_workspace.status_code == 200, still_group_workspace.text
+    assert still_group_workspace.json()["status"] == "active"
+
+
+async def test_delete_agent_keeps_workspace_used_by_another_active_agent(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    agents: list[JsonObject] = []
+    for name in ["First", "Second"]:
+        response = await client.post(
+            "/api/v1/agents",
+            headers=auth_headers,
+            json={
+                "name": name,
+                "system_prompt": f"You are {name}.",
+                "workspace_id": workspace["id"],
+            },
+        )
+        assert response.status_code == 201, response.text
+        agents.append(cast(JsonObject, response.json()))
+
+    response = await client.delete(
+        f"/api/v1/agents/{agents[0]['id']}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 204, response.text
+
+    workspace_response = await client.get(
+        f"/api/v1/workspaces/{workspace['id']}",
+        headers=auth_headers,
+    )
+    assert workspace_response.status_code == 200, workspace_response.text
+    assert workspace_response.json()["status"] == "active"
+
+    surviving_agent = await client.get(
+        f"/api/v1/agents/{agents[1]['id']}",
+        headers=auth_headers,
+    )
+    assert surviving_agent.status_code == 200, surviving_agent.text
+    assert surviving_agent.json()["workspace_id"] == workspace["id"]
+
+
 async def test_direct_invoke_loops_until_no_tool_call(
     client: AsyncClient,
     auth_headers: dict[str, str],
@@ -375,6 +539,42 @@ async def test_invoke_uses_fake_llm(
     )
     assert r.status_code == 200
     assert r.json()["content"] == "hello from fake"
+
+
+async def test_invoke_uses_acp_runtime(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    workspace = await _create_workspace(client, auth_headers)
+    r = await client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "name": "ACP Invoke",
+            "workspace_id": workspace["id"],
+            "runtime_kind": "acp",
+            "acp_runtime": {"command": sys.executable},
+        },
+    )
+    assert r.status_code == 201, r.text
+    agent = r.json()
+    calls: list[str] = []
+
+    async def _fake_run_acp_agent(_db: Any, **kwargs: Any) -> str:
+        calls.append(str(kwargs["prompt"]))
+        return "from acp"
+
+    monkeypatch.setattr("app.api.v1.agents.run_acp_agent", _fake_run_acp_agent)
+    r = await client.post(
+        f"/api/v1/agents/{agent['id']}/invoke",
+        headers=auth_headers,
+        json={"message": "anything"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == "from acp"
+    assert "User request:\nanything" in calls[0]
 
 
 async def test_invoke_stream_emits_token_and_done(

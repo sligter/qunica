@@ -1,216 +1,185 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import shutil
-import subprocess
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from app.core.exceptions import AgentChatError
 
-ExternalAdapterName = Literal["codex", "claude_code"]
-
-ADAPTER_LABELS: dict[ExternalAdapterName, str] = {
-    "codex": "Codex CLI",
-    "claude_code": "Claude Code",
-}
-DEFAULT_EXECUTABLES: dict[ExternalAdapterName, str] = {
-    "codex": "codex",
-    "claude_code": "claude",
-}
 DEFAULT_TIMEOUT_SECONDS = 3600
-DEFAULT_MAX_TURNS = 20
 MAX_TIMEOUT_SECONDS = 6 * 60 * 60
-MAX_TURNS = 100
+PermissionPolicy = Literal["deny", "auto_allow"]
+AcpRuntimeProfile = Literal["custom", "codex", "claude"]
+AcpConfigValue = str | bool
+
+_LEGACY_ADAPTERS = {"codex", "claude_code"}
+_RUNTIME_PROFILES = {"custom", "codex", "claude"}
+_BLOCKED_ENV_KEYS = {
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_HOME",
+    "AG_SWARMER_EXTERNAL_AGENT",
+    "AG_SWARMER_ACP_AGENT",
+}
 
 
 @dataclass(frozen=True, slots=True)
-class ExternalRuntimeConfig:
-    adapter: ExternalAdapterName
-    executable: str | None = None
-    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
-    max_turns: int = DEFAULT_MAX_TURNS
+class AcpRuntimeConfig:
+    command: str
+    args: list[str]
+    env: dict[str, str]
+    timeout_seconds: int
+    permission_policy: PermissionPolicy = "deny"
+    profile: AcpRuntimeProfile = "custom"
+    model: str | None = None
+    mode: str | None = None
+    thinking_effort: str | None = None
+    config_options: dict[str, AcpConfigValue] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class AdapterCommand:
-    argv: list[str]
-    redacted_argv: list[str]
-
-
-@dataclass(frozen=True, slots=True)
-class ExternalAdapterStatus:
-    adapter: ExternalAdapterName
-    label: str
-    executable: str
-    configured_path: str | None
-    resolved_path: str | None
-    available: bool
-    version: str | None = None
-    error: str | None = None
-
-
-def normalize_external_runtime(raw: dict[str, Any] | None) -> ExternalRuntimeConfig:
+def normalize_acp_runtime(raw: dict[str, Any] | None) -> AcpRuntimeConfig:
     if not isinstance(raw, dict):
-        raise AgentChatError("external runtime config is required for external CLI agents")
-    adapter = raw.get("adapter")
-    if adapter not in ADAPTER_LABELS:
-        raise AgentChatError("external runtime adapter must be codex or claude_code")
-    executable = raw.get("executable")
-    if executable is not None:
-        executable = str(executable).strip() or None
+        raise AgentChatError("ACP runtime config is required for ACP agents")
+    _reject_legacy_external_cli(raw)
+
+    command = _normalize_required_text(raw.get("command"), "ACP runtime command")
+    profile = _normalize_profile(raw.get("profile"))
+    args = _normalize_args(raw.get("args"))
+    env = _normalize_env(raw.get("env"))
     timeout_seconds = int(raw.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
     if timeout_seconds < 1 or timeout_seconds > MAX_TIMEOUT_SECONDS:
-        raise AgentChatError("external runtime timeout_seconds is out of range")
-    max_turns = int(raw.get("max_turns") or DEFAULT_MAX_TURNS)
-    if max_turns < 1 or max_turns > MAX_TURNS:
-        raise AgentChatError("external runtime max_turns is out of range")
-    return ExternalRuntimeConfig(
-        adapter=adapter,
-        executable=executable,
+        raise AgentChatError("ACP runtime timeout_seconds is out of range")
+    permission_policy = raw.get("permission_policy") or "deny"
+    if permission_policy not in {"deny", "auto_allow"}:
+        raise AgentChatError("ACP runtime permission_policy must be deny or auto_allow")
+    normalized_permission_policy = cast(PermissionPolicy, permission_policy)
+    config_options = _normalize_config_options(raw.get("config_options"))
+
+    return AcpRuntimeConfig(
+        profile=profile,
+        command=command,
+        args=args,
+        env=env,
         timeout_seconds=timeout_seconds,
-        max_turns=max_turns,
+        permission_policy=normalized_permission_policy,
+        model=_normalize_optional_text(raw.get("model"), "ACP runtime model"),
+        mode=_normalize_optional_text(raw.get("mode"), "ACP runtime mode"),
+        thinking_effort=_normalize_optional_text(
+            raw.get("thinking_effort"),
+            "ACP runtime thinking_effort",
+        ),
+        config_options=config_options,
     )
 
 
-def resolve_executable(config: ExternalRuntimeConfig) -> str:
-    executable = config.executable or DEFAULT_EXECUTABLES[config.adapter]
-    if any(sep in executable for sep in ("\n", "\r", "\x00")):
-        raise AgentChatError("external runtime executable path is invalid")
-    resolved = shutil.which(executable)
-    if resolved is None:
+def _reject_legacy_external_cli(raw: dict[str, Any]) -> None:
+    adapter = raw.get("adapter")
+    if adapter in _LEGACY_ADAPTERS:
         raise AgentChatError(
-            f"{ADAPTER_LABELS[config.adapter]} executable was not found: {executable}"
+            "external CLI adapters are deprecated; configure this agent with an ACP "
+            "runtime command instead"
         )
-    return resolved
+    if adapter is not None:
+        raise AgentChatError("ACP runtime config must not include an adapter field")
 
 
-def build_command(config: ExternalRuntimeConfig, prompt: str) -> AdapterCommand:
-    executable = resolve_executable(config)
-    if config.adapter == "codex":
-        argv = [executable, "exec", "--sandbox", "danger-full-access", prompt]
-    elif config.adapter == "claude_code":
-        argv = [
-            executable,
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--permission-mode",
-            "bypassPermissions",
-            "--max-turns",
-            str(config.max_turns),
-            prompt,
-        ]
-    else:
-        raise AgentChatError("unsupported external runtime adapter")
-    return AdapterCommand(argv=argv, redacted_argv=[*argv[:-1], "<prompt>"])
+def _normalize_required_text(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise AgentChatError(f"{label} is required")
+    text = value.strip()
+    if not text:
+        raise AgentChatError(f"{label} is required")
+    _reject_control_chars(text, label)
+    return text
 
 
-def parse_stdout_line(adapter: ExternalAdapterName, line: str) -> list[str]:
-    if adapter == "codex":
-        return [line]
-    if adapter != "claude_code":
-        return [line]
-    try:
-        payload = json.loads(line)
-    except json.JSONDecodeError:
-        return [line]
-    if not isinstance(payload, dict):
+def _normalize_optional_text(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise AgentChatError(f"{label} must be a string")
+    text = value.strip()
+    if not text:
+        return None
+    _reject_control_chars(text, label)
+    return text
+
+
+def _normalize_profile(value: Any) -> AcpRuntimeProfile:
+    if value is None:
+        return "custom"
+    if not isinstance(value, str):
+        raise AgentChatError("ACP runtime profile must be a string")
+    profile = value.strip()
+    if profile not in _RUNTIME_PROFILES:
+        raise AgentChatError("ACP runtime profile must be custom, codex, or claude")
+    return cast(AcpRuntimeProfile, profile)
+
+
+def _normalize_args(value: Any) -> list[str]:
+    if value is None:
         return []
-    extracted = _extract_claude_text(payload)
-    return [text for text in extracted if text]
+    if not isinstance(value, list):
+        raise AgentChatError("ACP runtime args must be a list of strings")
+    args: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise AgentChatError("ACP runtime args must be a list of strings")
+        _reject_nul(item, "ACP runtime arg")
+        args.append(item)
+    return args
 
 
-def _extract_claude_text(payload: dict[str, Any]) -> list[str]:
-    event_type = str(payload.get("type") or "")
-    if event_type in {"content_block_delta", "message_delta"}:
-        delta = payload.get("delta")
-        if isinstance(delta, dict) and isinstance(delta.get("text"), str):
-            return [delta["text"]]
-    if event_type == "assistant":
-        message = payload.get("message")
-        if isinstance(message, dict):
-            return _extract_content_text(message.get("content"))
-    if event_type == "result" and isinstance(payload.get("result"), str):
-        return [payload["result"]]
-    if isinstance(payload.get("text"), str):
-        return [payload["text"]]
-    return []
+def _normalize_env(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise AgentChatError("ACP runtime env must be an object")
+    env: dict[str, str] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str) or not isinstance(raw_value, str):
+            raise AgentChatError("ACP runtime env keys and values must be strings")
+        if key in _BLOCKED_ENV_KEYS:
+            raise AgentChatError(f"ACP runtime env may not override {key}")
+        _reject_nul(key, "ACP runtime env key")
+        _reject_nul(raw_value, "ACP runtime env value")
+        env[key] = raw_value
+    return env
 
 
-def _extract_content_text(content: Any) -> list[str]:
-    if isinstance(content, str):
-        return [content]
-    if not isinstance(content, list):
-        return []
-    out: list[str] = []
-    for item in content:
-        if (
-            isinstance(item, dict)
-            and item.get("type") == "text"
-            and isinstance(item.get("text"), str)
-        ):
-            out.append(item["text"])
-    return out
-
-
-async def detect_adapter_status(
-    adapter: ExternalAdapterName,
-    executable_override: str | None = None,
-) -> ExternalAdapterStatus:
-    configured = executable_override.strip() if executable_override else None
-    executable = configured or DEFAULT_EXECUTABLES[adapter]
-    if any(sep in executable for sep in ("\n", "\r", "\x00")):
-        return ExternalAdapterStatus(
-            adapter=adapter,
-            label=ADAPTER_LABELS[adapter],
-            executable=executable,
-            configured_path=configured,
-            resolved_path=None,
-            available=False,
-            error="invalid executable path",
+def _normalize_config_options(value: Any) -> dict[str, AcpConfigValue] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AgentChatError("ACP runtime config_options must be an object")
+    config_options: dict[str, AcpConfigValue] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise AgentChatError("ACP runtime config option keys must be strings")
+        normalized_key = _normalize_required_text(key, "ACP runtime config option key")
+        if isinstance(raw_value, bool):
+            config_options[normalized_key] = raw_value
+            continue
+        if not isinstance(raw_value, str):
+            raise AgentChatError("ACP runtime config option values must be strings or booleans")
+        config_options[normalized_key] = _normalize_required_text(
+            raw_value,
+            "ACP runtime config option value",
         )
-    resolved = shutil.which(executable)
-    if resolved is None:
-        return ExternalAdapterStatus(
-            adapter=adapter,
-            label=ADAPTER_LABELS[adapter],
-            executable=executable,
-            configured_path=configured,
-            resolved_path=None,
-            available=False,
-            error="executable not found",
-        )
-    try:
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            [resolved, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            check=False,
-        )
-    except Exception as exc:
-        return ExternalAdapterStatus(
-            adapter=adapter,
-            label=ADAPTER_LABELS[adapter],
-            executable=executable,
-            configured_path=configured,
-            resolved_path=resolved,
-            available=False,
-            error=str(exc),
-        )
-    version_text = (proc.stdout or proc.stderr).strip()
-    return ExternalAdapterStatus(
-        adapter=adapter,
-        label=ADAPTER_LABELS[adapter],
-        executable=executable,
-        configured_path=configured,
-        resolved_path=resolved,
-        available=proc.returncode == 0,
-        version=version_text or None,
-        error=None if proc.returncode == 0 else version_text or f"exit code {proc.returncode}",
-    )
+    return config_options or None
+
+
+def _reject_control_chars(value: str, label: str) -> None:
+    if any(char in value for char in ("\n", "\r", "\x00")):
+        raise AgentChatError(f"{label} is invalid")
+
+
+def _reject_nul(value: str, label: str) -> None:
+    if "\x00" in value:
+        raise AgentChatError(f"{label} is invalid")

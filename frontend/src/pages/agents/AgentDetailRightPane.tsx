@@ -68,8 +68,8 @@ export function AgentDetailRightPane() {
   }
 
   const runtimeText =
-    a.runtime_kind === 'external_cli'
-      ? `External CLI - ${a.external_runtime?.adapter ?? 'not configured'}`
+    a.runtime_kind === 'acp'
+      ? `ACP - ${a.acp_runtime?.command ?? 'not configured'}`
       : provider
         ? `LLM chat - ${provider.name} - ${provider.kind} - ${provider.default_model}`
         : 'LLM chat - Default (env settings)'

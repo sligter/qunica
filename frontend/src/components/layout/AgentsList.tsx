@@ -74,8 +74,8 @@ export function AgentsList() {
                       {a.name}
                     </span>
                     <p className="line-clamp-1 text-xs text-muted-foreground">
-                      {a.runtime_kind === 'external_cli'
-                        ? 'External CLI'
+                      {a.runtime_kind === 'acp'
+                        ? 'ACP runtime'
                         : a.description || a.system_prompt}
                     </p>
                   </div>

@@ -33,6 +33,12 @@ export function AgentDetailDialog({ agent, open, onOpenChange }: AgentDetailDial
     ? providers.data?.find((p) => p.id === agent.llm_provider_id)
     : null
   const mountedSkills = (skills.data ?? []).filter((s) => agent.skill_ids.includes(s.id))
+  const runtimeText =
+    agent.runtime_kind === 'acp'
+      ? `ACP - ${agent.acp_runtime?.command ?? 'not configured'}`
+      : provider
+        ? `LLM chat - ${provider.name} - ${provider.kind} - ${provider.default_model}`
+        : 'LLM chat - Default (env settings)'
 
   const handleClose = (v: boolean) => {
     if (!v) setEditing(false)
@@ -86,7 +92,7 @@ export function AgentDetailDialog({ agent, open, onOpenChange }: AgentDetailDial
                 onClick={onDelete}
                 disabled={del.isPending}
               >
-                {del.isPending ? 'Deleting…' : 'Delete'}
+                {del.isPending ? 'Deleting...' : 'Delete'}
               </Button>
             </div>
           </div>
@@ -106,13 +112,9 @@ export function AgentDetailDialog({ agent, open, onOpenChange }: AgentDetailDial
         <section className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              LLM provider
+              Runtime
             </h3>
-            <p>
-              {provider
-                ? `${provider.name} — ${provider.kind} · ${provider.default_model}`
-                : 'Default (env settings)'}
-            </p>
+            <p>{runtimeText}</p>
           </div>
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">

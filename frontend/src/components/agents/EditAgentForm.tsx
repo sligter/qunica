@@ -1,9 +1,15 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { z } from 'zod'
 
+import {
+  formatAcpArgs,
+  formatAcpEnv,
+  parseAcpArgs,
+  parseAcpEnv,
+} from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
@@ -22,6 +28,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
 import { useProviders } from '@/hooks/useProviders'
@@ -31,21 +38,28 @@ import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type {
+  AcpPermissionPolicy,
+  AcpRuntimePresetRead,
+  AcpRuntimeProfile,
   AgentRead,
   AgentRuntimeKind,
   AgentToolConfig,
-  ExternalRuntimeAdapter,
 } from '@/types/api'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),
   description: z.string().optional(),
   system_prompt: z.string().min(1, 'Required'),
-  runtime_kind: z.enum(['llm_chat', 'external_cli']),
-  external_adapter: z.enum(['codex', 'claude_code']),
-  external_executable: z.string().optional(),
-  external_timeout_seconds: z.number().int().min(1).max(21600),
-  external_max_turns: z.number().int().min(1).max(100),
+  runtime_kind: z.enum(['llm_chat', 'acp']),
+  acp_profile: z.enum(['custom', 'codex', 'claude']),
+  acp_command: z.string().optional(),
+  acp_args: z.string().optional(),
+  acp_env: z.string().optional(),
+  acp_timeout_seconds: z.number().int().min(1).max(21600),
+  acp_permission_policy: z.enum(['deny', 'auto_allow']),
+  acp_model: z.string().optional(),
+  acp_mode: z.string().optional(),
+  acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
   workspace_id: z.string().min(1, 'Workspace is required'),
   temperature: z
@@ -68,6 +82,11 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
+function optionalText(value: string | undefined): string | null {
+  const trimmed = value?.trim() ?? ''
+  return trimmed ? trimmed : null
+}
+
 interface EditAgentFormProps {
   agent: AgentRead
   onSaved?: () => void
@@ -80,6 +99,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const workspaces = useWorkspaces()
   const builtinTools = useBuiltinTools()
   const agents = useAgents()
+  const acpRuntimePresets = useAcpRuntimePresets()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
   const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(agent.tool_config)
@@ -94,10 +114,15 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       description: agent.description ?? '',
       system_prompt: agent.system_prompt,
       runtime_kind: agent.runtime_kind ?? 'llm_chat',
-      external_adapter: agent.external_runtime?.adapter ?? 'codex',
-      external_executable: agent.external_runtime?.executable ?? '',
-      external_timeout_seconds: agent.external_runtime?.timeout_seconds ?? 3600,
-      external_max_turns: agent.external_runtime?.max_turns ?? 20,
+      acp_profile: agent.acp_runtime?.profile ?? 'custom',
+      acp_command: agent.acp_runtime?.command ?? '',
+      acp_args: formatAcpArgs(agent.acp_runtime?.args),
+      acp_env: formatAcpEnv(agent.acp_runtime?.env),
+      acp_timeout_seconds: agent.acp_runtime?.timeout_seconds ?? 3600,
+      acp_permission_policy: agent.acp_runtime?.permission_policy ?? 'deny',
+      acp_model: agent.acp_runtime?.model ?? '',
+      acp_mode: agent.acp_runtime?.mode ?? '',
+      acp_thinking_effort: agent.acp_runtime?.thinking_effort ?? '',
       llm_provider_id: agent.llm_provider_id ?? '',
       workspace_id: agent.workspace_id ?? '',
       temperature: (agent.llm_config?.temperature as number) ?? DEFAULT_AGENT_TEMPERATURE,
@@ -117,12 +142,28 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   })
 
   const runtimeKind = form.watch('runtime_kind')
+  const acpPresets = acpRuntimePresets.data?.presets ?? []
   const tools = builtinTools.data?.tools ?? []
   const selectedWorkspace = (workspaces.data ?? []).find(
     (workspace) => workspace.id === form.watch('workspace_id'),
   )
   const currentToolConfig = mergeToolConfig(tools, toolConfig)
   const systemPromptField = form.register('system_prompt')
+
+  const applyAcpPreset = useCallback(
+    (preset: AcpRuntimePresetRead) => {
+      form.setValue('acp_profile', preset.profile)
+      form.setValue('acp_command', preset.command ?? '')
+      form.setValue('acp_args', formatAcpArgs(preset.args))
+      form.setValue('acp_env', formatAcpEnv(preset.env))
+      form.setValue('acp_timeout_seconds', preset.timeout_seconds)
+      form.setValue('acp_permission_policy', preset.permission_policy)
+      form.setValue('acp_model', preset.default_model ?? '')
+      form.setValue('acp_mode', preset.default_mode ?? '')
+      form.setValue('acp_thinking_effort', preset.default_thinking_effort ?? '')
+    },
+    [form],
+  )
 
   const toggleSkill = (id: string) => {
     setSelectedSkillIds((prev) =>
@@ -152,13 +193,19 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         description: values.description ?? null,
         system_prompt: values.system_prompt,
         runtime_kind: values.runtime_kind,
-        external_runtime:
-          values.runtime_kind === 'external_cli'
+        acp_runtime:
+          values.runtime_kind === 'acp'
             ? {
-                adapter: values.external_adapter,
-                executable: values.external_executable || null,
-                timeout_seconds: values.external_timeout_seconds,
-                max_turns: values.external_max_turns,
+                profile: values.acp_profile,
+                command: values.acp_command?.trim() ?? '',
+                args: parseAcpArgs(values.acp_args ?? ''),
+                env: parseAcpEnv(values.acp_env ?? ''),
+                timeout_seconds: values.acp_timeout_seconds,
+                permission_policy: values.acp_permission_policy,
+                model: optionalText(values.acp_model),
+                mode: optionalText(values.acp_mode),
+                thinking_effort: optionalText(values.acp_thinking_effort),
+                config_options: null,
               }
             : null,
         llm_config:
@@ -225,7 +272,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         <div className="grid gap-2 sm:grid-cols-2">
           {([
             ['llm_chat', 'LLM chat', 'Provider-native model and tools'],
-            ['external_cli', 'External CLI', 'Codex or Claude Code'],
+            ['acp', 'ACP', 'Agent Client Protocol process'],
           ] as const).map(([value, label, hint]) => {
             const checked = runtimeKind === value
             return (
@@ -269,18 +316,30 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         )}
       </section>
 
-      {runtimeKind === 'external_cli' && (
+      {runtimeKind === 'acp' && (
         <ExternalRuntimeFields
-          adapter={form.watch('external_adapter')}
-          executable={form.watch('external_executable') ?? ''}
-          timeoutSeconds={form.watch('external_timeout_seconds')}
-          maxTurns={form.watch('external_max_turns')}
-          onAdapterChange={(adapter: ExternalRuntimeAdapter) =>
-            form.setValue('external_adapter', adapter)
+          presets={acpPresets}
+          selectedProfile={form.watch('acp_profile')}
+          command={form.watch('acp_command') ?? ''}
+          argsText={form.watch('acp_args') ?? ''}
+          envText={form.watch('acp_env') ?? ''}
+          timeoutSeconds={form.watch('acp_timeout_seconds')}
+          permissionPolicy={form.watch('acp_permission_policy')}
+          model={form.watch('acp_model') ?? ''}
+          mode={form.watch('acp_mode') ?? ''}
+          thinkingEffort={form.watch('acp_thinking_effort') ?? ''}
+          onProfileChange={(value: AcpRuntimeProfile) => form.setValue('acp_profile', value)}
+          onPresetSelect={applyAcpPreset}
+          onCommandChange={(value) => form.setValue('acp_command', value)}
+          onArgsTextChange={(value) => form.setValue('acp_args', value)}
+          onEnvTextChange={(value) => form.setValue('acp_env', value)}
+          onTimeoutSecondsChange={(value) => form.setValue('acp_timeout_seconds', value)}
+          onPermissionPolicyChange={(value: AcpPermissionPolicy) =>
+            form.setValue('acp_permission_policy', value)
           }
-          onExecutableChange={(value) => form.setValue('external_executable', value)}
-          onTimeoutSecondsChange={(value) => form.setValue('external_timeout_seconds', value)}
-          onMaxTurnsChange={(value) => form.setValue('external_max_turns', value)}
+          onModelChange={(value) => form.setValue('acp_model', value)}
+          onModeChange={(value) => form.setValue('acp_mode', value)}
+          onThinkingEffortChange={(value) => form.setValue('acp_thinking_effort', value)}
         />
       )}
 

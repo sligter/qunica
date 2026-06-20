@@ -19,6 +19,26 @@ const EMPTY_MESSAGES: readonly Message[] = []
 const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_STREAM_RUNS: Record<string, never> = {}
 const BOTTOM_PROXIMITY_PX = 120
+const MESSAGE_SCROLL_KEY_PREFIX = 'ag-swarmer:groups:message-scroll:'
+
+function scrollStorageKey(groupId: string): string {
+  return `${MESSAGE_SCROLL_KEY_PREFIX}${groupId}`
+}
+
+function readStoredScrollTop(groupId: string): number | null {
+  const value = sessionStorage.getItem(scrollStorageKey(groupId))
+  if (value === null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+function storeScrollTop(groupId: string, value: number): void {
+  sessionStorage.setItem(scrollStorageKey(groupId), String(Math.max(0, Math.round(value))))
+}
+
+function maxScrollTop(node: HTMLDivElement): number {
+  return Math.max(0, node.scrollHeight - node.clientHeight)
+}
 
 function timelineMessageIds(runs: Record<string, StreamRun>): Set<string> {
   const ids = new Set<string>()
@@ -52,6 +72,7 @@ export function MessageList({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const isNearBottomRef = useRef(true)
+  const restoredScrollRef = useRef(false)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
 
   const hiddenMessageIds = useMemo(() => timelineMessageIds(streamRuns), [streamRuns])
@@ -74,16 +95,42 @@ export function MessageList({
   }, [])
 
   const updateNearBottom = useCallback(() => {
+    const node = scrollRef.current
+    if (node) storeScrollTop(groupId, node.scrollTop)
     const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
     setShowJumpToLatest(hasActiveStreamRun && canScroll && !isNearBottom)
-  }, [getScrollState, hasActiveStreamRun])
+  }, [getScrollState, groupId, hasActiveStreamRun])
 
   const jumpToLatest = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const node = scrollRef.current
+    if (node) storeScrollTop(groupId, maxScrollTop(node))
     isNearBottomRef.current = true
     setShowJumpToLatest(false)
   }
+
+  useEffect(() => {
+    restoredScrollRef.current = false
+    isNearBottomRef.current = true
+    setShowJumpToLatest(false)
+  }, [groupId])
+
+  useEffect(() => {
+    if (restoredScrollRef.current) return
+    if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
+    const node = scrollRef.current
+    if (!node) return
+    const storedScrollTop = readStoredScrollTop(groupId)
+    if (storedScrollTop === null) return
+
+    const maxRestorableScrollTop = maxScrollTop(node)
+    node.scrollTop = Math.min(storedScrollTop, maxRestorableScrollTop)
+    const { canScroll, isNearBottom } = getScrollState()
+    isNearBottomRef.current = isNearBottom
+    setShowJumpToLatest(hasActiveStreamRun && canScroll && !isNearBottom)
+    restoredScrollRef.current = true
+  }, [getScrollState, groupId, hasActiveStreamRun, messages.length, streamRuns])
 
   useEffect(() => {
     const { canScroll, isNearBottom } = getScrollState()
@@ -93,13 +140,15 @@ export function MessageList({
         behavior: hasActiveStreamRun ? 'auto' : 'smooth',
         block: 'end',
       })
+      const node = scrollRef.current
+      if (node) storeScrollTop(groupId, maxScrollTop(node))
       isNearBottomRef.current = true
       setShowJumpToLatest(false)
       return
     }
     isNearBottomRef.current = false
     setShowJumpToLatest(hasActiveStreamRun && canScroll)
-  }, [messages, streamRuns, warnings, hasActiveStreamRun, getScrollState])
+  }, [messages, streamRuns, warnings, groupId, hasActiveStreamRun, getScrollState])
 
   return (
     <div

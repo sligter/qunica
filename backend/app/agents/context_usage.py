@@ -54,6 +54,25 @@ def fallback_context_usage(
     )
 
 
+def acp_context_usage(
+    usage_update: Mapping[str, object],
+    *,
+    fallback_usage: ContextUsage,
+) -> ContextUsage | None:
+    used = _int_token_value(usage_update.get("used"))
+    size = _int_token_value(usage_update.get("size"))
+    if used is None or size is None or size <= 0:
+        return None
+    return ContextUsage(
+        input_tokens=used,
+        output_tokens=None,
+        total_tokens=None,
+        context_window_tokens=size,
+        output_reserve_tokens=fallback_usage.output_reserve_tokens,
+        source="provider",
+    )
+
+
 def extract_context_usage(
     response: AIMessage,
     *,
@@ -114,11 +133,17 @@ def _usage_from_mapping(value: object) -> tuple[int | None, int | None, int | No
 
 def _int_from_keys(value: Mapping[Any, Any], keys: tuple[str, ...]) -> int | None:
     for key in keys:
-        raw = value.get(key)
-        if isinstance(raw, bool):
-            continue
-        if isinstance(raw, int):
-            return raw
-        if isinstance(raw, float):
-            return int(raw)
+        normalized = _int_token_value(value.get(key))
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _int_token_value(raw: object) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
     return None

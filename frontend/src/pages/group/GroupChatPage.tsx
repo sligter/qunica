@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Files, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucide-react'
 
@@ -16,6 +16,24 @@ import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
 
+const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'ag-swarmer:groups:workspace-files-open:'
+
+type WorkspaceFilesOpenUpdater = boolean | ((current: boolean) => boolean)
+
+function workspaceFilesOpenStorageKey(groupId: string): string {
+  return `${WORKSPACE_FILES_OPEN_KEY_PREFIX}${groupId}`
+}
+
+function readWorkspaceFilesOpen(groupId: string | undefined): boolean {
+  if (!groupId) return true
+  const value = sessionStorage.getItem(workspaceFilesOpenStorageKey(groupId))
+  return value === null ? true : value === 'true'
+}
+
+function storeWorkspaceFilesOpen(groupId: string, value: boolean): void {
+  sessionStorage.setItem(workspaceFilesOpenStorageKey(groupId), String(value))
+}
+
 export function GroupChatPage() {
   const { groupId } = useParams<{ groupId: string }>()
   const group = useGroup(groupId)
@@ -25,7 +43,9 @@ export function GroupChatPage() {
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const fileNavRequest = useFileNavStore((s) => s.request)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(true)
+  const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
+    readWorkspaceFilesOpen(groupId),
+  )
   const workspaceFilesPane = usePersistentPaneWidth({
     storageKey: 'ag-swarmer:layout:workspace-files-pane-width',
     defaultWidth: 320,
@@ -34,15 +54,30 @@ export function GroupChatPage() {
   })
 
   useEffect(() => {
+    setWorkspaceFilesOpen(readWorkspaceFilesOpen(groupId))
+  }, [groupId])
+
+  const setWorkspaceFilesOpenPersisted = useCallback(
+    (next: WorkspaceFilesOpenUpdater) => {
+      setWorkspaceFilesOpen((current) => {
+        const resolved = typeof next === 'function' ? next(current) : next
+        if (groupId) storeWorkspaceFilesOpen(groupId, resolved)
+        return resolved
+      })
+    },
+    [groupId],
+  )
+
+  useEffect(() => {
     if (groupId) clearWarnings(groupId)
   }, [groupId, clearWarnings])
 
   // A chat file link wants to show a file — make sure the panel is visible.
   useEffect(() => {
     if (fileNavRequest && fileNavRequest.groupId === groupId) {
-      setWorkspaceFilesOpen(true)
+      setWorkspaceFilesOpenPersisted(true)
     }
-  }, [fileNavRequest, groupId])
+  }, [fileNavRequest, groupId, setWorkspaceFilesOpenPersisted])
 
   if (!groupId) {
     return <div className="p-6 text-sm text-muted-foreground">No group selected.</div>
@@ -85,7 +120,7 @@ export function GroupChatPage() {
           <Button
             variant={workspaceFilesOpen ? 'secondary' : 'ghost'}
             size="icon"
-            onClick={() => setWorkspaceFilesOpen((open) => !open)}
+            onClick={() => setWorkspaceFilesOpenPersisted((open) => !open)}
             aria-label={workspaceFilesOpen ? 'Hide workspace files' : 'Show workspace files'}
           >
             {workspaceFilesOpen ? (

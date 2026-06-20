@@ -1,23 +1,25 @@
 from app.external_agents.adapters import (
-    ADAPTER_LABELS,
-    ExternalAdapterStatus,
-    ExternalRuntimeConfig,
-    detect_adapter_status,
-    normalize_external_runtime,
+    AcpRuntimeConfig,
+    normalize_acp_runtime,
+)
+from app.external_agents.discovery import (
+    AcpRuntimeChoice,
+    AcpRuntimePreset,
+    discover_acp_runtime_presets,
 )
 from app.external_agents.runtime import (
-    ExternalAgentEvent,
-    run_external_agent,
-    run_external_agent_stream,
+    AcpAgentEvent,
+    run_acp_agent,
+    run_acp_agent_stream,
 )
 
 __all__ = [
-    "ADAPTER_LABELS",
-    "ExternalAdapterStatus",
-    "ExternalAgentEvent",
-    "ExternalRuntimeConfig",
-    "detect_adapter_status",
-    "normalize_external_runtime",
-    "run_external_agent",
-    "run_external_agent_stream",
+    "AcpAgentEvent",
+    "AcpRuntimeChoice",
+    "AcpRuntimeConfig",
+    "AcpRuntimePreset",
+    "discover_acp_runtime_presets",
+    "normalize_acp_runtime",
+    "run_acp_agent",
+    "run_acp_agent_stream",
 ]

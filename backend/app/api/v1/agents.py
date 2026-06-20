@@ -18,21 +18,20 @@ from app.core.deps import get_current_user
 from app.core.exceptions import LLMProviderError
 from app.db import get_db
 from app.external_agents import (
-    ADAPTER_LABELS,
-    detect_adapter_status,
-    normalize_external_runtime,
-    run_external_agent,
-    run_external_agent_stream,
+    discover_acp_runtime_presets,
+    normalize_acp_runtime,
+    run_acp_agent,
+    run_acp_agent_stream,
 )
 from app.llm.chat_model import resolve_chat_model
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.agent import (
+    AcpRuntimePresetListResponse,
+    AcpRuntimePresetRead,
     AgentCreate,
     AgentRead,
     AgentUpdate,
-    ExternalAdapterStatusRead,
-    ExternalAdapterStatusResponse,
     InvokeRequest,
     InvokeResponse,
     ToolCatalogResponse,
@@ -125,18 +124,13 @@ async def get_tool_catalog() -> ToolCatalogResponse:
     return ToolCatalogResponse(tools=list_builtin_tools())
 
 
-@router.get("/external-runtimes/status", response_model=ExternalAdapterStatusResponse)
-async def get_external_runtime_status() -> ExternalAdapterStatusResponse:
-    statuses = [
-        await detect_adapter_status(adapter)
-        for adapter in ADAPTER_LABELS
+@router.get("/acp-runtime-presets", response_model=AcpRuntimePresetListResponse)
+async def get_acp_runtime_presets() -> AcpRuntimePresetListResponse:
+    presets = [
+        AcpRuntimePresetRead.model_validate(asdict(preset))
+        for preset in discover_acp_runtime_presets()
     ]
-    return ExternalAdapterStatusResponse(
-        adapters=[
-            ExternalAdapterStatusRead(**asdict(status))
-            for status in statuses
-        ]
-    )
+    return AcpRuntimePresetListResponse(presets=presets)
 
 
 @router.post(
@@ -199,10 +193,14 @@ async def invoke_agent(
     agent = await agent_service.get_agent(db, agent_id, current_user)
     context = await build_agent_invocation_context(db, agent, current_user)
     if agent.runtime_kind == "external_cli":
+        raise LLMProviderError(
+            "external CLI agents are deprecated; reconfigure this agent with an ACP runtime"
+        )
+    if agent.runtime_kind == "acp":
         if context.workspace is None or context.workspace.local_path is None:
-            raise LLMProviderError("external CLI agent requires a local workspace")
-        config = normalize_external_runtime(agent.external_runtime)
-        content = await run_external_agent(
+            raise LLMProviderError("ACP agent requires a local workspace")
+        config = normalize_acp_runtime(agent.external_runtime)
+        content = await run_acp_agent(
             db,
             owner_id=current_user.id,
             group_id=None,
@@ -255,14 +253,18 @@ async def invoke_agent_stream(
     agent = await agent_service.get_agent(db, agent_id, current_user)
     context = await build_agent_invocation_context(db, agent, current_user)
     if agent.runtime_kind == "external_cli":
+        raise LLMProviderError(
+            "external CLI agents are deprecated; reconfigure this agent with an ACP runtime"
+        )
+    if agent.runtime_kind == "acp":
         if context.workspace is None or context.workspace.local_path is None:
-            raise LLMProviderError("external CLI agent requires a local workspace")
-        config = normalize_external_runtime(agent.external_runtime)
+            raise LLMProviderError("ACP agent requires a local workspace")
+        config = normalize_acp_runtime(agent.external_runtime)
         workspace_path = Path(context.workspace.local_path)
 
-        async def external_event_gen() -> AsyncIterator[dict[str, str]]:
+        async def acp_event_gen() -> AsyncIterator[dict[str, str]]:
             try:
-                async for event in run_external_agent_stream(
+                async for event in run_acp_agent_stream(
                     db,
                     owner_id=current_user.id,
                     group_id=None,
@@ -274,14 +276,21 @@ async def invoke_agent_stream(
                 ):
                     if event.kind == "token" and isinstance(event.data, str):
                         yield {"event": "token", "data": event.data}
+                    elif event.kind == "reasoning" and isinstance(event.data, str):
+                        yield {"event": "reasoning", "data": event.data}
                     elif event.kind == "run" and isinstance(event.data, dict):
                         payload = {**event.data, "display_name": agent.name}
-                        yield {"event": "external_agent_run", "data": json.dumps(payload)}
+                        yield {"event": "acp_agent_run", "data": json.dumps(payload)}
+                    elif event.kind in {"tool_call_start", "tool_call_result"} and isinstance(
+                        event.data, dict
+                    ):
+                        payload = {**event.data, "agent_id": str(agent.id)}
+                        yield {"event": event.kind, "data": json.dumps(payload)}
             except Exception as exc:
-                yield {"event": "error", "data": f"external agent failed: {exc}"}
+                yield {"event": "error", "data": f"ACP agent failed: {exc}"}
             yield {"event": "done", "data": ""}
 
-        return EventSourceResponse(external_event_gen())
+        return EventSourceResponse(acp_event_gen())
     chat_model = await resolve_chat_model(db, agent, streaming=True)
 
     async def _agent_tool_executor(
