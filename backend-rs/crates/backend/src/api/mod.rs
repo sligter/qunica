@@ -3,12 +3,16 @@ pub mod auth;
 pub mod error;
 pub mod groups;
 pub mod health;
+pub mod messages;
 pub mod workspaces;
+
+use std::sync::Arc;
 
 use axum::{
     routing::{get, post},
     Router,
 };
+use tokio::sync::Mutex;
 
 use crate::db::Db;
 
@@ -17,6 +21,9 @@ use crate::db::Db;
 pub struct AppState {
     pub db: Db,
     pub auth: AuthSettings,
+    /// Serializes chat/runtime writes so per-thread sequence allocation stays
+    /// atomic across concurrent streams on the same SQLite database.
+    pub write_lock: Arc<Mutex<()>>,
 }
 
 /// Auth configuration needed to mint and verify access tokens.
@@ -63,21 +70,35 @@ pub fn router(state: AppState) -> Router {
                 .patch(groups::update)
                 .delete(groups::delete),
         )
+        .route(
+            "/api/v2/groups/:group_id/messages/stream",
+            post(messages::stream),
+        )
         .with_state(state)
 }
 
 /// Build a router backed by a fresh, migrated in-memory database for tests.
 #[doc(hidden)]
 pub async fn router_for_tests() -> Router {
+    router_with_state_for_tests().await.0
+}
+
+/// Like [`router_for_tests`], but also returns the [`AppState`] so tests can
+/// seed rows directly through the shared pool (there is no group-agent or
+/// provider binding API yet).
+#[doc(hidden)]
+pub async fn router_with_state_for_tests() -> (Router, AppState) {
     let db = Db::connect("sqlite::memory:")
         .await
         .expect("connect test db");
     db.migrate().await.expect("migrate test db");
-    router(AppState {
+    let state = AppState {
         db,
         auth: AuthSettings {
             secret_key: "test-secret".to_string(),
             access_token_expire_minutes: 10080,
         },
-    })
+        write_lock: Arc::new(Mutex::new(())),
+    };
+    (router(state.clone()), state)
 }

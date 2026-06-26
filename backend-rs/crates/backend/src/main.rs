@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
             secret_key: config.secret_key.clone(),
             access_token_expire_minutes: config.access_token_expire_minutes,
         },
+        write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let addr = format!("{}:{}", config.host, config.port);
