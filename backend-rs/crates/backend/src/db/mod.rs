@@ -25,10 +25,25 @@ impl Db {
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_millis(5000))
             .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(8)
-            .connect_with(options)
-            .await?;
+
+        // An in-memory database lives only inside a single connection, so pin the
+        // pool to one persistent connection. Otherwise migrations and later queries
+        // could land on different connections that each see an empty database.
+        let is_memory = database_url.contains(":memory:");
+        let pool = if is_memory {
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .min_connections(1)
+                .idle_timeout(None)
+                .max_lifetime(None)
+                .connect_with(options)
+                .await?
+        } else {
+            SqlitePoolOptions::new()
+                .max_connections(8)
+                .connect_with(options)
+                .await?
+        };
         Ok(Self { pool })
     }
 

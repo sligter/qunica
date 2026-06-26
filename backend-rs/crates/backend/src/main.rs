@@ -1,6 +1,7 @@
 use ag_swarmer_backend::{
-    api::{self, AppState},
+    api::{self, AppState, AuthSettings},
     config::AppConfig,
+    db::Db,
     telemetry,
 };
 use anyhow::Context;
@@ -10,11 +11,25 @@ use tokio::net::TcpListener;
 async fn main() -> anyhow::Result<()> {
     let config = AppConfig::from_env_and_args()?;
     telemetry::setup_tracing(&config).context("failed to initialize tracing")?;
+
+    let db = Db::connect(&config.database_url)
+        .await
+        .with_context(|| format!("failed to connect database {}", config.database_url))?;
+    db.migrate().await.context("failed to run migrations")?;
+
+    let state = AppState {
+        db,
+        auth: AuthSettings {
+            secret_key: config.secret_key.clone(),
+            access_token_expire_minutes: config.access_token_expire_minutes,
+        },
+    };
+
     let addr = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
     tracing::info!(%addr, "ag-swarmer backend listening");
-    axum::serve(listener, api::router(AppState)).await?;
+    axum::serve(listener, api::router(state)).await?;
     Ok(())
 }

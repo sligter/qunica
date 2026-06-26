@@ -12,6 +12,16 @@ pub struct AppConfig {
     pub app_data_dir: Option<PathBuf>,
     #[arg(long, env = "AG_SWARMER_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+    #[arg(
+        long,
+        env = "AG_SWARMER_DATABASE_URL",
+        default_value = "sqlite://ag-swarmer.db?mode=rwc"
+    )]
+    pub database_url: String,
+    #[arg(long, env = "SECRET_KEY", default_value = "please-change-me-in-production")]
+    pub secret_key: String,
+    #[arg(long, env = "ACCESS_TOKEN_EXPIRE_MINUTES", default_value_t = 10080)]
+    pub access_token_expire_minutes: i64,
 }
 
 #[derive(Debug, Error)]

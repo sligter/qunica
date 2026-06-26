@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn health_v1_is_kept_for_tauri_readiness() {
-    let app = ag_swarmer_backend::api::router_for_tests();
+    let app = ag_swarmer_backend::api::router_for_tests().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -25,7 +25,7 @@ async fn health_v1_is_kept_for_tauri_readiness() {
 
 #[tokio::test]
 async fn health_v2_exists_for_new_api_contract() {
-    let app = ag_swarmer_backend::api::router_for_tests();
+    let app = ag_swarmer_backend::api::router_for_tests().await;
     let response = app
         .oneshot(
             Request::builder()
