@@ -229,7 +229,7 @@ fn kinds(events: &[Value]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn stream_events_use_monotonic_sequence_not_timestamps() {
+async fn group_stream_uses_monotonic_sequence_not_timestamps() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "seq@example.com").await;
     let owner = owner_id(&state, "seq@example.com").await;
@@ -278,7 +278,7 @@ async fn stream_events_use_monotonic_sequence_not_timestamps() {
 }
 
 #[tokio::test]
-async fn proactive_silent_turn_does_not_persist_agent_message() {
+async fn group_stream_proactive_silent_turn_does_not_persist_agent_message() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "silent@example.com").await;
     let owner = owner_id(&state, "silent@example.com").await;
@@ -330,7 +330,7 @@ async fn proactive_silent_turn_does_not_persist_agent_message() {
 }
 
 #[tokio::test]
-async fn waiting_for_user_stops_remaining_proactive_fanout() {
+async fn group_stream_waiting_for_user_stops_remaining_proactive_fanout() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "waiting@example.com").await;
     let owner = owner_id(&state, "waiting@example.com").await;
@@ -392,7 +392,7 @@ async fn waiting_for_user_stops_remaining_proactive_fanout() {
 }
 
 #[tokio::test]
-async fn client_disconnect_cancels_runtime_task() {
+async fn group_stream_client_disconnect_cancels_runtime_task() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "cancel@example.com").await;
     let owner = owner_id(&state, "cancel@example.com").await;
@@ -450,7 +450,7 @@ async fn client_disconnect_cancels_runtime_task() {
 }
 
 #[tokio::test]
-async fn no_routed_agents_ends_in_silence() {
+async fn group_stream_no_routed_agents_ends_in_silence() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "quiet@example.com").await;
     let owner = owner_id(&state, "quiet@example.com").await;
