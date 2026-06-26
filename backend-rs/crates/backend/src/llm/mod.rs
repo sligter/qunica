@@ -14,16 +14,29 @@ pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
 
-// Re-export the runtime contract so integration tests (which link only against
-// this crate) can name the shared types without depending on the domain crate
-// directly.
+// Re-export the runtime data contract so integration tests (which link only
+// against this crate) can name the shared types without depending on the domain
+// crate directly. The domain crate holds only pure data types; the streaming
+// provider behaviour below lives here in the backend.
 pub use ag_swarmer_domain::runtime::{
-    ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolCall,
+    ChatDelta, ChatMessage, ChatRequest, ContextUsage, ToolCall,
 };
 
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::Value;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
+
+/// A streaming chat completion provider.
+///
+/// Implementors issue a streaming HTTP request to a specific vendor API and
+/// translate its wire format into the neutral [`ChatDelta`] vocabulary. This
+/// trait carries the runtime dependencies (async/`tokio`/`anyhow`) and so lives
+/// in the backend rather than the pure-data domain crate.
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>>;
+}
 
 /// Accumulates the fragments of a single streamed tool call.
 ///
