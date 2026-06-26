@@ -8,6 +8,7 @@ target/
 *.tsbuildinfo
 .trellis/
 .claude/
+.worktrees/
 docs/
 llm_config-for-test.txt
 *.html
