@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod error;
 pub mod health;
+pub mod workspaces;
 
 use axum::{
     routing::{get, post},
@@ -30,6 +31,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v2/auth/register", post(auth::register))
         .route("/api/v2/auth/login", post(auth::login))
         .route("/api/v2/auth/me", get(auth::me))
+        .route(
+            "/api/v2/workspaces",
+            post(workspaces::create).get(workspaces::list),
+        )
+        .route(
+            "/api/v2/workspaces/:workspace_id",
+            get(workspaces::get)
+                .patch(workspaces::update)
+                .delete(workspaces::delete),
+        )
         .with_state(state)
 }
 
