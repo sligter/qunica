@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod auth;
 pub mod error;
+pub mod groups;
 pub mod health;
 pub mod workspaces;
 
@@ -51,6 +52,16 @@ pub fn router(state: AppState) -> Router {
             get(agents::get)
                 .patch(agents::update)
                 .delete(agents::delete),
+        )
+        .route(
+            "/api/v2/groups",
+            post(groups::create).get(groups::list),
+        )
+        .route(
+            "/api/v2/groups/:group_id",
+            get(groups::get)
+                .patch(groups::update)
+                .delete(groups::delete),
         )
         .with_state(state)
 }
