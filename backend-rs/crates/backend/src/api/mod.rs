@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod auth;
 pub mod error;
 pub mod health;
@@ -40,6 +41,16 @@ pub fn router(state: AppState) -> Router {
             get(workspaces::get)
                 .patch(workspaces::update)
                 .delete(workspaces::delete),
+        )
+        .route(
+            "/api/v2/agents",
+            post(agents::create).get(agents::list),
+        )
+        .route(
+            "/api/v2/agents/:agent_id",
+            get(agents::get)
+                .patch(agents::update)
+                .delete(agents::delete),
         )
         .with_state(state)
 }
