@@ -131,6 +131,7 @@ CREATE TABLE skills (
   description TEXT,
   body_markdown TEXT NOT NULL,
   metadata_json TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
   files_json TEXT,
   storage_path TEXT,
   status TEXT NOT NULL DEFAULT 'active',

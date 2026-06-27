@@ -24,6 +24,11 @@ async fn main() -> anyhow::Result<()> {
             access_token_expire_minutes: config.access_token_expire_minutes,
         },
         write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        skill_storage_root: config
+            .app_data_dir
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(".ag-swarmer"))
+            .join("skills"),
     };
 
     let addr = format!("{}:{}", config.host, config.port);

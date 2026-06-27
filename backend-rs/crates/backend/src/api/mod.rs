@@ -4,14 +4,12 @@ pub mod error;
 pub mod groups;
 pub mod health;
 pub mod messages;
+pub mod skills;
 pub mod workspaces;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use axum::{routing::get, Router};
 use tokio::sync::Mutex;
 
 use crate::db::Db;
@@ -24,6 +22,8 @@ pub struct AppState {
     /// Serializes chat/runtime writes so per-thread sequence allocation stays
     /// atomic across concurrent streams on the same SQLite database.
     pub write_lock: Arc<Mutex<()>>,
+    /// Root directory for extracted skill package resources.
+    pub skill_storage_root: PathBuf,
 }
 
 /// Auth configuration needed to mint and verify access tokens.
@@ -37,12 +37,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/health", get(health::health))
         .route("/api/v2/health", get(health::health))
-        .route("/api/v2/auth/register", post(auth::register))
-        .route("/api/v2/auth/login", post(auth::login))
+        .route("/api/v2/auth/register", axum::routing::post(auth::register))
+        .route("/api/v2/auth/login", axum::routing::post(auth::login))
         .route("/api/v2/auth/me", get(auth::me))
         .route(
             "/api/v2/workspaces",
-            post(workspaces::create).get(workspaces::list),
+            axum::routing::post(workspaces::create).get(workspaces::list),
         )
         .route(
             "/api/v2/workspaces/:workspace_id",
@@ -52,7 +52,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/agents",
-            post(agents::create).get(agents::list),
+            axum::routing::post(agents::create).get(agents::list),
         )
         .route(
             "/api/v2/agents/:agent_id",
@@ -62,7 +62,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups",
-            post(groups::create).get(groups::list),
+            axum::routing::post(groups::create).get(groups::list),
         )
         .route(
             "/api/v2/groups/:group_id",
@@ -72,7 +72,33 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups/:group_id/messages/stream",
-            post(messages::stream),
+            axum::routing::post(messages::stream),
+        )
+        .route(
+            "/api/v2/skills",
+            axum::routing::post(skills::create).get(skills::list),
+        )
+        .route(
+            "/api/v2/skills/import",
+            axum::routing::post(skills::import_raw),
+        )
+        .route(
+            "/api/v2/skills/import-package",
+            axum::routing::post(skills::import_package),
+        )
+        .route(
+            "/api/v2/skills/:skill_id",
+            get(skills::get)
+                .patch(skills::update)
+                .delete(skills::delete),
+        )
+        .route(
+            "/api/v2/skills/:skill_id/resources",
+            get(skills::list_resources),
+        )
+        .route(
+            "/api/v2/skills/:skill_id/resources/*resource_path",
+            get(skills::read_resource).patch(skills::update_resource),
         )
         .with_state(state)
 }
@@ -99,6 +125,8 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
             access_token_expire_minutes: 10080,
         },
         write_lock: Arc::new(Mutex::new(())),
+        skill_storage_root: std::env::temp_dir()
+            .join(format!("ag-swarmer-test-skills-{}", uuid::Uuid::new_v4())),
     };
     (router(state.clone()), state)
 }
