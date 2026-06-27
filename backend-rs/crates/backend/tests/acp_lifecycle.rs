@@ -569,6 +569,38 @@ async fn acp_lifecycle_timeout_kills_child_and_persists_failed_status() {
 }
 
 #[tokio::test]
+async fn acp_lifecycle_failed_child_exit_code_is_persisted() {
+    const EXIT_CODE: i64 = 23;
+
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+
+    let config = fake_child_config("fail_exit", "custom", json!({ "timeout_seconds": 30 }));
+    let mut run = run_acp_agent_stream(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "hi".to_string(),
+        },
+    )
+    .await
+    .expect("run starts");
+    let run_id = run.run_id().to_string();
+
+    while run.next_event().await.is_some() {}
+
+    let row = fetch_run(&pool, &run_id).await;
+    assert_eq!(row.status, "failed");
+    assert_eq!(row.exit_code, Some(EXIT_CODE));
+    assert!(row.ended_at.is_some());
+}
+
+#[tokio::test]
 async fn acp_lifecycle_stream_cancel_kills_child_and_persists_cancelled_status() {
     let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
     let cwd = tempfile::tempdir().unwrap();
@@ -782,6 +814,9 @@ fn acp_lifecycle_fake_child_entrypoint() {
     let Ok(mode) = std::env::var("ACP_FAKE_CHILD_MODE") else {
         return;
     };
+    if mode == "fail_exit" {
+        std::process::exit(23);
+    }
     run_fake_child(&mode);
     std::process::exit(0);
 }

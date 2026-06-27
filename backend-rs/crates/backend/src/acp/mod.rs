@@ -465,6 +465,8 @@ async fn run_turn(
         // own, then collect its exit code while stdout continues to drain.
         conn.close_stdin();
         wait_for_exit(&mut child).await
+    } else if status == TurnStatus::Failed {
+        wait_for_exit(&mut child).await
     } else {
         let _ = child.start_kill();
         let _ = timeout(CHILD_EXIT_GRACE, child.wait()).await;
