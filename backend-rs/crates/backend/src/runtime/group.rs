@@ -34,7 +34,11 @@ use uuid::Uuid;
 
 use crate::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider,
+    OpenAiCompatibleProvider, ToolCall,
+};
+use crate::runtime::agent_as_tool::{
+    resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AssistantMember, CallerAgent,
+    AGENT_AS_TOOL_NAME,
 };
 use crate::runtime::sequence::{NewMessage, SequenceAllocator};
 
@@ -163,7 +167,9 @@ impl StreamCtx {
         self.tx.send(event).await.map_err(|_| StepErr::Cancelled)
     }
 
-    /// Persist a message and its announcing event, then emit it.
+    /// Reserve outbound capacity, then persist a message and its announcing
+    /// event before emitting it. Reserving first lets disconnects stop the
+    /// durable write before the final message checkpoint.
     async fn emit_message(
         &mut self,
         kind: StreamEventKind,
@@ -171,25 +177,30 @@ impl StreamCtx {
         message: &NewMessage,
     ) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
+        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
         self.allocator
             .persist_message_with_event(&self.thread_id, &self.group_id, message, &event)
             .await
             .map_err(StepErr::Db)?;
-        self.tx.send(event).await.map_err(|_| StepErr::Cancelled)
+        permit.send(event);
+        Ok(())
     }
 
-    /// Persist a durable event with no message row, then emit it.
+    /// Reserve outbound capacity, then persist a durable event with no message
+    /// row before emitting it.
     async fn emit_durable_event(
         &mut self,
         kind: StreamEventKind,
         payload: Value,
     ) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
+        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
         self.allocator
             .persist_event(&self.thread_id, &event)
             .await
             .map_err(StepErr::Db)?;
-        self.tx.send(event).await.map_err(|_| StepErr::Cancelled)
+        permit.send(event);
+        Ok(())
     }
 
     /// Emit an `error` then `done` and finish the turn as `Error`. Propagates
@@ -270,159 +281,30 @@ async fn run_inner(
     let mut waiting = false;
 
     for agent in &selected {
-        step!(
+        match step!(
             ctx,
-            ctx.emit(
-                StreamEventKind::AgentStart,
-                json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
-            )
-            .await
-        );
-
-        let provider_cfg = match resolve_provider(&services.pool, agent).await {
-            Ok(cfg) => cfg,
-            Err(err) => return ctx.fail(&err.to_string()).await,
-        };
-        let provider = match build_provider(&provider_cfg) {
-            Ok(provider) => provider,
-            Err(err) => return ctx.fail(&err.to_string()).await,
-        };
-        let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
-        let messages =
-            match build_messages(&services.pool, &ctx.thread_id, &agent.system_prompt).await {
-                Ok(messages) => messages,
-                Err(err) => return ctx.fail(&err.to_string()).await,
-            };
-        let request = ChatRequest {
-            model,
-            messages,
-            temperature: None,
-            reasoning_passback: provider_cfg.reasoning_passback,
-        };
-        let mut deltas = match provider.stream(request).await {
-            Ok(rx) => rx,
-            Err(err) => return ctx.fail(&err.to_string()).await,
-        };
-
-        let mut content = String::new();
-        while let Some(delta) = deltas.recv().await {
-            match delta {
-                ChatDelta::Token(text) => {
-                    content.push_str(&text);
-                    step!(
-                        ctx,
-                        ctx.emit(
-                            StreamEventKind::Token,
-                            json!({ "agent_id": agent.agent_id, "text": text }),
-                        )
-                        .await
-                    );
-                }
-                ChatDelta::Reasoning(text) => {
-                    step!(
-                        ctx,
-                        ctx.emit(
-                            StreamEventKind::Reasoning,
-                            json!({ "agent_id": agent.agent_id, "text": text }),
-                        )
-                        .await
-                    );
-                }
-                ChatDelta::ToolCall(call) => {
-                    step!(
-                        ctx,
-                        ctx.emit(
-                            StreamEventKind::ToolCallStart,
-                            json!({
-                                "agent_id": agent.agent_id,
-                                "tool_call_id": call.id,
-                                "name": call.name,
-                                "args": call.args,
-                            }),
-                        )
-                        .await
-                    );
-                }
-                ChatDelta::Usage(usage) => {
-                    step!(
-                        ctx,
-                        ctx.emit(
-                            StreamEventKind::ContextUsage,
-                            json!({
-                                "agent_id": agent.agent_id,
-                                "input_tokens": usage.input_tokens,
-                                "output_tokens": usage.output_tokens,
-                                "total_tokens": usage.total_tokens,
-                            }),
-                        )
-                        .await
-                    );
-                }
-                ChatDelta::Done => break,
+            run_agent_turn(services, ctx, agent, proactive, 0).await
+        ) {
+            AgentRunResult::NoVisible => {}
+            AgentRunResult::Visible => had_visible = true,
+            AgentRunResult::WaitingForUser => {
+                had_visible = true;
+                waiting = true;
+                break;
             }
-        }
-
-        let trimmed = content.trim();
-
-        // Proactive silence: emit the marker event, persist no message.
-        if proactive && trimmed == SILENT_MARKER {
-            step!(
-                ctx,
-                ctx.emit_durable_event(
-                    StreamEventKind::AgentSilent,
-                    json!({ "agent_id": agent.agent_id }),
-                )
-                .await
-            );
-            continue;
-        }
-
-        let is_waiting = trimmed.starts_with(WAITING_MARKER);
-        let visible = if is_waiting {
-            let rest = trimmed[WAITING_MARKER.len()..].trim();
-            if rest.is_empty() {
-                "Waiting for your input".to_string()
-            } else {
-                rest.to_string()
+            AgentRunResult::Handoff { helper } => {
+                had_visible = true;
+                match step!(
+                    ctx,
+                    run_agent_turn(services, ctx, &Candidate::from(helper), proactive, 1).await
+                ) {
+                    AgentRunResult::WaitingForUser => waiting = true,
+                    AgentRunResult::Visible
+                    | AgentRunResult::NoVisible
+                    | AgentRunResult::Handoff { .. } => {}
+                }
+                break;
             }
-        } else {
-            content.clone()
-        };
-
-        let agent_message = NewMessage {
-            id: Uuid::new_v4().to_string(),
-            sender_type: "agent".to_string(),
-            sender_id: Some(agent.agent_id.clone()),
-            message_type: "text".to_string(),
-            content: visible.clone(),
-        };
-        let message_payload = json!({
-            "message_id": agent_message.id,
-            "agent_id": agent.agent_id,
-            "content": visible,
-        });
-        step!(
-            ctx,
-            ctx.emit_message(
-                StreamEventKind::AgentMessage,
-                message_payload,
-                &agent_message
-            )
-            .await
-        );
-        had_visible = true;
-
-        if is_waiting {
-            step!(
-                ctx,
-                ctx.emit_durable_event(
-                    StreamEventKind::WaitingForUser,
-                    json!({ "agent_id": agent.agent_id, "message": visible }),
-                )
-                .await
-            );
-            waiting = true;
-            break;
         }
     }
 
@@ -447,10 +329,26 @@ async fn run_inner(
 /// An active agent eligible to respond in the group.
 struct Candidate {
     agent_id: String,
+    owner_id: String,
     display_name: String,
     system_prompt: String,
     provider_id: Option<String>,
     model_config_json: Option<String>,
+    tool_config_json: Option<String>,
+}
+
+impl From<AssistantMember> for Candidate {
+    fn from(helper: AssistantMember) -> Self {
+        Self {
+            agent_id: helper.agent_id,
+            owner_id: helper.owner_id,
+            display_name: helper.display_name,
+            system_prompt: helper.system_prompt,
+            provider_id: helper.provider_id,
+            model_config_json: helper.model_config_json,
+            tool_config_json: helper.tool_config_json,
+        }
+    }
 }
 
 /// Resolved LLM provider connection settings.
@@ -460,6 +358,309 @@ struct ProviderConfig {
     api_key: String,
     default_model: String,
     reasoning_passback: bool,
+}
+
+enum AgentRunResult {
+    NoVisible,
+    Visible,
+    WaitingForUser,
+    Handoff { helper: AssistantMember },
+}
+
+async fn run_agent_turn(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    proactive: bool,
+    handoff_depth: usize,
+) -> Result<AgentRunResult, StepErr> {
+    ctx.emit(
+        StreamEventKind::AgentStart,
+        json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
+    )
+    .await?;
+
+    let provider_cfg = resolve_provider(&services.pool, agent)
+        .await
+        .map_err(StepErr::Db)?;
+    let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
+    let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
+    let messages = build_messages(&services.pool, &ctx.thread_id, &agent.system_prompt)
+        .await
+        .map_err(StepErr::Db)?;
+    let request = ChatRequest {
+        model,
+        messages,
+        temperature: None,
+        reasoning_passback: provider_cfg.reasoning_passback,
+    };
+    let mut deltas = provider.stream(request).await.map_err(StepErr::Db)?;
+
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+    while let Some(delta) = deltas.recv().await {
+        match delta {
+            ChatDelta::Token(text) => {
+                content.push_str(&text);
+                ctx.emit(
+                    StreamEventKind::Token,
+                    json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                )
+                .await?;
+            }
+            ChatDelta::Reasoning(text) => {
+                ctx.emit(
+                    StreamEventKind::Reasoning,
+                    json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                )
+                .await?;
+            }
+            ChatDelta::ToolCall(call) => {
+                tool_calls.push(call);
+            }
+            ChatDelta::Usage(usage) => {
+                ctx.emit(
+                    StreamEventKind::ContextUsage,
+                    json!({
+                        "agent_id": agent.agent_id,
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "total_tokens": usage.total_tokens,
+                    }),
+                )
+                .await?;
+            }
+            ChatDelta::Done => break,
+        }
+    }
+
+    if let Some(call) = agent_as_tool_call(&tool_calls) {
+        return handle_agent_as_tool(
+            services,
+            ctx,
+            agent,
+            proactive,
+            handoff_depth,
+            call,
+            &content,
+        )
+        .await;
+    }
+
+    for call in tool_calls {
+        emit_tool_call_start(ctx, agent, &call).await?;
+    }
+
+    finish_agent_content(ctx, agent, proactive, content).await
+}
+
+async fn handle_agent_as_tool(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    proactive: bool,
+    handoff_depth: usize,
+    call: ToolCall,
+    content: &str,
+) -> Result<AgentRunResult, StepErr> {
+    let _ = proactive;
+    emit_tool_call_start(ctx, agent, &call).await?;
+
+    let parsed = match AgentAsToolCall::from_args(call.id.clone(), &call.args) {
+        Ok(parsed) => parsed,
+        Err(failure) => {
+            emit_tool_call_failure(ctx, agent, &call.id, &failure).await?;
+            return finish_agent_content(ctx, agent, false, content.to_string()).await;
+        }
+    };
+    let caller = CallerAgent {
+        agent_id: agent.agent_id.clone(),
+        owner_id: agent.owner_id.clone(),
+        display_name: agent.display_name.clone(),
+        tool_config_json: agent.tool_config_json.clone(),
+    };
+
+    let dispatch = match resolve_dispatch(
+        &services.pool,
+        &ctx.group_id,
+        &caller,
+        &parsed,
+        handoff_depth,
+    )
+    .await
+    {
+        Ok(dispatch) => dispatch,
+        Err(failure) => {
+            emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+            return finish_agent_content(ctx, agent, false, content.to_string()).await;
+        }
+    };
+
+    let agent_message = NewMessage {
+        id: Uuid::new_v4().to_string(),
+        sender_type: "agent".to_string(),
+        sender_id: Some(agent.agent_id.clone()),
+        message_type: "text".to_string(),
+        content: dispatch.content.clone(),
+    };
+    let message_payload = json!({
+        "message_id": agent_message.id,
+        "agent_id": agent.agent_id,
+        "sender_id": agent.agent_id,
+        "display_name": agent.display_name,
+        "content": dispatch.content,
+    });
+    ctx.emit_message(
+        StreamEventKind::AgentMessage,
+        message_payload,
+        &agent_message,
+    )
+    .await?;
+
+    ctx.emit(
+        StreamEventKind::ToolCallResult,
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "tool_call_id": parsed.tool_call_id,
+            "tool_name": AGENT_AS_TOOL_NAME,
+            "status": "completed",
+            "result_summary": format!(
+                "Dispatched to @{} through normal group routing.",
+                dispatch.helper.display_name
+            ),
+        }),
+    )
+    .await?;
+
+    Ok(AgentRunResult::Handoff {
+        helper: dispatch.helper,
+    })
+}
+
+fn agent_as_tool_call(tool_calls: &[ToolCall]) -> Option<ToolCall> {
+    tool_calls
+        .iter()
+        .find(|call| call.name == AGENT_AS_TOOL_NAME)
+        .cloned()
+}
+
+async fn finish_agent_content(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    proactive: bool,
+    content: String,
+) -> Result<AgentRunResult, StepErr> {
+    let trimmed = content.trim();
+
+    if proactive && trimmed == SILENT_MARKER {
+        ctx.emit_durable_event(
+            StreamEventKind::AgentSilent,
+            json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
+        )
+        .await?;
+        return Ok(AgentRunResult::NoVisible);
+    }
+
+    let is_waiting = trimmed.starts_with(WAITING_MARKER);
+    let visible = if is_waiting {
+        let rest = trimmed[WAITING_MARKER.len()..].trim();
+        if rest.is_empty() {
+            "Waiting for your input".to_string()
+        } else {
+            rest.to_string()
+        }
+    } else {
+        content
+    };
+
+    if visible.trim().is_empty() {
+        return Ok(AgentRunResult::NoVisible);
+    }
+
+    let agent_message = NewMessage {
+        id: Uuid::new_v4().to_string(),
+        sender_type: "agent".to_string(),
+        sender_id: Some(agent.agent_id.clone()),
+        message_type: "text".to_string(),
+        content: visible.clone(),
+    };
+    let message_payload = json!({
+        "message_id": agent_message.id,
+        "agent_id": agent.agent_id,
+        "sender_id": agent.agent_id,
+        "display_name": agent.display_name,
+        "content": visible,
+    });
+    ctx.emit_message(
+        StreamEventKind::AgentMessage,
+        message_payload,
+        &agent_message,
+    )
+    .await?;
+
+    if is_waiting {
+        ctx.emit_durable_event(
+            StreamEventKind::WaitingForUser,
+            json!({ "agent_id": agent.agent_id, "message": visible }),
+        )
+        .await?;
+        Ok(AgentRunResult::WaitingForUser)
+    } else {
+        Ok(AgentRunResult::Visible)
+    }
+}
+
+async fn emit_tool_call_start(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    call: &ToolCall,
+) -> Result<(), StepErr> {
+    ctx.emit(
+        StreamEventKind::ToolCallStart,
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "tool_call_id": call.id,
+            "tool_name": call.name,
+            "status": "started",
+            "args_summary": summarize_value(&call.args),
+            "args": call.args,
+        }),
+    )
+    .await
+}
+
+async fn emit_tool_call_failure(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    tool_call_id: &str,
+    failure: &AgentAsToolFailure,
+) -> Result<(), StepErr> {
+    ctx.emit(
+        StreamEventKind::ToolCallResult,
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "tool_call_id": tool_call_id,
+            "tool_name": AGENT_AS_TOOL_NAME,
+            "status": failure.status,
+            "result_summary": failure.message,
+        }),
+    )
+    .await
+}
+
+fn summarize_value(value: &Value) -> String {
+    let raw = value.to_string();
+    const LIMIT: usize = 240;
+    let mut chars = raw.chars();
+    let summary: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{summary}...")
+    } else {
+        raw
+    }
 }
 
 async fn load_group_flags(pool: &SqlitePool, group_id: &str) -> anyhow::Result<(bool, bool)> {
@@ -475,17 +676,19 @@ async fn load_group_flags(pool: &SqlitePool, group_id: &str) -> anyhow::Result<(
 #[derive(sqlx::FromRow)]
 struct CandidateRow {
     id: String,
+    owner_id: String,
     display_name: Option<String>,
     name: String,
     system_prompt: String,
     provider_id: Option<String>,
     model_config_json: Option<String>,
+    tool_config_json: Option<String>,
 }
 
 async fn load_candidates(pool: &SqlitePool, group_id: &str) -> anyhow::Result<Vec<Candidate>> {
     let rows: Vec<CandidateRow> = sqlx::query_as(
-        "SELECT a.id, ga.display_name, a.name, a.system_prompt, a.provider_id, \
-                a.model_config_json \
+        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.provider_id, \
+                a.model_config_json, a.tool_config_json \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
          WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' \
@@ -499,16 +702,18 @@ async fn load_candidates(pool: &SqlitePool, group_id: &str) -> anyhow::Result<Ve
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut candidates = Vec::new();
     for row in rows {
-        let display = row.display_name.unwrap_or(row.name);
+        let display = row.display_name.clone().unwrap_or_else(|| row.name.clone());
         if !seen_names.insert(display.to_lowercase()) {
             continue;
         }
         candidates.push(Candidate {
             agent_id: row.id,
+            owner_id: row.owner_id,
             display_name: display,
             system_prompt: row.system_prompt,
             provider_id: row.provider_id,
             model_config_json: row.model_config_json,
+            tool_config_json: row.tool_config_json,
         });
     }
     Ok(candidates)

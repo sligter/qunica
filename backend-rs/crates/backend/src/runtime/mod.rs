@@ -1,9 +1,11 @@
 //! Group message streaming runtime.
 //!
 //! [`group`] holds the turn orchestration (routing, fan-out, terminal events);
-//! [`sequence`] holds the per-thread monotonic sequence allocator and durable
-//! persistence used by the runtime.
+//! [`agent_as_tool`] resolves visible group handoffs; [`sequence`] holds the
+//! per-thread monotonic sequence allocator and durable persistence used by the
+//! runtime.
 
+pub mod agent_as_tool;
 pub mod group;
 pub mod sequence;
 
