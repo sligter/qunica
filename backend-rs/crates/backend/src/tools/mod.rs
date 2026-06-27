@@ -4,16 +4,22 @@
 //! configured local workspace, together with the path-safety resolver that
 //! keeps every access inside the workspace root.
 //!
-//! This slice (Task 8a) implements path safety and the file tools `Read`,
-//! `Write`, `Edit`, `Glob` and `Grep` via [`workspace::WorkspaceTools`]. The
-//! network and shell tools (`Bash`, `Fetch`, `WebSearch`, `AskUser`, the media
-//! and planning stubs) and the runtime tool loop arrive in Task 8b; the
-//! [`ToolStatus`]/[`ToolResult`]/[`ToolError`] types defined here are shaped so
-//! those additions slot in without changing the file-tool API.
+//! Task 8a implemented path safety and the file tools `Read`, `Write`, `Edit`,
+//! `Glob` and `Grep` via [`workspace::WorkspaceTools`]. Task 8b completes the
+//! module: the guarded shell tool [`bash`], the bounded HTTP reader [`http`],
+//! the non-executing "controlled" tools in [`controlled`] (`WebSearch`,
+//! `AskUser`, and the media/planning stubs), and the [`ToolExecutor`] facade in
+//! [`executor`] that dispatches a named tool with JSON arguments and maps every
+//! internal failure to model-safe text.
 
+pub mod bash;
+pub mod controlled;
+pub mod executor;
+pub mod http;
 pub mod path_safety;
 pub mod workspace;
 
+pub use executor::ToolExecutor;
 pub use path_safety::resolve_workspace_path;
 pub use workspace::{
     WorkspaceTools, MAX_FILE_BYTES, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
@@ -44,17 +50,33 @@ impl ToolError {
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         ToolError::Invalid(message.into())
     }
+
+    /// Render this error as text that is always safe to return to the model.
+    ///
+    /// [`ToolError::Invalid`] messages are constructed by this crate and never
+    /// contain absolute local paths, so they pass through unchanged.
+    /// [`ToolError::Io`] wraps a raw OS error whose `Display` can embed the
+    /// absolute path that failed; it is collapsed to a generic message so no
+    /// local filesystem layout leaks back to the model.
+    pub fn model_safe_message(&self) -> String {
+        match self {
+            ToolError::Invalid(message) => message.clone(),
+            ToolError::Io(_) => "the tool failed due to an internal error".to_string(),
+        }
+    }
 }
 
 /// Coarse status of a completed tool invocation.
 ///
 /// File tools always complete with [`ToolStatus::Completed`]. The remaining
-/// variants exist for the Task 8b tools whose Python counterparts return
-/// "controlled results" (a structured status instead of executing): for example
-/// a tool invoked without a configured local workspace reports
-/// [`ToolStatus::WorkspaceRequired`], an unconfigured provider reports
-/// [`ToolStatus::SetupRequired`], and `AskUser` reports
-/// [`ToolStatus::WaitingForUser`].
+/// variants describe the "controlled results" of the Task 8b tools whose Python
+/// counterparts return a structured status instead of executing: a tool invoked
+/// without a configured local workspace reports [`ToolStatus::WorkspaceRequired`],
+/// an unconfigured provider reports [`ToolStatus::SetupRequired`], a required
+/// `AskUser` prompt reports [`ToolStatus::WaitingForUser`] (an optional one
+/// [`ToolStatus::InputRequested`]), `ExitPlanMode` reports
+/// [`ToolStatus::ApprovalRequired`], and any rejected request or unknown tool
+/// reports [`ToolStatus::Failed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     /// The tool ran and produced output.
@@ -63,8 +85,15 @@ pub enum ToolStatus {
     SetupRequired,
     /// The tool needs a local workspace that is not configured.
     WorkspaceRequired,
-    /// The tool is pausing for human input.
+    /// The tool is pausing for required human input.
     WaitingForUser,
+    /// The tool requested optional, non-blocking human input.
+    InputRequested,
+    /// The tool produced a plan that needs user approval before proceeding.
+    ApprovalRequired,
+    /// The request was rejected (bad arguments, an unknown tool, or a guarded
+    /// failure); `output` carries model-safe text explaining why.
+    Failed,
 }
 
 /// Successful outcome of a tool invocation: a status plus the text the runtime

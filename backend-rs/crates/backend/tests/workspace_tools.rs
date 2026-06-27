@@ -7,8 +7,13 @@
 
 use std::path::Path;
 
-use ag_swarmer_backend::tools::{resolve_workspace_path, WorkspaceTools, MAX_READ_LINES};
+use ag_swarmer_backend::tools::{
+    resolve_workspace_path, ToolExecutor, ToolStatus, WorkspaceTools, MAX_READ_LINES,
+};
+use serde_json::{json, Value};
 use tempfile::tempdir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 // ---------------------------------------------------------------------------
 // Path-safety rejection (no filesystem traversal needed beyond an empty root)
@@ -202,4 +207,306 @@ async fn workspace_tools_glob_does_not_match_across_directory_separators() {
     let shallow = tools.glob("*.txt", 200).unwrap();
     let listed: Vec<&str> = shallow.output.lines().collect();
     assert_eq!(listed, vec!["top.txt"], "shallow glob: {listed:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Bash guard and execution
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn workspace_tools_bash_rejects_destructive_commands() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    for command in [
+        "rm -rf build",
+        "del file.txt",
+        "rmdir target",
+        "git reset --hard HEAD",
+        "git clean -fd",
+        "git push origin main --force",
+        "powershell Remove-Item secret.txt",
+    ] {
+        let result = executor
+            .execute("Bash", json!({ "command": command }))
+            .await;
+        assert_eq!(
+            result.status,
+            ToolStatus::Failed,
+            "command should be blocked: {command}"
+        );
+        assert!(
+            result.output.contains("blocked"),
+            "command `{command}` should report the safety policy, got: {}",
+            result.output
+        );
+    }
+
+    // Empty command is rejected.
+    let empty = executor.execute("Bash", json!({ "command": "   " })).await;
+    assert_eq!(empty.status, ToolStatus::Failed);
+
+    // A redirection target escaping the workspace is rejected before running.
+    let escape = executor
+        .execute("Bash", json!({ "command": "echo hi > ../escape.txt" }))
+        .await;
+    assert_eq!(escape.status, ToolStatus::Failed);
+    assert!(!root.path().parent().unwrap().join("escape.txt").exists());
+}
+
+#[tokio::test]
+async fn workspace_tools_bash_runs_in_workspace_with_bounded_output() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    // The command runs with the workspace root as its working directory: the
+    // relative redirect target lands inside the root.
+    let probe = executor
+        .execute(
+            "Bash",
+            json!({ "command": "echo workspace_probe > probe.txt" }),
+        )
+        .await;
+    assert_eq!(probe.status, ToolStatus::Completed, "{}", probe.output);
+    assert!(
+        probe.output.contains("exit_code=0"),
+        "expected exit code, got: {}",
+        probe.output
+    );
+    assert!(
+        root.path().join("probe.txt").is_file(),
+        "command should run in the workspace root"
+    );
+
+    // Output is bounded: dumping a large file is truncated with a marker.
+    let big = "a".repeat(20_000);
+    std::fs::write(root.path().join("big.txt"), &big).unwrap();
+    let dump_command = if cfg!(windows) {
+        "type big.txt"
+    } else {
+        "cat big.txt"
+    };
+    let dumped = executor
+        .execute("Bash", json!({ "command": dump_command }))
+        .await;
+    assert_eq!(dumped.status, ToolStatus::Completed, "{}", dumped.output);
+    assert!(
+        dumped.output.contains("[output truncated]"),
+        "large output should be truncated"
+    );
+    let marker_len = "\n[output truncated]".chars().count();
+    assert!(
+        dumped.output.chars().count() <= 12_000 + marker_len,
+        "truncated output must stay within the char bound"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fetch
+// ---------------------------------------------------------------------------
+
+/// Spawn a single-shot local HTTP server that replies with a `text/plain` body.
+async fn spawn_text_server(body: String) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            // Drain the request headers (best effort) before responding.
+            let mut buffer = [0u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+    });
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn workspace_tools_fetch_rejects_non_http_and_reads_local_text_server() {
+    let executor = ToolExecutor::without_workspace();
+
+    // Non-http(s) URLs and unparseable input are rejected without any request.
+    for bad_url in ["ftp://example.com/data", "file:///etc/passwd", "not-a-url"] {
+        let result = executor.execute("Fetch", json!({ "url": bad_url })).await;
+        assert_eq!(
+            result.status,
+            ToolStatus::Failed,
+            "url should be rejected: {bad_url}"
+        );
+    }
+
+    // A local text server is fetched and summarized, no live network involved.
+    let body = "hello workspace_tools fetch body".to_string();
+    let (addr, server) = spawn_text_server(body.clone()).await;
+    let url = format!("http://{addr}/");
+    let result = executor.execute("Fetch", json!({ "url": url })).await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    assert!(
+        result.output.contains("Fetched http://"),
+        "expected a fetch header, got: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("hello workspace_tools fetch body"),
+        "expected the body snippet, got: {}",
+        result.output
+    );
+    server.await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Controlled (non-executing) tools
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn workspace_tools_controlled_tools_return_expected_statuses() {
+    let executor = ToolExecutor::without_workspace();
+
+    // AskUser: required vs optional.
+    let required = executor
+        .execute(
+            "AskUser",
+            json!({ "question": "Proceed?", "required": true }),
+        )
+        .await;
+    assert_eq!(required.status, ToolStatus::WaitingForUser);
+    let payload: Value = serde_json::from_str(&required.output).unwrap();
+    assert_eq!(payload["status"], "WAITING_FOR_USER");
+
+    let optional = executor
+        .execute(
+            "AskUser",
+            json!({ "question": "Pick one", "required": false, "choices": ["a", " b ", ""] }),
+        )
+        .await;
+    assert_eq!(optional.status, ToolStatus::InputRequested);
+    let payload: Value = serde_json::from_str(&optional.output).unwrap();
+    assert_eq!(payload["status"], "INPUT_REQUESTED");
+    assert_eq!(payload["choices"], json!(["a", "b"]));
+
+    // WebSearch with no provider configured is setup-required.
+    let search = executor
+        .execute("WebSearch", json!({ "query": "rust" }))
+        .await;
+    assert_eq!(search.status, ToolStatus::SetupRequired);
+    let payload: Value = serde_json::from_str(&search.output).unwrap();
+    assert_eq!(payload["status"], "SETUP_REQUIRED");
+
+    // WebSearch validates its arguments.
+    let bad_search = executor
+        .execute("WebSearch", json!({ "query": "   " }))
+        .await;
+    assert_eq!(bad_search.status, ToolStatus::Failed);
+
+    // Media stubs are setup-required.
+    let image = executor
+        .execute("GenerateImage", json!({ "prompt": "a cat" }))
+        .await;
+    assert_eq!(image.status, ToolStatus::SetupRequired);
+    let video = executor
+        .execute("GenerateVideo", json!({ "prompt": "a dog" }))
+        .await;
+    assert_eq!(video.status, ToolStatus::SetupRequired);
+
+    // TodoWrite completes with a bounded list.
+    let todos = executor
+        .execute("TodoWrite", json!({ "todos": ["one", "two"] }))
+        .await;
+    assert_eq!(todos.status, ToolStatus::Completed);
+    let payload: Value = serde_json::from_str(&todos.output).unwrap();
+    assert_eq!(payload["status"], "COMPLETED");
+    assert_eq!(payload["todos"], json!(["one", "two"]));
+
+    // ExitPlanMode needs approval and performs no side effect.
+    let plan = executor
+        .execute("ExitPlanMode", json!({ "plan": "do the thing" }))
+        .await;
+    assert_eq!(plan.status, ToolStatus::ApprovalRequired);
+    let payload: Value = serde_json::from_str(&plan.output).unwrap();
+    assert_eq!(payload["status"], "APPROVAL_REQUIRED");
+}
+
+// ---------------------------------------------------------------------------
+// Executor dispatch
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    // Write then read a file through the executor.
+    let written = executor
+        .execute(
+            "Write",
+            json!({ "file_path": "a/b.txt", "content": "line1\nline2\n" }),
+        )
+        .await;
+    assert_eq!(written.status, ToolStatus::Completed, "{}", written.output);
+
+    let read = executor
+        .execute("Read", json!({ "file_path": "a/b.txt" }))
+        .await;
+    assert_eq!(read.status, ToolStatus::Completed);
+    assert!(read.output.contains("1\tline1"));
+
+    // Glob (default pattern) and Grep dispatch to the file tools.
+    let globbed = executor.execute("Glob", json!({})).await;
+    assert_eq!(globbed.status, ToolStatus::Completed);
+    assert!(globbed.output.contains("a/b.txt"));
+
+    let grepped = executor
+        .execute("Grep", json!({ "pattern": "line2" }))
+        .await;
+    assert_eq!(grepped.status, ToolStatus::Completed);
+    assert!(grepped.output.contains("a/b.txt:2:line2"));
+
+    // Edit dispatches and succeeds.
+    let edited = executor
+        .execute(
+            "Edit",
+            json!({ "file_path": "a/b.txt", "old_string": "line1", "new_string": "LINE1" }),
+        )
+        .await;
+    assert_eq!(edited.status, ToolStatus::Completed);
+
+    // A non-file tool runs through the same executor.
+    let todos = executor
+        .execute("TodoWrite", json!({ "todos": ["x"] }))
+        .await;
+    assert_eq!(todos.status, ToolStatus::Completed);
+
+    // Unknown tools do not panic.
+    let unknown = executor.execute("Nonexistent", json!({})).await;
+    assert_eq!(unknown.status, ToolStatus::Failed);
+    assert!(unknown.output.contains("unavailable"));
+
+    // A missing required argument is a model-safe failure.
+    let missing = executor.execute("Read", json!({})).await;
+    assert_eq!(missing.status, ToolStatus::Failed);
+
+    // A path escape is rejected and never echoes the absolute local root.
+    let escape = executor
+        .execute("Read", json!({ "file_path": "../secret.txt" }))
+        .await;
+    assert_eq!(escape.status, ToolStatus::Failed);
+    let absolute_root = root.path().to_string_lossy();
+    assert!(
+        !escape.output.contains(absolute_root.as_ref()),
+        "error text must not leak the absolute workspace path"
+    );
+
+    // Without a workspace, file tools report WORKSPACE_REQUIRED.
+    let no_workspace = ToolExecutor::without_workspace();
+    let needs_ws = no_workspace
+        .execute("Read", json!({ "file_path": "a.txt" }))
+        .await;
+    assert_eq!(needs_ws.status, ToolStatus::WorkspaceRequired);
+    let payload: Value = serde_json::from_str(&needs_ws.output).unwrap();
+    assert_eq!(payload["status"], "WORKSPACE_REQUIRED");
 }
