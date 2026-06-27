@@ -26,7 +26,21 @@ pub use workspace::{
     MAX_WRITE_BYTES,
 };
 
+use serde_json::Value;
 use thiserror::Error;
+
+/// Skill instructions mounted into a tool executor for runtime inspection.
+///
+/// This is an in-memory contract only. `SkillManager` may list metadata and
+/// return stored markdown instructions, but it must not load files or execute
+/// arbitrary skill resources.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MountedSkill {
+    pub name: String,
+    pub description: Option<String>,
+    pub metadata: Value,
+    pub body_markdown: String,
+}
 
 /// Failure returned by a workspace tool.
 ///

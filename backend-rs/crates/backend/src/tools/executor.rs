@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    bash, controlled, http, ToolError, ToolResult, ToolStatus, WorkspaceTools, MAX_GLOB_RESULTS,
-    MAX_GREP_RESULTS, MAX_READ_LINES,
+    bash, controlled, http, MountedSkill, ToolError, ToolResult, ToolStatus, WorkspaceTools,
+    MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
 /// Executes workspace and network tools by name with JSON arguments.
@@ -21,6 +21,8 @@ use super::{
 pub struct ToolExecutor {
     /// The bound workspace, or `None` when no local workspace is configured.
     workspace: Option<WorkspaceTools>,
+    /// Skill metadata/instructions mounted for the non-executing SkillManager.
+    mounted_skills: Vec<MountedSkill>,
 }
 
 impl ToolExecutor {
@@ -28,16 +30,35 @@ impl ToolExecutor {
     /// `None`. Returns [`ToolError::Invalid`] if a given root is missing or is
     /// not a directory.
     pub fn new(workspace_root: Option<PathBuf>) -> Result<Self, ToolError> {
+        Self::new_with_skills(workspace_root, Vec::new())
+    }
+
+    /// Build an executor bound to `workspace_root` and the given mounted skills.
+    pub fn new_with_skills(
+        workspace_root: Option<PathBuf>,
+        mounted_skills: Vec<MountedSkill>,
+    ) -> Result<Self, ToolError> {
         let workspace = match workspace_root {
             Some(root) => Some(WorkspaceTools::new(root)?),
             None => None,
         };
-        Ok(Self { workspace })
+        Ok(Self {
+            workspace,
+            mounted_skills,
+        })
     }
 
     /// Build an executor with no local workspace; only non-workspace tools run.
     pub fn without_workspace() -> Self {
-        Self { workspace: None }
+        Self::without_workspace_with_skills(Vec::new())
+    }
+
+    /// Build an executor with no local workspace and the given mounted skills.
+    pub fn without_workspace_with_skills(mounted_skills: Vec<MountedSkill>) -> Self {
+        Self {
+            workspace: None,
+            mounted_skills,
+        }
     }
 
     /// The bound workspace root, if any.
@@ -84,6 +105,15 @@ impl ToolExecutor {
             }
             "GenerateImage" => Ok(controlled::generate_image(arg_str(&args, "prompt")?)),
             "GenerateVideo" => Ok(controlled::generate_video(arg_str(&args, "prompt")?)),
+            "SkillManager" => {
+                let action = arg_str_opt(&args, "action").unwrap_or("list");
+                let skill_name = arg_str_opt(&args, "skill_name");
+                Ok(controlled::skill_manager(
+                    &self.mounted_skills,
+                    action,
+                    skill_name,
+                ))
+            }
             "TodoWrite" => Ok(controlled::todo_write(arg_todos(&args))),
             "ExitPlanMode" => Ok(controlled::exit_plan_mode(arg_str(&args, "plan")?)),
             _ => Ok(unknown_tool(name)),

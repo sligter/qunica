@@ -9,7 +9,7 @@
 
 use serde_json::{Map, Value};
 
-use super::{ToolError, ToolResult, ToolStatus};
+use super::{MountedSkill, ToolError, ToolResult, ToolStatus};
 
 /// Default number of search results requested.
 pub const DEFAULT_SEARCH_RESULTS: u32 = 5;
@@ -22,6 +22,11 @@ pub const MAX_SEARCH_QUERY_CHARS: usize = 500;
 const MAX_ASK_CHOICES: usize = 8;
 /// Maximum number of todos echoed back by `TodoWrite`.
 const MAX_TODOS: usize = 20;
+
+const SKILL_LIST_MESSAGE: &str =
+    "Skill list includes metadata only; inspect or activate a skill to load instructions.";
+const SKILL_ACTIVATION_MESSAGE: &str =
+    "Skill runtime activation records intent only; no arbitrary code was loaded.";
 
 /// Build a controlled-result `ToolResult` whose output is a JSON object with the
 /// given `tool`, `status`, optional `message`, and any extra fields.
@@ -144,6 +149,97 @@ pub fn generate_video(prompt: &str) -> ToolResult {
         Some(&message),
         Vec::new(),
     )
+}
+
+/// `SkillManager`: inspect mounted skill metadata/instructions without loading
+/// files or executing arbitrary skill resources.
+pub fn skill_manager(
+    mounted_skills: &[MountedSkill],
+    action: &str,
+    skill_name: Option<&str>,
+) -> ToolResult {
+    match action {
+        "list" => skill_manager_list(mounted_skills),
+        "inspect" | "activate" => match skill_name.filter(|name| !name.is_empty()) {
+            Some(name) => skill_manager_inspect(mounted_skills, name),
+            None => skill_manager_list(mounted_skills),
+        },
+        other => {
+            let message = format!("Unsupported skill action: {other}");
+            controlled_result(
+                "SkillManager",
+                "FAILED",
+                ToolStatus::Failed,
+                Some(&message),
+                Vec::new(),
+            )
+        }
+    }
+}
+
+fn skill_manager_list(mounted_skills: &[MountedSkill]) -> ToolResult {
+    let skills = mounted_skills
+        .iter()
+        .map(skill_metadata)
+        .collect::<Vec<Value>>();
+    controlled_result(
+        "SkillManager",
+        "COMPLETED",
+        ToolStatus::Completed,
+        Some(SKILL_LIST_MESSAGE),
+        vec![("skills", Value::Array(skills))],
+    )
+}
+
+fn skill_manager_inspect(mounted_skills: &[MountedSkill], skill_name: &str) -> ToolResult {
+    let matched = mounted_skills
+        .iter()
+        .filter(|skill| skill.name == skill_name)
+        .map(skill_with_instructions)
+        .collect::<Vec<Value>>();
+    let (status_label, status) = if matched.is_empty() {
+        ("NOT_FOUND", ToolStatus::Failed)
+    } else {
+        ("COMPLETED", ToolStatus::Completed)
+    };
+    controlled_result(
+        "SkillManager",
+        status_label,
+        status,
+        Some(SKILL_ACTIVATION_MESSAGE),
+        vec![("skills", Value::Array(matched))],
+    )
+}
+
+fn skill_metadata(skill: &MountedSkill) -> Value {
+    let mut object = skill_base_object(skill);
+    object.insert("metadata".to_string(), skill.metadata.clone());
+    Value::Object(object)
+}
+
+fn skill_with_instructions(skill: &MountedSkill) -> Value {
+    let mut object = skill_base_object(skill);
+    object.insert("metadata".to_string(), skill.metadata.clone());
+    object.insert(
+        "instructions".to_string(),
+        Value::String(skill.body_markdown.clone()),
+    );
+    Value::Object(object)
+}
+
+fn skill_base_object(skill: &MountedSkill) -> Map<String, Value> {
+    let mut object = Map::new();
+    object.insert("name".to_string(), Value::String(skill.name.clone()));
+    object.insert(
+        "description".to_string(),
+        skill
+            .description
+            .as_ref()
+            .map_or(Value::Null, |description| {
+                Value::String(description.clone())
+            }),
+    );
+    object
 }
 
 /// `TodoWrite`: echo a bounded list of todos back as a completed result.
