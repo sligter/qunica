@@ -6,14 +6,33 @@
 //! [`Tail`]; Task 9b will spawn the actual child process, drive the ACP stdio
 //! protocol, and call these helpers to persist the outcome.
 
+use std::{
+    collections::BTreeMap,
+    io,
+    path::Path,
+    process::{Command as StdCommand, Stdio},
+};
+
 use serde_json::json;
 use sqlx::SqlitePool;
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command as TokioCommand};
 use uuid::Uuid;
+
+use crate::acp::config::AcpRuntimeProfile;
 
 /// Maximum number of characters retained in a captured stdout/stderr tail.
 pub const MAX_TAIL_CHARS: usize = 12_000;
+
+/// Marker env var set on every ACP child so a spawned agent can detect it runs
+/// under ag-swarmer. Matches the Python runtime.
+pub const ACP_AGENT_ENV_FLAG: &str = "AG_SWARMER_ACP_AGENT";
+
+/// `CreateNoWindow` process-creation flag, so a Windows GUI session does not
+/// flash a console window when spawning a CLI agent.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// A failure while persisting an ACP audit row.
 #[derive(Debug, Error)]
@@ -235,4 +254,170 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()
+}
+
+/// Host environment keys that carry a CLI's auth/config location. For the
+/// `codex`/`claude` profiles these are inherited so the agent can reuse the
+/// host user's existing login; for the `custom` profile they are instead
+/// redirected to an isolated temp tree (see [`acp_agent_env`]). Mirrors the
+/// Python `_host_cli_auth_env`.
+fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
+    let mut keys: Vec<&str> = vec![
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+    ];
+    match profile {
+        AcpRuntimeProfile::Codex => keys.push("CODEX_HOME"),
+        AcpRuntimeProfile::Claude => {
+            keys.extend(["CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "ANTHROPIC_MODEL"]);
+        }
+        AcpRuntimeProfile::Custom => {}
+    }
+    keys.into_iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| (key.to_string(), value))
+        })
+        .collect()
+}
+
+/// Build the ACP-specific environment overlay for a child, mirroring the Python
+/// `_acp_agent_env`.
+///
+/// Always sets [`ACP_AGENT_ENV_FLAG`]. For `codex`/`claude` it inherits the host
+/// CLI auth env then applies the runtime env. For `custom` it points every home
+/// /config/data/cache key at an isolated tree rooted under `isolated_home`
+/// (created here) so the agent cannot read or poison the host user's CLI state,
+/// then applies the runtime env. The runtime env is applied last; the blocked
+/// keys it could otherwise use to override these are already rejected by config
+/// normalization, so it can only add benign keys.
+fn acp_agent_env(
+    profile: AcpRuntimeProfile,
+    isolated_home: &Path,
+    runtime_env: &BTreeMap<String, String>,
+) -> io::Result<BTreeMap<String, String>> {
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    env.insert(ACP_AGENT_ENV_FLAG.to_string(), "1".to_string());
+
+    match profile {
+        AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude => {
+            for (key, value) in host_cli_auth_env(profile) {
+                env.insert(key, value);
+            }
+        }
+        AcpRuntimeProfile::Custom => {
+            let config_dir = isolated_home.join("config");
+            let data_dir = isolated_home.join("data");
+            let cache_dir = isolated_home.join("cache");
+            for dir in [isolated_home, &config_dir, &data_dir, &cache_dir] {
+                std::fs::create_dir_all(dir)?;
+            }
+            let s = |path: &Path| path.to_string_lossy().to_string();
+            env.insert("HOME".to_string(), s(isolated_home));
+            env.insert("USERPROFILE".to_string(), s(isolated_home));
+            env.insert("APPDATA".to_string(), s(&config_dir));
+            env.insert("LOCALAPPDATA".to_string(), s(&data_dir));
+            env.insert("XDG_CONFIG_HOME".to_string(), s(&config_dir));
+            env.insert("XDG_DATA_HOME".to_string(), s(&data_dir));
+            env.insert("XDG_CACHE_HOME".to_string(), s(&cache_dir));
+            env.insert("CODEX_HOME".to_string(), s(&config_dir.join("codex")));
+            env.insert(
+                "CLAUDE_CONFIG_DIR".to_string(),
+                s(&config_dir.join("claude")),
+            );
+            env.insert("CLAUDE_HOME".to_string(), s(&config_dir.join("claude")));
+        }
+    }
+
+    for (key, value) in runtime_env {
+        env.insert(key.clone(), value.clone());
+    }
+    Ok(env)
+}
+
+/// Build the full child environment: the inherited process env as a base, with
+/// the ACP overlay from [`acp_agent_env`] applied on top.
+///
+/// Using the process env as the base supplies `PATH`/`SystemRoot`/etc.; the
+/// overlay then redirects the home/config keys (for `custom`) so host
+/// credential stores are never reachable through an inherited `HOME`.
+pub fn build_child_env(
+    profile: AcpRuntimeProfile,
+    isolated_home: &Path,
+    runtime_env: &BTreeMap<String, String>,
+) -> io::Result<Vec<(String, String)>> {
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    for (key, value) in acp_agent_env(profile, isolated_home, runtime_env)? {
+        env.insert(key, value);
+    }
+    Ok(env.into_iter().collect())
+}
+
+/// A spawned ACP child with its stdio pipes taken out for the protocol layer.
+pub struct SpawnedAcpChild {
+    /// The running child handle (used to wait for exit or kill on timeout).
+    pub child: Child,
+    /// The child's stdin (JSON-RPC requests are written here).
+    pub stdin: ChildStdin,
+    /// The child's stdout (JSON-RPC responses/notifications are read here).
+    pub stdout: ChildStdout,
+    /// The child's stderr (captured into a bounded tail for the audit row).
+    pub stderr: ChildStderr,
+}
+
+/// Spawn an ACP agent child process with piped stdio, the given environment,
+/// `cwd` as the working directory, and (on Windows) no console window.
+///
+/// The environment is set explicitly via `env_clear` + the supplied pairs, so
+/// the child sees exactly what [`build_child_env`] computed.
+pub fn spawn_acp_child(
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+) -> io::Result<SpawnedAcpChild> {
+    let mut std_cmd = StdCommand::new(command);
+    std_cmd.args(args).current_dir(cwd).env_clear();
+    for (key, value) in env {
+        std_cmd.env(key, value);
+    }
+    std_cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut cmd = TokioCommand::from(std_cmd);
+    cmd.kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("ACP child stdin pipe missing"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("ACP child stdout pipe missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("ACP child stderr pipe missing"))?;
+
+    Ok(SpawnedAcpChild {
+        child,
+        stdin,
+        stdout,
+        stderr,
+    })
 }

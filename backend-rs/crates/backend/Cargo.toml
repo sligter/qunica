@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "time", "json", "macros", "migrate"] }
+tempfile = "3"
 thiserror = "1"
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "process", "fs", "io-util", "sync", "time", "net"] }
@@ -30,5 +31,4 @@ uuid = { version = "1", features = ["serde", "v4", "v7"] }
 walkdir = "2"
 
 [dev-dependencies]
-tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
