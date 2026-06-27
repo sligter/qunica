@@ -3,7 +3,7 @@
 //! Each test seeds users/groups via the public API and seeds agents, group
 //! bindings and LLM providers directly through the shared pool (there is no
 //! group-agent or provider binding API yet). LLM streaming is exercised against
-//! a local fake HTTP server that replays canned OpenAI-style SSE; no live
+//! a local fake HTTP server that replays canned provider-specific SSE; no live
 //! external API is contacted.
 
 use ag_swarmer_backend::{
@@ -141,16 +141,26 @@ async fn owner_id(state: &AppState, email: &str) -> String {
 }
 
 async fn seed_provider(state: &AppState, owner_id: &str, base_url: &str) -> String {
+    seed_provider_kind(state, owner_id, "openai-compatible", base_url).await
+}
+
+async fn seed_provider_kind(
+    state: &AppState,
+    owner_id: &str,
+    kind: &str,
+    base_url: &str,
+) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO llm_providers \
          (id, owner_id, name, kind, base_url, api_key, default_model, reasoning_passback, \
           status, created_at, updated_at) \
-         VALUES (?, ?, 'Fake', 'openai_compatible', ?, 'test-key', 'test-model', 0, 'active', \
+         VALUES (?, ?, 'Fake', ?, ?, 'test-key', 'test-model', 0, 'active', \
                  '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
     )
     .bind(&id)
     .bind(owner_id)
+    .bind(kind)
     .bind(base_url)
     .execute(state.db.pool())
     .await
@@ -275,6 +285,42 @@ async fn group_stream_uses_monotonic_sequence_not_timestamps() {
     assert_eq!(kinds.first().unwrap(), "user_message");
     assert_eq!(kinds.last().unwrap(), "done");
     assert!(kinds.contains(&"agent_message".to_string()));
+}
+
+#[tokio::test]
+async fn group_stream_supports_gemini_provider_kind_without_network() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "gemini-kind@example.com").await;
+    let owner = owner_id(&state, "gemini-kind@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Gemini hello\"}]}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider_kind(&state, &owner, "gemini", &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Gemini",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hi gemini"}),
+    )
+    .await;
+
+    let kinds = kinds(&events);
+    assert!(kinds.contains(&"agent_message".to_string()));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "agent_message" && event["payload"]["content"] == "Gemini hello"
+    }));
 }
 
 #[tokio::test]

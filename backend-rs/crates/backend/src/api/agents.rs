@@ -214,7 +214,7 @@ pub async fn create(
         (None, json_to_db_string(body.acp_runtime.as_ref()))
     } else {
         let provider = match body.llm_provider_id.as_deref() {
-            Some(raw) => Some(validate_uuid(raw, "llm_provider_id")?),
+            Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
             None => None,
         };
         (provider, None)
@@ -340,10 +340,13 @@ pub async fn update(
     } else {
         let provider = match body.llm_provider_id {
             Some(ref value) => match value.as_deref() {
-                Some(raw) => Some(validate_uuid(raw, "llm_provider_id")?),
+                Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
                 None => None,
             },
-            None => existing.provider_id.clone(),
+            None => match existing.provider_id.as_deref() {
+                Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
+                None => None,
+            },
         };
         (provider, None)
     };
@@ -461,6 +464,36 @@ async fn validate_workspace(
         Some((_, status)) if status != "active" => {
             Err(ApiError::invalid_input("workspace is not active"))
         }
+        Some(_) => Ok(id),
+    }
+}
+
+/// Resolve a provider reference to its canonical id, requiring it to be an
+/// active provider owned by the caller.
+async fn validate_provider(
+    pool: &SqlitePool,
+    raw_id: &str,
+    owner_id: &str,
+) -> Result<String, ApiError> {
+    let id = validate_uuid(raw_id, "llm_provider_id")?;
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT owner_id, status FROM llm_providers WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+
+    match row {
+        None => Err(ApiError::invalid_input(
+            "llm_provider_id does not reference a provider",
+        )),
+        Some((_, status)) if status != "active" => {
+            Err(ApiError::invalid_input("llm_provider_id is not active"))
+        }
+        Some((owner, _)) if owner != owner_id => Err(ApiError::permission_denied(
+            "provider belongs to another user",
+        )),
         Some(_) => Ok(id),
     }
 }

@@ -398,6 +398,35 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
 }
 
 #[tokio::test]
+async fn providers_settings_system_settings_concurrent_get_or_create_is_idempotent() {
+    let app = app().await;
+    let token = register_and_login(&app, "settings-race@example.com").await;
+
+    let req_a = authed("GET", "/api/v2/settings/system", &token);
+    let req_b = authed("GET", "/api/v2/settings/system", &token);
+    let req_c = authed("GET", "/api/v2/settings/system", &token);
+    let req_d = authed("GET", "/api/v2/settings/system", &token);
+
+    let (first, second, third, fourth) = tokio::join!(
+        send(&app, req_a),
+        send(&app, req_b),
+        send(&app, req_c),
+        send(&app, req_d),
+    );
+
+    let responses = vec![first, second, third, fourth];
+    for (status, body) in &responses {
+        assert_eq!(*status, StatusCode::OK);
+        assert_eq!(body["web_search_provider"], "tavily");
+    }
+
+    let first_id = responses[0].1["id"].as_str().unwrap();
+    for (_, body) in &responses[1..] {
+        assert_eq!(body["id"], first_id);
+    }
+}
+
+#[tokio::test]
 async fn providers_settings_system_settings_validation_rejects_invalid_values() {
     let app = app().await;
     let token = register_and_login(&app, "settings-validation@example.com").await;

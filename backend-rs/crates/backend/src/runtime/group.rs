@@ -812,9 +812,10 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!("agent has no llm provider configured"))?;
     let row: Option<(String, Option<String>, String, String, i64)> = sqlx::query_as(
         "SELECT kind, base_url, api_key, default_model, reasoning_passback \
-         FROM llm_providers WHERE id = ? AND status = 'active'",
+         FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
     .bind(provider_id)
+    .bind(&agent.owner_id)
     .fetch_optional(pool)
     .await?;
     let (kind, base_url, api_key, default_model, reasoning_passback) =

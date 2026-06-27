@@ -97,6 +97,27 @@ async fn create_workspace(app: &Router, token: &str) -> String {
     workspace["id"].as_str().unwrap().to_string()
 }
 
+async fn create_provider(app: &Router, token: &str, name: &str) -> String {
+    let (status, provider) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers",
+            token,
+            json!({
+                "name": name,
+                "kind": "openai-compatible",
+                "base_url": "https://llm.example.test/v1",
+                "api_key": format!("secret-{name}-1234"),
+                "default_model": "test-model"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    provider["id"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn agent_create_requires_active_owned_workspace() {
     let app = app().await;
@@ -135,6 +156,79 @@ async fn agent_create_requires_active_owned_workspace() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn agent_create_validates_provider_owner_and_status() {
+    let app = app().await;
+    let token_a = register_and_login(&app, "provider-create-a@example.com").await;
+    let workspace_a = create_workspace(&app, &token_a).await;
+    let provider_a = create_provider(&app, &token_a, "Owner A").await;
+
+    let (status, agent) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token_a,
+            json!({
+                "name": "Bound",
+                "workspace_id": workspace_a,
+                "llm_provider_id": provider_a
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(agent["llm_provider_id"], provider_a);
+
+    let token_b = register_and_login(&app, "provider-create-b@example.com").await;
+    let provider_b = create_provider(&app, &token_b, "Owner B").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token_a,
+            json!({
+                "name": "Trespasser",
+                "workspace_id": workspace_a,
+                "llm_provider_id": provider_b
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/llm-providers/{provider_a}"),
+            &token_a,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token_a,
+            json!({
+                "name": "Deleted Provider",
+                "workspace_id": workspace_a,
+                "llm_provider_id": provider_a
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
 }
 
 #[tokio::test]
@@ -204,7 +298,10 @@ async fn agent_patch_updates_name_and_json_fields() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["name"], "After");
-    assert_eq!(updated["llm_config"], json!({"model": "claude", "temperature": 0.5}));
+    assert_eq!(
+        updated["llm_config"],
+        json!({"model": "claude", "temperature": 0.5})
+    );
     assert_eq!(updated["tool_config"], json!({"enabled": ["search"]}));
     assert_eq!(updated["skill_ids"], json!([SKILL_A, SKILL_B]));
 
@@ -216,9 +313,91 @@ async fn agent_patch_updates_name_and_json_fields() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["name"], "After");
-    assert_eq!(fetched["llm_config"], json!({"model": "claude", "temperature": 0.5}));
+    assert_eq!(
+        fetched["llm_config"],
+        json!({"model": "claude", "temperature": 0.5})
+    );
     assert_eq!(fetched["tool_config"], json!({"enabled": ["search"]}));
     assert_eq!(fetched["skill_ids"], json!([SKILL_A, SKILL_B]));
+}
+
+#[tokio::test]
+async fn agent_update_validates_provider_owner_and_status() {
+    let app = app().await;
+    let token_a = register_and_login(&app, "provider-update-a@example.com").await;
+    let workspace_a = create_workspace(&app, &token_a).await;
+    let provider_a = create_provider(&app, &token_a, "Original").await;
+    let provider_a_next = create_provider(&app, &token_a, "Replacement").await;
+
+    let (status, agent) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token_a,
+            json!({
+                "name": "Switchable",
+                "workspace_id": workspace_a,
+                "llm_provider_id": provider_a
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            &token_a,
+            json!({"llm_provider_id": provider_a_next}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["llm_provider_id"], provider_a_next);
+
+    let token_b = register_and_login(&app, "provider-update-b@example.com").await;
+    let provider_b = create_provider(&app, &token_b, "Foreign").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            &token_a,
+            json!({"llm_provider_id": provider_b}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/llm-providers/{provider_a_next}"),
+            &token_a,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            &token_a,
+            json!({"llm_provider_id": provider_a_next}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
 }
 
 #[tokio::test]

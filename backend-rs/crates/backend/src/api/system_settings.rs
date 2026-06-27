@@ -181,7 +181,7 @@ async fn get_or_create(pool: &SqlitePool, owner_id: &str) -> Result<SettingsRow,
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
     sqlx::query(
-        "INSERT INTO system_settings \
+        "INSERT OR IGNORE INTO system_settings \
          (id, owner_id, group_workspace_root, web_search_provider, tavily_api_key, \
           tavily_search_url, tavily_max_results, tavily_search_depth, \
           tavily_include_answer, tavily_include_raw_content, created_at, updated_at) \
