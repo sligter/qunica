@@ -112,6 +112,47 @@ async fn create_agent(app: &Router, token: &str, workspace_id: &str, name: &str)
     agent["id"].as_str().unwrap().to_string()
 }
 
+async fn create_group_with_initial_agents(
+    app: &Router,
+    token: &str,
+    workspace_id: &str,
+    mode: &str,
+    initial_agents: &[&str],
+) -> Value {
+    let (status, group) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            token,
+            json!({
+                "name": format!("{mode} group"),
+                "workspace_id": workspace_id,
+                "communication_mode": mode,
+                "initial_agents": initial_agents
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    group
+}
+
+async fn patch_group_mode(app: &Router, token: &str, group_id: &str, mode: &str) -> Value {
+    let (status, group) = send(
+        app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            token,
+            json!({"communication_mode": mode}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    group
+}
+
 async fn owner_id(state: &AppState, email: &str) -> String {
     sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE email = ?")
         .bind(email)
@@ -336,6 +377,100 @@ async fn group_create_initial_agents_inserts_topology_defaults() {
             _ => unreachable!(),
         }
     }
+}
+
+#[tokio::test]
+async fn group_patch_ring_to_star_normalizes_existing_topology() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "ring-to-star@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_a = create_agent(&app, &token, &workspace, "Alpha").await;
+    let agent_b = create_agent(&app, &token, &workspace, "Beta").await;
+    let group = create_group_with_initial_agents(
+        &app,
+        &token,
+        &workspace,
+        "ring",
+        &[agent_a.as_str(), agent_b.as_str()],
+    )
+    .await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let updated = patch_group_mode(&app, &token, group_id, "star").await;
+    assert_eq!(updated["communication_mode"], "star");
+
+    let rows = vec![
+        group_agent_row(&state, group_id, &agent_a).await,
+        group_agent_row(&state, group_id, &agent_b).await,
+    ];
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.topology_role.as_deref() == Some("hub"))
+            .count(),
+        1
+    );
+    assert_eq!(rows[0].topology_role.as_deref(), Some("hub"));
+    assert!(rows.iter().all(|row| row.speaking_order.is_none()));
+}
+
+#[tokio::test]
+async fn group_patch_star_to_ring_assigns_speaking_orders() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "star-to-ring@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_a = create_agent(&app, &token, &workspace, "Alpha").await;
+    let agent_b = create_agent(&app, &token, &workspace, "Beta").await;
+    let group = create_group_with_initial_agents(
+        &app,
+        &token,
+        &workspace,
+        "star",
+        &[agent_a.as_str(), agent_b.as_str()],
+    )
+    .await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let updated = patch_group_mode(&app, &token, group_id, "ring").await;
+    assert_eq!(updated["communication_mode"], "ring");
+
+    let rows = vec![
+        group_agent_row(&state, group_id, &agent_a).await,
+        group_agent_row(&state, group_id, &agent_b).await,
+    ];
+    assert!(rows.iter().all(|row| row.topology_role.is_none()));
+    let orders = rows
+        .iter()
+        .map(|row| row.speaking_order.expect("speaking order"))
+        .collect::<Vec<_>>();
+    assert_eq!(orders, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn group_patch_star_to_mesh_clears_topology() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "star-to-mesh@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_a = create_agent(&app, &token, &workspace, "Alpha").await;
+    let agent_b = create_agent(&app, &token, &workspace, "Beta").await;
+    let group = create_group_with_initial_agents(
+        &app,
+        &token,
+        &workspace,
+        "star",
+        &[agent_a.as_str(), agent_b.as_str()],
+    )
+    .await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let updated = patch_group_mode(&app, &token, group_id, "mesh").await;
+    assert_eq!(updated["communication_mode"], "mesh");
+
+    let rows = vec![
+        group_agent_row(&state, group_id, &agent_a).await,
+        group_agent_row(&state, group_id, &agent_b).await,
+    ];
+    assert!(rows.iter().all(|row| row.topology_role.is_none()));
+    assert!(rows.iter().all(|row| row.speaking_order.is_none()));
 }
 
 struct GroupAgentRow {

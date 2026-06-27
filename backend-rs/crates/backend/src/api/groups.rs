@@ -4,8 +4,11 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use sqlx::SqlitePool;
-use std::{collections::BTreeSet, path::PathBuf};
+use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -116,6 +119,13 @@ struct GroupRow {
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ActiveGroupAgentRow {
+    agent_id: String,
+    topology_role: Option<String>,
+    speaking_order: Option<i64>,
 }
 
 impl From<GroupRow> for GroupResponse {
@@ -341,6 +351,12 @@ pub async fn update(
     };
 
     let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group update transaction"))?;
     sqlx::query(
         "UPDATE groups SET \
          name = ?, description = ?, announcement = ?, workspace_id = ?, free_speech = ?, \
@@ -363,9 +379,17 @@ pub async fn update(
     .bind(&now)
     .bind(&group_id)
     .bind(&owner_id)
-    .execute(state.db.pool())
+    .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("failed to update group"))?;
+
+    if communication_mode != existing.communication_mode {
+        normalize_group_agent_topology(&mut tx, &group_id, &communication_mode, &now).await?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group update"))?;
 
     let row = fetch_row(state.db.pool(), &group_id)
         .await?
@@ -426,6 +450,130 @@ async fn fetch_row(pool: &SqlitePool, group_id: &str) -> Result<Option<GroupRow>
         .fetch_optional(pool)
         .await
         .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn normalize_group_agent_topology(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    mode: &str,
+    now: &str,
+) -> Result<(), ApiError> {
+    let rows = sqlx::query_as::<_, ActiveGroupAgentRow>(
+        "SELECT group_agents.agent_id, group_agents.topology_role, group_agents.speaking_order \
+         FROM group_agents \
+         JOIN agents ON agents.id = group_agents.agent_id \
+         WHERE group_agents.group_id = ? \
+           AND group_agents.status = 'active' \
+           AND agents.status = 'active' \
+         ORDER BY group_agents.joined_at ASC, group_agents.agent_id ASC",
+    )
+    .bind(group_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to load group agents for topology update"))?;
+
+    let updates = match mode {
+        "mesh" => rows
+            .iter()
+            .map(|row| (row.agent_id.clone(), None, None))
+            .collect(),
+        "star" => star_topology_updates(&rows),
+        "hierarchical" => hierarchical_topology_updates(&rows),
+        "ring" => ring_topology_updates(&rows),
+        _ => return Err(ApiError::internal("unsupported communication mode")),
+    };
+
+    for (agent_id, topology_role, speaking_order) in updates {
+        sqlx::query(
+            "UPDATE group_agents \
+             SET topology_role = ?, speaking_order = ?, updated_at = ? \
+             WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+        )
+        .bind(topology_role)
+        .bind(speaking_order)
+        .bind(now)
+        .bind(group_id)
+        .bind(agent_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to update group agent topology"))?;
+    }
+
+    Ok(())
+}
+
+fn star_topology_updates(
+    rows: &[ActiveGroupAgentRow],
+) -> Vec<(String, Option<String>, Option<i64>)> {
+    let hub_agent_id = rows
+        .iter()
+        .find(|row| row.topology_role.as_deref() == Some("hub"))
+        .or_else(|| rows.first())
+        .map(|row| row.agent_id.as_str());
+
+    rows.iter()
+        .map(|row| {
+            let role = if hub_agent_id == Some(row.agent_id.as_str()) {
+                Some("hub".to_string())
+            } else {
+                None
+            };
+            (row.agent_id.clone(), role, None)
+        })
+        .collect()
+}
+
+fn hierarchical_topology_updates(
+    rows: &[ActiveGroupAgentRow],
+) -> Vec<(String, Option<String>, Option<i64>)> {
+    rows.iter()
+        .map(|row| {
+            let role = match row.topology_role.as_deref() {
+                Some("leader") => "leader",
+                Some("worker") => "worker",
+                _ => "worker",
+            };
+            (row.agent_id.clone(), Some(role.to_string()), None)
+        })
+        .collect()
+}
+
+fn ring_topology_updates(
+    rows: &[ActiveGroupAgentRow],
+) -> Vec<(String, Option<String>, Option<i64>)> {
+    let mut order_counts = BTreeMap::new();
+    for row in rows {
+        if let Some(order) = row.speaking_order.filter(|order| *order > 0) {
+            *order_counts.entry(order).or_insert(0usize) += 1;
+        }
+    }
+
+    let mut used_orders = BTreeSet::new();
+    let mut updates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let order = row.speaking_order.filter(|order| {
+            *order > 0 && order_counts.get(order).copied().unwrap_or_default() == 1
+        });
+        if let Some(order) = order {
+            used_orders.insert(order);
+        }
+        updates.push((row.agent_id.clone(), None, order));
+    }
+
+    let mut next_order = used_orders.iter().next_back().copied().unwrap_or_default() + 1;
+    for (_, _, speaking_order) in &mut updates {
+        if speaking_order.is_some() {
+            continue;
+        }
+        while used_orders.contains(&next_order) {
+            next_order += 1;
+        }
+        *speaking_order = Some(next_order);
+        used_orders.insert(next_order);
+        next_order += 1;
+    }
+
+    updates
 }
 
 /// Resolve a workspace reference to its canonical id, requiring it to be an
