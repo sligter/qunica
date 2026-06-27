@@ -118,6 +118,9 @@ CREATE TABLE llm_providers (
   base_url TEXT,
   api_key TEXT NOT NULL,
   default_model TEXT NOT NULL,
+  context_window_tokens INTEGER,
+  context_output_reserve_ratio REAL,
+  description TEXT,
   reasoning_passback INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL,
@@ -140,10 +143,17 @@ CREATE TABLE skills (
 );
 
 CREATE TABLE system_settings (
-  owner_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   group_workspace_root TEXT,
-  web_search_provider TEXT NOT NULL DEFAULT 'none',
-  tavily_config_json TEXT,
+  web_search_provider TEXT NOT NULL DEFAULT 'tavily',
+  tavily_api_key TEXT,
+  tavily_search_url TEXT NOT NULL DEFAULT 'https://api.tavily.com/search',
+  tavily_max_results INTEGER NOT NULL DEFAULT 5,
+  tavily_search_depth TEXT NOT NULL DEFAULT 'basic',
+  tavily_include_answer INTEGER NOT NULL DEFAULT 1,
+  tavily_include_raw_content INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 

@@ -6,6 +6,7 @@ use axum::{
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::collections::BTreeMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
@@ -84,6 +85,56 @@ pub struct AgentResponse {
     created_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ToolCatalogResponse {
+    tools: Vec<BuiltinToolResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct BuiltinToolResponse {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    policy: &'static str,
+    requires_workspace: bool,
+    requires_sandbox: bool,
+    runtime_status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AcpRuntimePresetListResponse {
+    presets: Vec<AcpRuntimePresetResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct AcpRuntimePresetResponse {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    profile: &'static str,
+    installed: bool,
+    command: Option<&'static str>,
+    args: Vec<&'static str>,
+    env: BTreeMap<String, String>,
+    timeout_seconds: i64,
+    permission_policy: &'static str,
+    default_model: Option<&'static str>,
+    default_mode: Option<&'static str>,
+    default_thinking_effort: Option<&'static str>,
+    model_options: Vec<AcpRuntimeChoiceResponse>,
+    mode_options: Vec<AcpRuntimeChoiceResponse>,
+    thinking_effort_options: Vec<AcpRuntimeChoiceResponse>,
+    install_hint: &'static str,
+    source: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct AcpRuntimeChoiceResponse {
+    value: &'static str,
+    label: &'static str,
+    description: Option<&'static str>,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct AgentRow {
     id: String,
@@ -124,6 +175,18 @@ impl From<AgentRow> for AgentResponse {
             created_at: row.created_at,
         }
     }
+}
+
+pub async fn tool_catalog() -> Json<ToolCatalogResponse> {
+    Json(ToolCatalogResponse {
+        tools: builtin_tools(),
+    })
+}
+
+pub async fn acp_runtime_presets() -> Json<AcpRuntimePresetListResponse> {
+    Json(AcpRuntimePresetListResponse {
+        presets: fallback_acp_presets(),
+    })
 }
 
 pub async fn create(
@@ -392,9 +455,9 @@ async fn validate_workspace(
         None => Err(ApiError::invalid_input(
             "workspace_id does not reference a workspace",
         )),
-        Some((owner, _)) if owner != owner_id => {
-            Err(ApiError::permission_denied("workspace belongs to another user"))
-        }
+        Some((owner, _)) if owner != owner_id => Err(ApiError::permission_denied(
+            "workspace belongs to another user",
+        )),
         Some((_, status)) if status != "active" => {
             Err(ApiError::invalid_input("workspace is not active"))
         }
@@ -460,6 +523,230 @@ fn json_to_db_string(value: Option<&Value>) -> Option<String> {
 
 fn parse_json(raw: Option<&str>) -> Option<Value> {
     raw.and_then(|r| serde_json::from_str::<Value>(r).ok())
+}
+
+fn builtin_tools() -> Vec<BuiltinToolResponse> {
+    vec![
+        tool(
+            "read",
+            "Read",
+            "Read files from the bound workspace.",
+            "read",
+            true,
+        ),
+        tool(
+            "write",
+            "Write",
+            "Create or replace files in the bound workspace.",
+            "write",
+            true,
+        ),
+        tool(
+            "edit",
+            "Edit",
+            "Patch existing files in the bound workspace.",
+            "write",
+            true,
+        ),
+        tool(
+            "glob",
+            "Glob",
+            "Find files in the bound workspace by pattern.",
+            "read",
+            true,
+        ),
+        tool(
+            "grep",
+            "Grep",
+            "Search file contents in the bound workspace.",
+            "read",
+            true,
+        ),
+        tool(
+            "bash",
+            "Bash",
+            "Run guarded shell commands in the bound workspace.",
+            "execute",
+            true,
+        ),
+        tool(
+            "ask_user",
+            "AskUser",
+            "Ask the user for clarification or approval.",
+            "planning",
+            false,
+        ),
+        tool(
+            "web_search",
+            "WebSearch",
+            "Search the web for current information.",
+            "network",
+            false,
+        ),
+        tool(
+            "fetch",
+            "Fetch",
+            "Fetch and inspect a specific URL.",
+            "network",
+            false,
+        ),
+        tool(
+            "run_sub_agent",
+            "RunSubAgent",
+            "Delegate read-only exploration to a sub-agent.",
+            "orchestration",
+            false,
+        ),
+        tool(
+            "generate_image",
+            "GenerateImage",
+            "Generate images through a media provider.",
+            "media",
+            false,
+        ),
+        tool(
+            "generate_video",
+            "GenerateVideo",
+            "Generate videos through a media provider.",
+            "media",
+            false,
+        ),
+        tool(
+            "skill_manager",
+            "SkillManager",
+            "Inspect and activate mounted skills.",
+            "orchestration",
+            false,
+        ),
+        tool(
+            "todo_write",
+            "TodoWrite",
+            "Track multi-step agent tasks.",
+            "planning",
+            false,
+        ),
+        tool(
+            "exit_plan_mode",
+            "ExitPlanMode",
+            "Request user approval after planning.",
+            "planning",
+            false,
+        ),
+    ]
+}
+
+fn tool(
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    policy: &'static str,
+    requires_workspace: bool,
+) -> BuiltinToolResponse {
+    BuiltinToolResponse {
+        id,
+        name,
+        description,
+        policy,
+        requires_workspace,
+        requires_sandbox: false,
+        runtime_status: "available",
+    }
+}
+
+fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
+    vec![
+        AcpRuntimePresetResponse {
+            id: "codex",
+            name: "Codex",
+            description: "Codex CLI through the Zed Codex ACP adapter.",
+            profile: "codex",
+            installed: false,
+            command: Some("npx"),
+            args: vec!["@zed-industries/codex-acp"],
+            env: BTreeMap::new(),
+            timeout_seconds: 3600,
+            permission_policy: "deny",
+            default_model: None,
+            default_mode: Some("read-only"),
+            default_thinking_effort: Some("medium"),
+            model_options: Vec::new(),
+            mode_options: vec![
+                choice(
+                    "read-only",
+                    "Read Only",
+                    Some("Read files in the current workspace; ask before edits or internet."),
+                ),
+                choice(
+                    "auto",
+                    "Default",
+                    Some("Read and edit workspace files; ask for internet or external edits."),
+                ),
+                choice(
+                    "full-access",
+                    "Full Access",
+                    Some("Edit outside the workspace and access the internet without asking."),
+                ),
+            ],
+            thinking_effort_options: vec![
+                choice("", "Default", None),
+                choice("minimal", "Minimal", None),
+                choice("low", "Low", None),
+                choice("medium", "Medium", None),
+                choice("high", "High", None),
+                choice("xhigh", "XHigh", None),
+            ],
+            install_hint: "Install @zed-industries/codex-acp so codex-acp is on PATH, or keep the npx fallback command.",
+            source: Some("fallback"),
+        },
+        AcpRuntimePresetResponse {
+            id: "claude",
+            name: "Claude Code",
+            description: "Claude Agent SDK through the official Claude Agent ACP adapter.",
+            profile: "claude",
+            installed: false,
+            command: Some("npx"),
+            args: vec!["@agentclientprotocol/claude-agent-acp"],
+            env: BTreeMap::new(),
+            timeout_seconds: 3600,
+            permission_policy: "deny",
+            default_model: None,
+            default_mode: Some("default"),
+            default_thinking_effort: Some("high"),
+            model_options: Vec::new(),
+            mode_options: vec![
+                choice("default", "Default", None),
+                choice(
+                    "auto",
+                    "Auto",
+                    Some("Use a model classifier to approve or deny permission prompts."),
+                ),
+                choice("acceptEdits", "Accept Edits", None),
+                choice("plan", "Plan", None),
+                choice("dontAsk", "Don't Ask", None),
+                choice("bypassPermissions", "Bypass Permissions", None),
+            ],
+            thinking_effort_options: vec![
+                choice("low", "Low", None),
+                choice("medium", "Medium", None),
+                choice("high", "High", None),
+                choice("max", "Max", None),
+            ],
+            install_hint: "Install @agentclientprotocol/claude-agent-acp so claude-agent-acp is on PATH, or keep the npx fallback command.",
+            source: Some("fallback"),
+        },
+    ]
+}
+
+fn choice(
+    value: &'static str,
+    label: &'static str,
+    description: Option<&'static str>,
+) -> AcpRuntimeChoiceResponse {
+    AcpRuntimeChoiceResponse {
+        value,
+        label,
+        description,
+    }
 }
 
 fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {

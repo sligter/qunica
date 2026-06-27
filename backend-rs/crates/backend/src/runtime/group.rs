@@ -831,10 +831,11 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
 fn build_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
     let base_url = cfg.base_url.clone().unwrap_or_default();
     let provider: Box<dyn LlmProvider> = match cfg.kind.as_str() {
-        "openai_compatible" | "openai" | "deepseek" | "vllm" | "openrouter" => {
-            Box::new(OpenAiCompatibleProvider::new(base_url, cfg.api_key.clone()))
+        "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
+        | "openrouter" => Box::new(OpenAiCompatibleProvider::new(base_url, cfg.api_key.clone())),
+        "anthropic" | "anthropic-compatible" | "anthropic_compatible" => {
+            Box::new(AnthropicProvider::new(base_url, cfg.api_key.clone()))
         }
-        "anthropic" => Box::new(AnthropicProvider::new(base_url, cfg.api_key.clone())),
         "gemini" | "google" => Box::new(GeminiProvider::new(base_url, cfg.api_key.clone())),
         other => anyhow::bail!("unsupported provider kind: {other}"),
     };

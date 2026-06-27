@@ -3,8 +3,10 @@ pub mod auth;
 pub mod error;
 pub mod groups;
 pub mod health;
+pub mod llm_providers;
 pub mod messages;
 pub mod skills;
+pub mod system_settings;
 pub mod workspaces;
 
 use std::{path::PathBuf, sync::Arc};
@@ -54,11 +56,34 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/agents",
             axum::routing::post(agents::create).get(agents::list),
         )
+        .route("/api/v2/agents/tool-catalog", get(agents::tool_catalog))
+        .route(
+            "/api/v2/agents/acp-runtime-presets",
+            get(agents::acp_runtime_presets),
+        )
         .route(
             "/api/v2/agents/:agent_id",
             get(agents::get)
                 .patch(agents::update)
                 .delete(agents::delete),
+        )
+        .route(
+            "/api/v2/llm-providers",
+            axum::routing::post(llm_providers::create).get(llm_providers::list),
+        )
+        .route(
+            "/api/v2/llm-providers/:provider_id",
+            get(llm_providers::get)
+                .patch(llm_providers::update)
+                .delete(llm_providers::delete),
+        )
+        .route(
+            "/api/v2/llm-providers/:provider_id/models",
+            get(llm_providers::models),
+        )
+        .route(
+            "/api/v2/settings/system",
+            get(system_settings::get).patch(system_settings::update),
         )
         .route(
             "/api/v2/groups",
