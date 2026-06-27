@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -19,6 +20,11 @@ const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, anno
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
      muted_agent_ids_json, admin_agent_ids_json, muted_member_ids_json, status, \
      created_at, updated_at";
+
+const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id, \
+     group_agents.display_name, agents.name AS agent_name, group_agents.role, \
+     group_agents.topology_role, group_agents.speaking_order, group_agents.response_mode, \
+     group_agents.context_scope_json, group_agents.status, group_agents.joined_at";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -75,6 +81,31 @@ pub struct UpdateRequest {
     communication_mode: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GroupAgentAddRequest {
+    agent_id: String,
+    #[serde(default)]
+    share_group_workspace: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupAgentMuteRequest {
+    muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupAgentTopologyRequest {
+    #[serde(default)]
+    topology_role: Option<String>,
+    #[serde(default)]
+    speaking_order: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupAgentWorkspaceSharingRequest {
+    share_group_workspace: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GroupResponse {
     id: String,
@@ -95,6 +126,22 @@ pub struct GroupResponse {
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupAgentResponse {
+    id: String,
+    group_id: String,
+    agent_id: String,
+    display_name: String,
+    role: Option<String>,
+    topology_role: Option<String>,
+    speaking_order: Option<i64>,
+    response_mode: String,
+    share_group_workspace: bool,
+    context_usage: Option<Value>,
+    status: String,
+    joined_at: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -128,6 +175,21 @@ struct ActiveGroupAgentRow {
     speaking_order: Option<i64>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct GroupAgentRow {
+    group_id: String,
+    agent_id: String,
+    display_name: Option<String>,
+    agent_name: String,
+    role: Option<String>,
+    topology_role: Option<String>,
+    speaking_order: Option<i64>,
+    response_mode: String,
+    context_scope_json: Option<String>,
+    status: String,
+    joined_at: String,
+}
+
 impl From<GroupRow> for GroupResponse {
     fn from(row: GroupRow) -> Self {
         Self {
@@ -149,6 +211,27 @@ impl From<GroupRow> for GroupResponse {
             status: row.status,
             created_at: row.created_at,
             updated_at: row.updated_at,
+        }
+    }
+}
+
+impl From<GroupAgentRow> for GroupAgentResponse {
+    fn from(row: GroupAgentRow) -> Self {
+        let id = format!("{}:{}", row.group_id, row.agent_id);
+        let share_group_workspace = group_workspace_shared(row.context_scope_json.as_deref());
+        Self {
+            id,
+            group_id: row.group_id,
+            agent_id: row.agent_id,
+            display_name: row.display_name.unwrap_or(row.agent_name),
+            role: row.role,
+            topology_role: row.topology_role,
+            speaking_order: row.speaking_order,
+            response_mode: row.response_mode,
+            share_group_workspace,
+            context_usage: None,
+            status: row.status,
+            joined_at: row.joined_at,
         }
     }
 }
@@ -422,6 +505,270 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn list_group_agents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<GroupAgentResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let rows = fetch_group_agent_rows(state.db.pool(), &group_id).await?;
+    Ok(Json(
+        rows.into_iter().map(GroupAgentResponse::from).collect(),
+    ))
+}
+
+pub async fn add_group_agent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupAgentAddRequest>,
+) -> Result<(StatusCode, Json<GroupAgentResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let agent_id = validate_uuid(&body.agent_id, "agent_id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    validate_owned_active_agent(state.db.pool(), &agent_id, &owner_id).await?;
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group agent transaction"))?;
+
+    let existing = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT status, context_scope_json FROM group_agents WHERE group_id = ? AND agent_id = ?",
+    )
+    .bind(&group_id)
+    .bind(&agent_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to load group agent"))?;
+
+    if matches!(existing.as_ref().map(|row| row.0.as_str()), Some("active")) {
+        return Err(ApiError::conflict("agent already in group"));
+    }
+
+    let (topology_role, speaking_order) =
+        new_agent_topology(&mut tx, &group_id, &group.communication_mode).await?;
+    let existing_context_scope = existing.as_ref().and_then(|row| row.1.as_deref());
+    let context_scope_json = context_scope_with_group_workspace(
+        existing_context_scope,
+        body.share_group_workspace.unwrap_or(false),
+    )?;
+
+    if existing.is_some() {
+        sqlx::query(
+            "UPDATE group_agents SET \
+             topology_role = ?, speaking_order = ?, response_mode = 'mentioned_only', \
+             context_scope_json = ?, status = 'active', updated_at = ? \
+             WHERE group_id = ? AND agent_id = ?",
+        )
+        .bind(&topology_role)
+        .bind(speaking_order)
+        .bind(&context_scope_json)
+        .bind(&now)
+        .bind(&group_id)
+        .bind(&agent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to reactivate group agent"))?;
+    } else {
+        sqlx::query(
+            "INSERT INTO group_agents \
+             (group_id, agent_id, topology_role, speaking_order, response_mode, \
+              context_scope_json, status, joined_at, updated_at) \
+             VALUES (?, ?, ?, ?, 'mentioned_only', ?, 'active', ?, ?)",
+        )
+        .bind(&group_id)
+        .bind(&agent_id)
+        .bind(&topology_role)
+        .bind(speaking_order)
+        .bind(&context_scope_json)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to add group agent"))?;
+    }
+
+    touch_group(&mut tx, &group_id, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group agent transaction"))?;
+
+    let row = fetch_group_agent_row(state.db.pool(), &group_id, &agent_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group agent vanished after add"))?;
+    Ok((StatusCode::CREATED, Json(row.into())))
+}
+
+pub async fn remove_group_agent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, agent_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let agent_id = validate_uuid(&agent_id, "agent id")?;
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group agent transaction"))?;
+
+    sqlx::query(
+        "UPDATE group_agents SET status = 'removed', updated_at = ? \
+         WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+    )
+    .bind(&now)
+    .bind(&group_id)
+    .bind(&agent_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to remove group agent"))?;
+
+    remove_agent_from_group_lists(&mut tx, &group_id, &agent_id, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group agent removal"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn set_group_agent_muted(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, agent_id)): Path<(String, String)>,
+    Json(body): Json<GroupAgentMuteRequest>,
+) -> Result<Json<GroupAgentResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let agent_id = validate_uuid(&agent_id, "agent id")?;
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group mute transaction"))?;
+    set_group_agent_muted_json(&mut tx, &group_id, &agent_id, body.muted, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group mute update"))?;
+
+    let row = fetch_group_agent_row(state.db.pool(), &group_id, &agent_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group agent vanished after mute update"))?;
+    Ok(Json(row.into()))
+}
+
+pub async fn set_group_agent_workspace_sharing(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, agent_id)): Path<(String, String)>,
+    Json(body): Json<GroupAgentWorkspaceSharingRequest>,
+) -> Result<Json<GroupAgentResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let agent_id = validate_uuid(&agent_id, "agent id")?;
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let existing = load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
+
+    let context_scope_json = context_scope_with_group_workspace(
+        existing.context_scope_json.as_deref(),
+        body.share_group_workspace,
+    )?;
+    let now = now_rfc3339();
+    sqlx::query(
+        "UPDATE group_agents SET context_scope_json = ?, updated_at = ? \
+         WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+    )
+    .bind(&context_scope_json)
+    .bind(&now)
+    .bind(&group_id)
+    .bind(&agent_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to update group agent workspace sharing"))?;
+
+    let row = fetch_group_agent_row(state.db.pool(), &group_id, &agent_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group agent vanished after workspace update"))?;
+    Ok(Json(row.into()))
+}
+
+pub async fn set_group_agent_topology(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, agent_id)): Path<(String, String)>,
+    Json(body): Json<GroupAgentTopologyRequest>,
+) -> Result<Json<GroupAgentResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let agent_id = validate_uuid(&agent_id, "agent id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
+
+    let (topology_role, speaking_order) =
+        validate_agent_topology_patch(&group.communication_mode, &body)?;
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start topology transaction"))?;
+
+    if topology_role.as_deref() == Some("hub") {
+        sqlx::query(
+            "UPDATE group_agents SET topology_role = NULL, updated_at = ? \
+             WHERE group_id = ? AND agent_id <> ? AND status = 'active'",
+        )
+        .bind(&now)
+        .bind(&group_id)
+        .bind(&agent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to clear existing topology hub"))?;
+    }
+
+    sqlx::query(
+        "UPDATE group_agents SET topology_role = ?, speaking_order = ?, updated_at = ? \
+         WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+    )
+    .bind(&topology_role)
+    .bind(speaking_order)
+    .bind(&now)
+    .bind(&group_id)
+    .bind(&agent_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to update group agent topology"))?;
+
+    touch_group(&mut tx, &group_id, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit topology update"))?;
+
+    let row = fetch_group_agent_row(state.db.pool(), &group_id, &agent_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group agent vanished after topology update"))?;
+    Ok(Json(row.into()))
+}
+
 /// Fetch an active group by id and enforce caller ownership.
 ///
 /// Returns `404 not_found` when no row exists or it has been soft-deleted, and
@@ -450,6 +797,305 @@ async fn fetch_row(pool: &SqlitePool, group_id: &str) -> Result<Option<GroupRow>
         .fetch_optional(pool)
         .await
         .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn fetch_group_agent_rows(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> Result<Vec<GroupAgentRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_AGENT_COLUMNS} \
+         FROM group_agents \
+         JOIN agents ON agents.id = group_agents.agent_id \
+         WHERE group_agents.group_id = ? \
+           AND group_agents.status = 'active' \
+           AND agents.status = 'active' \
+         ORDER BY group_agents.joined_at ASC, group_agents.agent_id ASC"
+    );
+    sqlx::query_as::<_, GroupAgentRow>(&sql)
+        .bind(group_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn fetch_group_agent_row(
+    pool: &SqlitePool,
+    group_id: &str,
+    agent_id: &str,
+) -> Result<Option<GroupAgentRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_AGENT_COLUMNS} \
+         FROM group_agents \
+         JOIN agents ON agents.id = group_agents.agent_id \
+         WHERE group_agents.group_id = ? \
+           AND group_agents.agent_id = ? \
+           AND group_agents.status = 'active' \
+           AND agents.status = 'active'"
+    );
+    sqlx::query_as::<_, GroupAgentRow>(&sql)
+        .bind(group_id)
+        .bind(agent_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn load_active_group_agent(
+    pool: &SqlitePool,
+    group_id: &str,
+    agent_id: &str,
+) -> Result<GroupAgentRow, ApiError> {
+    fetch_group_agent_row(pool, group_id, agent_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("group agent not found"))
+}
+
+async fn validate_owned_active_agent(
+    pool: &SqlitePool,
+    agent_id: &str,
+    owner_id: &str,
+) -> Result<(), ApiError> {
+    let row =
+        sqlx::query_as::<_, (String, String)>("SELECT owner_id, status FROM agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiError::internal("database error"))?;
+
+    match row {
+        None => Err(ApiError::not_found("agent not found")),
+        Some((_, status)) if status != "active" => Err(ApiError::not_found("agent not found")),
+        Some((owner, _)) if owner != owner_id => {
+            Err(ApiError::permission_denied("agent belongs to another user"))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+async fn new_agent_topology(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    mode: &str,
+) -> Result<(Option<String>, Option<i64>), ApiError> {
+    match mode {
+        "mesh" => Ok((None, None)),
+        "star" => {
+            let active_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) \
+                 FROM group_agents \
+                 JOIN agents ON agents.id = group_agents.agent_id \
+                 WHERE group_agents.group_id = ? \
+                   AND group_agents.status = 'active' \
+                   AND agents.status = 'active'",
+            )
+            .bind(group_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to load star topology state"))?;
+            let role = if active_count == 0 {
+                Some("hub".to_string())
+            } else {
+                None
+            };
+            Ok((role, None))
+        }
+        "hierarchical" => Ok((Some("worker".to_string()), None)),
+        "ring" => {
+            let max_order: Option<i64> = sqlx::query_scalar(
+                "SELECT MAX(group_agents.speaking_order) \
+                 FROM group_agents \
+                 JOIN agents ON agents.id = group_agents.agent_id \
+                 WHERE group_agents.group_id = ? \
+                   AND group_agents.status = 'active' \
+                   AND agents.status = 'active' \
+                   AND group_agents.speaking_order > 0",
+            )
+            .bind(group_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to load ring topology state"))?;
+            Ok((None, Some(max_order.unwrap_or_default() + 1)))
+        }
+        _ => Err(ApiError::internal("unsupported communication mode")),
+    }
+}
+
+fn validate_agent_topology_patch(
+    mode: &str,
+    body: &GroupAgentTopologyRequest,
+) -> Result<(Option<String>, Option<i64>), ApiError> {
+    let role = body
+        .topology_role
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_string);
+
+    match mode {
+        "mesh" => {
+            if role.is_some() || body.speaking_order.is_some() {
+                return Err(ApiError::invalid_input(
+                    "mesh mode does not use agent topology settings",
+                ));
+            }
+            Ok((None, None))
+        }
+        "star" => {
+            if body.speaking_order.is_some() || !matches!(role.as_deref(), None | Some("hub")) {
+                return Err(ApiError::invalid_input(
+                    "star mode only accepts hub topology role",
+                ));
+            }
+            Ok((role, None))
+        }
+        "hierarchical" => {
+            if body.speaking_order.is_some()
+                || !matches!(role.as_deref(), None | Some("leader") | Some("worker"))
+            {
+                return Err(ApiError::invalid_input(
+                    "hierarchical mode accepts leader or worker topology role",
+                ));
+            }
+            Ok((role, None))
+        }
+        "ring" => {
+            if role.is_some() {
+                return Err(ApiError::invalid_input(
+                    "ring mode only accepts speaking order",
+                ));
+            }
+            if matches!(body.speaking_order, Some(order) if order < 1) {
+                return Err(ApiError::invalid_input(
+                    "ring speaking_order must be null or >= 1",
+                ));
+            }
+            Ok((None, body.speaking_order))
+        }
+        _ => Err(ApiError::internal("unsupported communication mode")),
+    }
+}
+
+async fn touch_group(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    now: &str,
+) -> Result<(), ApiError> {
+    sqlx::query("UPDATE groups SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(group_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to update group timestamp"))?;
+    Ok(())
+}
+
+async fn set_group_agent_muted_json(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    agent_id: &str,
+    muted: bool,
+    now: &str,
+) -> Result<(), ApiError> {
+    let (raw_muted,): (Option<String>,) =
+        sqlx::query_as("SELECT muted_agent_ids_json FROM groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to load group mute list"))?;
+    let muted_agent_ids_json = if muted {
+        add_to_json_list(raw_muted.as_deref(), agent_id)?
+    } else {
+        remove_from_json_list(raw_muted.as_deref(), agent_id)?
+    };
+    sqlx::query("UPDATE groups SET muted_agent_ids_json = ?, updated_at = ? WHERE id = ?")
+        .bind(&muted_agent_ids_json)
+        .bind(now)
+        .bind(group_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to update group mute list"))?;
+    Ok(())
+}
+
+async fn remove_agent_from_group_lists(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    agent_id: &str,
+    now: &str,
+) -> Result<(), ApiError> {
+    let (raw_muted, raw_admin): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT muted_agent_ids_json, admin_agent_ids_json FROM groups WHERE id = ?",
+    )
+    .bind(group_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to load group agent lists"))?;
+    let muted_agent_ids_json = remove_from_json_list(raw_muted.as_deref(), agent_id)?;
+    let admin_agent_ids_json = remove_from_json_list(raw_admin.as_deref(), agent_id)?;
+    sqlx::query(
+        "UPDATE groups SET muted_agent_ids_json = ?, admin_agent_ids_json = ?, updated_at = ? \
+         WHERE id = ?",
+    )
+    .bind(&muted_agent_ids_json)
+    .bind(&admin_agent_ids_json)
+    .bind(now)
+    .bind(group_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to clear group agent lists"))?;
+    Ok(())
+}
+
+fn add_to_json_list(raw: Option<&str>, item: &str) -> Result<String, ApiError> {
+    let mut values = parse_json_list(raw).unwrap_or_default();
+    if !values.iter().any(|value| value == item) {
+        values.push(item.to_string());
+    }
+    json_list_to_db(values)
+}
+
+fn remove_from_json_list(raw: Option<&str>, item: &str) -> Result<String, ApiError> {
+    let mut values = parse_json_list(raw).unwrap_or_default();
+    values.retain(|value| value != item);
+    json_list_to_db(values)
+}
+
+fn json_list_to_db(values: Vec<String>) -> Result<String, ApiError> {
+    serde_json::to_string(&values)
+        .map_err(|_| ApiError::internal("failed to serialize group id list"))
+}
+
+fn group_workspace_shared(raw: Option<&str>) -> bool {
+    raw.and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .and_then(|value| value.get("share_group_workspace").and_then(Value::as_bool))
+        == Some(true)
+}
+
+fn context_scope_with_group_workspace(
+    raw: Option<&str>,
+    share: bool,
+) -> Result<Option<String>, ApiError> {
+    let mut object = raw
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .and_then(|value| match value {
+            Value::Object(object) => Some(object),
+            _ => None,
+        })
+        .unwrap_or_else(Map::new);
+
+    if share {
+        object.insert("share_group_workspace".to_string(), Value::Bool(true));
+    } else {
+        object.remove("share_group_workspace");
+    }
+
+    if object.is_empty() {
+        Ok(None)
+    } else {
+        serde_json::to_string(&Value::Object(object))
+            .map(Some)
+            .map_err(|_| ApiError::internal("failed to serialize context scope"))
+    }
 }
 
 async fn normalize_group_agent_topology(

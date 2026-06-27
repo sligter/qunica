@@ -473,6 +473,517 @@ async fn group_patch_star_to_mesh_clears_topology() {
     assert!(rows.iter().all(|row| row.speaking_order.is_none()));
 }
 
+#[tokio::test]
+async fn group_agents_add_and_list_return_group_agent_read() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-agents-add-list@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, added) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": agent, "share_group_workspace": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(added["id"], format!("{group_id}:{agent}"));
+    assert_eq!(added["group_id"], group_id);
+    assert_eq!(added["agent_id"], agent);
+    assert_eq!(added["display_name"], "Alpha");
+    assert_eq!(added["role"], Value::Null);
+    assert_eq!(added["topology_role"], Value::Null);
+    assert_eq!(added["speaking_order"], Value::Null);
+    assert_eq!(added["response_mode"], "mentioned_only");
+    assert_eq!(added["share_group_workspace"], true);
+    assert_eq!(added["context_usage"], Value::Null);
+    assert_eq!(added["status"], "active");
+    assert!(added["joined_at"].as_str().is_some());
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], added["id"]);
+    assert_eq!(rows[0]["display_name"], "Alpha");
+    assert_eq!(rows[0]["share_group_workspace"], true);
+}
+
+#[tokio::test]
+async fn group_agents_reject_foreign_agent_add() {
+    let app = app().await;
+    let token_a = register_and_login(&app, "group-agents-owner@example.com").await;
+    let workspace_a = create_workspace(&app, &token_a).await;
+    let group = create_group_with_initial_agents(&app, &token_a, &workspace_a, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let token_b = register_and_login(&app, "group-agents-foreign@example.com").await;
+    let workspace_b = create_workspace(&app, &token_b).await;
+    let foreign_agent = create_agent(&app, &token_b, &workspace_b, "Foreign").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token_a,
+            json!({"agent_id": foreign_agent}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn group_agents_duplicate_conflict_and_readd_removed_agent() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-agents-readd@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let agents_url = format!("/api/v2/groups/{group_id}/agents");
+    let agent_url = format!("{agents_url}/{agent}");
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &agents_url,
+            &token,
+            json!({"agent_id": agent, "share_group_workspace": false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        authed_json("POST", &agents_url, &token, json!({"agent_id": agent})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "conflict");
+
+    let (status, body) = send(&app, authed("DELETE", &agent_url, &token)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+
+    let (status, readded) = send(
+        &app,
+        authed_json(
+            "POST",
+            &agents_url,
+            &token,
+            json!({"agent_id": agent, "share_group_workspace": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(readded["status"], "active");
+    assert_eq!(readded["share_group_workspace"], true);
+
+    let (status, list) = send(&app, authed("GET", &agents_url, &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn group_agents_delete_hides_agent_and_clears_muted_and_admin_ids() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-agents-delete@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": agent}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/mute"),
+            &token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE groups SET admin_agent_ids_json = ? WHERE id = ?")
+        .bind(serde_json::to_string(&vec![agent.clone()]).unwrap())
+        .bind(group_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list.as_array().unwrap().is_empty());
+
+    let (status, group) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_json_array_missing(&group["muted_agent_ids"], &agent);
+    assert_json_array_missing(&group["admin_agent_ids"], &agent);
+}
+
+#[tokio::test]
+async fn group_agents_mute_updates_group_read_and_unmute_removes_it() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-agents-mute@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": agent}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, muted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/mute"),
+            &token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(muted["agent_id"], agent);
+
+    let (status, group) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_json_array_contains(&group["muted_agent_ids"], &agent);
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/mute"),
+            &token,
+            json!({"muted": false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, group) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_json_array_missing(&group["muted_agent_ids"], &agent);
+}
+
+#[tokio::test]
+async fn group_agents_workspace_sharing_toggles_response() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-agents-workspace@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, added) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": agent, "share_group_workspace": false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(added["share_group_workspace"], false);
+
+    let (status, shared) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"share_group_workspace": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shared["share_group_workspace"], true);
+
+    let (status, unshared) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"share_group_workspace": false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unshared["share_group_workspace"], false);
+}
+
+#[tokio::test]
+async fn group_topology_agent_patch_validates_star_hierarchical_and_ring() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-topology-agent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_a = create_agent(&app, &token, &workspace, "Alpha").await;
+    let agent_b = create_agent(&app, &token, &workspace, "Beta").await;
+
+    let star_group = create_group_with_initial_agents(&app, &token, &workspace, "star", &[]).await;
+    let star_group_id = star_group["id"].as_str().unwrap();
+    let star_agents_url = format!("/api/v2/groups/{star_group_id}/agents");
+    let (status, star_a) = send(
+        &app,
+        authed_json(
+            "POST",
+            &star_agents_url,
+            &token,
+            json!({"agent_id": agent_a}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(star_a["topology_role"], "hub");
+    let (status, star_b) = send(
+        &app,
+        authed_json(
+            "POST",
+            &star_agents_url,
+            &token,
+            json!({"agent_id": agent_b}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(star_b["topology_role"], Value::Null);
+
+    let (status, promoted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{star_group_id}/agents/{agent_b}/topology"),
+            &token,
+            json!({"topology_role": "hub", "speaking_order": Value::Null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(promoted["topology_role"], "hub");
+    let (status, star_list) = send(&app, authed("GET", &star_agents_url, &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        star_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["topology_role"] == "hub")
+            .count(),
+        1
+    );
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{star_group_id}/agents/{agent_b}/topology"),
+            &token,
+            json!({"speaking_order": 1}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+
+    let hierarchical_group =
+        create_group_with_initial_agents(&app, &token, &workspace, "hierarchical", &[]).await;
+    let hierarchical_group_id = hierarchical_group["id"].as_str().unwrap();
+    let (status, worker) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents"),
+            &token,
+            json!({"agent_id": agent_a}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(worker["topology_role"], "worker");
+    let (status, leader) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents/{agent_a}/topology"),
+            &token,
+            json!({"topology_role": "leader"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(leader["topology_role"], "leader");
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents/{agent_a}/topology"),
+            &token,
+            json!({"topology_role": "hub"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+
+    let ring_group = create_group_with_initial_agents(&app, &token, &workspace, "ring", &[]).await;
+    let ring_group_id = ring_group["id"].as_str().unwrap();
+    let ring_agents_url = format!("/api/v2/groups/{ring_group_id}/agents");
+    let (status, ring_a) = send(
+        &app,
+        authed_json(
+            "POST",
+            &ring_agents_url,
+            &token,
+            json!({"agent_id": agent_a}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(ring_a["speaking_order"], 1);
+    let (status, ring_b) = send(
+        &app,
+        authed_json(
+            "POST",
+            &ring_agents_url,
+            &token,
+            json!({"agent_id": agent_b}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(ring_b["speaking_order"], 2);
+    let (status, reordered) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{ring_group_id}/agents/{agent_b}/topology"),
+            &token,
+            json!({"speaking_order": 5}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reordered["topology_role"], Value::Null);
+    assert_eq!(reordered["speaking_order"], 5);
+    for invalid in [
+        json!({"topology_role": "leader"}),
+        json!({"speaking_order": 0}),
+    ] {
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "PATCH",
+                &format!("/api/v2/groups/{ring_group_id}/agents/{agent_b}/topology"),
+                &token,
+                invalid,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_input");
+    }
+}
+
+#[tokio::test]
+async fn group_agents_cross_owner_group_mutation_is_rejected() {
+    let app = app().await;
+    let token_a = register_and_login(&app, "group-agents-cross-a@example.com").await;
+    let workspace_a = create_workspace(&app, &token_a).await;
+    let agent = create_agent(&app, &token_a, &workspace_a, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token_a, &workspace_a, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token_a,
+            json!({"agent_id": agent}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let token_b = register_and_login(&app, "group-agents-cross-b@example.com").await;
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/mute"),
+            &token_b,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+}
+
 struct GroupAgentRow {
     topology_role: Option<String>,
     speaking_order: Option<i64>,
@@ -501,6 +1012,25 @@ async fn group_agent_row(state: &AppState, group_id: &str, agent_id: &str) -> Gr
 fn assert_shared_group_workspace(raw: &Option<String>) {
     let value: Value = serde_json::from_str(raw.as_deref().unwrap()).unwrap();
     assert_eq!(value["share_group_workspace"], true);
+}
+
+fn assert_json_array_contains(value: &Value, expected: &str) {
+    assert!(value
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str() == Some(expected)));
+}
+
+fn assert_json_array_missing(value: &Value, expected: &str) {
+    if value.is_null() {
+        return;
+    }
+    assert!(!value
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str() == Some(expected)));
 }
 
 #[tokio::test]
