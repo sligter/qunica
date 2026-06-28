@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs, io,
     path::{Path as FsPath, PathBuf},
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -2096,19 +2096,44 @@ fn group_note_path(root: &FsPath, note_id: &str) -> Result<PathBuf, ApiError> {
     resolve_workspace_path(root, &note_relative_path(note_id)).map_err(path_safety_error)
 }
 
+fn group_note_literal_path(root: &FsPath, note_id: &str) -> PathBuf {
+    root.join(note_relative_path(note_id))
+}
+
+enum GroupNoteFileState {
+    Missing,
+    File,
+}
+
+fn inspect_group_note_file(root: &FsPath, note_id: &str) -> Result<GroupNoteFileState, ApiError> {
+    match fs::symlink_metadata(group_note_literal_path(root, note_id)) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(ApiError::invalid_input(
+                    "group note path must not be a symlink",
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(ApiError::invalid_input("group note path is not a file"));
+            }
+            Ok(GroupNoteFileState::File)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(GroupNoteFileState::Missing),
+        Err(_) => Err(ApiError::invalid_input("group note path is invalid")),
+    }
+}
+
 fn read_group_note_content(
     root: &FsPath,
     note_id: &str,
     fallback: &str,
 ) -> Result<String, ApiError> {
     let path = group_note_path(root, note_id)?;
-    if !path.exists() {
-        return Ok(fallback.to_string());
+    match inspect_group_note_file(root, note_id)? {
+        GroupNoteFileState::Missing => Ok(fallback.to_string()),
+        GroupNoteFileState::File => fs::read_to_string(path)
+            .map_err(|_| ApiError::invalid_input("group note is not valid UTF-8")),
     }
-    if !path.is_file() {
-        return Err(ApiError::invalid_input("group note path is not a file"));
-    }
-    fs::read_to_string(path).map_err(|_| ApiError::invalid_input("group note is not valid UTF-8"))
 }
 
 fn write_group_note_content(root: &FsPath, note_id: &str, content: &str) -> Result<(), ApiError> {
@@ -2120,21 +2145,17 @@ fn write_group_note_content(root: &FsPath, note_id: &str, content: &str) -> Resu
         .map_err(|_| ApiError::invalid_input("group notes path is not a directory"))?;
 
     let path = group_note_path(root, note_id)?;
-    if path.exists() && !path.is_file() {
-        return Err(ApiError::invalid_input("group note path is not a file"));
-    }
+    inspect_group_note_file(root, note_id)?;
     fs::write(path, content).map_err(|_| ApiError::internal("failed to write group note content"))
 }
 
 fn delete_group_note_content(root: &FsPath, note_id: &str) -> Result<(), ApiError> {
     let path = group_note_path(root, note_id)?;
-    if !path.exists() {
-        return Ok(());
+    match inspect_group_note_file(root, note_id)? {
+        GroupNoteFileState::Missing => Ok(()),
+        GroupNoteFileState::File => fs::remove_file(path)
+            .map_err(|_| ApiError::internal("failed to delete group note content")),
     }
-    if !path.is_file() {
-        return Err(ApiError::invalid_input("group note path is not a file"));
-    }
-    fs::remove_file(path).map_err(|_| ApiError::internal("failed to delete group note content"))
 }
 
 fn path_safety_error(err: ToolError) -> ApiError {

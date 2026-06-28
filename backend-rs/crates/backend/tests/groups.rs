@@ -226,6 +226,16 @@ fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
 }
 
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
 #[tokio::test]
 async fn group_create_requires_active_owned_workspace() {
     let app = app().await;
@@ -1168,6 +1178,70 @@ async fn group_notes_rejects_notes_symlink_escape() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn group_notes_rejects_note_file_symlink_before_patch_read_and_delete() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-file-symlink@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let note = create_group_note(&app, &token, group_id, "Note", "before").await;
+    let note_id = note["id"].as_str().unwrap();
+    let note_path = group_note_file(root.path(), note_id);
+    let outside = tempfile::tempdir().unwrap();
+    let outside_target = outside.path().join("missing-note-target.md");
+    assert!(!outside_target.exists());
+
+    std::fs::remove_file(&note_path).unwrap();
+    if create_file_symlink(&outside_target, &note_path).is_err() {
+        return;
+    }
+    assert!(std::fs::symlink_metadata(&note_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+            json!({"content": "after"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(!outside_target.exists());
+
+    let (status, body) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/notes"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(!outside_target.exists());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(!outside_target.exists());
+    assert!(std::fs::symlink_metadata(&note_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }
 
 #[tokio::test]
