@@ -95,6 +95,20 @@ CREATE TABLE group_notes (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE group_files (
+  id TEXT PRIMARY KEY NOT NULL,
+  group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  uploader_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  mime_type TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX ix_group_files_group_id ON group_files(group_id);
+
 CREATE TABLE threads (
   id TEXT PRIMARY KEY NOT NULL,
   group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,

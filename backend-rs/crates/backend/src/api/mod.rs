@@ -112,6 +112,14 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(groups::update_group_note).delete(groups::delete_group_note),
         )
         .route(
+            "/api/v2/groups/:group_id/files",
+            axum::routing::post(groups::upload_group_file).get(groups::list_group_files),
+        )
+        .route(
+            "/api/v2/groups/:group_id/files/:file_id",
+            axum::routing::delete(groups::delete_group_file),
+        )
+        .route(
             "/api/v2/groups/:group_id/members/:user_id",
             axum::routing::delete(groups::remove_group_member),
         )

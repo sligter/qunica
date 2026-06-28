@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -8,7 +8,8 @@ use serde_json::{Map, Value};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Path as FsPath, PathBuf},
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -36,6 +37,8 @@ const GROUP_NOTE_COLUMNS: &str = "id, group_id, title, content, created_at, upda
 
 const NOTES_DIR: &str = "Notes";
 const NOTE_FILE_SUFFIX: &str = ".md";
+const GROUP_FILE_COLUMNS: &str = "id, group_id, filename, file_size, mime_type, created_at";
+const UPLOADS_DIR: &str = "uploads";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -217,6 +220,16 @@ pub struct GroupNoteResponse {
     updated_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GroupFileResponse {
+    id: String,
+    group_id: String,
+    filename: String,
+    file_size: i64,
+    mime_type: Option<String>,
+    created_at: String,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct GroupRow {
     id: String,
@@ -290,6 +303,16 @@ struct GroupNoteRow {
     content: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GroupFileRow {
+    id: String,
+    group_id: String,
+    filename: String,
+    file_size: i64,
+    mime_type: Option<String>,
+    created_at: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -386,6 +409,19 @@ impl GroupNoteRow {
             content,
             created_at: self.created_at,
             updated_at: self.updated_at,
+        }
+    }
+}
+
+impl From<GroupFileRow> for GroupFileResponse {
+    fn from(row: GroupFileRow) -> Self {
+        Self {
+            id: row.id,
+            group_id: row.group_id,
+            filename: row.filename,
+            file_size: row.file_size,
+            mime_type: row.mime_type,
+            created_at: row.created_at,
         }
     }
 }
@@ -655,6 +691,92 @@ pub async fn delete(
     .execute(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("failed to delete group"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_group_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<GroupFileResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let rows = fetch_group_file_rows(state.db.pool(), &group_id).await?;
+    Ok(Json(
+        rows.into_iter().map(GroupFileResponse::from).collect(),
+    ))
+}
+
+pub async fn upload_group_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    multipart: Multipart,
+) -> Result<(StatusCode, Json<GroupFileResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let upload = read_group_file_part(multipart).await?;
+    let filename = validate_group_file_name(&upload.filename)?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+
+    reject_active_group_file_filename(state.db.pool(), &group_id, &filename).await?;
+    let path = prepare_group_upload_path(&root, &filename)?;
+    write_new_group_upload_file(&path, &upload.bytes)?;
+
+    let id = Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+    let file_path = path.to_string_lossy().to_string();
+    let file_size = upload.bytes.len() as i64;
+
+    sqlx::query(
+        "INSERT INTO group_files \
+         (id, group_id, uploader_id, filename, file_path, file_size, mime_type, status, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+    )
+    .bind(&id)
+    .bind(&group_id)
+    .bind(&owner_id)
+    .bind(&filename)
+    .bind(&file_path)
+    .bind(file_size)
+    .bind(&upload.mime_type)
+    .bind(&now)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to create group file"))?;
+
+    let row = fetch_group_file_row(state.db.pool(), &group_id, &id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group file vanished after insert"))?;
+    Ok((StatusCode::CREATED, Json(row.into())))
+}
+
+pub async fn delete_group_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, file_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let file_id = validate_uuid(&file_id, "file id")?;
+
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    load_active_group_file(state.db.pool(), &group_id, &file_id).await?;
+
+    sqlx::query(
+        "UPDATE group_files SET status = 'deleted' \
+         WHERE id = ? AND group_id = ? AND status = 'active'",
+    )
+    .bind(&file_id)
+    .bind(&group_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to delete group file"))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1468,6 +1590,119 @@ async fn load_active_group_note(
         .ok_or_else(|| ApiError::not_found("group note not found"))
 }
 
+async fn fetch_group_file_rows(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> Result<Vec<GroupFileRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_FILE_COLUMNS} FROM group_files \
+         WHERE group_id = ? AND status = 'active' \
+         ORDER BY created_at DESC, id DESC"
+    );
+    sqlx::query_as::<_, GroupFileRow>(&sql)
+        .bind(group_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn fetch_group_file_row(
+    pool: &SqlitePool,
+    group_id: &str,
+    file_id: &str,
+) -> Result<Option<GroupFileRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_FILE_COLUMNS} FROM group_files \
+         WHERE group_id = ? AND id = ? AND status = 'active'"
+    );
+    sqlx::query_as::<_, GroupFileRow>(&sql)
+        .bind(group_id)
+        .bind(file_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn load_active_group_file(
+    pool: &SqlitePool,
+    group_id: &str,
+    file_id: &str,
+) -> Result<GroupFileRow, ApiError> {
+    fetch_group_file_row(pool, group_id, file_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("group file not found"))
+}
+
+async fn reject_active_group_file_filename(
+    pool: &SqlitePool,
+    group_id: &str,
+    filename: &str,
+) -> Result<(), ApiError> {
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM group_files \
+         WHERE group_id = ? AND filename = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .bind(filename)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    if exists > 0 {
+        return Err(ApiError::conflict(
+            "a file with this name already exists in uploads",
+        ));
+    }
+    Ok(())
+}
+
+async fn group_files_workspace_root(
+    pool: &SqlitePool,
+    group: &GroupRow,
+    owner_id: &str,
+) -> Result<PathBuf, ApiError> {
+    let workspace_id = group
+        .workspace_id
+        .as_deref()
+        .ok_or_else(|| ApiError::invalid_input("group has no bound workspace"))?;
+    let row = sqlx::query_as::<_, GroupNoteWorkspaceRow>(
+        "SELECT owner_id, backend_type, local_path, status FROM workspaces WHERE id = ?",
+    )
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::invalid_input("group workspace is not active"))?;
+
+    if row.owner_id != owner_id {
+        return Err(ApiError::permission_denied(
+            "group workspace belongs to another user",
+        ));
+    }
+    if row.status != "active" {
+        return Err(ApiError::invalid_input("group workspace is not active"));
+    }
+    if row.backend_type != "local" {
+        return Err(ApiError::invalid_input(
+            "group file uploads require a local workspace",
+        ));
+    }
+    let local_path = row
+        .local_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| ApiError::invalid_input("local workspace has no local_path"))?;
+    let root = fs::canonicalize(local_path).map_err(|_| {
+        ApiError::invalid_input("group workspace path must be an existing directory")
+    })?;
+    if !root.is_dir() {
+        return Err(ApiError::invalid_input(
+            "group workspace path must be an existing directory",
+        ));
+    }
+    Ok(root)
+}
+
 async fn group_notes_workspace_root(
     pool: &SqlitePool,
     group: &GroupRow,
@@ -2086,6 +2321,151 @@ fn validate_note_title(raw: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(title)
+}
+
+struct GroupFileUpload {
+    filename: String,
+    mime_type: Option<String>,
+    bytes: Vec<u8>,
+}
+
+async fn read_group_file_part(mut multipart: Multipart) -> Result<GroupFileUpload, ApiError> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ApiError::invalid_input("invalid multipart form-data"))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().unwrap_or_default().to_string();
+        let mime_type = field.content_type().map(ToString::to_string);
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| ApiError::invalid_input("invalid multipart file"))?
+            .to_vec();
+        return Ok(GroupFileUpload {
+            filename,
+            mime_type,
+            bytes,
+        });
+    }
+    Err(ApiError::invalid_input("file field is required"))
+}
+
+fn validate_group_file_name(raw: &str) -> Result<String, ApiError> {
+    let filename = raw.trim().to_string();
+    if filename.is_empty() {
+        return Err(ApiError::invalid_input("upload filename is required"));
+    }
+    let normalized = filename.replace('\\', "/");
+    if FsPath::new(&filename).is_absolute()
+        || filename.starts_with('\\')
+        || filename.starts_with('/')
+        || normalized.starts_with("//")
+        || filename.contains(':')
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || normalized.contains('/')
+    {
+        return Err(ApiError::invalid_input(
+            "upload filename must be a plain filename",
+        ));
+    }
+    Ok(filename)
+}
+
+fn group_file_relative_path(filename: &str) -> String {
+    format!("{UPLOADS_DIR}/{filename}")
+}
+
+fn group_upload_path(root: &FsPath, filename: &str) -> Result<PathBuf, ApiError> {
+    resolve_workspace_path(root, &group_file_relative_path(filename))
+        .map_err(group_upload_path_safety_error)
+}
+
+fn group_upload_literal_path(root: &FsPath, filename: &str) -> PathBuf {
+    root.join(UPLOADS_DIR).join(filename)
+}
+
+fn inspect_group_upload_dir(root: &FsPath) -> Result<(), ApiError> {
+    let path = root.join(UPLOADS_DIR);
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(ApiError::invalid_input(
+                    "group uploads path must not be a symlink",
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(ApiError::invalid_input(
+                    "group uploads path is not a directory",
+                ));
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(ApiError::invalid_input("group uploads path is invalid")),
+    }
+}
+
+fn inspect_group_upload_file(root: &FsPath, filename: &str) -> Result<(), ApiError> {
+    match fs::symlink_metadata(group_upload_literal_path(root, filename)) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(ApiError::invalid_input(
+                    "group upload path must not be a symlink",
+                ));
+            }
+            if metadata.is_file() {
+                return Err(ApiError::conflict(
+                    "a file with this name already exists in uploads",
+                ));
+            }
+            Err(ApiError::invalid_input("group upload path is not a file"))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(ApiError::invalid_input("group upload path is invalid")),
+    }
+}
+
+fn prepare_group_upload_path(root: &FsPath, filename: &str) -> Result<PathBuf, ApiError> {
+    inspect_group_upload_dir(root)?;
+    let path = group_upload_path(root, filename)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::invalid_input("group upload path is invalid"))?;
+    fs::create_dir_all(parent)
+        .map_err(|_| ApiError::invalid_input("group uploads path is not a directory"))?;
+    inspect_group_upload_dir(root)?;
+    let path = group_upload_path(root, filename)?;
+    inspect_group_upload_file(root, filename)?;
+    Ok(path)
+}
+
+fn write_new_group_upload_file(path: &FsPath, bytes: &[u8]) -> Result<(), ApiError> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| {
+            if err.kind() == io::ErrorKind::AlreadyExists {
+                ApiError::conflict("a file with this name already exists in uploads")
+            } else {
+                ApiError::internal("failed to write group file")
+            }
+        })?;
+    file.write_all(bytes)
+        .map_err(|_| ApiError::internal("failed to write group file"))
+}
+
+fn group_upload_path_safety_error(err: ToolError) -> ApiError {
+    match err {
+        ToolError::Invalid(message) => ApiError::invalid_input(message),
+        ToolError::Io(_) => ApiError::invalid_input("group upload path is invalid"),
+    }
 }
 
 fn note_relative_path(note_id: &str) -> String {

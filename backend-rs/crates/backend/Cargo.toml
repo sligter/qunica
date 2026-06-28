@@ -8,7 +8,7 @@ license.workspace = true
 ag-swarmer-domain = { path = "../domain" }
 anyhow = "1"
 async-trait = "0.1"
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 base64 = "0.22"
 bcrypt = "0.15"
 clap = { version = "4", features = ["derive", "env"] }

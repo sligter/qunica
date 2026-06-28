@@ -7,6 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tower::ServiceExt;
+use uuid::Uuid;
 
 async fn app() -> Router {
     ag_swarmer_backend::api::router_for_tests().await
@@ -55,6 +56,42 @@ fn authed(method: &str, uri: &str, token: &str) -> Request<Body> {
         .uri(uri)
         .header("authorization", format!("Bearer {token}"))
         .body(Body::empty())
+        .unwrap()
+}
+
+fn authed_multipart_file(
+    uri: &str,
+    token: &str,
+    field_name: &str,
+    filename: &str,
+    content_type: Option<&str>,
+    bytes: &[u8],
+) -> Request<Body> {
+    let boundary = "ag-swarmer-test-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\n"
+        )
+        .as_bytes(),
+    );
+    if let Some(content_type) = content_type {
+        body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+    }
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
         .unwrap()
 }
 
@@ -214,6 +251,10 @@ async fn create_group_note(
 
 fn group_note_file(root: &Path, note_id: &str) -> PathBuf {
     root.join("Notes").join(format!("{note_id}.md"))
+}
+
+fn group_upload_file(root: &Path, filename: &str) -> PathBuf {
+    root.join("uploads").join(filename)
 }
 
 #[cfg(unix)]
@@ -1242,6 +1283,492 @@ async fn group_notes_rejects_note_file_symlink_before_patch_read_and_delete() {
         .unwrap()
         .file_type()
         .is_symlink());
+}
+
+#[tokio::test]
+async fn group_files_upload_writes_file_and_records_metadata() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-files-upload@example.com").await;
+    let uploader_id = owner_id(&state, "group-files-upload@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, file) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "file",
+            "plan.txt",
+            Some("text/plain"),
+            b"hello files",
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let file_id = file["id"].as_str().unwrap();
+    assert_eq!(file["group_id"], group_id);
+    assert_eq!(file["filename"], "plan.txt");
+    assert_eq!(file["file_size"], 11);
+    assert_eq!(file["mime_type"], "text/plain");
+    assert!(file["created_at"].as_str().is_some());
+
+    let upload_path = group_upload_file(root.path(), "plan.txt");
+    assert_eq!(std::fs::read(&upload_path).unwrap(), b"hello files");
+
+    let row = sqlx::query_as::<_, (String, String, i64, Option<String>, String)>(
+        "SELECT uploader_id, file_path, file_size, mime_type, status \
+         FROM group_files WHERE id = ?",
+    )
+    .bind(file_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.0, uploader_id);
+    assert_eq!(
+        PathBuf::from(row.1).canonicalize().unwrap(),
+        upload_path.canonicalize().unwrap()
+    );
+    assert_eq!(row.2, 11);
+    assert_eq!(row.3.as_deref(), Some("text/plain"));
+    assert_eq!(row.4, "active");
+}
+
+#[tokio::test]
+async fn group_files_list_orders_active_files_newest_first_without_disk_requirement() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-files-list@example.com").await;
+    let uploader_id = owner_id(&state, "group-files-list@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let older_id = Uuid::new_v4().to_string();
+    let newer_id = Uuid::new_v4().to_string();
+    let deleted_id = Uuid::new_v4().to_string();
+
+    for (id, filename, created_at, status) in [
+        (
+            older_id.as_str(),
+            "older.txt",
+            "2026-01-01T00:00:00Z",
+            "active",
+        ),
+        (
+            newer_id.as_str(),
+            "newer.txt",
+            "2026-01-01T00:00:01Z",
+            "active",
+        ),
+        (
+            deleted_id.as_str(),
+            "deleted.txt",
+            "2026-01-01T00:00:02Z",
+            "deleted",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO group_files \
+             (id, group_id, uploader_id, filename, file_path, file_size, mime_type, status, created_at) \
+             VALUES (?, ?, ?, ?, ?, 7, 'text/plain', ?, ?)",
+        )
+        .bind(id)
+        .bind(group_id)
+        .bind(&uploader_id)
+        .bind(filename)
+        .bind(root.path().join("missing").join(filename).to_string_lossy().to_string())
+        .bind(status)
+        .bind(created_at)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    }
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/files"), &token),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], newer_id);
+    assert_eq!(rows[0]["filename"], "newer.txt");
+    assert_eq!(rows[1]["id"], older_id);
+    assert!(!rows.iter().any(|row| row["id"] == deleted_id));
+}
+
+#[tokio::test]
+async fn group_files_delete_hides_row_and_keeps_physical_file() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-files-delete@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let (status, file) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "file",
+            "keep.txt",
+            Some("text/plain"),
+            b"keep me",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let file_id = file["id"].as_str().unwrap();
+    let path = group_upload_file(root.path(), "keep.txt");
+    assert!(path.is_file());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/files/{file_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+    assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/files"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list.as_array().unwrap().is_empty());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/files/{}", Uuid::new_v4()),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn group_files_reject_missing_file_field_and_unsafe_filenames() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-files-invalid@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "other",
+            "ignored.txt",
+            Some("text/plain"),
+            b"ignored",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+
+    for filename in [
+        "",
+        "   ",
+        ".",
+        "..",
+        "../escape.txt",
+        "dir/name.txt",
+        "dir\\name.txt",
+        "C:evil.txt",
+        "C:\\evil.txt",
+        "\\\\server\\share.txt",
+        "//server/share.txt",
+        "bad:name.txt",
+    ] {
+        let (status, body) = send(
+            &app,
+            authed_multipart_file(
+                &format!("/api/v2/groups/{group_id}/files"),
+                &token,
+                "file",
+                filename,
+                Some("text/plain"),
+                b"blocked",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "filename {filename:?}");
+        assert_eq!(body["error"]["code"], "invalid_input");
+    }
+
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM group_files WHERE group_id = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn group_files_duplicate_upload_rejected_without_overwrite_or_second_row() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-files-duplicate@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let path = group_upload_file(root.path(), "dup.txt");
+
+    let (status, _) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "file",
+            "dup.txt",
+            Some("text/plain"),
+            b"first",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "file",
+            "dup.txt",
+            Some("text/plain"),
+            b"second",
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::CONFLICT
+    ));
+    assert!(matches!(
+        body["error"]["code"].as_str(),
+        Some("invalid_input" | "conflict")
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), b"first");
+
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM group_files \
+         WHERE group_id = ? AND filename = 'dup.txt' AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn group_files_cloud_or_unbound_workspace_returns_client_error() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-files-workspace-errors@example.com").await;
+    let cloud_workspace = create_workspace(&app, &token).await;
+    let cloud_group =
+        create_group_with_initial_agents(&app, &token, &cloud_workspace, "mesh", &[]).await;
+    let cloud_group_id = cloud_group["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{cloud_group_id}/files"),
+            &token,
+            "file",
+            "blocked.txt",
+            Some("text/plain"),
+            b"blocked",
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(status.is_client_error());
+    assert_eq!(body["error"]["code"], "invalid_input");
+
+    let (_root, local_workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let local_group =
+        create_group_with_initial_agents(&app, &token, &local_workspace, "mesh", &[]).await;
+    let local_group_id = local_group["id"].as_str().unwrap();
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{local_group_id}"),
+            &token,
+            json!({"workspace_id": Value::Null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{local_group_id}/files"),
+            &token,
+            "file",
+            "blocked.txt",
+            Some("text/plain"),
+            b"blocked",
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(status.is_client_error());
+    assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn group_files_cross_owner_access_is_rejected() {
+    let app = app().await;
+    let token_a = register_and_login(&app, "group-files-cross-a@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token_a, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token_a, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let (status, file) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token_a,
+            "file",
+            "private.txt",
+            Some("text/plain"),
+            b"private",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let file_id = file["id"].as_str().unwrap();
+    let token_b = register_and_login(&app, "group-files-cross-b@example.com").await;
+
+    for request in [
+        authed("GET", &format!("/api/v2/groups/{group_id}/files"), &token_b),
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token_b,
+            "file",
+            "nope.txt",
+            Some("text/plain"),
+            b"nope",
+        ),
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/files/{file_id}"),
+            &token_b,
+        ),
+    ] {
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "permission_denied");
+    }
+    assert!(!group_upload_file(root.path(), "nope.txt").exists());
+}
+
+#[tokio::test]
+async fn group_files_rejects_uploads_symlink_escape() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-files-uploads-symlink@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let outside = tempfile::tempdir().unwrap();
+    if create_dir_symlink(outside.path(), &root.path().join("uploads")).is_err() {
+        return;
+    }
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "file",
+            "escape.txt",
+            Some("text/plain"),
+            b"escape",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(!outside.path().join("escape.txt").exists());
+
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM group_files WHERE group_id = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn group_files_rejects_final_upload_path_symlink_escape() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-files-file-symlink@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Files WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let uploads = root.path().join("uploads");
+    std::fs::create_dir_all(&uploads).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_target = outside.path().join("missing-target.txt");
+    let upload_path = uploads.join("escape.txt");
+    assert!(!outside_target.exists());
+    if create_file_symlink(&outside_target, &upload_path).is_err() {
+        return;
+    }
+    assert!(std::fs::symlink_metadata(&upload_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    let (status, body) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/files"),
+            &token,
+            "file",
+            "escape.txt",
+            Some("text/plain"),
+            b"escape",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(!outside_target.exists());
+    assert!(std::fs::symlink_metadata(&upload_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM group_files WHERE group_id = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[tokio::test]
