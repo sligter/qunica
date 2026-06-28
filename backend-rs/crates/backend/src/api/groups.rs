@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -25,6 +25,10 @@ const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id,
      group_agents.display_name, agents.name AS agent_name, group_agents.role, \
      group_agents.topology_role, group_agents.speaking_order, group_agents.response_mode, \
      group_agents.context_scope_json, group_agents.status, group_agents.joined_at";
+
+const GROUP_MEMBER_COLUMNS: &str = "group_members.group_id, group_members.user_id, \
+     users.name AS user_name, group_members.role, group_members.status, \
+     group_members.joined_at";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -89,6 +93,22 @@ pub struct GroupAgentAddRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GroupMemberAddRequest {
+    user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemberCandidatesQuery {
+    #[serde(default)]
+    q: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupMemberMuteRequest {
+    muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct GroupAgentMuteRequest {
     muted: bool,
 }
@@ -144,6 +164,27 @@ pub struct GroupAgentResponse {
     joined_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GroupMemberResponse {
+    id: String,
+    group_id: String,
+    user_id: String,
+    display_name: String,
+    role: String,
+    status: String,
+    is_muted: bool,
+    joined_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserReadResponse {
+    id: String,
+    email: String,
+    name: String,
+    avatar_url: Option<String>,
+    created_at: String,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct GroupRow {
     id: String,
@@ -190,6 +231,25 @@ struct GroupAgentRow {
     joined_at: String,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct GroupMemberRow {
+    group_id: String,
+    user_id: String,
+    user_name: String,
+    role: String,
+    status: String,
+    joined_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct UserRow {
+    id: String,
+    email: String,
+    name: String,
+    avatar_url: Option<String>,
+    created_at: String,
+}
+
 impl From<GroupRow> for GroupResponse {
     fn from(row: GroupRow) -> Self {
         Self {
@@ -232,6 +292,37 @@ impl From<GroupAgentRow> for GroupAgentResponse {
             context_usage: None,
             status: row.status,
             joined_at: row.joined_at,
+        }
+    }
+}
+
+impl GroupMemberRow {
+    fn into_response(self, muted_member_ids: &[String]) -> GroupMemberResponse {
+        let id = format!("{}:{}", self.group_id, self.user_id);
+        let is_muted = muted_member_ids
+            .iter()
+            .any(|value| value == self.user_id.as_str());
+        GroupMemberResponse {
+            id,
+            group_id: self.group_id,
+            user_id: self.user_id,
+            display_name: self.user_name,
+            role: self.role,
+            status: self.status,
+            is_muted,
+            joined_at: self.joined_at,
+        }
+    }
+}
+
+impl From<UserRow> for UserReadResponse {
+    fn from(row: UserRow) -> Self {
+        Self {
+            id: row.id,
+            email: row.email,
+            name: row.name,
+            avatar_url: row.avatar_url,
+            created_at: row.created_at,
         }
     }
 }
@@ -503,6 +594,197 @@ pub async fn delete(
     .map_err(|_| ApiError::internal("failed to delete group"))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_group_members(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<GroupMemberResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let muted_member_ids =
+        parse_json_list(group.muted_member_ids_json.as_deref()).unwrap_or_default();
+    let rows = fetch_group_member_rows(state.db.pool(), &group_id).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| row.into_response(&muted_member_ids))
+            .collect(),
+    ))
+}
+
+pub async fn search_group_member_candidates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<MemberCandidatesQuery>,
+) -> Result<Json<Vec<UserReadResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let rows = search_user_rows(state.db.pool(), &query.q).await?;
+    Ok(Json(rows.into_iter().map(UserReadResponse::from).collect()))
+}
+
+pub async fn add_group_member(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupMemberAddRequest>,
+) -> Result<(StatusCode, Json<GroupMemberResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let user_id = validate_uuid(&body.user_id, "user_id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    fetch_user_row(state.db.pool(), &user_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("user not found"))?;
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group member transaction"))?;
+
+    let existing = sqlx::query_as::<_, (String,)>(
+        "SELECT status FROM group_members WHERE group_id = ? AND user_id = ?",
+    )
+    .bind(&group_id)
+    .bind(&user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to load group member"))?;
+
+    if matches!(existing.as_ref().map(|row| row.0.as_str()), Some("active")) {
+        return Err(ApiError::conflict("user already in group"));
+    }
+
+    if existing.is_some() {
+        sqlx::query(
+            "UPDATE group_members SET role = 'member', status = 'active' \
+             WHERE group_id = ? AND user_id = ?",
+        )
+        .bind(&group_id)
+        .bind(&user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to reactivate group member"))?;
+    } else {
+        let result = sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role, status, joined_at) \
+             VALUES (?, ?, 'member', 'active', ?)",
+        )
+        .bind(&group_id)
+        .bind(&user_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await;
+
+        if let Err(err) = result {
+            if is_unique_violation(&err) {
+                return Err(ApiError::conflict("user already in group"));
+            }
+            return Err(ApiError::internal("failed to add group member"));
+        }
+    }
+
+    touch_group(&mut tx, &group_id, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group member transaction"))?;
+
+    let row = fetch_group_member_row(state.db.pool(), &group_id, &user_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group member vanished after add"))?;
+    let muted_member_ids =
+        parse_json_list(group.muted_member_ids_json.as_deref()).unwrap_or_default();
+    Ok((
+        StatusCode::CREATED,
+        Json(row.into_response(&muted_member_ids)),
+    ))
+}
+
+pub async fn remove_group_member(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, user_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let user_id = validate_uuid(&user_id, "user id")?;
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let member = load_active_group_member(state.db.pool(), &group_id, &user_id).await?;
+    if member.role == "owner" {
+        return Err(ApiError::permission_denied("group owner cannot be removed"));
+    }
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group member transaction"))?;
+
+    sqlx::query(
+        "UPDATE group_members SET status = 'removed' \
+         WHERE group_id = ? AND user_id = ? AND status = 'active'",
+    )
+    .bind(&group_id)
+    .bind(&user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to remove group member"))?;
+
+    set_group_member_muted_json(&mut tx, &group_id, &user_id, false, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group member removal"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn set_group_member_muted(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, user_id)): Path<(String, String)>,
+    Json(body): Json<GroupMemberMuteRequest>,
+) -> Result<Json<GroupMemberResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let user_id = validate_uuid(&user_id, "user id")?;
+    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let member = load_active_group_member(state.db.pool(), &group_id, &user_id).await?;
+    if member.role == "owner" {
+        return Err(ApiError::permission_denied("group owner cannot be muted"));
+    }
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group member mute transaction"))?;
+    set_group_member_muted_json(&mut tx, &group_id, &user_id, body.muted, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group member mute update"))?;
+
+    let group = fetch_row(state.db.pool(), &group_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group vanished after member mute update"))?;
+    let row = fetch_group_member_row(state.db.pool(), &group_id, &user_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group member vanished after mute update"))?;
+    let muted_member_ids =
+        parse_json_list(group.muted_member_ids_json.as_deref()).unwrap_or_default();
+    Ok(Json(row.into_response(&muted_member_ids)))
 }
 
 pub async fn list_group_agents(
@@ -847,6 +1129,56 @@ async fn fetch_group_agent_row(
         .map_err(|_| ApiError::internal("database error"))
 }
 
+async fn fetch_group_member_rows(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> Result<Vec<GroupMemberRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_MEMBER_COLUMNS} \
+         FROM group_members \
+         JOIN users ON users.id = group_members.user_id \
+         WHERE group_members.group_id = ? \
+           AND group_members.status = 'active' \
+         ORDER BY group_members.joined_at ASC, group_members.user_id ASC"
+    );
+    sqlx::query_as::<_, GroupMemberRow>(&sql)
+        .bind(group_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn fetch_group_member_row(
+    pool: &SqlitePool,
+    group_id: &str,
+    user_id: &str,
+) -> Result<Option<GroupMemberRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_MEMBER_COLUMNS} \
+         FROM group_members \
+         JOIN users ON users.id = group_members.user_id \
+         WHERE group_members.group_id = ? \
+           AND group_members.user_id = ? \
+           AND group_members.status = 'active'"
+    );
+    sqlx::query_as::<_, GroupMemberRow>(&sql)
+        .bind(group_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn load_active_group_member(
+    pool: &SqlitePool,
+    group_id: &str,
+    user_id: &str,
+) -> Result<GroupMemberRow, ApiError> {
+    fetch_group_member_row(pool, group_id, user_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("group member not found"))
+}
+
 async fn load_active_group_agent(
     pool: &SqlitePool,
     group_id: &str,
@@ -855,6 +1187,45 @@ async fn load_active_group_agent(
     fetch_group_agent_row(pool, group_id, agent_id)
         .await?
         .ok_or_else(|| ApiError::not_found("group agent not found"))
+}
+
+async fn fetch_user_row(pool: &SqlitePool, user_id: &str) -> Result<Option<UserRow>, ApiError> {
+    sqlx::query_as::<_, UserRow>(
+        "SELECT id, email, name, avatar_url, created_at FROM users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn search_user_rows(pool: &SqlitePool, query: &str) -> Result<Vec<UserRow>, ApiError> {
+    let trimmed = query.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return sqlx::query_as::<_, UserRow>(
+            "SELECT id, email, name, avatar_url, created_at \
+             FROM users \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT 20",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"));
+    }
+
+    let pattern = format!("%{trimmed}%");
+    sqlx::query_as::<_, UserRow>(
+        "SELECT id, email, name, avatar_url, created_at \
+         FROM users \
+         WHERE LOWER(name) LIKE ? OR LOWER(email) LIKE ? \
+         ORDER BY created_at DESC, id DESC \
+         LIMIT 20",
+    )
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))
 }
 
 async fn validate_owned_active_agent(
@@ -1020,6 +1391,34 @@ async fn set_group_agent_muted_json(
         .execute(&mut **tx)
         .await
         .map_err(|_| ApiError::internal("failed to update group mute list"))?;
+    Ok(())
+}
+
+async fn set_group_member_muted_json(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    user_id: &str,
+    muted: bool,
+    now: &str,
+) -> Result<(), ApiError> {
+    let (raw_muted,): (Option<String>,) =
+        sqlx::query_as("SELECT muted_member_ids_json FROM groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to load group member mute list"))?;
+    let muted_member_ids_json = if muted {
+        add_to_json_list(raw_muted.as_deref(), user_id)?
+    } else {
+        remove_from_json_list(raw_muted.as_deref(), user_id)?
+    };
+    sqlx::query("UPDATE groups SET muted_member_ids_json = ?, updated_at = ? WHERE id = ?")
+        .bind(&muted_member_ids_json)
+        .bind(now)
+        .bind(group_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to update group member mute list"))?;
     Ok(())
 }
 

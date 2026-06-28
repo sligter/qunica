@@ -59,11 +59,16 @@ fn authed(method: &str, uri: &str, token: &str) -> Request<Body> {
 
 /// Register and log in a user, returning a bearer token.
 async fn register_and_login(app: &Router, email: &str) -> String {
+    register_and_login_named(app, email, "Tester").await
+}
+
+/// Register and log in a user with a specific display name, returning a bearer token.
+async fn register_and_login_named(app: &Router, email: &str, name: &str) -> String {
     let (status, _) = send(
         app,
         post_json(
             "/api/v2/auth/register",
-            json!({"email": email, "password": "supersecret", "name": "Tester"}),
+            json!({"email": email, "password": "supersecret", "name": name}),
         ),
     )
     .await;
@@ -272,6 +277,463 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
     .await
     .unwrap();
     assert_eq!(membership, ("owner".to_string(), "active".to_string()));
+}
+
+#[tokio::test]
+async fn group_members_add_list_and_candidates_are_owner_scoped() {
+    let (app, state) = app_with_state().await;
+    let owner_email = "group-members-owner@example.com";
+    let token = register_and_login_named(&app, owner_email, "Owner One").await;
+    let workspace = create_workspace(&app, &token).await;
+    let _member_token =
+        register_and_login_named(&app, "ada-candidate@example.com", "Ada Lovelace").await;
+    let _other_token =
+        register_and_login_named(&app, "grace-hopper@example.com", "Grace Hopper").await;
+    let member_id = owner_id(&state, "ada-candidate@example.com").await;
+    let owner_user_id = owner_id(&state, owner_email).await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, initial_members) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/members"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = initial_members.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], format!("{group_id}:{owner_user_id}"));
+    assert_eq!(rows[0]["group_id"], group_id);
+    assert_eq!(rows[0]["user_id"], owner_user_id);
+    assert_eq!(rows[0]["display_name"], "Owner One");
+    assert_eq!(rows[0]["role"], "owner");
+    assert_eq!(rows[0]["status"], "active");
+    assert_eq!(rows[0]["is_muted"], false);
+    assert!(rows[0]["joined_at"].as_str().is_some());
+
+    let (status, candidates_by_name) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/member-candidates?q=Ada"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(candidates_by_name
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|user| user["id"] == member_id
+            && user["email"] == "ada-candidate@example.com"
+            && user["name"] == "Ada Lovelace"
+            && user["avatar_url"] == Value::Null
+            && user["created_at"].as_str().is_some()));
+
+    let (status, candidates_by_email) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/member-candidates?q=hopper"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(candidates_by_email
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|user| user["email"] == "grace-hopper@example.com"));
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/member-candidates?q=Ada"),
+            _other_token.as_str(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+
+    let (status, added) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/members"),
+            &token,
+            json!({"user_id": member_id}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(added["id"], format!("{group_id}:{member_id}"));
+    assert_eq!(added["group_id"], group_id);
+    assert_eq!(added["user_id"], member_id);
+    assert_eq!(added["display_name"], "Ada Lovelace");
+    assert_eq!(added["role"], "member");
+    assert_eq!(added["status"], "active");
+    assert_eq!(added["is_muted"], false);
+    assert!(added["joined_at"].as_str().is_some());
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/members"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows
+        .iter()
+        .any(|row| row["user_id"] == owner_user_id && row["role"] == "owner"));
+    assert!(rows
+        .iter()
+        .any(|row| row["user_id"] == member_id && row["role"] == "member"));
+
+    let (status, candidates_after_add) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/member-candidates?q=Ada"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(candidates_after_add
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|user| user["id"] == member_id));
+}
+
+#[tokio::test]
+async fn group_members_duplicate_conflict_and_readd_removed_member() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-members-readd@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let _member_token = register_and_login(&app, "group-members-readd-target@example.com").await;
+    let member_id = owner_id(&state, "group-members-readd-target@example.com").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let members_url = format!("/api/v2/groups/{group_id}/members");
+    let member_url = format!("{members_url}/{member_id}");
+
+    let (status, _) = send(
+        &app,
+        authed_json("POST", &members_url, &token, json!({"user_id": member_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        authed_json("POST", &members_url, &token, json!({"user_id": member_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "conflict");
+    assert_eq!(body["error"]["message"], "user already in group");
+
+    let (status, body) = send(&app, authed("DELETE", &member_url, &token)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+
+    let (status, readded) = send(
+        &app,
+        authed_json("POST", &members_url, &token, json!({"user_id": member_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(readded["user_id"], member_id);
+    assert_eq!(readded["role"], "member");
+    assert_eq!(readded["status"], "active");
+
+    let (status, list) = send(&app, authed("GET", &members_url, &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn group_members_concurrent_duplicate_add_returns_created_and_conflict() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-members-concurrent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let _member_token =
+        register_and_login(&app, "group-members-concurrent-target@example.com").await;
+    let member_id = owner_id(&state, "group-members-concurrent-target@example.com").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let members_url = format!("/api/v2/groups/{group_id}/members");
+
+    let req_a = authed_json(
+        "POST",
+        &members_url,
+        &token,
+        json!({"user_id": member_id.clone()}),
+    );
+    let req_b = authed_json(
+        "POST",
+        &members_url,
+        &token,
+        json!({"user_id": member_id.clone()}),
+    );
+
+    let (first, second) = tokio::join!(send(&app, req_a), send(&app, req_b));
+    let responses = vec![first, second];
+
+    assert!(
+        responses
+            .iter()
+            .all(|(status, _)| *status != StatusCode::INTERNAL_SERVER_ERROR),
+        "responses: {responses:?}"
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::CREATED)
+            .count(),
+        1,
+        "responses: {responses:?}"
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::CONFLICT)
+            .count(),
+        1,
+        "responses: {responses:?}"
+    );
+
+    for (status, body) in responses {
+        match status {
+            StatusCode::CREATED => {
+                assert_eq!(body["group_id"], group_id);
+                assert_eq!(body["user_id"], member_id);
+                assert_eq!(body["status"], "active");
+            }
+            StatusCode::CONFLICT => {
+                assert_eq!(body["error"]["code"], "conflict");
+                assert_eq!(body["error"]["message"], "user already in group");
+            }
+            other => panic!("unexpected status {other}: {body:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn group_members_delete_hides_member_and_clears_muted_id() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-members-delete@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let _member_token = register_and_login(&app, "group-members-delete-target@example.com").await;
+    let member_id = owner_id(&state, "group-members-delete-target@example.com").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/members"),
+            &token,
+            json!({"user_id": member_id}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, muted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/members/{member_id}/mute"),
+            &token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(muted["is_muted"], true);
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/members/{member_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/members"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!list
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|member| member["user_id"] == member_id));
+
+    let (status, group) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_json_array_missing(&group["muted_member_ids"], &member_id);
+}
+
+#[tokio::test]
+async fn group_members_mute_updates_group_read_and_unmute_removes_it() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-members-mute@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let _member_token = register_and_login(&app, "group-members-mute-target@example.com").await;
+    let member_id = owner_id(&state, "group-members-mute-target@example.com").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/members"),
+            &token,
+            json!({"user_id": member_id}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, muted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/members/{member_id}/mute"),
+            &token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(muted["user_id"], member_id);
+    assert_eq!(muted["is_muted"], true);
+
+    let (status, members) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/members"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(members
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|member| member["user_id"] == member_id && member["is_muted"] == true));
+
+    let (status, group) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_json_array_contains(&group["muted_member_ids"], &member_id);
+
+    let (status, unmuted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/members/{member_id}/mute"),
+            &token,
+            json!({"muted": false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unmuted["is_muted"], false);
+
+    let (status, group) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_json_array_missing(&group["muted_member_ids"], &member_id);
+}
+
+#[tokio::test]
+async fn group_members_owner_protection_and_cross_owner_mutation_rejection() {
+    let (app, state) = app_with_state().await;
+    let owner_email = "group-members-owner-protect@example.com";
+    let token = register_and_login(&app, owner_email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let member_token =
+        register_and_login(&app, "group-members-owner-protect-member@example.com").await;
+    let owner_user_id = owner_id(&state, owner_email).await;
+    let member_id = owner_id(&state, "group-members-owner-protect-member@example.com").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/members"),
+            &token,
+            json!({"user_id": member_id}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/members/{owner_user_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+    assert_eq!(body["error"]["message"], "group owner cannot be removed");
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/members/{owner_user_id}/mute"),
+            &token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+    assert_eq!(body["error"]["message"], "group owner cannot be muted");
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/members/{member_id}/mute"),
+            &member_token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
 }
 
 #[tokio::test]

@@ -96,6 +96,22 @@ pub fn router(state: AppState) -> Router {
                 .delete(groups::delete),
         )
         .route(
+            "/api/v2/groups/:group_id/members",
+            axum::routing::post(groups::add_group_member).get(groups::list_group_members),
+        )
+        .route(
+            "/api/v2/groups/:group_id/member-candidates",
+            get(groups::search_group_member_candidates),
+        )
+        .route(
+            "/api/v2/groups/:group_id/members/:user_id",
+            axum::routing::delete(groups::remove_group_member),
+        )
+        .route(
+            "/api/v2/groups/:group_id/members/:user_id/mute",
+            axum::routing::patch(groups::set_group_member_muted),
+        )
+        .route(
             "/api/v2/groups/:group_id/agents",
             axum::routing::post(groups::add_group_agent).get(groups::list_group_agents),
         )
