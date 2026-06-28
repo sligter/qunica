@@ -104,6 +104,14 @@ pub fn router(state: AppState) -> Router {
             get(groups::search_group_member_candidates),
         )
         .route(
+            "/api/v2/groups/:group_id/notes",
+            axum::routing::post(groups::create_group_note).get(groups::list_group_notes),
+        )
+        .route(
+            "/api/v2/groups/:group_id/notes/:note_id",
+            axum::routing::patch(groups::update_group_note).delete(groups::delete_group_note),
+        )
+        .route(
             "/api/v2/groups/:group_id/members/:user_id",
             axum::routing::delete(groups::remove_group_member),
         )

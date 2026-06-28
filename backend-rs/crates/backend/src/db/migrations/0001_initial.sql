@@ -84,6 +84,17 @@ CREATE TABLE group_agents (
   PRIMARY KEY (group_id, agent_id)
 );
 
+CREATE TABLE group_notes (
+  id TEXT PRIMARY KEY NOT NULL,
+  group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE threads (
   id TEXT PRIMARY KEY NOT NULL,
   group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,

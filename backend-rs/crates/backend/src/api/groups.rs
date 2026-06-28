@@ -8,12 +8,14 @@ use serde_json::{Map, Value};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    fs,
+    path::{Path as FsPath, PathBuf},
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::tools::{resolve_workspace_path, ToolError};
 
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
      free_speech, proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
@@ -29,6 +31,11 @@ const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id,
 const GROUP_MEMBER_COLUMNS: &str = "group_members.group_id, group_members.user_id, \
      users.name AS user_name, group_members.role, group_members.status, \
      group_members.joined_at";
+
+const GROUP_NOTE_COLUMNS: &str = "id, group_id, title, content, created_at, updated_at";
+
+const NOTES_DIR: &str = "Notes";
+const NOTE_FILE_SUFFIX: &str = ".md";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -126,6 +133,21 @@ pub struct GroupAgentWorkspaceSharingRequest {
     share_group_workspace: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GroupNoteCreateRequest {
+    title: String,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupNoteUpdateRequest {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GroupResponse {
     id: String,
@@ -183,6 +205,16 @@ pub struct UserReadResponse {
     name: String,
     avatar_url: Option<String>,
     created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupNoteResponse {
+    id: String,
+    group_id: String,
+    title: String,
+    content: String,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -248,6 +280,24 @@ struct UserRow {
     name: String,
     avatar_url: Option<String>,
     created_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GroupNoteRow {
+    id: String,
+    group_id: String,
+    title: String,
+    content: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GroupNoteWorkspaceRow {
+    owner_id: String,
+    backend_type: String,
+    local_path: Option<String>,
+    status: String,
 }
 
 impl From<GroupRow> for GroupResponse {
@@ -323,6 +373,19 @@ impl From<UserRow> for UserReadResponse {
             name: row.name,
             avatar_url: row.avatar_url,
             created_at: row.created_at,
+        }
+    }
+}
+
+impl GroupNoteRow {
+    fn into_response_with_content(self, content: String) -> GroupNoteResponse {
+        GroupNoteResponse {
+            id: self.id,
+            group_id: self.group_id,
+            title: self.title,
+            content,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -592,6 +655,179 @@ pub async fn delete(
     .execute(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("failed to delete group"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_group_notes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<GroupNoteResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let rows = fetch_group_note_rows(state.db.pool(), &group_id).await?;
+
+    let mut notes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let content = read_group_note_content(&root, &row.id, &row.content)?;
+        notes.push(row.into_response_with_content(content));
+    }
+    Ok(Json(notes))
+}
+
+pub async fn create_group_note(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupNoteCreateRequest>,
+) -> Result<(StatusCode, Json<GroupNoteResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let title = validate_note_title(&body.title)?;
+    let content = body.content.unwrap_or_default();
+    let note_id = Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group note create transaction"))?;
+
+    sqlx::query(
+        "INSERT INTO group_notes \
+         (id, group_id, author_id, title, content, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
+    )
+    .bind(&note_id)
+    .bind(&group_id)
+    .bind(&owner_id)
+    .bind(&title)
+    .bind(&content)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to create group note"))?;
+
+    write_group_note_content(&root, &note_id, &content)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group note create"))?;
+
+    let row = fetch_group_note_row(state.db.pool(), &group_id, &note_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group note vanished after insert"))?;
+    let content = read_group_note_content(&root, &row.id, &row.content)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(row.into_response_with_content(content)),
+    ))
+}
+
+pub async fn update_group_note(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, note_id)): Path<(String, String)>,
+    Json(body): Json<GroupNoteUpdateRequest>,
+) -> Result<Json<GroupNoteResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let note_id = validate_uuid(&note_id, "note id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let existing = load_active_group_note(state.db.pool(), &group_id, &note_id).await?;
+
+    let title = match body.title.as_deref() {
+        Some(raw) => validate_note_title(raw)?,
+        None => existing.title,
+    };
+    let should_write_content = body.content.is_some();
+    let content = body.content.unwrap_or(existing.content);
+    let now = now_rfc3339();
+
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group note update transaction"))?;
+
+    sqlx::query(
+        "UPDATE group_notes SET title = ?, content = ?, updated_at = ? \
+         WHERE id = ? AND group_id = ? AND status = 'active'",
+    )
+    .bind(&title)
+    .bind(&content)
+    .bind(&now)
+    .bind(&note_id)
+    .bind(&group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to update group note"))?;
+
+    if should_write_content {
+        write_group_note_content(&root, &note_id, &content)?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group note update"))?;
+
+    let row = fetch_group_note_row(state.db.pool(), &group_id, &note_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("group note vanished after update"))?;
+    let content = read_group_note_content(&root, &row.id, &row.content)?;
+    Ok(Json(row.into_response_with_content(content)))
+}
+
+pub async fn delete_group_note(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, note_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let note_id = validate_uuid(&note_id, "note id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    load_active_group_note(state.db.pool(), &group_id, &note_id).await?;
+
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start group note delete transaction"))?;
+
+    sqlx::query(
+        "UPDATE group_notes SET status = 'deleted', updated_at = ? \
+         WHERE id = ? AND group_id = ? AND status = 'active'",
+    )
+    .bind(&now)
+    .bind(&note_id)
+    .bind(&group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to delete group note"))?;
+
+    delete_group_note_content(&root, &note_id)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit group note delete"))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1189,6 +1425,97 @@ async fn load_active_group_agent(
         .ok_or_else(|| ApiError::not_found("group agent not found"))
 }
 
+async fn fetch_group_note_rows(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> Result<Vec<GroupNoteRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_NOTE_COLUMNS} FROM group_notes \
+         WHERE group_id = ? AND status = 'active' \
+         ORDER BY updated_at DESC, id DESC"
+    );
+    sqlx::query_as::<_, GroupNoteRow>(&sql)
+        .bind(group_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn fetch_group_note_row(
+    pool: &SqlitePool,
+    group_id: &str,
+    note_id: &str,
+) -> Result<Option<GroupNoteRow>, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_NOTE_COLUMNS} FROM group_notes \
+         WHERE group_id = ? AND id = ? AND status = 'active'"
+    );
+    sqlx::query_as::<_, GroupNoteRow>(&sql)
+        .bind(group_id)
+        .bind(note_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))
+}
+
+async fn load_active_group_note(
+    pool: &SqlitePool,
+    group_id: &str,
+    note_id: &str,
+) -> Result<GroupNoteRow, ApiError> {
+    fetch_group_note_row(pool, group_id, note_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("group note not found"))
+}
+
+async fn group_notes_workspace_root(
+    pool: &SqlitePool,
+    group: &GroupRow,
+    owner_id: &str,
+) -> Result<PathBuf, ApiError> {
+    let workspace_id = group
+        .workspace_id
+        .as_deref()
+        .ok_or_else(|| ApiError::invalid_input("group has no bound workspace"))?;
+    let row = sqlx::query_as::<_, GroupNoteWorkspaceRow>(
+        "SELECT owner_id, backend_type, local_path, status FROM workspaces WHERE id = ?",
+    )
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::invalid_input("group workspace is not active"))?;
+
+    if row.owner_id != owner_id {
+        return Err(ApiError::permission_denied(
+            "group workspace belongs to another user",
+        ));
+    }
+    if row.status != "active" {
+        return Err(ApiError::invalid_input("group workspace is not active"));
+    }
+    if row.backend_type != "local" {
+        return Err(ApiError::invalid_input(
+            "group notes require a local workspace",
+        ));
+    }
+    let local_path = row
+        .local_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| ApiError::invalid_input("local workspace has no local_path"))?;
+    let root = fs::canonicalize(local_path).map_err(|_| {
+        ApiError::invalid_input("group workspace path must be an existing directory")
+    })?;
+    if !root.is_dir() {
+        return Err(ApiError::invalid_input(
+            "group workspace path must be an existing directory",
+        ));
+    }
+    Ok(root)
+}
+
 async fn fetch_user_row(pool: &SqlitePool, user_id: &str) -> Result<Option<UserRow>, ApiError> {
     sqlx::query_as::<_, UserRow>(
         "SELECT id, email, name, avatar_url, created_at FROM users WHERE id = ?",
@@ -1748,6 +2075,73 @@ async fn validate_initial_agents(
         }
     }
     Ok(ids)
+}
+
+fn validate_note_title(raw: &str) -> Result<String, ApiError> {
+    let title = raw.trim().to_string();
+    let len = title.chars().count();
+    if !(1..=200).contains(&len) {
+        return Err(ApiError::invalid_input(
+            "title must be between 1 and 200 characters",
+        ));
+    }
+    Ok(title)
+}
+
+fn note_relative_path(note_id: &str) -> String {
+    format!("{NOTES_DIR}/{note_id}{NOTE_FILE_SUFFIX}")
+}
+
+fn group_note_path(root: &FsPath, note_id: &str) -> Result<PathBuf, ApiError> {
+    resolve_workspace_path(root, &note_relative_path(note_id)).map_err(path_safety_error)
+}
+
+fn read_group_note_content(
+    root: &FsPath,
+    note_id: &str,
+    fallback: &str,
+) -> Result<String, ApiError> {
+    let path = group_note_path(root, note_id)?;
+    if !path.exists() {
+        return Ok(fallback.to_string());
+    }
+    if !path.is_file() {
+        return Err(ApiError::invalid_input("group note path is not a file"));
+    }
+    fs::read_to_string(path).map_err(|_| ApiError::invalid_input("group note is not valid UTF-8"))
+}
+
+fn write_group_note_content(root: &FsPath, note_id: &str, content: &str) -> Result<(), ApiError> {
+    let path = group_note_path(root, note_id)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::invalid_input("group notes path is invalid"))?;
+    fs::create_dir_all(parent)
+        .map_err(|_| ApiError::invalid_input("group notes path is not a directory"))?;
+
+    let path = group_note_path(root, note_id)?;
+    if path.exists() && !path.is_file() {
+        return Err(ApiError::invalid_input("group note path is not a file"));
+    }
+    fs::write(path, content).map_err(|_| ApiError::internal("failed to write group note content"))
+}
+
+fn delete_group_note_content(root: &FsPath, note_id: &str) -> Result<(), ApiError> {
+    let path = group_note_path(root, note_id)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    if !path.is_file() {
+        return Err(ApiError::invalid_input("group note path is not a file"));
+    }
+    fs::remove_file(path).map_err(|_| ApiError::internal("failed to delete group note content"))
+}
+
+fn path_safety_error(err: ToolError) -> ApiError {
+    match err {
+        ToolError::Invalid(message) => ApiError::invalid_input(message),
+        ToolError::Io(_) => ApiError::invalid_input("group note path is invalid"),
+    }
 }
 
 fn validate_name(raw: &str) -> Result<String, ApiError> {

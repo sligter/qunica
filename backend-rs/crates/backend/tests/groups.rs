@@ -5,6 +5,7 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 
 async fn app() -> Router {
@@ -102,6 +103,30 @@ async fn create_workspace(app: &Router, token: &str) -> String {
     workspace["id"].as_str().unwrap().to_string()
 }
 
+async fn create_local_workspace(
+    app: &Router,
+    token: &str,
+    name: &str,
+) -> (tempfile::TempDir, String) {
+    let root = tempfile::tempdir().unwrap();
+    let (status, workspace) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces",
+            token,
+            json!({
+                "name": name,
+                "backend_type": "local",
+                "local_path": root.path().to_string_lossy()
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    (root, workspace["id"].as_str().unwrap().to_string())
+}
+
 async fn create_agent(app: &Router, token: &str, workspace_id: &str, name: &str) -> String {
     let (status, agent) = send(
         app,
@@ -164,6 +189,41 @@ async fn owner_id(state: &AppState, email: &str) -> String {
         .fetch_one(state.db.pool())
         .await
         .unwrap()
+}
+
+async fn create_group_note(
+    app: &Router,
+    token: &str,
+    group_id: &str,
+    title: &str,
+    content: &str,
+) -> Value {
+    let (status, note) = send(
+        app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/notes"),
+            token,
+            json!({"title": title, "content": content}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    note
+}
+
+fn group_note_file(root: &Path, note_id: &str) -> PathBuf {
+    root.join("Notes").join(format!("{note_id}.md"))
+}
+
+#[cfg(unix)]
+fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
 }
 
 #[tokio::test]
@@ -780,6 +840,334 @@ async fn group_create_without_workspace_id_creates_local_workspace_from_settings
     assert_eq!(workspace.0, "group:Auto WS");
     assert_eq!(workspace.1, "local");
     assert_eq!(workspace.2.as_deref(), Some(expected_path.as_str()));
+}
+
+#[tokio::test]
+async fn group_notes_create_writes_markdown_file() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-create@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, note) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/notes"),
+            &token,
+            json!({"title": "  Plan  ", "content": "first draft"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let note_id = note["id"].as_str().unwrap();
+    assert_eq!(note["group_id"], group_id);
+    assert_eq!(note["title"], "Plan");
+    assert_eq!(note["content"], "first draft");
+    assert!(note["created_at"].as_str().is_some());
+    assert!(note["updated_at"].as_str().is_some());
+    assert_eq!(
+        std::fs::read_to_string(group_note_file(root.path(), note_id)).unwrap(),
+        "first draft"
+    );
+}
+
+#[tokio::test]
+async fn group_notes_list_orders_active_notes_and_reads_file_content() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-notes-list@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let older = create_group_note(&app, &token, group_id, "Older", "db older").await;
+    let newer = create_group_note(&app, &token, group_id, "Newer", "db newer").await;
+    let deleted = create_group_note(&app, &token, group_id, "Deleted", "db deleted").await;
+    let older_id = older["id"].as_str().unwrap();
+    let newer_id = newer["id"].as_str().unwrap();
+    let deleted_id = deleted["id"].as_str().unwrap();
+
+    std::fs::write(group_note_file(root.path(), older_id), "file older").unwrap();
+    std::fs::remove_file(group_note_file(root.path(), newer_id)).unwrap();
+    sqlx::query("UPDATE group_notes SET updated_at = ? WHERE id = ?")
+        .bind("2026-01-01T00:00:00Z")
+        .bind(older_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE group_notes SET updated_at = ? WHERE id = ?")
+        .bind("2026-01-01T00:00:01Z")
+        .bind(newer_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE group_notes SET status = 'deleted' WHERE id = ?")
+        .bind(deleted_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/notes"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], newer_id);
+    assert_eq!(rows[0]["content"], "db newer");
+    assert_eq!(rows[1]["id"], older_id);
+    assert_eq!(rows[1]["content"], "file older");
+    assert!(!rows.iter().any(|row| row["id"] == deleted_id));
+}
+
+#[tokio::test]
+async fn group_notes_patch_title_only_preserves_file_content() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-title-only@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let note = create_group_note(&app, &token, group_id, "Before", "db content").await;
+    let note_id = note["id"].as_str().unwrap();
+    let path = group_note_file(root.path(), note_id);
+    std::fs::write(&path, "file content").unwrap();
+
+    let (status, patched) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+            json!({"title": "  After  "}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(patched["title"], "After");
+    assert_eq!(patched["content"], "file content");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "file content");
+}
+
+#[tokio::test]
+async fn group_notes_patch_content_rewrites_markdown_file() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-content@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let note = create_group_note(&app, &token, group_id, "Note", "before").await;
+    let note_id = note["id"].as_str().unwrap();
+
+    let (status, patched) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+            json!({"content": "after"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(patched["content"], "after");
+    assert_eq!(
+        std::fs::read_to_string(group_note_file(root.path(), note_id)).unwrap(),
+        "after"
+    );
+}
+
+#[tokio::test]
+async fn group_notes_delete_hides_note_and_removes_markdown_file() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-delete@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let note = create_group_note(&app, &token, group_id, "Delete", "gone").await;
+    let note_id = note["id"].as_str().unwrap();
+    let path = group_note_file(root.path(), note_id);
+    assert!(path.is_file());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+    assert!(!path.exists());
+
+    let (status, list) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/notes"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn group_notes_reject_invalid_titles() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-invalid-title@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let too_long = "x".repeat(201);
+
+    for title in ["", "   ", too_long.as_str()] {
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "POST",
+                &format!("/api/v2/groups/{group_id}/notes"),
+                &token,
+                json!({"title": title, "content": ""}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_input");
+    }
+
+    let note = create_group_note(&app, &token, group_id, "Valid", "").await;
+    let note_id = note["id"].as_str().unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+            json!({"title": "   "}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn group_notes_cloud_or_unbound_workspace_returns_client_error() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-workspace-errors@example.com").await;
+    let cloud_workspace = create_workspace(&app, &token).await;
+    let cloud_group =
+        create_group_with_initial_agents(&app, &token, &cloud_workspace, "mesh", &[]).await;
+    let cloud_group_id = cloud_group["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{cloud_group_id}/notes"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+
+    let (_root, local_workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let local_group =
+        create_group_with_initial_agents(&app, &token, &local_workspace, "mesh", &[]).await;
+    let local_group_id = local_group["id"].as_str().unwrap();
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{local_group_id}"),
+            &token,
+            json!({"workspace_id": Value::Null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{local_group_id}/notes"),
+            &token,
+            json!({"title": "Blocked", "content": ""}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn group_notes_cross_owner_access_is_rejected() {
+    let app = app().await;
+    let token_a = register_and_login(&app, "group-notes-cross-a@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token_a, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token_a, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let note = create_group_note(&app, &token_a, group_id, "Private", "secret").await;
+    let note_id = note["id"].as_str().unwrap();
+    let token_b = register_and_login(&app, "group-notes-cross-b@example.com").await;
+
+    for request in [
+        authed("GET", &format!("/api/v2/groups/{group_id}/notes"), &token_b),
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/notes"),
+            &token_b,
+            json!({"title": "Nope", "content": ""}),
+        ),
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token_b,
+            json!({"title": "Nope"}),
+        ),
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token_b,
+        ),
+    ] {
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "permission_denied");
+    }
+}
+
+#[tokio::test]
+async fn group_notes_rejects_notes_symlink_escape() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-symlink@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let outside = tempfile::tempdir().unwrap();
+    if create_dir_symlink(outside.path(), &root.path().join("Notes")).is_err() {
+        return;
+    }
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/notes"),
+            &token,
+            json!({"title": "Escape", "content": ""}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
 }
 
 #[tokio::test]
