@@ -1930,6 +1930,14 @@ async fn workspace_files_preview_handles_text_truncation_and_binary() {
     std::fs::write(root.path().join("note.md"), "hello preview").unwrap();
     std::fs::write(root.path().join("large.txt"), "a".repeat(70 * 1024)).unwrap();
     std::fs::write(root.path().join("binary.bin"), [0, 1, 2, 3]).unwrap();
+    let mut late_nul = vec![b'a'; 4097];
+    late_nul.push(0);
+    late_nul.extend_from_slice(b"after-nul");
+    std::fs::write(root.path().join("late-nul.txt"), late_nul).unwrap();
+    let mut late_invalid_utf8 = vec![b'a'; 4097];
+    late_invalid_utf8.push(0xFF);
+    late_invalid_utf8.extend_from_slice(b"after-invalid");
+    std::fs::write(root.path().join("late-invalid.bin"), late_invalid_utf8).unwrap();
 
     let (status, preview) = send(
         &app,
@@ -1980,6 +1988,40 @@ async fn workspace_files_preview_handles_text_truncation_and_binary() {
         "Preview is not available for binary or unsupported files."
     );
     assert_eq!(preview["size"], 4);
+
+    let (status, preview) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=late-nul.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preview["is_text"], false);
+    assert_eq!(preview["content"], Value::Null);
+    assert_eq!(
+        preview["message"],
+        "Preview is not available for binary or unsupported files."
+    );
+
+    let (status, preview) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=late-invalid.bin"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preview["is_text"], false);
+    assert_eq!(preview["content"], Value::Null);
+    assert_eq!(
+        preview["message"],
+        "Preview is not available for binary or unsupported files."
+    );
 }
 
 #[tokio::test]
@@ -2355,6 +2397,43 @@ async fn workspace_files_cross_owner_all_routes_are_rejected() {
     )
     .await;
     assert!(!group_upload_file(root.path(), "blocked.txt").exists());
+}
+
+#[tokio::test]
+async fn workspace_files_rejects_explicit_dot_path() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-files-dot-path@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let unsafe_path_message =
+        "workspace file paths must be relative and stay inside the group workspace";
+
+    for request in vec![
+        authed("GET", &workspace_file_url(group_id, "."), &token),
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=."),
+            &token,
+        ),
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files/download?path=."),
+            &token,
+        ),
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/workspace-files/rename?path=."),
+            &token,
+            json!({"new_path": "renamed.txt"}),
+        ),
+        authed("DELETE", &workspace_file_url(group_id, "."), &token),
+    ] {
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_input");
+        assert_eq!(body["error"]["message"], unsafe_path_message);
+    }
 }
 
 #[tokio::test]

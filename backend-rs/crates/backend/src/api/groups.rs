@@ -901,7 +901,10 @@ pub async fn preview_group_workspace_file(
         .read_to_end(&mut sample)
         .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
 
-    if !workspace_file_looks_text(&file_path, &sample[..sample.len().min(4096)]) {
+    let byte_truncated = sample.len() > MAX_WORKSPACE_PREVIEW_BYTES;
+    let capped = &sample[..sample.len().min(MAX_WORKSPACE_PREVIEW_BYTES)];
+
+    if !workspace_file_looks_text(&file_path, capped) {
         return Ok(Json(GroupWorkspaceFilePreviewResponse {
             path: display_workspace_path(&root, &file_path)?,
             name: workspace_file_name(&file_path)?,
@@ -913,8 +916,6 @@ pub async fn preview_group_workspace_file(
         }));
     }
 
-    let byte_truncated = sample.len() > MAX_WORKSPACE_PREVIEW_BYTES;
-    let capped = &sample[..sample.len().min(MAX_WORKSPACE_PREVIEW_BYTES)];
     let mut content = String::from_utf8_lossy(capped).to_string();
     let mut truncated = byte_truncated;
     if content.chars().count() > TEXT_WORKSPACE_PREVIEW_CHARS {
@@ -2707,7 +2708,7 @@ fn validate_workspace_file_new_path(raw: &str) -> Result<String, ApiError> {
 
 fn workspace_file_relative_path(raw: &str) -> Result<Option<String>, ApiError> {
     let normalized = raw.trim().replace('\\', "/");
-    if normalized.is_empty() || normalized == "." {
+    if normalized.is_empty() {
         return Ok(None);
     }
     let mut chars = normalized.chars();
