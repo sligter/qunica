@@ -578,7 +578,7 @@ pub async fn add_group_agent(
         .await
         .map_err(|_| ApiError::internal("failed to reactivate group agent"))?;
     } else {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO group_agents \
              (group_id, agent_id, topology_role, speaking_order, response_mode, \
               context_scope_json, status, joined_at, updated_at) \
@@ -592,8 +592,14 @@ pub async fn add_group_agent(
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
-        .await
-        .map_err(|_| ApiError::internal("failed to add group agent"))?;
+        .await;
+
+        if let Err(err) = result {
+            if is_unique_violation(&err) {
+                return Err(ApiError::conflict("agent already in group"));
+            }
+            return Err(ApiError::internal("failed to add group agent"));
+        }
     }
 
     touch_group(&mut tx, &group_id, &now).await?;
@@ -1428,6 +1434,10 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()
+}
+
+fn is_unique_violation(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db) if db.is_unique_violation())
 }
 
 fn now_plus_rfc3339(microseconds: i64) -> String {

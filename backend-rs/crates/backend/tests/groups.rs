@@ -575,6 +575,7 @@ async fn group_agents_duplicate_conflict_and_readd_removed_agent() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], "conflict");
+    assert_eq!(body["error"]["message"], "agent already in group");
 
     let (status, body) = send(&app, authed("DELETE", &agent_url, &token)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -597,6 +598,71 @@ async fn group_agents_duplicate_conflict_and_readd_removed_agent() {
     let (status, list) = send(&app, authed("GET", &agents_url, &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn group_agents_concurrent_duplicate_add_returns_created_and_conflict() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-agents-concurrent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let agents_url = format!("/api/v2/groups/{group_id}/agents");
+
+    let req_a = authed_json(
+        "POST",
+        &agents_url,
+        &token,
+        json!({"agent_id": agent.clone()}),
+    );
+    let req_b = authed_json(
+        "POST",
+        &agents_url,
+        &token,
+        json!({"agent_id": agent.clone()}),
+    );
+
+    let (first, second) = tokio::join!(send(&app, req_a), send(&app, req_b));
+    let responses = vec![first, second];
+
+    assert!(
+        responses
+            .iter()
+            .all(|(status, _)| *status != StatusCode::INTERNAL_SERVER_ERROR),
+        "responses: {responses:?}"
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::CREATED)
+            .count(),
+        1,
+        "responses: {responses:?}"
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::CONFLICT)
+            .count(),
+        1,
+        "responses: {responses:?}"
+    );
+
+    for (status, body) in responses {
+        match status {
+            StatusCode::CREATED => {
+                assert_eq!(body["group_id"], group_id);
+                assert_eq!(body["agent_id"], agent);
+                assert_eq!(body["status"], "active");
+            }
+            StatusCode::CONFLICT => {
+                assert_eq!(body["error"]["code"], "conflict");
+                assert_eq!(body["error"]["message"], "agent already in group");
+            }
+            other => panic!("unexpected status {other}: {body:?}"),
+        }
+    }
 }
 
 #[tokio::test]
