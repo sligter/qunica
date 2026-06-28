@@ -1,6 +1,7 @@
 use axum::{
     extract::{Multipart, Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -9,7 +10,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path as FsPath, PathBuf},
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -39,6 +40,10 @@ const NOTES_DIR: &str = "Notes";
 const NOTE_FILE_SUFFIX: &str = ".md";
 const GROUP_FILE_COLUMNS: &str = "id, group_id, filename, file_size, mime_type, created_at";
 const UPLOADS_DIR: &str = "uploads";
+const MAX_WORKSPACE_PREVIEW_BYTES: usize = 64 * 1024;
+const TEXT_WORKSPACE_PREVIEW_CHARS: usize = 20_000;
+const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
+const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -151,6 +156,17 @@ pub struct GroupNoteUpdateRequest {
     content: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceFilePathQuery {
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceFileRenameRequest {
+    new_path: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GroupResponse {
     id: String,
@@ -228,6 +244,33 @@ pub struct GroupFileResponse {
     file_size: i64,
     mime_type: Option<String>,
     created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupWorkspaceFileResponse {
+    path: String,
+    name: String,
+    is_dir: bool,
+    size: Option<i64>,
+    modified_at: Option<String>,
+    abs_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupWorkspaceRootResponse {
+    root: String,
+    separator: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupWorkspaceFilePreviewResponse {
+    path: String,
+    name: String,
+    is_text: bool,
+    content: Option<String>,
+    truncated: bool,
+    message: Option<String>,
+    size: Option<i64>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -778,6 +821,247 @@ pub async fn delete_group_file(
     .await
     .map_err(|_| ApiError::internal("failed to delete group file"))?;
 
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_group_workspace_root(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<GroupWorkspaceRootResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    Ok(Json(GroupWorkspaceRootResponse {
+        root: root.to_string_lossy().to_string(),
+        separator: std::path::MAIN_SEPARATOR.to_string(),
+    }))
+}
+
+pub async fn list_group_workspace_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+) -> Result<Json<Vec<GroupWorkspaceFileResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let directory = resolve_group_workspace_file_path(&root, &query.path)?;
+    if !directory.is_dir() {
+        return Err(ApiError::invalid_input("workspace path is not a directory"));
+    }
+
+    let mut rows = Vec::new();
+    for entry in fs::read_dir(&directory)
+        .map_err(|_| ApiError::invalid_input("workspace path is not a directory"))?
+    {
+        let entry = entry.map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        rows.push(workspace_file_response(&entry.path(), &root)?);
+    }
+    rows.sort_by(|left, right| {
+        (if left.is_dir { 0 } else { 1 }, left.name.to_lowercase())
+            .cmp(&(if right.is_dir { 0 } else { 1 }, right.name.to_lowercase()))
+    });
+    Ok(Json(rows))
+}
+
+pub async fn preview_group_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+) -> Result<Json<GroupWorkspaceFilePreviewResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let file_path = resolve_group_workspace_file_path(&root, &query.path)?;
+    if !file_path.is_file() {
+        return Err(ApiError::invalid_input("workspace path is not a file"));
+    }
+
+    let metadata = fs::metadata(&file_path)
+        .map_err(|_| ApiError::invalid_input("workspace path is not a file"))?;
+    let size = metadata.len() as i64;
+    let mut file = fs::File::open(&file_path)
+        .map_err(|_| ApiError::invalid_input("workspace path is not a file"))?;
+    let mut sample = Vec::new();
+    Read::by_ref(&mut file)
+        .take((MAX_WORKSPACE_PREVIEW_BYTES + 1) as u64)
+        .read_to_end(&mut sample)
+        .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
+
+    if !workspace_file_looks_text(&file_path, &sample[..sample.len().min(4096)]) {
+        return Ok(Json(GroupWorkspaceFilePreviewResponse {
+            path: display_workspace_path(&root, &file_path)?,
+            name: workspace_file_name(&file_path)?,
+            is_text: false,
+            content: None,
+            truncated: false,
+            message: Some(BINARY_PREVIEW_MESSAGE.to_string()),
+            size: Some(size),
+        }));
+    }
+
+    let byte_truncated = sample.len() > MAX_WORKSPACE_PREVIEW_BYTES;
+    let capped = &sample[..sample.len().min(MAX_WORKSPACE_PREVIEW_BYTES)];
+    let mut content = String::from_utf8_lossy(capped).to_string();
+    let mut truncated = byte_truncated;
+    if content.chars().count() > TEXT_WORKSPACE_PREVIEW_CHARS {
+        content = content.chars().take(TEXT_WORKSPACE_PREVIEW_CHARS).collect();
+        truncated = true;
+    }
+
+    Ok(Json(GroupWorkspaceFilePreviewResponse {
+        path: display_workspace_path(&root, &file_path)?,
+        name: workspace_file_name(&file_path)?,
+        is_text: true,
+        content: Some(content),
+        truncated,
+        message: None,
+        size: Some(size),
+    }))
+}
+
+pub async fn upload_group_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    multipart: Multipart,
+) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let upload = read_group_workspace_file_part(multipart).await?;
+    let filename = validate_group_file_name(&upload.filename)?;
+    let path = prepare_group_upload_path(&root, &filename)?;
+    write_new_group_upload_file(&path, &upload.bytes)?;
+    let path = fs::canonicalize(&path)
+        .map_err(|_| ApiError::internal("failed to resolve group workspace file"))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(workspace_file_response(&path, &root)?),
+    ))
+}
+
+pub async fn download_group_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+) -> Result<Response, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let file_path = resolve_group_workspace_file_path(&root, &query.path)?;
+    if !file_path.is_file() {
+        return Err(ApiError::invalid_input("workspace path is not a file"));
+    }
+    let bytes = fs::read(&file_path)
+        .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
+    let filename = workspace_file_name(&file_path)?;
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(workspace_file_content_type(&file_path)),
+    );
+    response_headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"{}\"",
+            header_safe_filename(&filename)
+        ))
+        .map_err(|_| ApiError::internal("failed to build download headers"))?,
+    );
+    Ok((response_headers, bytes).into_response())
+}
+
+pub async fn rename_group_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Json(body): Json<GroupWorkspaceFileRenameRequest>,
+) -> Result<Json<GroupWorkspaceFileResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let source = resolve_group_workspace_file_path(&root, &query.path)?;
+    if source == root {
+        return Err(ApiError::invalid_input("cannot rename the workspace root"));
+    }
+    if !source.exists() {
+        return Err(ApiError::not_found("workspace path not found"));
+    }
+
+    let new_path = validate_workspace_file_new_path(&body.new_path)?;
+    let destination = resolve_group_workspace_file_path(&root, &new_path)?;
+    if path_exists_or_symlink(&destination)? {
+        return Err(ApiError::conflict("destination already exists"));
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| ApiError::invalid_input("destination parent is invalid"))?;
+    if !parent.is_dir() {
+        return Err(ApiError::invalid_input("destination parent does not exist"));
+    }
+
+    fs::rename(&source, &destination)
+        .map_err(|_| ApiError::internal("failed to rename workspace file"))?;
+    let destination = fs::canonicalize(&destination)
+        .map_err(|_| ApiError::internal("failed to resolve renamed workspace file"))?;
+    Ok(Json(workspace_file_response(&destination, &root)?))
+}
+
+pub async fn delete_group_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let target = resolve_group_workspace_file_path(&root, &query.path)?;
+    if target == root {
+        return Err(ApiError::invalid_input("cannot delete the workspace root"));
+    }
+    if target.is_dir() {
+        fs::remove_dir(&target).map_err(|err| {
+            if err.kind() == io::ErrorKind::DirectoryNotEmpty {
+                ApiError::invalid_input("directory must be empty before it can be deleted")
+            } else {
+                ApiError::internal("failed to delete workspace directory")
+            }
+        })?;
+    } else if target.is_file() {
+        fs::remove_file(&target)
+            .map_err(|_| ApiError::internal("failed to delete workspace file"))?;
+    } else {
+        return Err(ApiError::invalid_input(
+            "workspace path is not a file or directory",
+        ));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2354,6 +2638,38 @@ async fn read_group_file_part(mut multipart: Multipart) -> Result<GroupFileUploa
     Err(ApiError::invalid_input("file field is required"))
 }
 
+async fn read_group_workspace_file_part(
+    mut multipart: Multipart,
+) -> Result<GroupFileUpload, ApiError> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ApiError::invalid_input("invalid multipart form-data"))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().unwrap_or_default().to_string();
+        let mime_type = field.content_type().map(ToString::to_string);
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| ApiError::invalid_input("invalid multipart file"))?
+            .to_vec();
+        if bytes.len() > MAX_WORKSPACE_UPLOAD_BYTES {
+            return Err(ApiError::invalid_input(
+                "uploaded file exceeds the workspace upload size limit",
+            ));
+        }
+        return Ok(GroupFileUpload {
+            filename,
+            mime_type,
+            bytes,
+        });
+    }
+    Err(ApiError::invalid_input("file field is required"))
+}
+
 fn validate_group_file_name(raw: &str) -> Result<String, ApiError> {
     let filename = raw.trim().to_string();
     if filename.is_empty() {
@@ -2375,6 +2691,192 @@ fn validate_group_file_name(raw: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(filename)
+}
+
+fn validate_workspace_file_new_path(raw: &str) -> Result<String, ApiError> {
+    let path = raw.trim().to_string();
+    let len = path.chars().count();
+    if !(1..=500).contains(&len) {
+        return Err(ApiError::invalid_input(
+            "new_path must be between 1 and 500 characters",
+        ));
+    }
+    workspace_file_relative_path(&path)?;
+    Ok(path)
+}
+
+fn workspace_file_relative_path(raw: &str) -> Result<Option<String>, ApiError> {
+    let normalized = raw.trim().replace('\\', "/");
+    if normalized.is_empty() || normalized == "." {
+        return Ok(None);
+    }
+    let mut chars = normalized.chars();
+    if matches!(
+        (chars.next(), chars.next()),
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic()
+    ) {
+        return Err(ApiError::invalid_input(
+            "workspace file paths must be relative and stay inside the group workspace",
+        ));
+    }
+    if normalized.starts_with('/') || normalized.starts_with("//") {
+        return Err(ApiError::invalid_input(
+            "workspace file paths must be relative and stay inside the group workspace",
+        ));
+    }
+    if normalized
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == ".." || part == "~")
+    {
+        return Err(ApiError::invalid_input(
+            "workspace file paths must be relative and stay inside the group workspace",
+        ));
+    }
+    Ok(Some(normalized))
+}
+
+fn resolve_group_workspace_file_path(root: &FsPath, raw: &str) -> Result<PathBuf, ApiError> {
+    match workspace_file_relative_path(raw)? {
+        Some(relative) => resolve_workspace_path(root, &relative).map_err(workspace_path_error),
+        None => Ok(root.to_path_buf()),
+    }
+}
+
+fn workspace_file_response(
+    path: &FsPath,
+    root: &FsPath,
+) -> Result<GroupWorkspaceFileResponse, ApiError> {
+    let canonical =
+        fs::canonicalize(path).map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+    if !canonical.starts_with(root) {
+        return Err(ApiError::invalid_input(
+            "workspace file path escapes the group workspace",
+        ));
+    }
+    let metadata =
+        fs::metadata(path).map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| OffsetDateTime::from(modified).format(&Rfc3339).ok());
+    Ok(GroupWorkspaceFileResponse {
+        path: display_workspace_path(root, path)?,
+        name: workspace_file_name(path)?,
+        is_dir: metadata.is_dir(),
+        size: if metadata.is_dir() {
+            None
+        } else {
+            Some(metadata.len() as i64)
+        },
+        modified_at,
+        abs_path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn display_workspace_path(root: &FsPath, path: &FsPath) -> Result<String, ApiError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+    if relative.as_os_str().is_empty() {
+        return Ok(String::new());
+    }
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn workspace_file_name(path: &FsPath) -> Result<String, ApiError> {
+    Ok(path
+        .file_name()
+        .ok_or_else(|| ApiError::invalid_input("workspace path is invalid"))?
+        .to_string_lossy()
+        .to_string())
+}
+
+fn workspace_file_looks_text(path: &FsPath, sample: &[u8]) -> bool {
+    if sample.contains(&0) {
+        return false;
+    }
+    if workspace_file_has_text_extension(path) {
+        return true;
+    }
+    std::str::from_utf8(sample).is_ok()
+}
+
+fn workspace_file_has_text_extension(path: &FsPath) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "txt"
+            | "md"
+            | "markdown"
+            | "csv"
+            | "json"
+            | "jsonl"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "cfg"
+            | "log"
+            | "xml"
+            | "html"
+            | "css"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "py"
+            | "sh"
+            | "bat"
+            | "ps1"
+            | "sql"
+            | "rst"
+    )
+}
+
+fn workspace_file_content_type(path: &FsPath) -> &'static str {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return "application/octet-stream";
+    };
+    match extension.to_ascii_lowercase().as_str() {
+        "txt" | "log" | "csv" | "md" | "markdown" | "rst" => "text/plain",
+        "html" => "text/html",
+        "css" => "text/css",
+        "js" | "jsx" => "text/javascript",
+        "json" | "jsonl" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        "toml" | "ini" | "cfg" => "text/plain",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+fn header_safe_filename(filename: &str) -> String {
+    filename
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() && ch != '"' && ch != '\\' && !ch.is_control() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn path_exists_or_symlink(path: &FsPath) -> Result<bool, ApiError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(ApiError::invalid_input("workspace path is invalid")),
+    }
 }
 
 fn group_file_relative_path(filename: &str) -> String {
@@ -2465,6 +2967,13 @@ fn group_upload_path_safety_error(err: ToolError) -> ApiError {
     match err {
         ToolError::Invalid(message) => ApiError::invalid_input(message),
         ToolError::Io(_) => ApiError::invalid_input("group upload path is invalid"),
+    }
+}
+
+fn workspace_path_error(err: ToolError) -> ApiError {
+    match err {
+        ToolError::Invalid(message) => ApiError::invalid_input(message),
+        ToolError::Io(_) => ApiError::invalid_input("workspace path is invalid"),
     }
 }
 

@@ -11,7 +11,7 @@ pub mod workspaces;
 
 use std::{path::PathBuf, sync::Arc};
 
-use axum::{routing::get, Router};
+use axum::{extract::DefaultBodyLimit, routing::get, Router};
 use tokio::sync::Mutex;
 
 use crate::db::Db;
@@ -118,6 +118,31 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/groups/:group_id/files/:file_id",
             axum::routing::delete(groups::delete_group_file),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files",
+            get(groups::list_group_workspace_files).delete(groups::delete_group_workspace_file),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files/root",
+            get(groups::get_group_workspace_root),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files/preview",
+            get(groups::preview_group_workspace_file),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files/upload",
+            axum::routing::post(groups::upload_group_workspace_file)
+                .layer(DefaultBodyLimit::max(26 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files/download",
+            get(groups::download_group_workspace_file),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files/rename",
+            axum::routing::patch(groups::rename_group_workspace_file),
         )
         .route(
             "/api/v2/groups/:group_id/members/:user_id",
