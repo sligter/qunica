@@ -10,7 +10,10 @@ use std::{collections::VecDeque, sync::Arc};
 
 use ag_swarmer_backend::{
     api::{router_with_state_for_tests, AppState},
-    runtime::{run_group_turn, RuntimeServices, StreamEventKind, TurnOutcome, TurnRequest},
+    runtime::{
+        group::{run_thread_resume, ResumeRequest},
+        run_group_turn, RuntimeServices, StreamEventKind, TurnOutcome, TurnRequest,
+    },
 };
 use axum::{
     body::Body,
@@ -1742,6 +1745,94 @@ async fn group_stream_waiting_for_user_stops_remaining_proactive_fanout() {
 }
 
 #[tokio::test]
+async fn group_stream_client_disconnect_after_visible_token_persists_interrupted_message() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "cancel-after-token@example.com").await;
+    let owner = owner_id(&state, "cancel-after-token@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let request = TurnRequest {
+        group_id: group.clone(),
+        owner_id: owner.clone(),
+        thread_id: None,
+        content: "hi".to_string(),
+    };
+    let (tx, mut rx) = mpsc::channel(1);
+    let handle = tokio::spawn(run_group_turn(services, request, tx));
+
+    let first = rx.recv().await.unwrap();
+    assert_eq!(first.kind, StreamEventKind::UserMessage);
+    let second = rx.recv().await.unwrap();
+    assert_eq!(second.kind, StreamEventKind::AgentStart);
+    let third = rx.recv().await.unwrap();
+    assert_eq!(third.kind, StreamEventKind::Token);
+    assert_eq!(third.payload["delta"], "a");
+    drop(rx);
+
+    let outcome = handle.await.unwrap();
+    assert_eq!(outcome, TurnOutcome::Cancelled);
+
+    let rows: Vec<(
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        String,
+    )> = sqlx::query_as(
+        "SELECT thread_id, sender_id, message_type, content, status, sender_type \
+             FROM messages \
+             WHERE group_id = ? AND sender_type = 'agent' \
+             ORDER BY seq ASC",
+    )
+    .bind(&group)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    let (thread_id, sender_id, message_type, content, status, sender_type) = &rows[0];
+    assert_eq!(sender_type, "agent");
+    assert_eq!(sender_id.as_deref(), Some(agent.as_str()));
+    assert_eq!(message_type, "text");
+    assert_eq!(content.as_deref(), Some("a"));
+    assert_eq!(status, "interrupted");
+
+    let visible_agent_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages \
+         WHERE group_id = ? AND sender_type = 'agent' AND status = 'visible'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(visible_agent_messages, 0);
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "paused");
+}
+
+#[tokio::test]
 async fn group_stream_client_disconnect_cancels_runtime_task() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "cancel@example.com").await;
@@ -1797,6 +1888,297 @@ async fn group_stream_client_disconnect_cancels_runtime_task() {
             .await
             .unwrap();
     assert_eq!(agent_messages, 0);
+
+    let interrupted_messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE status = 'interrupted'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(interrupted_messages, 0);
+
+    let thread_status: String = sqlx::query_scalar(
+        "SELECT t.status \
+         FROM threads t \
+         JOIN messages m ON m.thread_id = t.id \
+         WHERE m.group_id = ? AND m.sender_type = 'user'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(thread_status, "active");
+}
+
+#[tokio::test]
+async fn resume_thread_unknown_thread_returns_not_found() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-unknown@example.com").await;
+    let unknown = uuid::Uuid::new_v4();
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{unknown}/resume"),
+            &token,
+            json!({}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn resume_thread_cross_owner_returns_permission_denied() {
+    let (app, state) = router_with_state_for_tests().await;
+    let owner_token = register_and_login(&app, "resume-owner@example.com").await;
+    let other_token = register_and_login(&app, "resume-other@example.com").await;
+    let workspace = create_workspace(&app, &owner_token).await;
+    let group = create_group(&app, &owner_token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "paused").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &other_token,
+            json!({}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn resume_thread_non_paused_returns_conflict() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-active@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &token,
+            json!({}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn resume_thread_paused_without_interrupted_message_returns_conflict() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-no-interrupted@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "paused").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &token,
+            json!({}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn resume_thread_success_appends_to_existing_interrupted_message() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-success@example.com").await;
+    let owner = owner_id(&state, "resume-success@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" continued\"}}]}\n\
+                         data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "paused").await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "question",
+        None,
+    )
+    .await;
+    let interrupted = seed_message(
+        &state,
+        &group,
+        &thread,
+        2,
+        "interrupted",
+        "agent",
+        Some(&agent),
+        "Hello",
+        None,
+    )
+    .await;
+
+    let frames = stream_frames(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({}),
+    )
+    .await;
+    assert_frame_ids_match_payloads(&frames);
+    let events: Vec<Value> = frames.iter().map(|frame| frame.data.clone()).collect();
+    assert_eq!(
+        kinds(&events),
+        vec![
+            "agent_start".to_string(),
+            "token".to_string(),
+            "agent_message".to_string(),
+            "done".to_string()
+        ]
+    );
+    assert_eq!(events[0]["payload"]["agent_id"], agent);
+    assert_eq!(events[1]["payload"]["delta"], " continued");
+    assert_eq!(events[2]["payload"]["message_id"], interrupted);
+    assert_eq!(events[2]["payload"]["content"], "Hello continued");
+
+    let rows: Vec<(String, Option<String>, String, i64)> = sqlx::query_as(
+        "SELECT id, content, status, seq \
+         FROM messages \
+         WHERE thread_id = ? AND sender_type = 'agent' \
+         ORDER BY seq ASC",
+    )
+    .bind(&thread)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, interrupted);
+    assert_eq!(rows[0].1.as_deref(), Some("Hello continued"));
+    assert_eq!(rows[0].2, "visible");
+    assert_eq!(rows[0].3, 2);
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "active");
+
+    let durable_kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM stream_events WHERE thread_id = ? ORDER BY seq ASC")
+            .bind(&thread)
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(durable_kinds, vec!["agent_message", "done"]);
+}
+
+#[tokio::test]
+async fn resume_thread_cancellation_appends_tokens_and_keeps_thread_paused() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-cancel@example.com").await;
+    let owner = owner_id(&state, "resume-cancel@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" more\"}}]}\n\
+                         data: {\"choices\":[{\"delta\":{\"content\":\" later\"}}]}\n\
+                         data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "paused").await;
+    let interrupted = seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "interrupted",
+        "agent",
+        Some(&agent),
+        "Start",
+        None,
+    )
+    .await;
+
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let request = ResumeRequest {
+        group_id: group.clone(),
+        thread_id: thread.clone(),
+        agent_id: agent.clone(),
+        message_id: interrupted.clone(),
+        existing_content: "Start".to_string(),
+    };
+    let (tx, mut rx) = mpsc::channel(1);
+    let handle = tokio::spawn(run_thread_resume(services, request, tx));
+
+    let start = rx.recv().await.unwrap();
+    assert_eq!(start.kind, StreamEventKind::AgentStart);
+    let token_event = rx.recv().await.unwrap();
+    assert_eq!(token_event.kind, StreamEventKind::Token);
+    assert_eq!(token_event.payload["delta"], " more");
+    drop(rx);
+
+    let outcome = handle.await.unwrap();
+    assert_eq!(outcome, TurnOutcome::Cancelled);
+
+    let row: (Option<String>, String) =
+        sqlx::query_as("SELECT content, status FROM messages WHERE id = ?")
+            .bind(&interrupted)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(row.0.as_deref(), Some("Start more"));
+    assert_eq!(row.1, "interrupted");
+
+    let agent_message_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE thread_id = ? AND sender_type = 'agent'",
+    )
+    .bind(&thread)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(agent_message_count, 1);
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "paused");
 }
 
 #[tokio::test]

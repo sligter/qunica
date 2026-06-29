@@ -19,7 +19,8 @@
 //!
 //! Cancellation is cooperative: every event is pushed through an mpsc channel,
 //! and the moment the receiver (the HTTP response body) is dropped, the next
-//! send fails and the turn stops without emitting or persisting anything more.
+//! send fails. If visible agent tokens already reached the client, the runtime
+//! checkpoints that partial reply as `interrupted` so it can be resumed.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -47,6 +48,9 @@ pub const SILENT_MARKER: &str = "<SILENT>";
 /// An agent prefixes its reply with this marker to pause for human input.
 pub const WAITING_MARKER: &str = "<WAITING_FOR_USER>";
 
+const RESUME_CONTINUATION_PROMPT: &str =
+    "Continue from where you left off. Do not repeat completed text; append only the continuation.";
+
 /// Shared services the group runtime needs to read config and persist state.
 #[derive(Clone)]
 pub struct RuntimeServices {
@@ -70,6 +74,15 @@ pub struct TurnRequest {
     pub owner_id: String,
     pub thread_id: Option<String>,
     pub content: String,
+}
+
+/// A request to continue the latest interrupted message in a paused thread.
+pub struct ResumeRequest {
+    pub group_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub message_id: String,
+    pub existing_content: String,
 }
 
 /// How a turn ended.
@@ -142,6 +155,29 @@ pub async fn run_group_turn(
     }
 }
 
+/// Resume an interrupted agent message, appending newly streamed tokens to the
+/// existing row rather than creating a replacement message.
+pub async fn run_thread_resume(
+    services: RuntimeServices,
+    req: ResumeRequest,
+    tx: Sender<StreamEvent<Value>>,
+) -> TurnOutcome {
+    let stream_id = Uuid::new_v4();
+    let mut ctx = StreamCtx {
+        stream_id,
+        seq: 0,
+        tx,
+        allocator: services.allocator(),
+        thread_id: req.thread_id.clone(),
+        group_id: req.group_id.clone(),
+    };
+
+    match run_resume_inner(&services, &req, &mut ctx).await {
+        Ok(outcome) => outcome,
+        Err(Cancelled) => TurnOutcome::Cancelled,
+    }
+}
+
 /// Per-stream emit state: the stream id, the monotonic sequence counter, the
 /// outbound channel, and the durable-write allocator.
 struct StreamCtx {
@@ -183,6 +219,32 @@ impl StreamCtx {
             .await
             .map_err(StepErr::Db)?;
         permit.send(event);
+        Ok(())
+    }
+
+    /// Reserve outbound capacity, update an existing interrupted message and
+    /// persist both final durable events before emitting them.
+    async fn emit_resume_completion(
+        &mut self,
+        payload: Value,
+        message_id: &str,
+        content: &str,
+    ) -> Result<(), StepErr> {
+        let message_event = self.next_event(StreamEventKind::AgentMessage, payload);
+        let done_event = self.next_event(StreamEventKind::Done, json!({}));
+        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
+        self.allocator
+            .complete_interrupted_message_with_events(
+                &self.thread_id,
+                message_id,
+                content,
+                &message_event,
+                &done_event,
+            )
+            .await
+            .map_err(StepErr::Db)?;
+        permit.send(message_event);
+        let _ = self.tx.send(done_event).await;
         Ok(())
     }
 
@@ -331,6 +393,179 @@ async fn run_inner(
     Ok(TurnOutcome::Completed)
 }
 
+async fn run_resume_inner(
+    services: &RuntimeServices,
+    req: &ResumeRequest,
+    ctx: &mut StreamCtx,
+) -> Result<TurnOutcome, Cancelled> {
+    if let Err(err) = ctx
+        .allocator
+        .set_thread_status(&ctx.thread_id, "running")
+        .await
+    {
+        return ctx.fail(&err.to_string()).await;
+    }
+
+    let agent = match load_resume_candidate(&services.pool, &req.group_id, &req.agent_id).await {
+        Ok(agent) => agent,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+
+    if ctx
+        .emit(
+            StreamEventKind::AgentStart,
+            json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
+        )
+        .await
+        .is_err()
+    {
+        let _ = ctx
+            .allocator
+            .set_thread_status(&ctx.thread_id, "paused")
+            .await;
+        return Ok(TurnOutcome::Cancelled);
+    }
+
+    let provider_cfg = match resolve_provider(&services.pool, &agent).await {
+        Ok(config) => config,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+    let provider = match build_provider(&provider_cfg) {
+        Ok(provider) => provider,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+    let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
+    let messages = match build_resume_messages(
+        &services.pool,
+        &ctx.thread_id,
+        &agent.system_prompt,
+        &req.message_id,
+    )
+    .await
+    {
+        Ok(messages) => messages,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+    let request = ChatRequest {
+        model,
+        messages,
+        temperature: None,
+        reasoning_passback: provider_cfg.reasoning_passback,
+    };
+    let mut deltas = match provider.stream(request).await {
+        Ok(deltas) => deltas,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+
+    let mut addition = String::new();
+    while let Some(delta) = deltas.recv().await {
+        match delta {
+            ChatDelta::Token(text) => {
+                match ctx
+                    .emit(
+                        StreamEventKind::Token,
+                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                    )
+                    .await
+                {
+                    Ok(()) => addition.push_str(&text),
+                    Err(StepErr::Cancelled) => {
+                        append_resume_cancellation(ctx, req, &addition).await?;
+                        return Ok(TurnOutcome::Cancelled);
+                    }
+                    Err(StepErr::Db(err)) => return fail_resume(ctx, &err.to_string()).await,
+                }
+            }
+            ChatDelta::Reasoning(text) => {
+                if let Err(err) = ctx
+                    .emit(
+                        StreamEventKind::Reasoning,
+                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                    )
+                    .await
+                {
+                    return match err {
+                        StepErr::Cancelled => {
+                            append_resume_cancellation(ctx, req, &addition).await?;
+                            Ok(TurnOutcome::Cancelled)
+                        }
+                        StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
+                    };
+                }
+            }
+            ChatDelta::Usage(usage) => {
+                if let Err(err) = ctx
+                    .emit(
+                        StreamEventKind::ContextUsage,
+                        json!({
+                            "agent_id": agent.agent_id,
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                            "total_tokens": usage.total_tokens,
+                        }),
+                    )
+                    .await
+                {
+                    return match err {
+                        StepErr::Cancelled => {
+                            append_resume_cancellation(ctx, req, &addition).await?;
+                            Ok(TurnOutcome::Cancelled)
+                        }
+                        StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
+                    };
+                }
+            }
+            ChatDelta::ToolCall(_) => {}
+            ChatDelta::Done => break,
+        }
+    }
+
+    let final_content = format!("{}{}", req.existing_content, addition);
+    let message_payload = json!({
+        "message_id": req.message_id,
+        "agent_id": agent.agent_id,
+        "sender_id": agent.agent_id,
+        "display_name": agent.display_name,
+        "content": final_content,
+    });
+    match ctx
+        .emit_resume_completion(message_payload, &req.message_id, &final_content)
+        .await
+    {
+        Ok(()) => Ok(TurnOutcome::Completed),
+        Err(err) => match err {
+            StepErr::Cancelled => {
+                append_resume_cancellation(ctx, req, &addition).await?;
+                Ok(TurnOutcome::Cancelled)
+            }
+            StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
+        },
+    }
+}
+
+async fn fail_resume(ctx: &mut StreamCtx, message: &str) -> Result<TurnOutcome, Cancelled> {
+    let _ = ctx
+        .allocator
+        .set_thread_status(&ctx.thread_id, "failed")
+        .await;
+    ctx.fail(message).await
+}
+
+async fn append_resume_cancellation(
+    ctx: &mut StreamCtx,
+    req: &ResumeRequest,
+    addition: &str,
+) -> Result<(), Cancelled> {
+    if let Err(err) = ctx
+        .allocator
+        .append_interrupted_message(&req.thread_id, &req.message_id, addition, "paused")
+        .await
+    {
+        return fail_resume(ctx, &err.to_string()).await.map(|_| ());
+    }
+    Ok(())
+}
+
 /// An active agent eligible to respond in the group.
 struct Candidate {
     agent_id: String,
@@ -406,34 +641,56 @@ async fn run_agent_turn(
     while let Some(delta) = deltas.recv().await {
         match delta {
             ChatDelta::Token(text) => {
-                content.push_str(&text);
-                ctx.emit(
-                    StreamEventKind::Token,
-                    json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
-                )
-                .await?;
+                match ctx
+                    .emit(
+                        StreamEventKind::Token,
+                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                    )
+                    .await
+                {
+                    Ok(()) => content.push_str(&text),
+                    Err(StepErr::Cancelled) => {
+                        persist_interrupted_agent(ctx, agent, &content).await?;
+                        return Err(StepErr::Cancelled);
+                    }
+                    Err(err @ StepErr::Db(_)) => return Err(err),
+                }
             }
             ChatDelta::Reasoning(text) => {
-                ctx.emit(
-                    StreamEventKind::Reasoning,
-                    json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
-                )
-                .await?;
+                if let Err(err) = ctx
+                    .emit(
+                        StreamEventKind::Reasoning,
+                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                    )
+                    .await
+                {
+                    if matches!(err, StepErr::Cancelled) {
+                        persist_interrupted_agent(ctx, agent, &content).await?;
+                    }
+                    return Err(err);
+                }
             }
             ChatDelta::ToolCall(call) => {
                 tool_calls.push(call);
             }
             ChatDelta::Usage(usage) => {
-                ctx.emit(
-                    StreamEventKind::ContextUsage,
-                    json!({
-                        "agent_id": agent.agent_id,
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "total_tokens": usage.total_tokens,
-                    }),
-                )
-                .await?;
+                if let Err(err) = ctx
+                    .emit(
+                        StreamEventKind::ContextUsage,
+                        json!({
+                            "agent_id": agent.agent_id,
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                            "total_tokens": usage.total_tokens,
+                        }),
+                    )
+                    .await
+                {
+                    if matches!(err, StepErr::Cancelled) {
+                        persist_interrupted_agent(ctx, agent, &content).await?;
+                    }
+                    return Err(err);
+                }
             }
             ChatDelta::Done => break,
         }
@@ -453,10 +710,52 @@ async fn run_agent_turn(
     }
 
     for call in tool_calls {
-        emit_tool_call_start(ctx, agent, &call).await?;
+        if let Err(err) = emit_tool_call_start(ctx, agent, &call).await {
+            if matches!(err, StepErr::Cancelled) {
+                persist_interrupted_agent(ctx, agent, &content).await?;
+            }
+            return Err(err);
+        }
     }
 
     finish_agent_content(ctx, agent, proactive, content).await
+}
+
+async fn persist_interrupted_agent(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+) -> Result<(), StepErr> {
+    let Some(content) = interrupted_visible_content(content) else {
+        return Ok(());
+    };
+    let message = NewMessage {
+        id: Uuid::new_v4().to_string(),
+        sender_type: "agent".to_string(),
+        sender_id: Some(agent.agent_id.clone()),
+        message_type: "text".to_string(),
+        content,
+    };
+    ctx.allocator
+        .persist_interrupted_message(&ctx.thread_id, &ctx.group_id, &message)
+        .await
+        .map_err(StepErr::Db)?;
+    Ok(())
+}
+
+fn interrupted_visible_content(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() || trimmed == SILENT_MARKER {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix(WAITING_MARKER) {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    Some(content.to_string())
 }
 
 async fn handle_agent_as_tool(
@@ -596,14 +895,21 @@ async fn finish_agent_content(
         "agent_id": agent.agent_id,
         "sender_id": agent.agent_id,
         "display_name": agent.display_name,
-        "content": visible,
+        "content": visible.clone(),
     });
-    ctx.emit_message(
-        StreamEventKind::AgentMessage,
-        message_payload,
-        &agent_message,
-    )
-    .await?;
+    if let Err(err) = ctx
+        .emit_message(
+            StreamEventKind::AgentMessage,
+            message_payload,
+            &agent_message,
+        )
+        .await
+    {
+        if matches!(err, StepErr::Cancelled) {
+            persist_interrupted_agent(ctx, agent, &visible).await?;
+        }
+        return Err(err);
+    }
 
     if is_waiting {
         ctx.emit_durable_event(
@@ -712,17 +1018,45 @@ async fn load_candidates(pool: &SqlitePool, group_id: &str) -> anyhow::Result<Ve
         if !seen_names.insert(display.to_lowercase()) {
             continue;
         }
-        candidates.push(Candidate {
-            agent_id: row.id,
-            owner_id: row.owner_id,
-            display_name: display,
-            system_prompt: row.system_prompt,
-            provider_id: row.provider_id,
-            model_config_json: row.model_config_json,
-            tool_config_json: row.tool_config_json,
-        });
+        candidates.push(candidate_from_row(row));
     }
     Ok(candidates)
+}
+
+async fn load_resume_candidate(
+    pool: &SqlitePool,
+    group_id: &str,
+    agent_id: &str,
+) -> anyhow::Result<Candidate> {
+    let row: Option<CandidateRow> = sqlx::query_as(
+        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.provider_id, \
+                a.model_config_json, a.tool_config_json \
+         FROM group_agents ga \
+         JOIN agents a ON a.id = ga.agent_id \
+         WHERE ga.group_id = ? \
+           AND ga.agent_id = ? \
+           AND ga.status = 'active' \
+           AND a.status = 'active'",
+    )
+    .bind(group_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(candidate_from_row)
+        .ok_or_else(|| anyhow::anyhow!("agent is no longer active in this group"))
+}
+
+fn candidate_from_row(row: CandidateRow) -> Candidate {
+    let display = row.display_name.clone().unwrap_or_else(|| row.name.clone());
+    Candidate {
+        agent_id: row.id,
+        owner_id: row.owner_id,
+        display_name: display,
+        system_prompt: row.system_prompt,
+        provider_id: row.provider_id,
+        model_config_json: row.model_config_json,
+        tool_config_json: row.tool_config_json,
+    }
 }
 
 /// Pick the responders for `text`: explicit mentions win; otherwise free-speech
@@ -890,6 +1224,44 @@ async fn build_messages(
             content: content.unwrap_or_default(),
         });
     }
+    Ok(messages)
+}
+
+async fn build_resume_messages(
+    pool: &SqlitePool,
+    thread_id: &str,
+    system_prompt: &str,
+    interrupted_message_id: &str,
+) -> anyhow::Result<Vec<ChatMessage>> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, sender_type, content FROM messages \
+         WHERE thread_id = ? AND (status = 'visible' OR id = ?) \
+         ORDER BY seq ASC",
+    )
+    .bind(thread_id)
+    .bind(interrupted_message_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    }];
+    for (_id, sender_type, content) in rows {
+        let role = if sender_type == "agent" {
+            "assistant"
+        } else {
+            "user"
+        };
+        messages.push(ChatMessage {
+            role: role.to_string(),
+            content: content.unwrap_or_default(),
+        });
+    }
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: RESUME_CONTINUATION_PROMPT.to_string(),
+    });
     Ok(messages)
 }
 

@@ -7,6 +7,7 @@ pub mod llm_providers;
 pub mod messages;
 pub mod skills;
 pub mod system_settings;
+pub mod threads;
 pub mod workspaces;
 
 use std::{path::PathBuf, sync::Arc};
@@ -183,6 +184,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/groups/:group_id/messages/stream",
             axum::routing::post(messages::stream),
+        )
+        .route("/api/v2/threads/:thread_id", get(threads::get))
+        .route(
+            "/api/v2/threads/:thread_id/resume",
+            axum::routing::post(threads::resume),
         )
         .route(
             "/api/v2/skills",

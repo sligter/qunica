@@ -93,6 +93,147 @@ impl SequenceAllocator {
         Ok(next_seq)
     }
 
+    /// Persist a partial agent message at the thread's next sequence and pause
+    /// the thread. No stream event is written because the client has already
+    /// disconnected before the final `agent_message` checkpoint.
+    pub async fn persist_interrupted_message(
+        &self,
+        thread_id: &str,
+        group_id: &str,
+        message: &NewMessage,
+    ) -> anyhow::Result<i64> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+
+        let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "INSERT INTO messages \
+             (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
+              status, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interrupted', ?)",
+        )
+        .bind(&message.id)
+        .bind(thread_id)
+        .bind(group_id)
+        .bind(next_seq)
+        .bind(&message.sender_type)
+        .bind(&message.sender_id)
+        .bind(&message.message_type)
+        .bind(&message.content)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE threads SET next_seq = ?, status = 'paused', updated_at = ? WHERE id = ?",
+        )
+        .bind(next_seq + 1)
+        .bind(&now)
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(next_seq)
+    }
+
+    /// Append resume output to an existing interrupted message and keep the
+    /// thread in the supplied state.
+    pub async fn append_interrupted_message(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        addition: &str,
+        thread_status: &str,
+    ) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(
+            "UPDATE messages \
+             SET content = COALESCE(content, '') || ? \
+             WHERE id = ? AND thread_id = ? AND status = 'interrupted'",
+        )
+        .bind(addition)
+        .bind(message_id)
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!("interrupted message not found"));
+        }
+
+        sqlx::query("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(thread_status)
+            .bind(&now)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Complete an interrupted message in place and persist the durable
+    /// `agent_message` and `done` events for the resumed stream.
+    pub async fn complete_interrupted_message_with_events(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        content: &str,
+        message_event: &StreamEvent<Value>,
+        done_event: &StreamEvent<Value>,
+    ) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(
+            "UPDATE messages \
+             SET content = ?, status = 'visible' \
+             WHERE id = ? AND thread_id = ? AND status = 'interrupted'",
+        )
+        .bind(content)
+        .bind(message_id)
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!("interrupted message not found"));
+        }
+
+        sqlx::query("UPDATE threads SET status = 'active', updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+
+        insert_stream_event(&mut tx, thread_id, message_event, &now).await?;
+        insert_stream_event(&mut tx, thread_id, done_event, &now).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Update only the thread status under the same write lock used for other
+    /// runtime mutations.
+    pub async fn set_thread_status(&self, thread_id: &str, status: &str) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        sqlx::query("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Persist a durable stream event with no associated message row (terminal
     /// markers such as `agent_silent`, `waiting_for_user` and `silence`).
     pub async fn persist_event(
