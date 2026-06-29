@@ -10,14 +10,15 @@ use std::convert::Infallible;
 
 use ag_swarmer_domain::events::StreamEvent;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     response::sse::{Event, Sse},
     Json,
 };
 use futures_util::{stream::BoxStream, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -36,6 +37,153 @@ pub struct StreamRequest {
     content: String,
     #[serde(default)]
     thread_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListMessagesQuery {
+    limit: Option<String>,
+    before: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MessageResponse {
+    id: String,
+    group_id: String,
+    thread_id: Option<String>,
+    sender_type: String,
+    sender_id: Option<String>,
+    message_type: String,
+    content: Option<String>,
+    status: String,
+    refs: Option<Value>,
+    context_usage: Option<Value>,
+    reply_to_message_id: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClearMessagesResponse {
+    cleared_count: u64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MessageRow {
+    id: String,
+    group_id: String,
+    thread_id: String,
+    sender_type: String,
+    sender_id: Option<String>,
+    message_type: String,
+    content: Option<String>,
+    content_json: Option<String>,
+    status: String,
+    created_at: String,
+}
+
+impl From<MessageRow> for MessageResponse {
+    fn from(row: MessageRow) -> Self {
+        let context_usage = context_usage_from_content_json(row.content_json.as_deref());
+        Self {
+            id: row.id,
+            group_id: row.group_id,
+            thread_id: Some(row.thread_id),
+            sender_type: row.sender_type,
+            sender_id: row.sender_id,
+            message_type: row.message_type,
+            content: row.content,
+            status: row.status,
+            refs: None,
+            context_usage,
+            reply_to_message_id: None,
+            created_at: row.created_at,
+        }
+    }
+}
+
+pub async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<ListMessagesQuery>,
+) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let limit = parse_limit(query.limit.as_deref())?;
+    let before_id = query
+        .before
+        .as_deref()
+        .map(|raw| validate_uuid(raw, "before message id"))
+        .transpose()?;
+
+    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+
+    let before_cursor = match before_id {
+        Some(before_id) => {
+            Some(fetch_visible_message_cursor(state.db.pool(), &group_id, &before_id).await?)
+        }
+        None => None,
+    };
+
+    let mut rows = fetch_message_page(state.db.pool(), &group_id, limit, before_cursor).await?;
+    rows.reverse();
+    Ok(Json(rows.into_iter().map(MessageResponse::from).collect()))
+}
+
+pub async fn clear(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<ClearMessagesResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+
+    let _guard = state.write_lock.lock().await;
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start message clear transaction"))?;
+
+    let cleared_count = sqlx::query(
+        "UPDATE messages \
+         SET status = 'cleared' \
+         WHERE group_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(&group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to clear messages"))?
+    .rows_affected();
+
+    sqlx::query(
+        "UPDATE threads \
+         SET status = 'cleared', updated_at = ? \
+         WHERE group_id = ? \
+           AND agent_id IS NULL \
+           AND status IN ('active', 'running', 'paused', 'completed', 'failed', 'created') \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM messages \
+             WHERE messages.thread_id = threads.id \
+               AND messages.group_id = ? \
+               AND messages.status IN ('visible', 'interrupted') \
+           )",
+    )
+    .bind(&now)
+    .bind(&group_id)
+    .bind(&group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to clear message threads"))?;
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit message clear"))?;
+
+    Ok(Json(ClearMessagesResponse { cleared_count }))
 }
 
 pub async fn stream(
@@ -76,6 +224,68 @@ pub async fn stream(
     Ok(Sse::new(body))
 }
 
+async fn fetch_visible_message_cursor(
+    pool: &sqlx::SqlitePool,
+    group_id: &str,
+    message_id: &str,
+) -> Result<(i64, String), ApiError> {
+    sqlx::query_as::<_, (i64, String)>(
+        "SELECT seq, id FROM messages \
+         WHERE id = ? AND group_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::not_found("message not found"))
+}
+
+async fn fetch_message_page(
+    pool: &sqlx::SqlitePool,
+    group_id: &str,
+    limit: i64,
+    before_cursor: Option<(i64, String)>,
+) -> Result<Vec<MessageRow>, ApiError> {
+    let rows = match before_cursor {
+        Some((before_seq, before_id)) => {
+            sqlx::query_as::<_, MessageRow>(
+                "SELECT id, group_id, thread_id, seq, sender_type, sender_id, message_type, \
+                        content, content_json, status, created_at \
+                 FROM messages \
+                 WHERE group_id = ? \
+                   AND status IN ('visible', 'interrupted') \
+                   AND (seq < ? OR (seq = ? AND id < ?)) \
+                 ORDER BY seq DESC, id DESC \
+                 LIMIT ?",
+            )
+            .bind(group_id)
+            .bind(before_seq)
+            .bind(before_seq)
+            .bind(before_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, MessageRow>(
+                "SELECT id, group_id, thread_id, seq, sender_type, sender_id, message_type, \
+                        content, content_json, status, created_at \
+                 FROM messages \
+                 WHERE group_id = ? AND status IN ('visible', 'interrupted') \
+                 ORDER BY seq DESC, id DESC \
+                 LIMIT ?",
+            )
+            .bind(group_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+        }
+    };
+
+    rows.map_err(|_| ApiError::internal("database error"))
+}
+
 /// Confirm the group exists, is active, and belongs to the caller.
 async fn ensure_active_owned_group(
     pool: &sqlx::SqlitePool,
@@ -103,4 +313,28 @@ fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {
     Uuid::parse_str(raw.trim())
         .map(|id| id.to_string())
         .map_err(|_| ApiError::invalid_input(format!("invalid {field}")))
+}
+
+fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(30);
+    };
+    let limit = raw
+        .parse::<i64>()
+        .map_err(|_| ApiError::invalid_input("limit must be an integer"))?;
+    Ok(limit.clamp(1, 100))
+}
+
+fn context_usage_from_content_json(raw: Option<&str>) -> Option<Value> {
+    let value: Value = serde_json::from_str(raw?).ok()?;
+    match value.get("context_usage") {
+        Some(Value::Object(_)) => value.get("context_usage").cloned(),
+        _ => None,
+    }
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }

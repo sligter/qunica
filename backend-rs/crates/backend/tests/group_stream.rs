@@ -78,6 +78,15 @@ fn authed_json(method: &str, uri: &str, token: &str, body: Value) -> Request<Bod
         .unwrap()
 }
 
+fn authed_empty(method: &str, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
 async fn register_and_login(app: &Router, email: &str) -> String {
     let (status, _) = send(
         app,
@@ -210,6 +219,80 @@ async fn seed_agent(
     agent_id
 }
 
+async fn seed_thread(state: &AppState, group_id: &str, status: &str) -> String {
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO threads (id, group_id, agent_id, status, next_seq, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, 1, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&thread_id)
+    .bind(group_id)
+    .bind(status)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    thread_id
+}
+
+async fn seed_message(
+    state: &AppState,
+    group_id: &str,
+    thread_id: &str,
+    seq: i64,
+    status: &str,
+    sender_type: &str,
+    sender_id: Option<&str>,
+    content: &str,
+    content_json: Option<Value>,
+) -> String {
+    let message_id = uuid::Uuid::new_v4().to_string();
+    let content_json = content_json.map(|value| value.to_string());
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
+          content_json, status, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, 'text', ?, ?, ?, '2024-01-01T00:00:00Z')",
+    )
+    .bind(&message_id)
+    .bind(thread_id)
+    .bind(group_id)
+    .bind(seq)
+    .bind(sender_type)
+    .bind(sender_id)
+    .bind(content)
+    .bind(content_json)
+    .bind(status)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    sqlx::query("UPDATE threads SET next_seq = MAX(next_seq, ?) WHERE id = ?")
+        .bind(seq + 1)
+        .bind(thread_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+
+    message_id
+}
+
+async fn seed_stream_event(state: &AppState, thread_id: &str) -> String {
+    let event_id = format!("test-event:{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO stream_events \
+         (id, stream_id, thread_id, seq, event_id, kind, payload_json, created_at) \
+         VALUES (?, ?, ?, 0, ?, 'done', '{}', '2024-01-01T00:00:00Z')",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(thread_id)
+    .bind(&event_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    event_id
+}
+
 // ---------------------------------------------------------------------------
 // Fake LLM provider server (OpenAI-style SSE)
 // ---------------------------------------------------------------------------
@@ -237,6 +320,462 @@ fn kinds(events: &[Value]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn messages_list_returns_chronological_visible_interrupted_shape() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "messages-shape@example.com").await;
+    let owner = owner_id(&state, "messages-shape@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+    let agent_id = uuid::Uuid::new_v4().to_string();
+
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "one",
+        None,
+    )
+    .await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        2,
+        "cleared",
+        "agent",
+        Some(&agent_id),
+        "two-cleared",
+        None,
+    )
+    .await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        3,
+        "interrupted",
+        "agent",
+        Some(&agent_id),
+        "three",
+        Some(json!({
+            "context_usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "context_window_tokens": 100,
+                "output_reserve_tokens": 20,
+                "ratio": 0.15,
+                "source": "prompt",
+                "updated_at": "2024-01-01T00:00:00Z"
+            }
+        })),
+    )
+    .await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        4,
+        "visible",
+        "agent",
+        Some(&agent_id),
+        "four",
+        Some(json!({"context_usage": "not-an-object"})),
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{group}/messages?limit=30"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let messages = body.as_array().unwrap();
+    let contents: Vec<&str> = messages
+        .iter()
+        .map(|message| message["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, vec!["one", "three", "four"]);
+
+    assert_eq!(messages[0]["group_id"].as_str().unwrap(), group);
+    assert_eq!(messages[0]["thread_id"].as_str().unwrap(), thread);
+    assert_eq!(messages[0]["sender_type"], "user");
+    assert_eq!(messages[0]["sender_id"].as_str().unwrap(), owner);
+    assert_eq!(messages[0]["message_type"], "text");
+    assert_eq!(messages[0]["status"], "visible");
+    assert!(messages[0]["refs"].is_null());
+    assert!(messages[0]["reply_to_message_id"].is_null());
+    assert!(messages[0]["context_usage"].is_null());
+    assert!(messages[0]["created_at"].as_str().is_some());
+
+    assert_eq!(messages[1]["status"], "interrupted");
+    assert_eq!(messages[1]["context_usage"]["input_tokens"], 10);
+    assert_eq!(messages[1]["context_usage"]["source"], "prompt");
+    assert!(messages[2]["context_usage"].is_null());
+}
+
+#[tokio::test]
+async fn messages_list_clamps_limit_and_paginates_before_oldest_id() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "messages-page@example.com").await;
+    let owner = owner_id(&state, "messages-page@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+    let mut ids = Vec::new();
+
+    for seq in 1..=105 {
+        let id = seed_message(
+            &state,
+            &group,
+            &thread,
+            seq,
+            "visible",
+            "user",
+            Some(&owner),
+            &format!("msg-{seq}"),
+            None,
+        )
+        .await;
+        ids.push(id);
+    }
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{group}/messages?limit=999"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page = body.as_array().unwrap();
+    assert_eq!(page.len(), 100);
+    assert_eq!(page[0]["id"].as_str().unwrap(), ids[5]);
+    assert_eq!(page[0]["content"], "msg-6");
+    assert_eq!(page[99]["content"], "msg-105");
+
+    let before = page[0]["id"].as_str().unwrap();
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{group}/messages?limit=999&before={before}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let older_page = body.as_array().unwrap();
+    assert_eq!(older_page.len(), 5);
+    assert_eq!(older_page[0]["content"], "msg-1");
+    assert_eq!(older_page[4]["content"], "msg-5");
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{group}/messages?limit=0"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let lower_clamped = body.as_array().unwrap();
+    assert_eq!(lower_clamped.len(), 1);
+    assert_eq!(lower_clamped[0]["content"], "msg-105");
+}
+
+#[tokio::test]
+async fn messages_list_rejects_invalid_before_targets() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "messages-before@example.com").await;
+    let owner = owner_id(&state, "messages-before@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let other_group = create_group(&app, &token, &workspace, json!({"name": "Other"})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+    let other_thread = seed_thread(&state, &other_group, "active").await;
+
+    let cleared = seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "cleared",
+        "user",
+        Some(&owner),
+        "cleared",
+        None,
+    )
+    .await;
+    let outside = seed_message(
+        &state,
+        &other_group,
+        &other_thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "outside",
+        None,
+    )
+    .await;
+
+    for before in [outside, cleared] {
+        let (status, body) = send(
+            &app,
+            authed_empty(
+                "GET",
+                &format!("/api/v2/groups/{group}/messages?before={before}"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "not_found");
+    }
+
+    let missing_group = uuid::Uuid::new_v4();
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{missing_group}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn messages_list_and_clear_reject_cross_owner_access() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let owner_token = register_and_login(&app, "messages-owner@example.com").await;
+    let intruder_token = register_and_login(&app, "messages-intruder@example.com").await;
+    let workspace = create_workspace(&app, &owner_token).await;
+    let group = create_group(&app, &owner_token, &workspace, json!({})).await;
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{group}/messages"),
+            &intruder_token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages/clear"),
+            &intruder_token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn messages_clear_marks_visible_history_and_preserves_rows() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "messages-clear@example.com").await;
+    let owner = owner_id(&state, "messages-clear@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+    let event_id = seed_stream_event(&state, &thread).await;
+
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "visible",
+        None,
+    )
+    .await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        2,
+        "interrupted",
+        "user",
+        Some(&owner),
+        "interrupted",
+        None,
+    )
+    .await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        3,
+        "cleared",
+        "user",
+        Some(&owner),
+        "already-cleared",
+        None,
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages/clear"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cleared_count"].as_u64().unwrap(), 2);
+
+    let (status, body) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.as_array().unwrap().is_empty());
+
+    let total_messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(total_messages, 3);
+    let visible_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages \
+         WHERE group_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(visible_messages, 0);
+    let stream_event_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE event_id = ?")
+            .bind(&event_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(stream_event_count, 1);
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "cleared");
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages/clear"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cleared_count"].as_u64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn messages_clear_prevents_next_stream_from_reusing_cleared_thread() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "messages-reuse@example.com").await;
+    let owner = owner_id(&state, "messages-reuse@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let old_thread = seed_thread(&state, &group, "active").await;
+    seed_message(
+        &state,
+        &group,
+        &old_thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "old",
+        None,
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages/clear"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cleared_count"].as_u64().unwrap(), 1);
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "fresh"}),
+    )
+    .await;
+    assert_eq!(
+        kinds(&events),
+        vec![
+            "user_message".to_string(),
+            "silence".to_string(),
+            "done".to_string()
+        ]
+    );
+
+    let new_thread: String = sqlx::query_scalar(
+        "SELECT thread_id FROM messages \
+         WHERE group_id = ? AND content = 'fresh' AND status = 'visible'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_ne!(new_thread, old_thread);
+    let old_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&old_thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let new_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&new_thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(old_status, "cleared");
+    assert_eq!(new_status, "active");
+}
 
 #[tokio::test]
 async fn group_stream_uses_monotonic_sequence_not_timestamps() {

@@ -172,6 +172,11 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/groups/:group_id/agents/:agent_id/workspace-sharing",
             axum::routing::patch(groups::set_group_agent_workspace_sharing),
         )
+        .route("/api/v2/groups/:group_id/messages", get(messages::list))
+        .route(
+            "/api/v2/groups/:group_id/messages/clear",
+            axum::routing::post(messages::clear),
+        )
         .route(
             "/api/v2/groups/:group_id/messages/stream",
             axum::routing::post(messages::stream),
