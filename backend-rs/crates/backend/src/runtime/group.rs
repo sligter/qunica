@@ -203,6 +203,11 @@ impl StreamCtx {
         Ok(())
     }
 
+    async fn emit_done(&mut self) -> Result<(), StepErr> {
+        self.emit_durable_event(StreamEventKind::Done, json!({}))
+            .await
+    }
+
     /// Emit an `error` then `done` and finish the turn as `Error`. Propagates
     /// `Cancelled` if the client has already gone.
     async fn fail(&mut self, message: &str) -> Result<TurnOutcome, Cancelled> {
@@ -272,7 +277,7 @@ async fn run_inner(
             ctx.emit_durable_event(StreamEventKind::Silence, json!({}))
                 .await
         );
-        step!(ctx, ctx.emit(StreamEventKind::Done, json!({})).await);
+        step!(ctx, ctx.emit_done().await);
         return Ok(TurnOutcome::Silence);
     }
 
@@ -310,7 +315,7 @@ async fn run_inner(
 
     // 4. Terminal event.
     if waiting {
-        step!(ctx, ctx.emit(StreamEventKind::Done, json!({})).await);
+        step!(ctx, ctx.emit_done().await);
         return Ok(TurnOutcome::WaitingForUser);
     }
     if !had_visible {
@@ -319,10 +324,10 @@ async fn run_inner(
             ctx.emit_durable_event(StreamEventKind::Silence, json!({}))
                 .await
         );
-        step!(ctx, ctx.emit(StreamEventKind::Done, json!({})).await);
+        step!(ctx, ctx.emit_done().await);
         return Ok(TurnOutcome::Silence);
     }
-    step!(ctx, ctx.emit(StreamEventKind::Done, json!({})).await);
+    step!(ctx, ctx.emit_done().await);
     Ok(TurnOutcome::Completed)
 }
 

@@ -26,6 +26,12 @@ use tower::ServiceExt;
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
+struct SseFrame {
+    id: Option<String>,
+    data: Value,
+}
+
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
@@ -42,23 +48,76 @@ async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
 
 /// Drive the SSE endpoint and return the parsed `StreamEvent` JSON frames.
 async fn stream_events(app: &Router, uri: &str, token: &str, body: Value) -> Vec<Value> {
-    let request = Request::builder()
+    stream_frames(app, uri, token, body)
+        .await
+        .into_iter()
+        .map(|frame| frame.data)
+        .collect()
+}
+
+async fn stream_frames(app: &Router, uri: &str, token: &str, body: Value) -> Vec<SseFrame> {
+    let (status, text) = stream_text(app, uri, token, body, None).await;
+    assert_eq!(status, StatusCode::OK);
+    parse_sse_frames(&text)
+}
+
+async fn stream_text(
+    app: &Router,
+    uri: &str,
+    token: &str,
+    body: Value,
+    last_event_id: Option<&str>,
+) -> (StatusCode, String) {
+    let mut builder = Request::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(body.to_string()))
-        .unwrap();
+        .header("authorization", format!("Bearer {token}"));
+    if let Some(last_event_id) = last_event_id {
+        builder = builder.header("LAST-EVENT-ID", last_event_id);
+    }
+    let request = builder.body(Body::from(body.to_string())).unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    text.lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(|data| serde_json::from_str::<Value>(data.trim()).unwrap())
-        .collect()
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+fn parse_sse_frames(text: &str) -> Vec<SseFrame> {
+    let mut frames = Vec::new();
+    let mut id: Option<String> = None;
+    let mut data_lines: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        if line.is_empty() {
+            if !data_lines.is_empty() {
+                let data = serde_json::from_str::<Value>(&data_lines.join("\n")).unwrap();
+                frames.push(SseFrame {
+                    id: id.take(),
+                    data,
+                });
+                data_lines.clear();
+            } else {
+                id = None;
+            }
+            continue;
+        }
+
+        if let Some(value) = line.strip_prefix("id:") {
+            id = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.trim().to_string());
+        }
+    }
+
+    if !data_lines.is_empty() {
+        let data = serde_json::from_str::<Value>(&data_lines.join("\n")).unwrap();
+        frames.push(SseFrame { id, data });
+    }
+
+    frames
 }
 
 fn post_json(uri: &str, body: Value) -> Request<Body> {
@@ -394,6 +453,21 @@ fn kinds(events: &[Value]) -> Vec<String> {
         .iter()
         .map(|e| e["kind"].as_str().unwrap().to_string())
         .collect()
+}
+
+fn assert_frame_ids_match_payloads(frames: &[SseFrame]) {
+    for frame in frames {
+        let event_id = frame.data["event_id"].as_str().unwrap();
+        assert_eq!(frame.id.as_deref(), Some(event_id));
+    }
+}
+
+async fn message_count(state: &AppState, group_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+        .bind(group_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,6 +1336,259 @@ async fn group_stream_uses_monotonic_sequence_not_timestamps() {
     assert_eq!(kinds.first().unwrap(), "user_message");
     assert_eq!(kinds.last().unwrap(), "done");
     assert!(kinds.contains(&"agent_message".to_string()));
+}
+
+#[tokio::test]
+async fn stream_replay_live_stream_sets_sse_ids() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-live-id@example.com").await;
+    let owner = owner_id(&state, "replay-live-id@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let frames = stream_frames(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hi team"}),
+    )
+    .await;
+
+    assert!(!frames.is_empty());
+    assert_frame_ids_match_payloads(&frames);
+}
+
+#[tokio::test]
+async fn stream_replay_after_user_message_returns_durable_tail_without_duplicates() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-tail@example.com").await;
+    let owner = owner_id(&state, "replay-tail@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let frames = stream_frames(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hi team"}),
+    )
+    .await;
+    let events: Vec<Value> = frames.iter().map(|frame| frame.data.clone()).collect();
+    let user_event = events
+        .iter()
+        .find(|event| event["kind"] == "user_message")
+        .unwrap();
+    let user_event_id = user_event["event_id"].as_str().unwrap();
+    let stream_id = user_event["stream_id"].as_str().unwrap();
+    let live_message_count = message_count(&state, &group).await;
+    assert_eq!(live_message_count, 2);
+
+    let (status, replay_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "retry body must not create a new turn"}),
+        Some(user_event_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let replay_frames = parse_sse_frames(&replay_text);
+    assert_frame_ids_match_payloads(&replay_frames);
+    let replay_events: Vec<Value> = replay_frames
+        .iter()
+        .map(|frame| frame.data.clone())
+        .collect();
+
+    assert_eq!(
+        kinds(&replay_events),
+        vec!["agent_message".to_string(), "done".to_string()]
+    );
+    assert!(replay_events
+        .iter()
+        .all(|event| event["stream_id"].as_str().unwrap() == stream_id));
+    assert!(replay_events
+        .iter()
+        .all(|event| event["seq"].as_i64().unwrap() > user_event["seq"].as_i64().unwrap()));
+    assert_eq!(message_count(&state, &group).await, live_message_count);
+}
+
+#[tokio::test]
+async fn stream_replay_from_done_returns_empty_without_duplicates() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-done@example.com").await;
+    let owner = owner_id(&state, "replay-done@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let frames = stream_frames(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hi team"}),
+    )
+    .await;
+    let done_event_id = frames
+        .iter()
+        .find(|frame| frame.data["kind"] == "done")
+        .unwrap()
+        .data["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let live_message_count = message_count(&state, &group).await;
+    assert_eq!(live_message_count, 2);
+
+    let (status, replay_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "retry after done"}),
+        Some(&done_event_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(parse_sse_frames(&replay_text).is_empty());
+    assert_eq!(message_count(&state, &group).await, live_message_count);
+}
+
+#[tokio::test]
+async fn stream_replay_malformed_last_event_id_returns_invalid_input() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-malformed@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+
+    let (status, body_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "retry"}),
+        Some("not-a-stream-cursor"),
+    )
+    .await;
+    let body: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(message_count(&state, &group).await, 0);
+}
+
+#[tokio::test]
+async fn stream_replay_unknown_last_event_id_returns_not_found() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-unknown@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let unknown_event_id = format!("{}:0", uuid::Uuid::new_v4());
+
+    let (status, body_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "retry"}),
+        Some(&unknown_event_id),
+    )
+    .await;
+    let body: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+    assert_eq!(message_count(&state, &group).await, 0);
+}
+
+#[tokio::test]
+async fn stream_replay_event_id_from_another_group_returns_not_found() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-cross-group@example.com").await;
+    let owner = owner_id(&state, "replay-cross-group@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let source_group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"name": "Source", "free_speech": true}),
+    )
+    .await;
+    let target_group = create_group(&app, &token, &workspace, json!({"name": "Target"})).await;
+
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &source_group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let source_frames = stream_frames(
+        &app,
+        &format!("/api/v2/groups/{source_group}/messages/stream"),
+        &token,
+        json!({"content": "hi source"}),
+    )
+    .await;
+    let source_user_event_id = source_frames
+        .iter()
+        .find(|frame| frame.data["kind"] == "user_message")
+        .unwrap()
+        .data["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{target_group}/messages/stream"),
+        &token,
+        json!({"content": "retry against target"}),
+        Some(&source_user_event_id),
+    )
+    .await;
+    let body: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+    assert_eq!(message_count(&state, &target_group).await, 0);
 }
 
 #[tokio::test]
