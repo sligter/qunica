@@ -509,6 +509,7 @@ async fn handle_agent_as_tool(
         "sender_id": agent.agent_id,
         "display_name": agent.display_name,
         "content": dispatch.content,
+        "dispatch": true,
     });
     ctx.emit_message(
         StreamEventKind::AgentMessage,

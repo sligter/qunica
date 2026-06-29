@@ -6,6 +6,8 @@
 //! a local fake HTTP server that replays canned provider-specific SSE; no live
 //! external API is contacted.
 
+use std::{collections::VecDeque, sync::Arc};
+
 use ag_swarmer_backend::{
     api::{router_with_state_for_tests, AppState},
     runtime::{run_group_turn, RuntimeServices, StreamEventKind, TurnOutcome, TurnRequest},
@@ -17,7 +19,7 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -219,6 +221,33 @@ async fn seed_agent(
     agent_id
 }
 
+async fn seed_agent_with_tool_config(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    provider_id: &str,
+    display_name: &str,
+    joined_at: &str,
+    tool_config: Value,
+) -> String {
+    let agent_id = seed_agent(
+        state,
+        owner_id,
+        group_id,
+        provider_id,
+        display_name,
+        joined_at,
+    )
+    .await;
+    sqlx::query("UPDATE agents SET tool_config_json = ? WHERE id = ?")
+        .bind(tool_config.to_string())
+        .bind(&agent_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    agent_id
+}
+
 async fn seed_thread(state: &AppState, group_id: &str, status: &str) -> String {
     let thread_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
@@ -308,6 +337,56 @@ async fn fake_provider(body: &'static str) -> String {
         axum::serve(listener, app).await.unwrap();
     });
     format!("http://{addr}")
+}
+
+async fn fake_provider_sequence(bodies: Vec<String>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let queue = Arc::new(Mutex::new(VecDeque::from(bodies)));
+    let app = Router::new().fallback(move || {
+        let queue = Arc::clone(&queue);
+        async move {
+            let body = {
+                let mut queue = queue.lock().await;
+                queue
+                    .pop_front()
+                    .unwrap_or_else(|| "data: [DONE]\n".to_string())
+            };
+            ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+fn text_body(text: &str) -> String {
+    format!(
+        "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": text}}]})
+    )
+}
+
+fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
+    let tool_calls: Vec<Value> = calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, name, args))| {
+            json!({
+                "index": index,
+                "id": id,
+                "function": {
+                    "name": name,
+                    "arguments": args.to_string(),
+                },
+            })
+        })
+        .collect();
+    format!(
+        "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
+    )
 }
 
 fn kinds(events: &[Value]) -> Vec<String> {
@@ -593,6 +672,365 @@ async fn messages_list_and_clear_reject_cross_owner_access() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn message_send_rejects_empty_trimmed_content() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-empty@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "  \n\t  "}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn message_send_rejects_cross_owner_group_access() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let owner_token = register_and_login(&app, "send-owner@example.com").await;
+    let intruder_token = register_and_login(&app, "send-intruder@example.com").await;
+    let workspace = create_workspace(&app, &owner_token).await;
+    let group = create_group(&app, &owner_token, &workspace, json!({})).await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &intruder_token,
+            json!({"content": "hello"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn message_send_no_routed_agents_returns_user_message_without_provider() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-quiet@example.com").await;
+    let owner = owner_id(&state, "send-quiet@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let missing_provider = uuid::Uuid::new_v4().to_string();
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &missing_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "  just thinking out loud  "}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["user_message"]["content"], "just thinking out loud");
+    assert_eq!(body["user_message"]["sender_type"], "user");
+    assert_eq!(body["user_message"]["sender_id"].as_str().unwrap(), owner);
+    assert!(body["agent_replies"].as_array().unwrap().is_empty());
+    assert!(body["dispatch_messages"].as_array().unwrap().is_empty());
+    assert!(body["warnings"].as_array().unwrap().is_empty());
+    assert!(body["silent_turns"].as_array().unwrap().is_empty());
+    assert_eq!(body["all_silent"], false);
+    assert_eq!(body["waiting_for_user"], false);
+
+    let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(messages, 1);
+}
+
+#[tokio::test]
+async fn message_send_free_speech_one_agent_returns_persisted_reply_and_history() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-happy@example.com").await;
+    let owner = owner_id(&state, "send-happy@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
+                         data: {\"choices\":[{\"delta\":{\"content\":\" from fake\"}}]}\n\
+                         data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "hi team"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["user_message"]["content"], "hi team");
+    let replies = body["agent_replies"].as_array().unwrap();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["content"], "Hello from fake");
+    assert_eq!(replies[0]["sender_id"].as_str().unwrap(), agent);
+    assert!(body["dispatch_messages"].as_array().unwrap().is_empty());
+    assert!(body["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(body["all_silent"], false);
+    assert_eq!(body["waiting_for_user"], false);
+
+    let (status, history) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let contents: Vec<&str> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, vec!["hi team", "Hello from fake"]);
+}
+
+#[tokio::test]
+async fn message_send_proactive_silent_turn_returns_warning_without_agent_row() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-silent@example.com").await;
+    let owner = owner_id(&state, "send-silent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
+
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\"<SILENT>\"}}]}\n\
+                         data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "anyone around?"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(body["agent_replies"].as_array().unwrap().is_empty());
+    assert!(body["dispatch_messages"].as_array().unwrap().is_empty());
+    assert_eq!(body["silent_turns"].as_array().unwrap().len(), 1);
+    assert_eq!(body["silent_turns"][0]["agent_id"].as_str().unwrap(), agent);
+    assert_eq!(body["silent_turns"][0]["display_name"], "Alice");
+    assert_eq!(body["all_silent"], true);
+    assert_eq!(body["waiting_for_user"], false);
+    assert_eq!(body["warnings"], json!(["No one replied"]));
+
+    let agent_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(agent_messages, 0);
+}
+
+#[tokio::test]
+async fn message_send_waiting_for_user_returns_reply_and_stops_fanout() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-waiting@example.com").await;
+    let owner = owner_id(&state, "send-waiting@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
+
+    let provider_body =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"<WAITING_FOR_USER> need a budget\"}}]}\n\
+         data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
+    let first = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let second = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "let's plan"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let replies = body["agent_replies"].as_array().unwrap();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["sender_id"].as_str().unwrap(), first);
+    assert_eq!(replies[0]["content"], "need a budget");
+    assert_eq!(body["waiting_for_user"], true);
+    assert_eq!(body["all_silent"], false);
+    assert!(body["silent_turns"].as_array().unwrap().is_empty());
+
+    let second_messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_id = ?")
+            .bind(&group)
+            .bind(&second)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(second_messages, 0);
+}
+
+#[tokio::test]
+async fn message_send_agent_as_tool_splits_dispatch_and_helper_reply() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-aat@example.com").await;
+    let owner = owner_id(&state, "send-aat@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_handoff",
+            "AgentAsTool",
+            json!({"assistant": "Helper", "task": "draft summary"}),
+        )]),
+        text_body("Helper finished"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let caller = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "@Caller delegate"}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let dispatches = body["dispatch_messages"].as_array().unwrap();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0]["sender_id"].as_str().unwrap(), caller);
+    assert_eq!(dispatches[0]["content"], "@Helper draft summary");
+    let replies = body["agent_replies"].as_array().unwrap();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["sender_id"].as_str().unwrap(), helper);
+    assert_eq!(replies[0]["content"], "Helper finished");
+    assert!(body["warnings"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn message_send_bad_thread_id_errors_without_user_message() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "send-bad-thread@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let stale_thread = seed_thread(&state, &group, "cleared").await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "hello", "thread_id": stale_thread}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("active thread"));
+    let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(messages, 0);
 }
 
 #[tokio::test]
