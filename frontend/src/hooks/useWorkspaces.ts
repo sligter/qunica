@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { fetchJson } from '@/lib/api'
+import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type { WorkspaceCreate, WorkspaceRead, WorkspaceUpdate } from '@/types/api'
 
