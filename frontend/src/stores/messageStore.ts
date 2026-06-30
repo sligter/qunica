@@ -156,6 +156,7 @@ interface MessageState {
   warningsByGroup: Record<string, string[]>
   toolActivityByGroup: Record<string, ToolActivity[]>
   streamRunsByGroup: Record<string, Record<string, StreamRun>>
+  streamRunIdByUserMessageIdByGroup: Record<string, Record<string, string>>
   streamRunOrderByGroup: Record<string, string[]>
   resumingMessageIds: Set<string>
 
@@ -174,7 +175,7 @@ interface MessageState {
   clearWarnings: (groupId: string) => void
   pushToolActivity: (groupId: string, activity: ToolActivity) => void
   clearToolActivity: (groupId: string) => void
-  startStreamRun: (groupId: string, userMessage: Message) => void
+  startStreamRun: (groupId: string, streamId: string, userMessage: Message) => void
   addStreamAgentStart: (groupId: string, streamId: string, agent: ActiveAgent) => void
   setStreamAgentContextUsage: (
     groupId: string,
@@ -324,6 +325,7 @@ export const useMessageStore = create<MessageState>((set) => ({
   warningsByGroup: {},
   toolActivityByGroup: {},
   streamRunsByGroup: {},
+  streamRunIdByUserMessageIdByGroup: {},
   streamRunOrderByGroup: {},
   resumingMessageIds: new Set(),
 
@@ -354,6 +356,10 @@ export const useMessageStore = create<MessageState>((set) => ({
       warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
       streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: {} },
+      streamRunIdByUserMessageIdByGroup: {
+        ...s.streamRunIdByUserMessageIdByGroup,
+        [groupId]: {},
+      },
       streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: [] },
     })),
 
@@ -530,14 +536,15 @@ export const useMessageStore = create<MessageState>((set) => ({
       toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
 
-  startStreamRun: (groupId, userMessage) =>
+  startStreamRun: (groupId, streamId, userMessage) =>
     set((s) => {
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
       const timestamp = nowIso()
-      const existing = groupRuns[userMessage.id]
+      const existing = groupRuns[streamId]
       const run: StreamRun = {
-        id: userMessage.id,
+        id: streamId,
         group_id: groupId,
         user_message_id: userMessage.id,
         status: 'active',
@@ -545,13 +552,17 @@ export const useMessageStore = create<MessageState>((set) => ({
         updated_at: timestamp,
         events: existing?.events ?? [],
       }
-      const nextRuns = { ...groupRuns, [userMessage.id]: run }
-      const nextOrder = groupOrder.includes(userMessage.id)
+      const nextRuns = { ...groupRuns, [streamId]: run }
+      const nextOrder = groupOrder.includes(streamId)
         ? groupOrder
-        : [...groupOrder, userMessage.id]
+        : [...groupOrder, streamId]
       const pruned = pruneStreamRuns(nextRuns, nextOrder)
       return {
         streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: { ...groupRunIdsByMessage, [userMessage.id]: streamId },
+        },
         streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
       }
     }),

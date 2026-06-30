@@ -1,113 +1,125 @@
 /**
- * Stream-send messages to a group.
+ * Stream-send messages to a group through the API v2 typed SSE contract.
  *
- * Multiple sends may be active at once. Each SSE stream carries a backend
- * `stream_id` (the triggering user message id), which keeps in-flight agent
- * bubbles separate even when the same agent is replying to more than one user
- * message.
+ * Multiple sends may be active at once. API v2 uses a runtime `stream_id`
+ * for each SSE run, while the persisted user message has its own id in the
+ * `user_message` payload. Keep those ids separate so concurrent agent drafts
+ * never share transient state.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { z } from 'zod'
 
-import type { HumanInputRequest } from '@/lib/humanInput'
-import { openSseStream } from '@/lib/sse'
+import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import type { StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
 import type { ContextUsage, Message } from '@/types/api'
 
-interface StreamPayload {
-  stream_id?: string | null
-}
+const userMessagePayloadSchema = z.object({
+  message_id: z.string(),
+  thread_id: z.string().nullable().optional(),
+  content: z.string().nullable().optional(),
+})
 
-interface TokenPayload extends StreamPayload {
-  agent_id: string
-  delta: string
-}
+const agentStartPayloadSchema = z.object({
+  agent_id: z.string(),
+  display_name: z.string().optional(),
+})
 
-interface ReasoningPayload extends StreamPayload {
-  agent_id: string
-  delta: string
-  round?: number
-}
+const tokenPayloadSchema = z.object({
+  agent_id: z.string(),
+  text: z.string().optional(),
+  delta: z.string().optional(),
+})
 
-interface AgentIdentityPayload extends StreamPayload {
-  agent_id: string
-  display_name?: string
-  round?: number
-}
+const contextUsageSchema = z.object({
+  input_tokens: z.number().nullable().optional(),
+  output_tokens: z.number().nullable().optional(),
+  total_tokens: z.number().nullable().optional(),
+  context_window_tokens: z.number().nullable().optional(),
+  output_reserve_tokens: z.number().nullable().optional(),
+  ratio: z.number().nullable().optional(),
+  source: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+})
 
-interface ContextUsagePayload extends StreamPayload {
-  agent_id?: string
-  round?: number
-  context_usage?: ContextUsage | null
-}
+const contextUsagePayloadSchema = z.object({
+  agent_id: z.string().optional(),
+  input_tokens: z.number().nullable().optional(),
+  output_tokens: z.number().nullable().optional(),
+  total_tokens: z.number().nullable().optional(),
+  context_usage: contextUsageSchema.nullable().optional(),
+})
 
-interface AgentErrorPayload extends StreamPayload {
-  agent_id: string
-  display_name: string
-  error: string
-  round?: number
-}
+const agentMessagePayloadSchema = z.object({
+  message_id: z.string(),
+  agent_id: z.string().optional(),
+  sender_id: z.string().nullable().optional(),
+  display_name: z.string().optional(),
+  content: z.string().nullable().optional(),
+  thread_id: z.string().nullable().optional(),
+  context_usage: contextUsageSchema.nullable().optional(),
+})
 
-interface WaitingForUserPayload extends StreamPayload {
-  message?: string
-  agent_id?: string
-  display_name?: string
-  input_request?: HumanInputRequest
-  round?: number
-}
+const waitingForUserPayloadSchema = z.object({
+  agent_id: z.string().optional(),
+  display_name: z.string().optional(),
+  message: z.string().optional(),
+})
 
-type DonePayload = StreamPayload
+const toolCallPayloadSchema = z.object({
+  agent_id: z.string().optional(),
+  display_name: z.string().optional(),
+  tool_call_id: z.string().optional(),
+  tool_name: z.string().optional(),
+  status: z.string().optional(),
+  args_summary: z.string().optional(),
+  result_summary: z.string().optional(),
+})
 
-interface ToolCallPayload extends StreamPayload {
-  agent_id?: string
-  display_name?: string
-  tool_call_id?: string
-  tool_name?: string
-  status?: ToolActivityStatus
-  args_summary?: string
-  result_summary?: string
-  input_request?: HumanInputRequest
-  round?: number
-}
+const acpAgentRunPayloadSchema = z.object({
+  run_id: z.string(),
+  agent_id: z.string(),
+  display_name: z.string(),
+  adapter: z.string().optional(),
+  status: z.string().optional(),
+  cwd: z.string().optional(),
+  exit_code: z.number().nullable().optional(),
+  summary: z.string().optional(),
+})
 
-interface ExternalAgentRunPayload extends StreamPayload {
-  run_id?: string
-  agent_id?: string
-  display_name?: string
-  adapter?: string
-  status?: string
-  cwd?: string
-  exit_code?: number
-  summary?: string
-  round?: number
-}
+const messagePayloadSchema = z.object({
+  message: z.string().optional(),
+})
 
-const TOOL_ACTIVITY_STATUSES = new Set<ToolActivityStatus>([
-  'started',
-  'completed',
-  'failed',
-  'unavailable',
-  'setup_required',
-  'workspace_required',
-  'input_required',
-  'approval_required',
-])
+const warningPayloadSchema = z.union([z.string(), messagePayloadSchema])
 
-function safeJson<T>(raw: string): T | null {
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
+type UserMessagePayload = z.infer<typeof userMessagePayloadSchema>
+type AgentMessagePayload = z.infer<typeof agentMessagePayloadSchema>
+type ContextUsagePayload = z.infer<typeof contextUsagePayloadSchema>
+type ContextUsageInput = z.infer<typeof contextUsageSchema>
+
+function isToolActivityStatus(status: unknown): status is ToolActivityStatus {
+  switch (status) {
+    case 'started':
+    case 'completed':
+    case 'failed':
+    case 'unavailable':
+    case 'setup_required':
+    case 'workspace_required':
+    case 'input_required':
+    case 'approval_required':
+      return true
+    default:
+      return false
   }
 }
 
 function normalizeToolStatus(status: unknown): ToolActivityStatus {
-  return typeof status === 'string' && TOOL_ACTIVITY_STATUSES.has(status as ToolActivityStatus)
-    ? (status as ToolActivityStatus)
-    : 'unavailable'
+  return isToolActivityStatus(status) ? status : 'unavailable'
 }
 
 function externalRunStatus(status: string | undefined): ToolActivityStatus {
@@ -120,8 +132,96 @@ function requestId(): string {
   return crypto.randomUUID()
 }
 
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function normalizeContextUsage(input: ContextUsageInput | null | undefined): ContextUsage | null {
+  if (!input) return null
+  return {
+    input_tokens: input.input_tokens ?? null,
+    output_tokens: input.output_tokens ?? null,
+    total_tokens: input.total_tokens ?? null,
+    context_window_tokens: input.context_window_tokens ?? null,
+    output_reserve_tokens: input.output_reserve_tokens ?? null,
+    ratio: input.ratio ?? null,
+    source: input.source ?? null,
+    updated_at: input.updated_at ?? null,
+  }
+}
+
+function contextUsageFromPayload(payload: ContextUsagePayload): ContextUsage | null {
+  const nested = normalizeContextUsage(payload.context_usage)
+  if (nested) return nested
+  const hasUsage =
+    payload.input_tokens !== undefined ||
+    payload.output_tokens !== undefined ||
+    payload.total_tokens !== undefined
+  if (!hasUsage) return null
+  return {
+    input_tokens: payload.input_tokens ?? null,
+    output_tokens: payload.output_tokens ?? null,
+    total_tokens: payload.total_tokens ?? null,
+    context_window_tokens: null,
+    output_reserve_tokens: null,
+    ratio: null,
+    source: null,
+    updated_at: null,
+  }
+}
+
+function messageFromPayload(payload: unknown, fallback: string): string {
+  const parsed = warningPayloadSchema.safeParse(payload)
+  if (!parsed.success) return fallback
+  if (typeof parsed.data === 'string') return parsed.data
+  return parsed.data.message ?? fallback
+}
+
+function buildUserMessage(
+  groupId: string,
+  payload: UserMessagePayload,
+  senderId: string | null,
+): Message {
+  return {
+    id: payload.message_id,
+    group_id: groupId,
+    thread_id: payload.thread_id ?? null,
+    sender_type: 'user',
+    sender_id: senderId,
+    message_type: 'text',
+    content: payload.content ?? '',
+    status: 'visible',
+    refs: null,
+    context_usage: null,
+    reply_to_message_id: null,
+    created_at: nowIso(),
+  }
+}
+
+function buildAgentMessage(
+  groupId: string,
+  event: StreamEvent,
+  payload: AgentMessagePayload,
+): Message {
+  return {
+    id: payload.message_id,
+    group_id: groupId,
+    thread_id: payload.thread_id ?? null,
+    sender_type: 'agent',
+    sender_id: payload.sender_id ?? payload.agent_id ?? null,
+    message_type: 'text',
+    content: payload.content ?? '',
+    status: 'visible',
+    refs: null,
+    context_usage: normalizeContextUsage(payload.context_usage),
+    reply_to_message_id: event.stream_id,
+    created_at: nowIso(),
+  }
+}
+
 export function useSendMessageStream(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
+  const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const appendMessage = useMessageStore((s) => s.appendMessage)
   const patchInFlight = useMessageStore((s) => s.patchInFlight)
   const finalizeInFlight = useMessageStore((s) => s.finalizeInFlight)
@@ -152,6 +252,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const [error, setError] = useState<string | null>(null)
   const streamsRef = useRef<Map<string, AbortController>>(new Map())
   const streamIdsRef = useRef<Map<string, string>>(new Map())
+  const erroredStreamIdsRef = useRef<Set<string>>(new Set())
   const agentNamesRef = useRef<Map<string, string>>(new Map())
 
   const refreshActiveCount = useCallback(() => {
@@ -161,6 +262,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   useEffect(() => {
     const streams = streamsRef.current
     const streamIds = streamIdsRef.current
+    const erroredStreamIds = erroredStreamIdsRef.current
     const agentNames = agentNamesRef.current
     return () => {
       for (const ctrl of streams.values()) {
@@ -168,6 +270,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       }
       streams.clear()
       streamIds.clear()
+      erroredStreamIds.clear()
       agentNames.clear()
     }
   }, [])
@@ -187,6 +290,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       }
       streamIdsRef.current.delete(id)
       if (resolvedStreamId) {
+        erroredStreamIdsRef.current.delete(resolvedStreamId)
         for (const key of Array.from(agentNamesRef.current.keys())) {
           if (key.startsWith(`${resolvedStreamId}:`)) {
             agentNamesRef.current.delete(key)
@@ -210,290 +314,232 @@ export function useSendMessageStream(groupId: string | undefined) {
       clearWarnings(groupId)
       clearToolActivity(groupId)
 
-      const ctrl = openSseStream({
-        url: `/api/v1/groups/${groupId}/messages/stream`,
+      const ctrl = openApiV2SseStream({
+        url: `/api/v2/groups/${groupId}/messages/stream`,
         body: { content },
         token,
         handlers: {
-          onEvent: (event, data) => {
-            const streamIdFor = (payload?: StreamPayload | null) =>
-              payload?.stream_id ?? streamIdsRef.current.get(id) ?? null
-            const agentDisplayName = (
-              streamId: string | null,
-              agentId: string | undefined,
-              fallback?: string,
-            ) => {
+          onEvent: (event) => {
+            const streamId = event.stream_id
+            streamIdsRef.current.set(id, streamId)
+            const agentDisplayName = (agentId: string | undefined, fallback?: string) => {
               if (fallback) return fallback
-              if (streamId && agentId) {
+              if (agentId) {
                 return agentNamesRef.current.get(`${streamId}:${agentId}`) ?? 'Agent'
               }
               return 'Agent'
             }
 
-            if (event === 'user_message') {
-              const msg = safeJson<Message>(data)
-              if (msg) {
-                streamIdsRef.current.set(id, msg.id)
+            switch (event.kind) {
+              case 'user_message': {
+                const parsed = userMessagePayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
+                const msg = buildUserMessage(groupId, parsed.data, currentUserId)
                 appendMessage(groupId, msg)
-                startStreamRun(groupId, msg)
+                startStreamRun(groupId, streamId, msg)
+                return
               }
-              return
-            }
-            if (event === 'agent_start') {
-              const info = safeJson<ActiveAgent>(data)
-              if (info) {
-                const streamId = streamIdFor(info)
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  agentNamesRef.current.set(`${streamId}:${info.agent_id}`, info.display_name)
-                  addStreamAgentStart(groupId, streamId, { ...info, stream_id: streamId })
+              case 'agent_start': {
+                const parsed = agentStartPayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
+                const displayName = parsed.data.display_name ?? 'Agent'
+                agentNamesRef.current.set(`${streamId}:${parsed.data.agent_id}`, displayName)
+                const info: ActiveAgent = {
+                  agent_id: parsed.data.agent_id,
+                  display_name: displayName,
+                  index: 0,
+                  total: 0,
+                  stream_id: streamId,
                 }
+                addStreamAgentStart(groupId, streamId, info)
                 setActiveAgent(groupId, info)
+                return
               }
-              return
-            }
-            if (event === 'context_usage') {
-              const payload = safeJson<ContextUsagePayload>(data)
-              if (payload?.agent_id && payload.context_usage) {
-                const streamId = streamIdFor(payload)
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  setStreamAgentContextUsage(
-                    groupId,
-                    streamId,
-                    payload.agent_id,
-                    payload.context_usage,
-                  )
+              case 'context_usage': {
+                const parsed = contextUsagePayloadSchema.safeParse(event.payload)
+                if (!parsed.success || !parsed.data.agent_id) return
+                const usage = contextUsageFromPayload(parsed.data)
+                if (usage) {
+                  setStreamAgentContextUsage(groupId, streamId, parsed.data.agent_id, usage)
                 }
+                return
               }
-              return
-            }
-            if (event === 'token') {
-              const payload = safeJson<TokenPayload>(data)
-              if (payload?.agent_id && payload.delta) {
-                const streamId = streamIdFor(payload)
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  patchStreamDraft(
-                    groupId,
-                    streamId,
-                    payload.agent_id,
-                    payload.delta,
-                    agentDisplayName(streamId, payload.agent_id),
-                  )
-                }
-                patchInFlight(groupId, payload.agent_id, payload.delta, streamId)
+              case 'token': {
+                const parsed = tokenPayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
+                const delta = parsed.data.delta ?? parsed.data.text ?? ''
+                if (!delta) return
+                patchStreamDraft(
+                  groupId,
+                  streamId,
+                  parsed.data.agent_id,
+                  delta,
+                  agentDisplayName(parsed.data.agent_id),
+                )
+                patchInFlight(groupId, parsed.data.agent_id, delta, streamId)
+                return
               }
-              return
-            }
-            if (event === 'reasoning') {
-              const payload = safeJson<ReasoningPayload>(data)
-              if (payload?.agent_id && payload.delta) {
-                const streamId = streamIdFor(payload)
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  patchStreamReasoning(
-                    groupId,
-                    streamId,
-                    payload.agent_id,
-                    payload.delta,
-                    agentDisplayName(streamId, payload.agent_id),
-                  )
-                }
+              case 'reasoning': {
+                const parsed = tokenPayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
+                const delta = parsed.data.delta ?? parsed.data.text ?? ''
+                if (!delta) return
+                patchStreamReasoning(
+                  groupId,
+                  streamId,
+                  parsed.data.agent_id,
+                  delta,
+                  agentDisplayName(parsed.data.agent_id),
+                )
+                return
               }
-              return
-            }
-            if (event === 'agent_message') {
-              const msg = safeJson<Message>(data)
-              if (msg) {
-                const streamId = msg.reply_to_message_id ?? streamIdsRef.current.get(id) ?? null
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  finalizeStreamDraft(
-                    groupId,
-                    streamId,
-                    msg,
-                    agentDisplayName(streamId, msg.sender_id ?? undefined),
-                  )
-                }
+              case 'agent_message': {
+                const parsed = agentMessagePayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
+                const msg = buildAgentMessage(groupId, event, parsed.data)
+                finalizeStreamDraft(
+                  groupId,
+                  streamId,
+                  msg,
+                  agentDisplayName(parsed.data.agent_id, parsed.data.display_name),
+                )
                 finalizeInFlight(groupId, msg)
+                void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+                void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+                return
               }
-              void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
-              void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
-              return
-            }
-            if (event === 'agent_silent') {
-              const info = safeJson<AgentIdentityPayload>(data)
-              if (info?.agent_id) {
-                const streamId = streamIdFor(info)
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  appendStreamNotice(groupId, streamId, {
-                    type: 'agent_silent',
-                    agent_id: info.agent_id,
-                    display_name: agentDisplayName(streamId, info.agent_id, info.display_name),
-                    message: 'No visible reply',
-                  })
-                }
-                clearAgentInFlight(groupId, info.agent_id, streamId)
-                clearActiveAgent(groupId, info.agent_id, streamId)
-              }
-              return
-            }
-            if (event === 'agent_handoff') {
-              const payload = safeJson<AgentIdentityPayload>(data)
-              const streamId = streamIdFor(payload)
-              if (streamId) {
-                streamIdsRef.current.set(id, streamId)
+              case 'agent_silent': {
+                const parsed = agentStartPayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
                 appendStreamNotice(groupId, streamId, {
-                  type: 'agent_handoff',
-                  agent_id: payload?.agent_id,
-                  display_name: agentDisplayName(streamId, payload?.agent_id, payload?.display_name),
-                  message: 'Delegated to another agent',
-                })
-              }
-              return
-            }
-            if (event === 'tool_call_start' || event === 'tool_call_result') {
-              const payload = safeJson<ToolCallPayload>(data)
-              if (payload?.tool_call_id) {
-                const streamId = streamIdFor(payload)
-                if (streamId) streamIdsRef.current.set(id, streamId)
-                const status = normalizeToolStatus(payload.status)
-                const activity: ToolActivity = {
-                  id: payload.tool_call_id,
-                  agent_id: payload.agent_id ?? 'unknown-agent',
+                  type: 'agent_silent',
+                  agent_id: parsed.data.agent_id,
                   display_name: agentDisplayName(
-                    streamId,
-                    payload.agent_id,
-                    payload.display_name,
+                    parsed.data.agent_id,
+                    parsed.data.display_name,
                   ),
-                  tool_name: payload.tool_name ?? 'Unknown tool',
+                  message: 'No visible reply',
+                })
+                clearAgentInFlight(groupId, parsed.data.agent_id, streamId)
+                clearActiveAgent(groupId, parsed.data.agent_id, streamId)
+                return
+              }
+              case 'tool_call_start':
+              case 'tool_call_result': {
+                const parsed = toolCallPayloadSchema.safeParse(event.payload)
+                if (!parsed.success || !parsed.data.tool_call_id) return
+                const status = normalizeToolStatus(parsed.data.status)
+                const activity: ToolActivity = {
+                  id: parsed.data.tool_call_id,
+                  agent_id: parsed.data.agent_id ?? 'unknown-agent',
+                  display_name: agentDisplayName(
+                    parsed.data.agent_id,
+                    parsed.data.display_name,
+                  ),
+                  tool_name: parsed.data.tool_name ?? 'Unknown tool',
                   status,
-                  args_summary: payload.args_summary,
-                  result_summary: payload.result_summary,
-                  input_request: payload.input_request,
+                  args_summary: parsed.data.args_summary,
+                  result_summary: parsed.data.result_summary,
                 }
                 pushToolActivity(groupId, activity)
-                if (streamId) upsertStreamTool(groupId, streamId, activity)
-                if (event === 'tool_call_result') {
+                upsertStreamTool(groupId, streamId, activity)
+                if (event.kind === 'tool_call_result') {
                   void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
                 }
+                return
               }
-              return
-            }
-            if (event === 'external_agent_run') {
-              const payload = safeJson<ExternalAgentRunPayload>(data)
-              if (payload?.run_id) {
-                const streamId = streamIdFor(payload)
-                if (streamId) streamIdsRef.current.set(id, streamId)
+              case 'acp_agent_run': {
+                const parsed = acpAgentRunPayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
                 const displayName = agentDisplayName(
-                  streamId,
-                  payload.agent_id,
-                  payload.display_name,
+                  parsed.data.agent_id,
+                  parsed.data.display_name,
                 )
                 pushToolActivity(groupId, {
-                  id: payload.run_id,
-                  agent_id: payload.agent_id ?? 'unknown-agent',
+                  id: parsed.data.run_id,
+                  agent_id: parsed.data.agent_id,
                   display_name: displayName,
-                  tool_name: `External CLI: ${payload.adapter ?? 'unknown'}`,
-                  status: externalRunStatus(payload.status),
-                  args_summary: payload.cwd,
-                  result_summary: payload.summary,
+                  tool_name: `External CLI: ${parsed.data.adapter ?? 'unknown'}`,
+                  status: externalRunStatus(parsed.data.status),
+                  args_summary: parsed.data.cwd,
+                  result_summary: parsed.data.summary,
                 })
-                if (streamId) {
-                  upsertStreamExternalRun(groupId, streamId, {
-                    run_id: payload.run_id,
-                    agent_id: payload.agent_id ?? 'unknown-agent',
-                    display_name: displayName,
-                    adapter: payload.adapter,
-                    status: payload.status,
-                    cwd: payload.cwd,
-                    exit_code: payload.exit_code,
-                    summary: payload.summary,
-                  })
-                }
-                if (payload.status && payload.status !== 'running') {
+                upsertStreamExternalRun(groupId, streamId, {
+                  run_id: parsed.data.run_id,
+                  agent_id: parsed.data.agent_id,
+                  display_name: displayName,
+                  adapter: parsed.data.adapter,
+                  status: parsed.data.status,
+                  cwd: parsed.data.cwd,
+                  exit_code: parsed.data.exit_code ?? undefined,
+                  summary: parsed.data.summary,
+                })
+                if (parsed.data.status && parsed.data.status !== 'running') {
                   void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
                 }
+                return
               }
-              return
-            }
-            if (event === 'silence') {
-              pushWarning(groupId, 'No one replied')
-              const streamId = streamIdsRef.current.get(id)
-              if (streamId) {
+              case 'silence': {
+                pushWarning(groupId, 'No one replied')
                 appendStreamNotice(groupId, streamId, {
                   type: 'warning',
                   message: 'No one replied',
                 })
+                return
               }
-              return
-            }
-            if (event === 'waiting_for_user') {
-              const payload = safeJson<WaitingForUserPayload>(data)
-              const streamId = streamIdFor(payload)
-              if (streamId) {
-                streamIdsRef.current.set(id, streamId)
+              case 'waiting_for_user': {
+                const parsed = waitingForUserPayloadSchema.safeParse(event.payload)
+                const payload = parsed.success ? parsed.data : undefined
+                const message = payload?.message ?? 'Waiting for your input'
                 appendStreamNotice(groupId, streamId, {
                   type: 'waiting_for_user',
                   agent_id: payload?.agent_id,
-                  display_name: agentDisplayName(
-                    streamId,
-                    payload?.agent_id,
-                    payload?.display_name,
-                  ),
-                  message: payload?.message || 'Waiting for your input',
-                  input_request: payload?.input_request,
+                  display_name: agentDisplayName(payload?.agent_id, payload?.display_name),
+                  message,
                 })
+                pushWarning(groupId, message)
+                return
               }
-              pushWarning(groupId, payload?.message || 'Waiting for your input')
-              return
-            }
-            if (event === 'agent_error') {
-              const err = safeJson<AgentErrorPayload>(data)
-              if (err) {
-                const streamId = streamIdFor(err)
-                if (streamId) {
-                  streamIdsRef.current.set(id, streamId)
-                  appendStreamNotice(groupId, streamId, {
-                    type: 'agent_error',
-                    agent_id: err.agent_id,
-                    display_name: agentDisplayName(streamId, err.agent_id, err.display_name),
-                    message: err.error,
-                  })
-                }
-                clearAgentInFlight(groupId, err.agent_id, streamId)
-                clearActiveAgent(groupId, err.agent_id, streamId)
-                pushWarning(groupId, `Agent "${err.display_name}" failed: ${err.error}`)
-              }
-              return
-            }
-            if (event === 'warning') {
-              pushWarning(groupId, data)
-              const streamId = streamIdsRef.current.get(id)
-              if (streamId) {
+              case 'warning': {
+                const message = messageFromPayload(event.payload, 'Stream warning')
+                pushWarning(groupId, message)
                 appendStreamNotice(groupId, streamId, {
                   type: 'warning',
-                  message: data,
+                  message,
                 })
+                return
               }
-              return
-            }
-            if (event === 'done') {
-              const payload = safeJson<DonePayload>(data)
-              const streamId = streamIdFor(payload)
-              if (streamId) markStreamRunDone(groupId, streamId)
-              finishStream(id, streamId)
-              window.setTimeout(() => clearToolActivity(groupId), 4_000)
+              case 'error': {
+                const message = messageFromPayload(event.payload, 'Stream failed')
+                setError(message)
+                erroredStreamIdsRef.current.add(streamId)
+                markStreamRunError(groupId, streamId, message)
+                clearStreamInFlight(groupId, streamId)
+                clearActiveAgent(groupId, undefined, streamId)
+                pushWarning(groupId, message)
+                return
+              }
+              case 'done': {
+                if (!erroredStreamIdsRef.current.has(streamId)) {
+                  markStreamRunDone(groupId, streamId)
+                }
+                finishStream(id, streamId)
+                window.setTimeout(() => clearToolActivity(groupId), 4_000)
+                return
+              }
+              default: {
+                const _exhaustive: never = event.kind
+                return _exhaustive
+              }
             }
           },
           onError: (err) => {
             const message = err instanceof Error ? err.message : String(err)
             setError(message)
             const streamId = streamIdsRef.current.get(id)
-            if (streamId) markStreamRunError(groupId, streamId, message)
             if (streamId) {
+              erroredStreamIdsRef.current.add(streamId)
+              markStreamRunError(groupId, streamId, message)
               clearStreamInFlight(groupId, streamId)
             } else {
               clearInFlight(groupId)
@@ -518,8 +564,9 @@ export function useSendMessageStream(groupId: string | undefined) {
       clearStreamInFlight,
       clearToolActivity,
       clearWarnings,
-      finalizeStreamDraft,
+      currentUserId,
       finalizeInFlight,
+      finalizeStreamDraft,
       finishStream,
       groupId,
       markStreamRunDone,
@@ -547,6 +594,7 @@ export function useSendMessageStream(groupId: string | undefined) {
     }
     streamsRef.current.clear()
     streamIdsRef.current.clear()
+    erroredStreamIdsRef.current.clear()
     agentNamesRef.current.clear()
     setActiveStreamCount(0)
     if (groupId) {
