@@ -197,6 +197,7 @@ interface MessageState {
     delta: string,
     displayName?: string,
   ) => void
+  clearStreamingStreamDraft: (groupId: string, streamId: string, agentId: string) => void
   finalizeStreamDraft: (groupId: string, streamId: string, message: Message, displayName?: string) => void
   upsertStreamTool: (groupId: string, streamId: string, activity: ToolActivity) => void
   upsertStreamExternalRun: (
@@ -303,19 +304,29 @@ function appendTextSegment(
 function pruneStreamRuns(
   runs: Record<string, StreamRun>,
   order: string[],
-): { runs: Record<string, StreamRun>; order: string[] } {
+): { runs: Record<string, StreamRun>; order: string[]; removedIds: Set<string> } {
   const completedIds = order.filter((id) => {
     const run = runs[id]
     return run !== undefined && run.status !== 'active'
   })
   const removeCount = Math.max(0, completedIds.length - MAX_COMPLETED_STREAM_RUNS_PER_GROUP)
-  if (removeCount === 0) return { runs, order }
+  if (removeCount === 0) return { runs, order, removedIds: new Set() }
   const removeIds = new Set(completedIds.slice(0, removeCount))
   const nextRuns = Object.fromEntries(
     Object.entries(runs).filter(([id]) => !removeIds.has(id)),
   )
   const nextOrder = order.filter((id) => !removeIds.has(id))
-  return { runs: nextRuns, order: nextOrder }
+  return { runs: nextRuns, order: nextOrder, removedIds: removeIds }
+}
+
+function pruneStreamRunIdMap(
+  runIdsByMessage: Record<string, string>,
+  removedRunIds: Set<string>,
+): Record<string, string> {
+  if (removedRunIds.size === 0) return runIdsByMessage
+  return Object.fromEntries(
+    Object.entries(runIdsByMessage).filter(([, runId]) => !removedRunIds.has(runId)),
+  )
 }
 
 export const useMessageStore = create<MessageState>((set) => ({
@@ -557,11 +568,15 @@ export const useMessageStore = create<MessageState>((set) => ({
         ? groupOrder
         : [...groupOrder, streamId]
       const pruned = pruneStreamRuns(nextRuns, nextOrder)
+      const nextRunIdsByMessage = pruneStreamRunIdMap(
+        groupRunIdsByMessage,
+        pruned.removedIds,
+      )
       return {
         streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
         streamRunIdByUserMessageIdByGroup: {
           ...s.streamRunIdByUserMessageIdByGroup,
-          [groupId]: { ...groupRunIdsByMessage, [userMessage.id]: streamId },
+          [groupId]: { ...nextRunIdsByMessage, [userMessage.id]: streamId },
         },
         streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
       }
@@ -733,6 +748,32 @@ export const useMessageStore = create<MessageState>((set) => ({
       }
     }),
 
+  clearStreamingStreamDraft: (groupId, streamId, agentId) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const run = groupRuns[streamId]
+      if (!run) return {}
+      const events = run.events.filter(
+        (event) =>
+          !(
+            event.type === 'response_draft' &&
+            event.agent_id === agentId &&
+            event.status === 'streaming'
+          ),
+      )
+      if (events.length === run.events.length) return {}
+      const timestamp = nowIso()
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: {
+            ...groupRuns,
+            [streamId]: { ...run, updated_at: timestamp, events },
+          },
+        },
+      }
+    }),
+
   finalizeStreamDraft: (groupId, streamId, message, displayName) =>
     set((s) => {
       const agentId = message.sender_id ?? 'unknown-agent'
@@ -759,11 +800,13 @@ export const useMessageStore = create<MessageState>((set) => ({
         const lastSegmentId = segmentIds[segmentIds.length - 1]
         events = events.map((event) => {
           if (event.type === 'response_draft' && event.agent_id === agentId) {
+            const isFinalSegment = event.id === lastSegmentId
             return {
               ...event,
               display_name: displayName ?? event.display_name,
+              content: isFinalSegment ? message.content ?? '' : event.content,
               status: 'finalized',
-              message_id: event.id === lastSegmentId ? message.id : event.message_id,
+              message_id: isFinalSegment ? message.id : event.message_id,
               context_usage: message.context_usage ?? event.context_usage,
               updated_at: timestamp,
             }
@@ -949,6 +992,7 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => {
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
       const run = groupRuns[streamId]
       if (!run) return {}
       const timestamp = nowIso()
@@ -969,6 +1013,10 @@ export const useMessageStore = create<MessageState>((set) => ({
       const pruned = pruneStreamRuns({ ...groupRuns, [streamId]: nextRun }, groupOrder)
       return {
         streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: pruneStreamRunIdMap(groupRunIdsByMessage, pruned.removedIds),
+        },
         streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
       }
     }),
@@ -977,6 +1025,7 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => {
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
       const run = groupRuns[streamId]
       if (!run) return {}
       const timestamp = nowIso()
@@ -996,6 +1045,10 @@ export const useMessageStore = create<MessageState>((set) => ({
       const pruned = pruneStreamRuns({ ...groupRuns, [streamId]: nextRun }, groupOrder)
       return {
         streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: pruneStreamRunIdMap(groupRunIdsByMessage, pruned.removedIds),
+        },
         streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
       }
     }),
@@ -1004,6 +1057,7 @@ export const useMessageStore = create<MessageState>((set) => ({
     set((s) => {
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
       const ids = streamIds && streamIds.length > 0
         ? streamIds
         : Object.values(groupRuns)
@@ -1032,6 +1086,10 @@ export const useMessageStore = create<MessageState>((set) => ({
       const pruned = pruneStreamRuns(nextRuns, groupOrder)
       return {
         streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: pruned.runs },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: pruneStreamRunIdMap(groupRunIdsByMessage, pruned.removedIds),
+        },
         streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: pruned.order },
       }
     }),

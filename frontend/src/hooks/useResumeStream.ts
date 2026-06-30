@@ -126,6 +126,7 @@ export function useResumeStream(
             }
             case 'error': {
               setError(errorMessage(event.payload))
+              finish()
               return
             }
             case 'done': {

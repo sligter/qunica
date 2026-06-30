@@ -239,6 +239,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const setStreamAgentContextUsage = useMessageStore((s) => s.setStreamAgentContextUsage)
   const patchStreamDraft = useMessageStore((s) => s.patchStreamDraft)
   const patchStreamReasoning = useMessageStore((s) => s.patchStreamReasoning)
+  const clearStreamingStreamDraft = useMessageStore((s) => s.clearStreamingStreamDraft)
   const finalizeStreamDraft = useMessageStore((s) => s.finalizeStreamDraft)
   const upsertStreamTool = useMessageStore((s) => s.upsertStreamTool)
   const upsertStreamExternalRun = useMessageStore((s) => s.upsertStreamExternalRun)
@@ -411,6 +412,7 @@ export function useSendMessageStream(groupId: string | undefined) {
               case 'agent_silent': {
                 const parsed = agentStartPayloadSchema.safeParse(event.payload)
                 if (!parsed.success) return
+                clearStreamingStreamDraft(groupId, streamId, parsed.data.agent_id)
                 appendStreamNotice(groupId, streamId, {
                   type: 'agent_silent',
                   agent_id: parsed.data.agent_id,
@@ -565,6 +567,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       clearToolActivity,
       clearWarnings,
       currentUserId,
+      clearStreamingStreamDraft,
       finalizeInFlight,
       finalizeStreamDraft,
       finishStream,
