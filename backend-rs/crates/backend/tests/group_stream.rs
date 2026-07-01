@@ -325,6 +325,7 @@ async fn seed_thread(state: &AppState, group_id: &str, status: &str) -> String {
     thread_id
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_message(
     state: &AppState,
     group_id: &str,
@@ -1789,14 +1790,15 @@ async fn group_stream_client_disconnect_after_visible_token_persists_interrupted
     let outcome = handle.await.unwrap();
     assert_eq!(outcome, TurnOutcome::Cancelled);
 
-    let rows: Vec<(
+    type AgentMessageAuditRow = (
         String,
         Option<String>,
         String,
         Option<String>,
         String,
         String,
-    )> = sqlx::query_as(
+    );
+    let rows: Vec<AgentMessageAuditRow> = sqlx::query_as(
         "SELECT thread_id, sender_id, message_type, content, status, sender_type \
              FROM messages \
              WHERE group_id = ? AND sender_type = 'agent' \

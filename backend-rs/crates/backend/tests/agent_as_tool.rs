@@ -135,6 +135,7 @@ async fn seed_provider(state: &AppState, owner_id: &str, base_url: &str) -> Stri
     id
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_agent(
     state: &AppState,
     owner_id: &str,
@@ -160,6 +161,7 @@ async fn seed_agent(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_agent_with_id(
     state: &AppState,
     agent_id: &str,

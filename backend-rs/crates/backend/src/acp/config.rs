@@ -178,7 +178,9 @@ fn reject_legacy_external_cli(map: &Map<String, Value>) -> Result<(), AcpConfigE
             "external CLI adapters are deprecated; configure this agent with an ACP \
              runtime command instead",
         )),
-        Some(_) => Err(invalid("ACP runtime config must not include an adapter field")),
+        Some(_) => Err(invalid(
+            "ACP runtime config must not include an adapter field",
+        )),
     }
 }
 
@@ -223,7 +225,9 @@ fn normalize_profile(value: Option<&Value>) -> Result<AcpRuntimeProfile, AcpConf
             "custom" => Ok(AcpRuntimeProfile::Custom),
             "codex" => Ok(AcpRuntimeProfile::Codex),
             "claude" => Ok(AcpRuntimeProfile::Claude),
-            _ => Err(invalid("ACP runtime profile must be custom, codex, or claude")),
+            _ => Err(invalid(
+                "ACP runtime profile must be custom, codex, or claude",
+            )),
         },
         Some(_) => Err(invalid("ACP runtime profile must be a string")),
     }
@@ -255,11 +259,7 @@ fn normalize_env(value: Option<&Value>) -> Result<BTreeMap<String, String>, AcpC
             for (key, raw_value) in map {
                 let val = match raw_value {
                     Value::String(s) => s,
-                    _ => {
-                        return Err(invalid(
-                            "ACP runtime env keys and values must be strings",
-                        ))
-                    }
+                    _ => return Err(invalid("ACP runtime env keys and values must be strings")),
                 };
                 if BLOCKED_ENV_KEYS.contains(&key.as_str()) {
                     return Err(invalid(format!("ACP runtime env may not override {key}")));

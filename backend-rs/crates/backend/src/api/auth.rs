@@ -3,9 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use jsonwebtoken::{
-    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
-};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -154,8 +152,10 @@ pub async fn me(
 /// Reusable by later API v2 routes that need the current user. Any missing or
 /// invalid token surfaces as a `401 unauthorized`.
 pub fn current_user_id(headers: &HeaderMap, secret: &str) -> Result<String, ApiError> {
-    let token = bearer_token(headers).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
-    let claims = decode_token(token, secret).ok_or_else(|| ApiError::unauthorized("invalid token"))?;
+    let token =
+        bearer_token(headers).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
+    let claims =
+        decode_token(token, secret).ok_or_else(|| ApiError::unauthorized("invalid token"))?;
     Ok(claims.sub)
 }
 
@@ -239,10 +239,7 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db) if db.is_unique_violation())
 }
 
-async fn find_user_by_email(
-    pool: &SqlitePool,
-    email: &str,
-) -> Result<Option<UserRow>, ApiError> {
+async fn find_user_by_email(pool: &SqlitePool, email: &str) -> Result<Option<UserRow>, ApiError> {
     sqlx::query_as::<_, UserRow>(
         "SELECT id, email, password_hash, name, avatar_url, created_at FROM users WHERE email = ?",
     )

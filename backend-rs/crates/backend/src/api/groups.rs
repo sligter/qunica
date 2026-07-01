@@ -5,7 +5,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -2333,7 +2333,7 @@ fn context_scope_with_group_workspace(
             Value::Object(object) => Some(object),
             _ => None,
         })
-        .unwrap_or_else(Map::new);
+        .unwrap_or_default();
 
     if share {
         object.insert("share_group_workspace".to_string(), Value::Bool(true));

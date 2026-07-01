@@ -254,7 +254,11 @@ async fn workspace_delete_soft_deletes_and_hides_from_list() {
 
     let (status, body) = send(
         &app,
-        authed("DELETE", &format!("/api/v2/workspaces/{workspace_id}"), &token),
+        authed(
+            "DELETE",
+            &format!("/api/v2/workspaces/{workspace_id}"),
+            &token,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);

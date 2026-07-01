@@ -1,4 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path as FsPath, PathBuf},
+};
 
 use axum::{
     extract::{Path, State},
@@ -537,7 +540,7 @@ async fn prune_agent_skill_ids(
 }
 
 fn resource_response(
-    storage_root: &PathBuf,
+    storage_root: &FsPath,
     row: &SkillRow,
     file: &SkillFileInfo,
     content: Option<String>,
@@ -554,7 +557,7 @@ fn resource_response(
 }
 
 fn skill_resource_path(
-    storage_root: &PathBuf,
+    storage_root: &FsPath,
     row: &SkillRow,
     rel_path: &str,
 ) -> Result<PathBuf, ApiError> {
@@ -562,10 +565,11 @@ fn skill_resource_path(
         .storage_path
         .as_ref()
         .ok_or_else(|| ApiError::not_found("skill resources not found"))?;
-    resource_storage_path(storage_root, &PathBuf::from(storage_path), rel_path)
+    let skill_storage = PathBuf::from(storage_path);
+    resource_storage_path(storage_root, &skill_storage, rel_path)
 }
 
-fn file_size(path: &PathBuf) -> Result<u64, ApiError> {
+fn file_size(path: &FsPath) -> Result<u64, ApiError> {
     path.metadata()
         .map(|metadata| metadata.len())
         .map_err(|_| ApiError::not_found("skill resource not found"))

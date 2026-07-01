@@ -18,7 +18,11 @@ pub struct AppConfig {
         default_value = "sqlite://ag-swarmer.db?mode=rwc"
     )]
     pub database_url: String,
-    #[arg(long, env = "SECRET_KEY", default_value = "please-change-me-in-production")]
+    #[arg(
+        long,
+        env = "SECRET_KEY",
+        default_value = "please-change-me-in-production"
+    )]
     pub secret_key: String,
     #[arg(long, env = "ACCESS_TOKEN_EXPIRE_MINUTES", default_value_t = 10080)]
     pub access_token_expire_minutes: i64,

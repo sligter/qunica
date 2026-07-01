@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, Receiver};
 
-use super::{pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolCall};
+use super::{
+    pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolCall,
+};
 
 /// Streams responses from the Gemini `:streamGenerateContent` endpoint.
 pub struct GeminiProvider {
@@ -30,7 +32,11 @@ fn to_contents(messages: &[ChatMessage]) -> Vec<Value> {
     messages
         .iter()
         .map(|m| {
-            let role = if m.role == "assistant" { "model" } else { "user" };
+            let role = if m.role == "assistant" {
+                "model"
+            } else {
+                "user"
+            };
             json!({ "role": role, "parts": [{ "text": m.content }] })
         })
         .collect()
@@ -58,7 +64,10 @@ fn parse(line: &str) -> Vec<ChatDelta> {
                     }
                     let function_call = &part["functionCall"];
                     if !function_call.is_null() {
-                        let name = function_call["name"].as_str().unwrap_or_default().to_string();
+                        let name = function_call["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
                         out.push(ChatDelta::ToolCall(ToolCall {
                             // Gemini does not assign tool-call ids; the name is
                             // the stable identifier for the call.

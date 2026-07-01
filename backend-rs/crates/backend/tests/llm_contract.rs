@@ -25,7 +25,9 @@ async fn fake_server(body: &'static str) -> String {
     });
 
     tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve fake provider");
+        axum::serve(listener, app)
+            .await
+            .expect("serve fake provider");
     });
 
     format!("http://{addr}")

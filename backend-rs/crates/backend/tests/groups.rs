@@ -2605,7 +2605,7 @@ async fn group_patch_ring_to_star_normalizes_existing_topology() {
     let updated = patch_group_mode(&app, &token, group_id, "star").await;
     assert_eq!(updated["communication_mode"], "star");
 
-    let rows = vec![
+    let rows = [
         group_agent_row(&state, group_id, &agent_a).await,
         group_agent_row(&state, group_id, &agent_b).await,
     ];
@@ -2639,7 +2639,7 @@ async fn group_patch_star_to_ring_assigns_speaking_orders() {
     let updated = patch_group_mode(&app, &token, group_id, "ring").await;
     assert_eq!(updated["communication_mode"], "ring");
 
-    let rows = vec![
+    let rows = [
         group_agent_row(&state, group_id, &agent_a).await,
         group_agent_row(&state, group_id, &agent_b).await,
     ];
@@ -2671,7 +2671,7 @@ async fn group_patch_star_to_mesh_clears_topology() {
     let updated = patch_group_mode(&app, &token, group_id, "mesh").await;
     assert_eq!(updated["communication_mode"], "mesh");
 
-    let rows = vec![
+    let rows = [
         group_agent_row(&state, group_id, &agent_a).await,
         group_agent_row(&state, group_id, &agent_b).await,
     ];

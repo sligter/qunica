@@ -311,7 +311,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
 
     let (status, defaults) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(defaults["owner_id"].as_str().is_some(), true);
+    assert!(defaults["owner_id"].as_str().is_some());
     assert_eq!(defaults["group_workspace_root"], Value::Null);
     assert_eq!(defaults["web_search_provider"], "tavily");
     assert_eq!(defaults["tavily_api_key_configured"], false);
@@ -516,8 +516,11 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
         assert_eq!(preset["installed"], false);
         assert_eq!(preset["command"], "npx");
         assert_eq!(preset["source"], "fallback");
-        assert!(preset["args"].as_array().unwrap().len() > 0);
-        assert!(preset["mode_options"].as_array().unwrap().len() > 0);
-        assert!(preset["thinking_effort_options"].as_array().unwrap().len() > 0);
+        assert!(!preset["args"].as_array().unwrap().is_empty());
+        assert!(!preset["mode_options"].as_array().unwrap().is_empty());
+        assert!(!preset["thinking_effort_options"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 }

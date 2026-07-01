@@ -135,7 +135,9 @@ pub async fn list(
     .await
     .map_err(|_| ApiError::internal("database error"))?;
 
-    Ok(Json(rows.into_iter().map(WorkspaceResponse::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(WorkspaceResponse::from).collect(),
+    ))
 }
 
 pub async fn get(
@@ -223,13 +225,15 @@ pub async fn delete(
     load_owned(state.db.pool(), &workspace_id, &owner_id).await?;
 
     let now = now_rfc3339();
-    sqlx::query("UPDATE workspaces SET status = 'deleted', updated_at = ? WHERE id = ? AND owner_id = ?")
-        .bind(&now)
-        .bind(&workspace_id)
-        .bind(&owner_id)
-        .execute(state.db.pool())
-        .await
-        .map_err(|_| ApiError::internal("failed to delete workspace"))?;
+    sqlx::query(
+        "UPDATE workspaces SET status = 'deleted', updated_at = ? WHERE id = ? AND owner_id = ?",
+    )
+    .bind(&now)
+    .bind(&workspace_id)
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to delete workspace"))?;
 
     // Unbind same-owner active agents/groups so they no longer point at a
     // workspace that no longer exists from their perspective.
@@ -263,12 +267,17 @@ async fn load_owned(
         .await?
         .ok_or_else(|| ApiError::not_found("workspace not found"))?;
     if row.owner_id != owner_id {
-        return Err(ApiError::permission_denied("workspace belongs to another user"));
+        return Err(ApiError::permission_denied(
+            "workspace belongs to another user",
+        ));
     }
     Ok(row)
 }
 
-async fn fetch_row(pool: &SqlitePool, workspace_id: &str) -> Result<Option<WorkspaceRow>, ApiError> {
+async fn fetch_row(
+    pool: &SqlitePool,
+    workspace_id: &str,
+) -> Result<Option<WorkspaceRow>, ApiError> {
     sqlx::query_as::<_, WorkspaceRow>(
         "SELECT id, owner_id, name, backend_type, local_path, config_json, status, created_at, updated_at \
          FROM workspaces WHERE id = ?",
@@ -309,9 +318,8 @@ fn normalize_backend_type(raw: Option<&str>) -> Result<String, ApiError> {
 fn resolve_local_path(backend_type: &str, raw: Option<&str>) -> Result<Option<String>, ApiError> {
     let trimmed = raw.map(str::trim).filter(|p| !p.is_empty());
     if backend_type == BACKEND_LOCAL {
-        let path = trimmed.ok_or_else(|| {
-            ApiError::invalid_input("local_path is required for local backend")
-        })?;
+        let path = trimmed
+            .ok_or_else(|| ApiError::invalid_input("local_path is required for local backend"))?;
         let canonical = std::fs::canonicalize(path)
             .map_err(|_| ApiError::invalid_input("local_path must be an existing directory"))?;
         if !canonical.is_dir() {

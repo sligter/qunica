@@ -638,6 +638,7 @@ async fn run_agent_turn(
 
     let mut content = String::new();
     let mut tool_calls = Vec::new();
+    let checkpoint_interrupted = handoff_depth == 0;
     while let Some(delta) = deltas.recv().await {
         match delta {
             ChatDelta::Token(text) => {
@@ -650,7 +651,13 @@ async fn run_agent_turn(
                 {
                     Ok(()) => content.push_str(&text),
                     Err(StepErr::Cancelled) => {
-                        persist_interrupted_agent(ctx, agent, &content).await?;
+                        maybe_persist_interrupted_agent(
+                            ctx,
+                            agent,
+                            &content,
+                            checkpoint_interrupted,
+                        )
+                        .await?;
                         return Err(StepErr::Cancelled);
                     }
                     Err(err @ StepErr::Db(_)) => return Err(err),
@@ -665,7 +672,13 @@ async fn run_agent_turn(
                     .await
                 {
                     if matches!(err, StepErr::Cancelled) {
-                        persist_interrupted_agent(ctx, agent, &content).await?;
+                        maybe_persist_interrupted_agent(
+                            ctx,
+                            agent,
+                            &content,
+                            checkpoint_interrupted,
+                        )
+                        .await?;
                     }
                     return Err(err);
                 }
@@ -687,7 +700,13 @@ async fn run_agent_turn(
                     .await
                 {
                     if matches!(err, StepErr::Cancelled) {
-                        persist_interrupted_agent(ctx, agent, &content).await?;
+                        maybe_persist_interrupted_agent(
+                            ctx,
+                            agent,
+                            &content,
+                            checkpoint_interrupted,
+                        )
+                        .await?;
                     }
                     return Err(err);
                 }
@@ -712,13 +731,26 @@ async fn run_agent_turn(
     for call in tool_calls {
         if let Err(err) = emit_tool_call_start(ctx, agent, &call).await {
             if matches!(err, StepErr::Cancelled) {
-                persist_interrupted_agent(ctx, agent, &content).await?;
+                maybe_persist_interrupted_agent(ctx, agent, &content, checkpoint_interrupted)
+                    .await?;
             }
             return Err(err);
         }
     }
 
-    finish_agent_content(ctx, agent, proactive, content).await
+    finish_agent_content(ctx, agent, proactive, content, checkpoint_interrupted).await
+}
+
+async fn maybe_persist_interrupted_agent(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    checkpoint_interrupted: bool,
+) -> Result<(), StepErr> {
+    if checkpoint_interrupted {
+        persist_interrupted_agent(ctx, agent, content).await?;
+    }
+    Ok(())
 }
 
 async fn persist_interrupted_agent(
@@ -774,7 +806,14 @@ async fn handle_agent_as_tool(
         Ok(parsed) => parsed,
         Err(failure) => {
             emit_tool_call_failure(ctx, agent, &call.id, &failure).await?;
-            return finish_agent_content(ctx, agent, false, content.to_string()).await;
+            return finish_agent_content(
+                ctx,
+                agent,
+                false,
+                content.to_string(),
+                handoff_depth == 0,
+            )
+            .await;
         }
     };
     let caller = CallerAgent {
@@ -796,7 +835,14 @@ async fn handle_agent_as_tool(
         Ok(dispatch) => dispatch,
         Err(failure) => {
             emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
-            return finish_agent_content(ctx, agent, false, content.to_string()).await;
+            return finish_agent_content(
+                ctx,
+                agent,
+                false,
+                content.to_string(),
+                handoff_depth == 0,
+            )
+            .await;
         }
     };
 
@@ -855,6 +901,7 @@ async fn finish_agent_content(
     agent: &Candidate,
     proactive: bool,
     content: String,
+    checkpoint_interrupted: bool,
 ) -> Result<AgentRunResult, StepErr> {
     let trimmed = content.trim();
 
@@ -906,7 +953,7 @@ async fn finish_agent_content(
         .await
     {
         if matches!(err, StepErr::Cancelled) {
-            persist_interrupted_agent(ctx, agent, &visible).await?;
+            maybe_persist_interrupted_agent(ctx, agent, &visible, checkpoint_interrupted).await?;
         }
         return Err(err);
     }
