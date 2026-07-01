@@ -1,3 +1,6 @@
+# Retained for the legacy Python oracle stack only. The normal Rust desktop
+# runtime builds and launches the Rust sidecar and does not require Docker,
+# Postgres, Redis, or MinIO.
 services:
   postgres:
     image: pgvector/pgvector:pg16
