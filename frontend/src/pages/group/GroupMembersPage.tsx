@@ -22,7 +22,7 @@ import {
   useSetGroupAgentTopology,
   useSetGroupAgentWorkspaceSharing,
 } from '@/hooks/useGroupAgentActions'
-import { ApiError } from '@/lib/http'
+import { ApiError } from '@/lib/api-v2/client'
 import type {
   AgentRead,
   GroupAgentRead,

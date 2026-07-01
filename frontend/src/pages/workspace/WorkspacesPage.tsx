@@ -30,7 +30,7 @@ import {
   useUpdateWorkspace,
   useWorkspaces,
 } from '@/hooks/useWorkspaces'
-import { ApiError } from '@/lib/http'
+import { ApiError } from '@/lib/api-v2/client'
 import {
   basename,
   composePickedPath,

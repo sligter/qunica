@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useAgents } from '@/hooks/useAgents'
 import { useCreateGroup } from '@/hooks/useCreateGroup'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
-import { ApiError } from '@/lib/http'
+import { ApiError } from '@/lib/api-v2/client'
 
 const schema = z.object({
   name: z.string().min(1, 'Required').max(100),

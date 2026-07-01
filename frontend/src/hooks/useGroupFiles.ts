@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { ApiError, fetchFormData, fetchJson } from '@/lib/http'
+import { ApiError, fetchFormData, fetchJson } from '@/lib/api-v2/client'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'

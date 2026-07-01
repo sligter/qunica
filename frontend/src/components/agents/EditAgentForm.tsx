@@ -35,7 +35,7 @@ import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { useUpdateAgent } from '@/hooks/useUpdateAgent'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
-import { ApiError } from '@/lib/http'
+import { ApiError } from '@/lib/api-v2/client'
 import { cn } from '@/lib/utils'
 import type {
   AcpPermissionPolicy,

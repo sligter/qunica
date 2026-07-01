@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { useAddAgentToGroup } from '@/hooks/useAddAgentToGroup'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
-import { ApiError } from '@/lib/http'
+import { ApiError } from '@/lib/api-v2/client'
 
 interface AddAgentToGroupFormProps {
   groupId: string
