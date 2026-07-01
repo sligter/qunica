@@ -43,6 +43,7 @@ fn request() -> ChatRequest {
         }],
         temperature: Some(0.0),
         reasoning_passback: false,
+        tools: Vec::new(),
     }
 }
 

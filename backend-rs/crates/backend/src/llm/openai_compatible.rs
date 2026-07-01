@@ -107,13 +107,31 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
 impl LlmProvider for OpenAiCompatibleProvider {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = json!({
+        let mut body = json!({
             "model": request.model,
             "messages": request.messages,
             "temperature": request.temperature,
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        if !request.tools.is_empty() {
+            body["tools"] = Value::Array(
+                request
+                    .tools
+                    .into_iter()
+                    .map(|tool| {
+                        json!({
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.input_schema,
+                            },
+                        })
+                    })
+                    .collect(),
+            );
+        }
 
         let resp = self
             .client

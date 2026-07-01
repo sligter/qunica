@@ -1483,7 +1483,7 @@ pub async fn add_group_agent(
     let existing_context_scope = existing.as_ref().and_then(|row| row.1.as_deref());
     let context_scope_json = context_scope_with_group_workspace(
         existing_context_scope,
-        body.share_group_workspace.unwrap_or(false),
+        body.share_group_workspace.unwrap_or(true),
     )?;
 
     if existing.is_some() {

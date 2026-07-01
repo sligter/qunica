@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{Cursor, Read, Write},
     path::{Path as FsPath, PathBuf},
 };
 
@@ -14,6 +15,7 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 use crate::{
     api::{auth::current_user_id, error::ApiError, AppState},
@@ -48,6 +50,15 @@ pub struct PackageImportRequest {
     #[serde(default)]
     filename: Option<String>,
     content_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GithubImportRequest {
+    url: String,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,7 +215,64 @@ pub async fn import_package(
     let bytes = STANDARD
         .decode(body.content_base64.trim())
         .map_err(|_| ApiError::invalid_input("content_base64 is not valid base64"))?;
-    let package = parse_skill_package(&bytes)?;
+    import_package_bytes(&state, &owner_id, &bytes, "package").await
+}
+
+pub async fn import_github(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<GithubImportRequest>,
+) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let repo = parse_github_repo(&body.url)?;
+    let branch = validate_github_ref(body.branch.as_deref().unwrap_or("main"))?;
+    let selected_path = match body
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        Some(path) => Some(validate_resource_path(path)?),
+        None => None,
+    };
+    let url = format!(
+        "https://codeload.github.com/{}/{}/zip/{}",
+        repo.owner, repo.name, branch
+    );
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| ApiError::invalid_input("GitHub repository archive could not be downloaded"))?
+        .error_for_status()
+        .map_err(|_| {
+            ApiError::invalid_input("GitHub repository archive could not be downloaded")
+        })?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| ApiError::invalid_input("GitHub repository archive could not be read"))?;
+    const MAX_GITHUB_ZIP_BYTES: usize = 25 * 1024 * 1024;
+    if bytes.len() > MAX_GITHUB_ZIP_BYTES {
+        return Err(ApiError::invalid_input(
+            "GitHub repository archive is too large",
+        ));
+    }
+    let package_bytes = if let Some(path) = selected_path {
+        crop_github_skill_package(&bytes, &path)?
+    } else {
+        bytes.to_vec()
+    };
+    import_package_bytes(&state, &owner_id, &package_bytes, "github").await
+}
+
+async fn import_package_bytes(
+    state: &AppState,
+    owner_id: &str,
+    bytes: &[u8],
+    source: &str,
+) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
+    let package = parse_skill_package(bytes)?;
     let metadata_json = json_to_db_string(&package.parsed.metadata)?;
     let files_json = files_to_json(&package.files)?;
     let id = Uuid::new_v4().to_string();
@@ -217,12 +285,12 @@ pub async fn import_package(
         state.db.pool(),
         NewSkill {
             id: &id,
-            owner_id: &owner_id,
+            owner_id,
             name: &package.parsed.name,
             description: package.parsed.description.as_deref(),
             body_markdown: &package.parsed.body_markdown,
             metadata_json: Some(&metadata_json),
-            source: "package",
+            source,
             files_json: Some(&files_json),
             storage_path: Some(&storage_path),
             now: &now,
@@ -614,6 +682,132 @@ fn json_to_db_string(value: &Value) -> Result<String, ApiError> {
 
 fn parse_json(raw: Option<&str>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str::<Value>(value).ok())
+}
+
+struct GithubRepo {
+    owner: String,
+    name: String,
+}
+
+fn parse_github_repo(raw: &str) -> Result<GithubRepo, ApiError> {
+    let trimmed = raw.trim().trim_end_matches(".git");
+    let repo = if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
+        rest
+    } else if !trimmed.contains("://") {
+        trimmed
+    } else {
+        return Err(ApiError::invalid_input(
+            "GitHub import requires an https://github.com repository URL or owner/repo",
+        ));
+    };
+    let repo = repo.trim_matches('/');
+    let mut parts = repo.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    if owner.is_empty() || name.is_empty() || parts.next().is_some() {
+        return Err(ApiError::invalid_input(
+            "GitHub import requires a repository in owner/repo form",
+        ));
+    }
+    validate_github_segment(owner, "owner")?;
+    validate_github_segment(name, "repository")?;
+    Ok(GithubRepo {
+        owner: owner.to_string(),
+        name: name.to_string(),
+    })
+}
+
+fn validate_github_segment(value: &str, label: &str) -> Result<(), ApiError> {
+    let valid = value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.');
+    if valid && !value.starts_with('.') && !value.ends_with('.') && !value.contains("..") {
+        Ok(())
+    } else {
+        Err(ApiError::invalid_input(format!(
+            "GitHub {label} contains unsupported characters"
+        )))
+    }
+}
+
+fn validate_github_ref(raw: &str) -> Result<String, ApiError> {
+    let value = raw.trim();
+    let valid = !value.is_empty()
+        && !value.starts_with('/')
+        && !value.ends_with('/')
+        && !value.contains("..")
+        && !value.contains('\\')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'));
+    if valid {
+        Ok(value.to_string())
+    } else {
+        Err(ApiError::invalid_input(
+            "GitHub branch or ref contains unsupported characters",
+        ))
+    }
+}
+
+fn crop_github_skill_package(bytes: &[u8], selected_path: &str) -> Result<Vec<u8>, ApiError> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))
+        .map_err(|_| ApiError::invalid_input("GitHub archive is not a valid zip"))?;
+    let root_prefix = github_archive_root(&mut archive)?;
+    let selected_prefix = format!("{root_prefix}{}/", selected_path.trim_matches('/'));
+    let mut output = Cursor::new(Vec::new());
+    {
+        let mut writer = ZipWriter::new(&mut output);
+        let options = SimpleFileOptions::default();
+        let mut copied = 0usize;
+        for index in 0..archive.len() {
+            let mut file = archive
+                .by_index(index)
+                .map_err(|_| ApiError::invalid_input("GitHub archive cannot be read"))?;
+            if file.is_dir() {
+                continue;
+            }
+            let Some(rel) = file.name().strip_prefix(&selected_prefix) else {
+                continue;
+            };
+            if rel.is_empty() {
+                continue;
+            }
+            validate_resource_path(rel)?;
+            writer
+                .start_file(rel, options)
+                .map_err(|_| ApiError::internal("failed to build skill package"))?;
+            let mut data = Vec::new();
+            file.read_to_end(&mut data)
+                .map_err(|_| ApiError::invalid_input("GitHub archive cannot be read"))?;
+            writer
+                .write_all(&data)
+                .map_err(|_| ApiError::internal("failed to build skill package"))?;
+            copied += 1;
+        }
+        writer
+            .finish()
+            .map_err(|_| ApiError::internal("failed to build skill package"))?;
+        if copied == 0 {
+            return Err(ApiError::invalid_input(
+                "GitHub skill path did not contain any files",
+            ));
+        }
+    }
+    Ok(output.into_inner())
+}
+
+fn github_archive_root(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<String, ApiError> {
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index(index)
+            .map_err(|_| ApiError::invalid_input("GitHub archive cannot be read"))?;
+        let name = file.name().replace('\\', "/");
+        if let Some((root, _)) = name.split_once('/') {
+            validate_resource_path(root)?;
+            return Ok(format!("{root}/"));
+        }
+    }
+    Err(ApiError::invalid_input("GitHub archive is empty"))
 }
 
 fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {

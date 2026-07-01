@@ -114,6 +114,15 @@ impl ToolExecutor {
                     skill_name,
                 ))
             }
+            "RunSubAgent" => {
+                let task = arg_str(&args, "task")?;
+                Ok(ToolResult {
+                    status: ToolStatus::SetupRequired,
+                    output: format!(
+                        "RunSubAgent setup required: no sub-agent executor is configured for task '{task}'."
+                    ),
+                })
+            }
             "TodoWrite" => Ok(controlled::todo_write(arg_todos(&args))),
             "ExitPlanMode" => Ok(controlled::exit_plan_mode(arg_str(&args, "plan")?)),
             _ => Ok(unknown_tool(name)),

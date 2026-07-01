@@ -113,13 +113,28 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
 impl LlmProvider for AnthropicProvider {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let body = json!({
+        let mut body = json!({
             "model": request.model,
             "messages": request.messages,
             "temperature": request.temperature,
             "max_tokens": DEFAULT_MAX_TOKENS,
             "stream": true,
         });
+        if !request.tools.is_empty() {
+            body["tools"] = Value::Array(
+                request
+                    .tools
+                    .into_iter()
+                    .map(|tool| {
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.input_schema,
+                        })
+                    })
+                    .collect(),
+            );
+        }
 
         let resp = self
             .client

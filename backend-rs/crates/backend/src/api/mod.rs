@@ -12,8 +12,17 @@ pub mod workspaces;
 
 use std::{path::PathBuf, sync::Arc};
 
-use axum::{extract::DefaultBodyLimit, routing::get, Router};
+use axum::{
+    extract::DefaultBodyLimit,
+    http::{
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+        HeaderName, HeaderValue, Method,
+    },
+    routing::get,
+    Router,
+};
 use tokio::sync::Mutex;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::db::Db;
 
@@ -37,6 +46,24 @@ pub struct AuthSettings {
 }
 
 pub fn router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            is_allowed_origin(origin)
+        }))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            ACCEPT,
+            HeaderName::from_static("last-event-id"),
+        ]);
+
     Router::new()
         .route("/api/v1/health", get(health::health))
         .route("/api/v2/health", get(health::health))
@@ -203,6 +230,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(skills::import_package),
         )
         .route(
+            "/api/v2/skills/import-github",
+            axum::routing::post(skills::import_github),
+        )
+        .route(
             "/api/v2/skills/:skill_id",
             get(skills::get)
                 .patch(skills::update)
@@ -217,6 +248,22 @@ pub fn router(state: AppState) -> Router {
             get(skills::read_resource).patch(skills::update_resource),
         )
         .with_state(state)
+        .layer(cors)
+}
+
+fn is_allowed_origin(origin: &HeaderValue) -> bool {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    matches!(
+        origin,
+        "http://tauri.localhost"
+            | "https://tauri.localhost"
+            | "tauri://localhost"
+            | "http://localhost"
+            | "http://127.0.0.1"
+    ) || origin.starts_with("http://localhost:")
+        || origin.starts_with("http://127.0.0.1:")
 }
 
 /// Build a router backed by a fresh, migrated in-memory database for tests.

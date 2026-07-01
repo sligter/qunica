@@ -166,16 +166,17 @@ export function useImportSkillPackage() {
 }
 
 export function useImportSkillFromGithub() {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: SkillGithubImport) => {
-      void data
-      return Promise.reject<SkillRead>(
-        new ApiError(
-          501,
-          'not_implemented',
-          'GitHub skill import is not available in the Rust API v2 backend yet.',
-        ),
-      )
+    mutationFn: (data: SkillGithubImport) =>
+      fetchJson<SkillRead>('/skills/import-github', {
+        token,
+        method: 'POST',
+        body: data,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skills'] })
     },
   })
 }

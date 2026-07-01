@@ -106,10 +106,25 @@ impl LlmProvider for GeminiProvider {
         if let Some(temp) = request.temperature {
             generation_config.insert("temperature".to_string(), json!(temp));
         }
-        let body = json!({
+        let mut body = json!({
             "contents": to_contents(&request.messages),
             "generationConfig": Value::Object(generation_config),
         });
+        if !request.tools.is_empty() {
+            body["tools"] = json!([{
+                "functionDeclarations": request
+                    .tools
+                    .into_iter()
+                    .map(|tool| {
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }]);
+        }
 
         let resp = self
             .client

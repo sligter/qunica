@@ -45,7 +45,6 @@ export function openApiV2SseStream(opts: {
     },
     onerror: (err) => {
       opts.handlers.onError?.(err)
-      throw err
     },
     onclose: () => {
       opts.handlers.onClose?.()

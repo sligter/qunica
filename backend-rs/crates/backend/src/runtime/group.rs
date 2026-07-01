@@ -22,8 +22,8 @@
 //! send fails. If visible agent tokens already reached the client, the runtime
 //! checkpoints that partial reply as `interrupted` so it can be resumed.
 
-use std::collections::HashSet;
 use std::sync::Arc;
+use std::{collections::HashSet, path::PathBuf};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use serde_json::{json, Value};
@@ -33,14 +33,18 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::acp::{normalize_acp_runtime, run_acp_agent_stream, AcpEventKind, AcpRunRequest};
 use crate::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider, ToolCall,
+    OpenAiCompatibleProvider, ToolCall, ToolDefinition,
 };
 use crate::runtime::agent_as_tool::{
     resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AssistantMember, CallerAgent,
     AGENT_AS_TOOL_NAME,
 };
+use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
+
+const MAX_TOOL_ROUNDS: usize = 24;
 use crate::runtime::sequence::{NewMessage, SequenceAllocator};
 
 /// A proactive agent replies with exactly this marker to stay silent.
@@ -196,11 +200,17 @@ impl StreamCtx {
         event
     }
 
-    /// Emit an ephemeral event (tokens, reasoning, lifecycle markers). Not
-    /// persisted.
+    /// Emit an event and persist its stream cursor before delivery so reconnect
+    /// replay can anchor on any id the client may have observed.
     async fn emit(&mut self, kind: StreamEventKind, payload: Value) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
-        self.tx.send(event).await.map_err(|_| StepErr::Cancelled)
+        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
+        self.allocator
+            .persist_event(&self.thread_id, &event)
+            .await
+            .map_err(StepErr::Db)?;
+        permit.send(event);
+        Ok(())
     }
 
     /// Reserve outbound capacity, then persist a message and its announcing
@@ -301,8 +311,8 @@ async fn run_inner(
     req: &TurnRequest,
     ctx: &mut StreamCtx,
 ) -> Result<TurnOutcome, Cancelled> {
-    let (free_speech, proactive) = match load_group_flags(&services.pool, &req.group_id).await {
-        Ok(flags) => flags,
+    let group = match load_group_runtime_config(&services.pool, &req.group_id).await {
+        Ok(config) => config,
         Err(err) => return ctx.fail(&err.to_string()).await,
     };
 
@@ -327,11 +337,11 @@ async fn run_inner(
     );
 
     // 2. Route the message to responders.
-    let candidates = match load_candidates(&services.pool, &req.group_id).await {
+    let candidates = match load_candidates(&services.pool, &req.group_id, &group).await {
         Ok(candidates) => candidates,
         Err(err) => return ctx.fail(&err.to_string()).await,
     };
-    let selected = select_agents(candidates, &req.content, free_speech, proactive);
+    let selected = select_agents(candidates, &req.content, &group);
 
     if selected.is_empty() {
         step!(
@@ -348,10 +358,7 @@ async fn run_inner(
     let mut waiting = false;
 
     for agent in &selected {
-        match step!(
-            ctx,
-            run_agent_turn(services, ctx, agent, proactive, 0).await
-        ) {
+        match step!(ctx, run_agent_turn(services, ctx, agent, &group, 0).await) {
             AgentRunResult::NoVisible => {}
             AgentRunResult::Visible => had_visible = true,
             AgentRunResult::WaitingForUser => {
@@ -363,7 +370,7 @@ async fn run_inner(
                 had_visible = true;
                 match step!(
                     ctx,
-                    run_agent_turn(services, ctx, &Candidate::from(helper), proactive, 1).await
+                    run_agent_turn(services, ctx, &Candidate::from(helper), &group, 1).await
                 ) {
                     AgentRunResult::WaitingForUser => waiting = true,
                     AgentRunResult::Visible
@@ -451,6 +458,7 @@ async fn run_resume_inner(
         messages,
         temperature: None,
         reasoning_passback: provider_cfg.reasoning_passback,
+        tools: Vec::new(),
     };
     let mut deltas = match provider.stream(request).await {
         Ok(deltas) => deltas,
@@ -572,9 +580,17 @@ struct Candidate {
     owner_id: String,
     display_name: String,
     system_prompt: String,
+    runtime_kind: String,
     provider_id: Option<String>,
     model_config_json: Option<String>,
     tool_config_json: Option<String>,
+    external_runtime_json: Option<String>,
+    skill_ids_json: Option<String>,
+    workspace_id: Option<String>,
+    share_group_workspace: bool,
+    response_mode: String,
+    topology_role: Option<String>,
+    speaking_order: Option<i64>,
 }
 
 impl From<AssistantMember> for Candidate {
@@ -584,11 +600,41 @@ impl From<AssistantMember> for Candidate {
             owner_id: helper.owner_id,
             display_name: helper.display_name,
             system_prompt: helper.system_prompt,
+            runtime_kind: "llm_chat".to_string(),
             provider_id: helper.provider_id,
             model_config_json: helper.model_config_json,
             tool_config_json: helper.tool_config_json,
+            external_runtime_json: None,
+            skill_ids_json: Some("[]".to_string()),
+            workspace_id: None,
+            share_group_workspace: true,
+            response_mode: "mentioned_only".to_string(),
+            topology_role: None,
+            speaking_order: None,
         }
     }
+}
+
+struct GroupRuntimeConfig {
+    id: String,
+    owner_id: String,
+    name: String,
+    description: Option<String>,
+    announcement: Option<String>,
+    workspace_id: Option<String>,
+    free_speech: bool,
+    proactive_mode: bool,
+    proactive_reply_multiplier: i64,
+    allow_agent_free_mention: bool,
+    communication_mode: String,
+    muted_agent_ids: HashSet<String>,
+}
+
+struct InvocationContext {
+    system_prompt: String,
+    tools: Vec<ToolDefinition>,
+    executor: ToolExecutor,
+    workspace_root: Option<PathBuf>,
 }
 
 /// Resolved LLM provider connection settings.
@@ -611,7 +657,7 @@ async fn run_agent_turn(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
-    proactive: bool,
+    group: &GroupRuntimeConfig,
     handoff_depth: usize,
 ) -> Result<AgentRunResult, StepErr> {
     ctx.emit(
@@ -620,125 +666,194 @@ async fn run_agent_turn(
     )
     .await?;
 
+    if agent.runtime_kind == "acp" {
+        return run_acp_agent_turn(services, ctx, agent, group).await;
+    }
+
     let provider_cfg = resolve_provider(&services.pool, agent)
         .await
         .map_err(StepErr::Db)?;
     let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
     let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
-    let messages = build_messages(&services.pool, &ctx.thread_id, &agent.system_prompt)
+    let invocation = build_invocation_context(&services.pool, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
-    let request = ChatRequest {
-        model,
-        messages,
-        temperature: None,
-        reasoning_passback: provider_cfg.reasoning_passback,
-    };
-    let mut deltas = provider.stream(request).await.map_err(StepErr::Db)?;
+    let mut messages = build_messages(&services.pool, &ctx.thread_id, &invocation.system_prompt)
+        .await
+        .map_err(StepErr::Db)?;
 
     let mut content = String::new();
-    let mut tool_calls = Vec::new();
     let checkpoint_interrupted = handoff_depth == 0;
-    while let Some(delta) = deltas.recv().await {
-        match delta {
-            ChatDelta::Token(text) => {
-                match ctx
-                    .emit(
-                        StreamEventKind::Token,
-                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
-                    )
-                    .await
-                {
-                    Ok(()) => content.push_str(&text),
-                    Err(StepErr::Cancelled) => {
-                        maybe_persist_interrupted_agent(
-                            ctx,
-                            agent,
-                            &content,
-                            checkpoint_interrupted,
+
+    for _ in 0..MAX_TOOL_ROUNDS {
+        let request = ChatRequest {
+            model: model.clone(),
+            messages: messages.clone(),
+            temperature: None,
+            reasoning_passback: provider_cfg.reasoning_passback,
+            tools: invocation.tools.clone(),
+        };
+        let mut deltas = provider.stream(request).await.map_err(StepErr::Db)?;
+        let mut round_content = String::new();
+        let mut tool_calls = Vec::new();
+
+        while let Some(delta) = deltas.recv().await {
+            match delta {
+                ChatDelta::Token(text) => {
+                    match ctx
+                        .emit(
+                            StreamEventKind::Token,
+                            json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
                         )
-                        .await?;
-                        return Err(StepErr::Cancelled);
+                        .await
+                    {
+                        Ok(()) => {
+                            content.push_str(&text);
+                            round_content.push_str(&text);
+                        }
+                        Err(StepErr::Cancelled) => {
+                            maybe_persist_interrupted_agent(
+                                ctx,
+                                agent,
+                                &content,
+                                checkpoint_interrupted,
+                            )
+                            .await?;
+                            return Err(StepErr::Cancelled);
+                        }
+                        Err(err @ StepErr::Db(_)) => return Err(err),
                     }
-                    Err(err @ StepErr::Db(_)) => return Err(err),
                 }
-            }
-            ChatDelta::Reasoning(text) => {
-                if let Err(err) = ctx
-                    .emit(
-                        StreamEventKind::Reasoning,
-                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
-                    )
-                    .await
-                {
-                    if matches!(err, StepErr::Cancelled) {
-                        maybe_persist_interrupted_agent(
-                            ctx,
-                            agent,
-                            &content,
-                            checkpoint_interrupted,
+                ChatDelta::Reasoning(text) => {
+                    if let Err(err) = ctx
+                        .emit(
+                            StreamEventKind::Reasoning,
+                            json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
                         )
-                        .await?;
+                        .await
+                    {
+                        if matches!(err, StepErr::Cancelled) {
+                            maybe_persist_interrupted_agent(
+                                ctx,
+                                agent,
+                                &content,
+                                checkpoint_interrupted,
+                            )
+                            .await?;
+                        }
+                        return Err(err);
                     }
-                    return Err(err);
                 }
-            }
-            ChatDelta::ToolCall(call) => {
-                tool_calls.push(call);
-            }
-            ChatDelta::Usage(usage) => {
-                if let Err(err) = ctx
-                    .emit(
-                        StreamEventKind::ContextUsage,
-                        json!({
-                            "agent_id": agent.agent_id,
-                            "input_tokens": usage.input_tokens,
-                            "output_tokens": usage.output_tokens,
-                            "total_tokens": usage.total_tokens,
-                        }),
-                    )
-                    .await
-                {
-                    if matches!(err, StepErr::Cancelled) {
-                        maybe_persist_interrupted_agent(
-                            ctx,
-                            agent,
-                            &content,
-                            checkpoint_interrupted,
+                ChatDelta::ToolCall(call) => {
+                    tool_calls.push(call);
+                }
+                ChatDelta::Usage(usage) => {
+                    if let Err(err) = ctx
+                        .emit(
+                            StreamEventKind::ContextUsage,
+                            json!({
+                                "agent_id": agent.agent_id,
+                                "input_tokens": usage.input_tokens,
+                                "output_tokens": usage.output_tokens,
+                                "total_tokens": usage.total_tokens,
+                            }),
                         )
-                        .await?;
+                        .await
+                    {
+                        if matches!(err, StepErr::Cancelled) {
+                            maybe_persist_interrupted_agent(
+                                ctx,
+                                agent,
+                                &content,
+                                checkpoint_interrupted,
+                            )
+                            .await?;
+                        }
+                        return Err(err);
                     }
-                    return Err(err);
                 }
+                ChatDelta::Done => break,
             }
-            ChatDelta::Done => break,
+        }
+
+        if tool_calls.is_empty() {
+            return finish_agent_content(
+                ctx,
+                agent,
+                group.proactive_mode,
+                content,
+                checkpoint_interrupted,
+            )
+            .await;
+        }
+
+        if let Some(call) = agent_as_tool_call(&tool_calls) {
+            return handle_agent_as_tool(
+                services,
+                ctx,
+                agent,
+                group.proactive_mode,
+                handoff_depth,
+                call,
+                &content,
+            )
+            .await;
+        }
+
+        if !round_content.trim().is_empty() {
+            messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: round_content,
+            });
+        }
+
+        let mut wait_for_user: Option<Value> = None;
+        for call in tool_calls {
+            let result = execute_tool_call(
+                ctx,
+                agent,
+                &invocation.executor,
+                &call,
+                checkpoint_interrupted,
+                &content,
+            )
+            .await?;
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "Tool {} returned status {:?} for call {}:\n{}",
+                    call.name, result.status, call.id, result.output
+                ),
+            });
+            if matches!(result.status, ToolStatus::WaitingForUser) {
+                wait_for_user = Some(tool_input_request_payload(&result.output));
+                break;
+            }
+        }
+
+        if let Some(input_request) = wait_for_user {
+            ctx.emit_durable_event(
+                StreamEventKind::WaitingForUser,
+                json!({
+                    "agent_id": agent.agent_id,
+                    "message": "Waiting for your input",
+                    "input_request": input_request,
+                }),
+            )
+            .await?;
+            return Ok(AgentRunResult::WaitingForUser);
         }
     }
 
-    if let Some(call) = agent_as_tool_call(&tool_calls) {
-        return handle_agent_as_tool(
-            services,
-            ctx,
-            agent,
-            proactive,
-            handoff_depth,
-            call,
-            &content,
-        )
-        .await;
-    }
-
-    for call in tool_calls {
-        if let Err(err) = emit_tool_call_start(ctx, agent, &call).await {
-            if matches!(err, StepErr::Cancelled) {
-                maybe_persist_interrupted_agent(ctx, agent, &content, checkpoint_interrupted)
-                    .await?;
-            }
-            return Err(err);
-        }
-    }
-
-    finish_agent_content(ctx, agent, proactive, content, checkpoint_interrupted).await
+    content.push_str("\n\nTool loop stopped after repeated tool calls without a final answer.");
+    finish_agent_content(
+        ctx,
+        agent,
+        group.proactive_mode,
+        content,
+        checkpoint_interrupted,
+    )
+    .await
 }
 
 async fn maybe_persist_interrupted_agent(
@@ -751,6 +866,161 @@ async fn maybe_persist_interrupted_agent(
         persist_interrupted_agent(ctx, agent, content).await?;
     }
     Ok(())
+}
+
+async fn run_acp_agent_turn(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    group: &GroupRuntimeConfig,
+) -> Result<AgentRunResult, StepErr> {
+    let raw = agent
+        .external_runtime_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let config = normalize_acp_runtime(raw.as_ref()).map_err(|err| StepErr::Db(err.into()))?;
+    let invocation = build_invocation_context(&services.pool, ctx, agent, group)
+        .await
+        .map_err(StepErr::Db)?;
+    let cwd = invocation.workspace_root.ok_or_else(|| {
+        StepErr::Db(anyhow::anyhow!(
+            "ACP agent requires an active local workspace context"
+        ))
+    })?;
+    let prompt = build_acp_prompt(&services.pool, &ctx.thread_id, &invocation.system_prompt)
+        .await
+        .map_err(StepErr::Db)?;
+
+    let mut run = run_acp_agent_stream(
+        services.pool.clone(),
+        AcpRunRequest {
+            owner_id: agent.owner_id.clone(),
+            group_id: Some(ctx.group_id.clone()),
+            agent_id: agent.agent_id.clone(),
+            thread_id: Some(ctx.thread_id.clone()),
+            config,
+            cwd,
+            prompt,
+        },
+    )
+    .await
+    .map_err(|err| StepErr::Db(err.into()))?;
+
+    let mut content = String::new();
+    while let Some(event) = run.next_event().await {
+        match event.kind {
+            AcpEventKind::Run => {
+                ctx.emit(StreamEventKind::AcpAgentRun, event.data).await?;
+            }
+            AcpEventKind::Token => {
+                let text = event.data.as_str().unwrap_or_default().to_string();
+                if !text.is_empty() {
+                    ctx.emit(
+                        StreamEventKind::Token,
+                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                    )
+                    .await?;
+                    content.push_str(&text);
+                }
+            }
+            AcpEventKind::Reasoning => {
+                let text = event.data.as_str().unwrap_or_default().to_string();
+                if !text.is_empty() {
+                    ctx.emit(
+                        StreamEventKind::Reasoning,
+                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
+                    )
+                    .await?;
+                }
+            }
+            AcpEventKind::ToolCallStart => {
+                ctx.emit(StreamEventKind::ToolCallStart, event.data).await?;
+            }
+            AcpEventKind::ToolCallResult => {
+                ctx.emit(StreamEventKind::ToolCallResult, event.data)
+                    .await?;
+            }
+            AcpEventKind::Usage => {
+                ctx.emit(
+                    StreamEventKind::ContextUsage,
+                    json!({ "agent_id": agent.agent_id, "usage": event.data }),
+                )
+                .await?;
+            }
+        }
+    }
+    run.join().await.map_err(|err| StepErr::Db(err.into()))?;
+
+    finish_agent_content(ctx, agent, group.proactive_mode, content, true).await
+}
+
+async fn execute_tool_call(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    executor: &ToolExecutor,
+    call: &ToolCall,
+    checkpoint_interrupted: bool,
+    content: &str,
+) -> Result<ToolResult, StepErr> {
+    if let Err(err) = emit_tool_call_start(ctx, agent, call).await {
+        if matches!(err, StepErr::Cancelled) {
+            maybe_persist_interrupted_agent(ctx, agent, content, checkpoint_interrupted).await?;
+        }
+        return Err(err);
+    }
+
+    let result = executor.execute(&call.name, call.args.clone()).await;
+    if let Err(err) = ctx
+        .emit(
+            StreamEventKind::ToolCallResult,
+            json!({
+                "agent_id": agent.agent_id,
+                "display_name": agent.display_name,
+                "tool_call_id": call.id,
+                "tool_name": call.name,
+                "status": tool_status_wire(result.status),
+                "result_summary": summarize_text(&result.output),
+                "output": result.output,
+            }),
+        )
+        .await
+    {
+        if matches!(err, StepErr::Cancelled) {
+            maybe_persist_interrupted_agent(ctx, agent, content, checkpoint_interrupted).await?;
+        }
+        return Err(err);
+    }
+    Ok(result)
+}
+
+fn tool_status_wire(status: ToolStatus) -> &'static str {
+    match status {
+        ToolStatus::Completed => "completed",
+        ToolStatus::SetupRequired => "setup_required",
+        ToolStatus::WorkspaceRequired => "workspace_required",
+        ToolStatus::WaitingForUser => "input_required",
+        ToolStatus::InputRequested => "input_required",
+        ToolStatus::ApprovalRequired => "approval_required",
+        ToolStatus::Failed => "failed",
+    }
+}
+
+fn summarize_text(value: &str) -> String {
+    const LIMIT: usize = 500;
+    let mut chars = value.chars();
+    let summary: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{summary}...")
+    } else {
+        value.to_string()
+    }
+}
+
+fn tool_input_request_payload(output: &str) -> Value {
+    serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|value| value.get("input_request").cloned())
+        .unwrap_or_else(|| json!({ "question": "The agent requested input.", "required": true }))
 }
 
 async fn persist_interrupted_agent(
@@ -1022,14 +1292,50 @@ fn summarize_value(value: &Value) -> String {
     }
 }
 
-async fn load_group_flags(pool: &SqlitePool, group_id: &str) -> anyhow::Result<(bool, bool)> {
-    let row: Option<(i64, i64)> =
-        sqlx::query_as("SELECT free_speech, proactive_mode FROM groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_optional(pool)
-            .await?;
-    let (free_speech, proactive) = row.ok_or_else(|| anyhow::anyhow!("group not found"))?;
-    Ok((free_speech != 0, proactive != 0))
+#[derive(sqlx::FromRow)]
+struct GroupRuntimeRow {
+    id: String,
+    owner_id: String,
+    name: String,
+    description: Option<String>,
+    announcement: Option<String>,
+    workspace_id: Option<String>,
+    free_speech: i64,
+    proactive_mode: i64,
+    proactive_reply_multiplier: i64,
+    allow_agent_free_mention: i64,
+    communication_mode: String,
+    muted_agent_ids_json: Option<String>,
+}
+
+async fn load_group_runtime_config(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> anyhow::Result<GroupRuntimeConfig> {
+    let row: Option<GroupRuntimeRow> = sqlx::query_as(
+        "SELECT id, owner_id, name, description, announcement, workspace_id, free_speech, \
+                proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
+                communication_mode, muted_agent_ids_json \
+         FROM groups WHERE id = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await?;
+    let row = row.ok_or_else(|| anyhow::anyhow!("group not found"))?;
+    Ok(GroupRuntimeConfig {
+        id: row.id,
+        owner_id: row.owner_id,
+        name: row.name,
+        description: row.description,
+        announcement: row.announcement,
+        workspace_id: row.workspace_id,
+        free_speech: row.free_speech != 0,
+        proactive_mode: row.proactive_mode != 0,
+        proactive_reply_multiplier: row.proactive_reply_multiplier,
+        allow_agent_free_mention: row.allow_agent_free_mention != 0,
+        communication_mode: row.communication_mode,
+        muted_agent_ids: parse_string_set(row.muted_agent_ids_json.as_deref()),
+    })
 }
 
 #[derive(sqlx::FromRow)]
@@ -1039,19 +1345,34 @@ struct CandidateRow {
     display_name: Option<String>,
     name: String,
     system_prompt: String,
+    runtime_kind: String,
     provider_id: Option<String>,
     model_config_json: Option<String>,
     tool_config_json: Option<String>,
+    external_runtime_json: Option<String>,
+    skill_ids_json: Option<String>,
+    workspace_id: Option<String>,
+    context_scope_json: Option<String>,
+    response_mode: String,
+    topology_role: Option<String>,
+    speaking_order: Option<i64>,
 }
 
-async fn load_candidates(pool: &SqlitePool, group_id: &str) -> anyhow::Result<Vec<Candidate>> {
+async fn load_candidates(
+    pool: &SqlitePool,
+    group_id: &str,
+    group: &GroupRuntimeConfig,
+) -> anyhow::Result<Vec<Candidate>> {
     let rows: Vec<CandidateRow> = sqlx::query_as(
-        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.provider_id, \
-                a.model_config_json, a.tool_config_json \
+        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
+                a.provider_id, a.model_config_json, a.tool_config_json, \
+                a.external_runtime_json, a.skill_ids_json, a.workspace_id, \
+                ga.context_scope_json, ga.response_mode, ga.topology_role, ga.speaking_order \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
          WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' \
-         ORDER BY ga.joined_at ASC, a.id ASC",
+         ORDER BY COALESCE(NULLIF(ga.speaking_order, 0), 9223372036854775807) ASC, \
+                  ga.joined_at ASC, a.id ASC",
     )
     .bind(group_id)
     .fetch_all(pool)
@@ -1061,6 +1382,9 @@ async fn load_candidates(pool: &SqlitePool, group_id: &str) -> anyhow::Result<Ve
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut candidates = Vec::new();
     for row in rows {
+        if group.muted_agent_ids.contains(&row.id) {
+            continue;
+        }
         let display = row.display_name.clone().unwrap_or_else(|| row.name.clone());
         if !seen_names.insert(display.to_lowercase()) {
             continue;
@@ -1076,8 +1400,10 @@ async fn load_resume_candidate(
     agent_id: &str,
 ) -> anyhow::Result<Candidate> {
     let row: Option<CandidateRow> = sqlx::query_as(
-        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.provider_id, \
-                a.model_config_json, a.tool_config_json \
+        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
+                a.provider_id, a.model_config_json, a.tool_config_json, \
+                a.external_runtime_json, a.skill_ids_json, a.workspace_id, \
+                ga.context_scope_json, ga.response_mode, ga.topology_role, ga.speaking_order \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
          WHERE ga.group_id = ? \
@@ -1100,9 +1426,17 @@ fn candidate_from_row(row: CandidateRow) -> Candidate {
         owner_id: row.owner_id,
         display_name: display,
         system_prompt: row.system_prompt,
+        runtime_kind: row.runtime_kind,
         provider_id: row.provider_id,
         model_config_json: row.model_config_json,
         tool_config_json: row.tool_config_json,
+        external_runtime_json: row.external_runtime_json,
+        skill_ids_json: row.skill_ids_json,
+        workspace_id: row.workspace_id,
+        share_group_workspace: group_workspace_shared(row.context_scope_json.as_deref()),
+        response_mode: row.response_mode,
+        topology_role: row.topology_role,
+        speaking_order: row.speaking_order,
     }
 }
 
@@ -1111,8 +1445,7 @@ fn candidate_from_row(row: CandidateRow) -> Candidate {
 fn select_agents(
     candidates: Vec<Candidate>,
     text: &str,
-    free_speech: bool,
-    proactive: bool,
+    group: &GroupRuntimeConfig,
 ) -> Vec<Candidate> {
     if text.contains('@') {
         let mentioned = scan_mentions(text, &candidates);
@@ -1126,8 +1459,15 @@ fn select_agents(
                 .collect();
         }
     }
-    if free_speech || proactive {
-        return candidates;
+    if group.free_speech || group.proactive_mode {
+        return candidates
+            .into_iter()
+            .filter(|candidate| {
+                candidate.response_mode != "explicit_only"
+                    && candidate.response_mode != "muted"
+                    && candidate.response_mode != "manual_only"
+            })
+            .collect();
     }
     Vec::new()
 }
@@ -1190,6 +1530,446 @@ fn scan_mentions(text: &str, candidates: &[Candidate]) -> Vec<usize> {
 
 fn is_name_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '-' || ('\u{4e00}'..='\u{9fff}').contains(&ch)
+}
+
+fn parse_string_set(raw: Option<&str>) -> HashSet<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn group_workspace_shared(raw: Option<&str>) -> bool {
+    raw.and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .and_then(|value| {
+            value
+                .get("share_group_workspace")
+                .and_then(Value::as_bool)
+                .or(Some(false))
+        })
+        .unwrap_or(false)
+}
+
+async fn build_invocation_context(
+    pool: &SqlitePool,
+    ctx: &StreamCtx,
+    agent: &Candidate,
+    group: &GroupRuntimeConfig,
+) -> anyhow::Result<InvocationContext> {
+    let enabled_tools = enabled_tool_names(agent.tool_config_json.as_deref());
+    let mounted_skills = load_mounted_skills(pool, agent).await?;
+    let workspace_root = resolve_workspace_root(pool, agent, group).await?;
+    let executor = ToolExecutor::new_with_skills(workspace_root.clone(), mounted_skills.clone())
+        .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?;
+    let tools = enabled_tools
+        .iter()
+        .filter_map(|name| tool_definition(name))
+        .collect::<Vec<_>>();
+    let system_prompt = build_agent_system_prompt(
+        pool,
+        ctx,
+        agent,
+        group,
+        &enabled_tools,
+        &mounted_skills,
+        &workspace_root,
+    )
+    .await?;
+
+    Ok(InvocationContext {
+        system_prompt,
+        tools,
+        executor,
+        workspace_root,
+    })
+}
+
+async fn build_agent_system_prompt(
+    pool: &SqlitePool,
+    ctx: &StreamCtx,
+    agent: &Candidate,
+    group: &GroupRuntimeConfig,
+    enabled_tools: &[String],
+    mounted_skills: &[MountedSkill],
+    workspace_root: &Option<PathBuf>,
+) -> anyhow::Result<String> {
+    let roster = load_group_roster(pool, &ctx.group_id, &agent.agent_id).await?;
+    let skill_lines = if mounted_skills.is_empty() {
+        "none".to_string()
+    } else {
+        mounted_skills
+            .iter()
+            .map(|skill| {
+                format!(
+                    "- {}{}",
+                    skill.name,
+                    skill
+                        .description
+                        .as_ref()
+                        .map(|description| format!(": {description}"))
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let tools = if enabled_tools.is_empty() {
+        "none".to_string()
+    } else {
+        enabled_tools.join(", ")
+    };
+    let workspace_source = if workspace_root.is_some() {
+        if agent.share_group_workspace {
+            "group"
+        } else {
+            "agent"
+        }
+    } else {
+        "none"
+    };
+    let workspace_location = workspace_root
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "not configured".to_string());
+    let mut sections = vec![
+        agent.system_prompt.clone(),
+        format!(
+            "Group context:\n- id: {}\n- owner_id: {}\n- name: {}\n- description: {}\n- announcement: {}\n- communication_mode: {}\n- proactive_reply_multiplier: {}\n- allow_agent_free_mention: {}\n- self_display_name: {}\n- self_response_mode: {}\n- self_topology_role: {}\n- self_speaking_order: {}",
+            group.id,
+            group.owner_id,
+            group.name,
+            group.description.as_deref().unwrap_or("none"),
+            group.announcement.as_deref().unwrap_or("none"),
+            group.communication_mode,
+            group.proactive_reply_multiplier,
+            group.allow_agent_free_mention,
+            agent.display_name,
+            agent.response_mode,
+            agent.topology_role.as_deref().unwrap_or("none"),
+            agent
+                .speaking_order
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        format!("Roster:\n{roster}"),
+        format!(
+            "Workspace:\n- source: {workspace_source}\n- location: {workspace_location}"
+        ),
+        format!("Enabled provider-native tools: {tools}"),
+        format!("Mounted skills:\n{skill_lines}"),
+        "Only provider-native tool calls listed above may execute. Literal XML or pseudo-tool text is not executable tool work.".to_string(),
+    ];
+    if group.proactive_mode {
+        sections.push(format!(
+            "Proactive mode is enabled. Reply with exactly {SILENT_MARKER} to skip this turn without persisting a message."
+        ));
+    }
+    Ok(sections.join("\n\n"))
+}
+
+async fn load_group_roster(
+    pool: &SqlitePool,
+    group_id: &str,
+    self_agent_id: &str,
+) -> anyhow::Result<String> {
+    let agents: Vec<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT a.id, ga.display_name, a.name \
+         FROM group_agents ga JOIN agents a ON a.id = ga.agent_id \
+         WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' \
+         ORDER BY ga.joined_at ASC, a.id ASC",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await?;
+    let humans: Vec<(String, String)> = sqlx::query_as(
+        "SELECT u.name, gm.role \
+         FROM group_members gm JOIN users u ON u.id = gm.user_id \
+         WHERE gm.group_id = ? AND gm.status = 'active' \
+         ORDER BY gm.joined_at ASC, u.id ASC",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut lines = Vec::new();
+    for (id, display_name, name) in agents {
+        let display = display_name.unwrap_or(name);
+        let marker = if id == self_agent_id { " (self)" } else { "" };
+        lines.push(format!("- agent: {display}{marker}"));
+    }
+    for (name, role) in humans {
+        lines.push(format!("- human: {name} ({role})"));
+    }
+    if lines.is_empty() {
+        Ok("none".to_string())
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
+async fn resolve_workspace_root(
+    pool: &SqlitePool,
+    agent: &Candidate,
+    group: &GroupRuntimeConfig,
+) -> anyhow::Result<Option<PathBuf>> {
+    let workspace_id = if agent.share_group_workspace {
+        group.workspace_id.as_deref()
+    } else {
+        agent.workspace_id.as_deref()
+    };
+    let Some(workspace_id) = workspace_id else {
+        return Ok(None);
+    };
+    let row: Option<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT backend_type, local_path, status FROM workspaces WHERE id = ? AND owner_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(&agent.owner_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((backend_type, local_path, status)) = row else {
+        return Ok(None);
+    };
+    if status != "active" || backend_type != "local" {
+        return Ok(None);
+    }
+    Ok(local_path.map(PathBuf::from))
+}
+
+async fn load_mounted_skills(
+    pool: &SqlitePool,
+    agent: &Candidate,
+) -> anyhow::Result<Vec<MountedSkill>> {
+    let ids = agent
+        .skill_ids_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .unwrap_or_default();
+    let mut skills = Vec::new();
+    for id in ids {
+        let row: Option<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+            "SELECT name, description, metadata_json, body_markdown \
+             FROM skills WHERE id = ? AND owner_id = ? AND status = 'active'",
+        )
+        .bind(&id)
+        .bind(&agent.owner_id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some((name, description, metadata_json, body_markdown)) = row {
+            skills.push(MountedSkill {
+                name,
+                description,
+                metadata: metadata_json
+                    .and_then(|raw| serde_json::from_str(&raw).ok())
+                    .unwrap_or(Value::Null),
+                body_markdown,
+            });
+        }
+    }
+    Ok(skills)
+}
+
+fn enabled_tool_names(raw: Option<&str>) -> Vec<String> {
+    let Some(value) = raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) else {
+        return vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
+    };
+    let mut names = Vec::new();
+    if let Some(tools) = value.get("tools").and_then(Value::as_object) {
+        for (id, selection) in tools {
+            if selection
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                if let Some(name) = builtin_tool_name(id) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    if let Some(enabled) = value.get("enabled").and_then(Value::as_array) {
+        for id in enabled.iter().filter_map(Value::as_str) {
+            if let Some(name) = builtin_tool_name(id) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    if value
+        .get("assistant_agents")
+        .and_then(Value::as_array)
+        .is_some_and(|agents| {
+            agents.iter().any(|entry| {
+                entry
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+            })
+        })
+    {
+        names.push(AGENT_AS_TOOL_NAME.to_string());
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn builtin_tool_name(id: &str) -> Option<&'static str> {
+    match id {
+        "read" => Some("Read"),
+        "write" => Some("Write"),
+        "edit" => Some("Edit"),
+        "glob" => Some("Glob"),
+        "grep" => Some("Grep"),
+        "bash" => Some("Bash"),
+        "ask_user" => Some("AskUser"),
+        "web_search" => Some("WebSearch"),
+        "fetch" => Some("Fetch"),
+        "run_sub_agent" => Some("RunSubAgent"),
+        "generate_image" => Some("GenerateImage"),
+        "generate_video" => Some("GenerateVideo"),
+        "skill_manager" => Some("SkillManager"),
+        "todo_write" => Some("TodoWrite"),
+        "exit_plan_mode" => Some("ExitPlanMode"),
+        _ => None,
+    }
+}
+
+fn tool_definition(name: &str) -> Option<ToolDefinition> {
+    let (description, schema) = match name {
+        "Read" => (
+            "Read a UTF-8 file from the bound workspace.",
+            object_schema(
+                &[
+                    ("file_path", "string"),
+                    ("start_line", "integer"),
+                    ("limit", "integer"),
+                ],
+                &["file_path"],
+            ),
+        ),
+        "Write" => (
+            "Create or replace a UTF-8 file in the bound workspace.",
+            object_schema(
+                &[("file_path", "string"), ("content", "string")],
+                &["file_path", "content"],
+            ),
+        ),
+        "Edit" => (
+            "Replace exact text in a UTF-8 workspace file.",
+            object_schema(
+                &[
+                    ("file_path", "string"),
+                    ("old_string", "string"),
+                    ("new_string", "string"),
+                    ("replace_all", "boolean"),
+                ],
+                &["file_path", "old_string", "new_string"],
+            ),
+        ),
+        "Glob" => (
+            "Find workspace files by glob pattern.",
+            object_schema(&[("pattern", "string"), ("limit", "integer")], &[]),
+        ),
+        "Grep" => (
+            "Search workspace file contents.",
+            object_schema(
+                &[
+                    ("pattern", "string"),
+                    ("path", "string"),
+                    ("limit", "integer"),
+                ],
+                &["pattern"],
+            ),
+        ),
+        "Bash" => (
+            "Run a guarded shell command in the bound workspace.",
+            object_schema(
+                &[("command", "string"), ("timeout_seconds", "integer")],
+                &["command"],
+            ),
+        ),
+        "AskUser" => (
+            "Ask the human user for bounded input without blocking the server.",
+            object_schema(
+                &[
+                    ("question", "string"),
+                    ("required", "boolean"),
+                    ("choices", "array"),
+                ],
+                &["question"],
+            ),
+        ),
+        "WebSearch" => (
+            "Search the web when a provider is configured; otherwise report setup required.",
+            object_schema(
+                &[("query", "string"), ("max_results", "integer")],
+                &["query"],
+            ),
+        ),
+        "Fetch" => (
+            "Fetch a bounded HTTP(S) text URL.",
+            object_schema(
+                &[("url", "string"), ("timeout_seconds", "integer")],
+                &["url"],
+            ),
+        ),
+        "RunSubAgent" => (
+            "Request a bounded sub-agent delegation if infrastructure is configured.",
+            object_schema(&[("task", "string")], &["task"]),
+        ),
+        "GenerateImage" | "GenerateVideo" => (
+            "Request media generation if infrastructure is configured.",
+            object_schema(&[("prompt", "string")], &["prompt"]),
+        ),
+        "SkillManager" => (
+            "List or inspect mounted skill metadata and instructions.",
+            object_schema(&[("action", "string"), ("skill_name", "string")], &[]),
+        ),
+        "TodoWrite" => (
+            "Record bounded todo items for this turn.",
+            object_schema(&[("todos", "array")], &[]),
+        ),
+        "ExitPlanMode" => (
+            "Request user approval for an implementation plan.",
+            object_schema(&[("plan", "string")], &["plan"]),
+        ),
+        AGENT_AS_TOOL_NAME => (
+            "Dispatch a task to a bound assistant that is active in this group.",
+            object_schema(
+                &[
+                    ("assistant", "string"),
+                    ("task", "string"),
+                    ("instructions", "string"),
+                ],
+                &["assistant", "task"],
+            ),
+        ),
+        _ => return None,
+    };
+    Some(ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema: schema,
+    })
+}
+
+fn object_schema(fields: &[(&str, &str)], required: &[&str]) -> Value {
+    let mut properties = serde_json::Map::new();
+    for (name, kind) in fields {
+        let schema = if *kind == "array" {
+            json!({ "type": "array", "items": { "type": "string" } })
+        } else {
+            json!({ "type": kind })
+        };
+        properties.insert((*name).to_string(), schema);
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
 }
 
 async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Result<ProviderConfig> {
@@ -1272,6 +2052,36 @@ async fn build_messages(
         });
     }
     Ok(messages)
+}
+
+async fn build_acp_prompt(
+    pool: &SqlitePool,
+    thread_id: &str,
+    system_prompt: &str,
+) -> anyhow::Result<String> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT sender_type, content FROM messages \
+         WHERE thread_id = ? AND status = 'visible' ORDER BY seq ASC",
+    )
+    .bind(thread_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut prompt = String::new();
+    prompt.push_str(system_prompt);
+    prompt.push_str("\n\nConversation:\n");
+    for (sender_type, content) in rows {
+        let role = if sender_type == "agent" {
+            "assistant"
+        } else {
+            "user"
+        };
+        prompt.push_str(role);
+        prompt.push_str(": ");
+        prompt.push_str(&content.unwrap_or_default());
+        prompt.push('\n');
+    }
+    Ok(prompt)
 }
 
 async fn build_resume_messages(

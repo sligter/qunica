@@ -189,6 +189,26 @@ async fn create_workspace(app: &Router, token: &str) -> String {
     workspace["id"].as_str().unwrap().to_string()
 }
 
+async fn create_local_workspace(app: &Router, token: &str) -> (tempfile::TempDir, String) {
+    let root = tempfile::tempdir().unwrap();
+    let (status, workspace) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces",
+            token,
+            json!({
+                "name": "Local WS",
+                "backend_type": "local",
+                "local_path": root.path().to_string_lossy()
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    (root, workspace["id"].as_str().unwrap().to_string())
+}
+
 async fn create_group(app: &Router, token: &str, workspace_id: &str, flags: Value) -> String {
     let mut body = json!({"name": "Team", "workspace_id": workspace_id});
     if let (Some(obj), Some(extra)) = (body.as_object_mut(), flags.as_object()) {
@@ -268,8 +288,8 @@ async fn seed_agent(
 
     sqlx::query(
         "INSERT INTO group_agents \
-         (group_id, agent_id, display_name, status, joined_at, updated_at) \
-         VALUES (?, ?, ?, 'active', ?, ?)",
+         (group_id, agent_id, display_name, context_scope_json, status, joined_at, updated_at) \
+         VALUES (?, ?, ?, '{\"share_group_workspace\":true}', 'active', ?, ?)",
     )
     .bind(group_id)
     .bind(&agent_id)
@@ -464,6 +484,15 @@ fn assert_frame_ids_match_payloads(frames: &[SseFrame]) {
         let event_id = frame.data["event_id"].as_str().unwrap();
         assert_eq!(frame.id.as_deref(), Some(event_id));
     }
+}
+
+fn payloads_of_kind(events: &[Value], kind: StreamEventKind) -> Vec<&Value> {
+    let kind = serde_json::to_value(kind).unwrap();
+    events
+        .iter()
+        .filter(|event| event["kind"] == kind)
+        .map(|event| &event["payload"])
+        .collect()
 }
 
 async fn message_count(state: &AppState, group_id: &str) -> i64 {
@@ -1376,6 +1405,194 @@ async fn stream_replay_live_stream_sets_sse_ids() {
 }
 
 #[tokio::test]
+async fn group_stream_executes_native_tool_and_continues_model() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "native-tool-loop@example.com").await;
+    let owner = owner_id(&state, "native-tool-loop@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "tool result body").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_read",
+            "Read",
+            json!({"file_path": "note.txt"}),
+        )]),
+        text_body("I read the file."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "please inspect note.txt"}),
+    )
+    .await;
+
+    let starts = payloads_of_kind(&events, StreamEventKind::ToolCallStart);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["tool_name"], "Read");
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "completed");
+    assert!(results[0]["output"]
+        .as_str()
+        .unwrap()
+        .contains("tool result body"));
+    let messages = payloads_of_kind(&events, StreamEventKind::AgentMessage);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content"], "I read the file.");
+}
+
+#[tokio::test]
+async fn group_stream_runs_acp_agent_without_llm_provider() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "group-acp@example.com").await;
+    let owner = owner_id(&state, "group-acp@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let script = root.path().join("fake-acp.ps1");
+    std::fs::write(
+        &script,
+        r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq "initialize") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/new") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ sessionId = "s1" } } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/prompt") {
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "agent_message_chunk"; content = @{ type = "text"; text = "ACP hello" } } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ stopReason = "end_turn" } } | ConvertTo-Json -Compress
+    break
+  } else {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let agent_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO agents \
+         (id, owner_id, workspace_id, name, system_prompt, runtime_kind, provider_id, \
+          external_runtime_json, skill_ids_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'ACP', 'You are an ACP test agent.', 'acp', NULL, ?, '[]', \
+                 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&agent_id)
+    .bind(&owner)
+    .bind(&workspace)
+    .bind(
+        json!({
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script.to_string_lossy()
+            ],
+            "timeout_seconds": 10
+        })
+        .to_string(),
+    )
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO group_agents \
+         (group_id, agent_id, display_name, context_scope_json, status, joined_at, updated_at) \
+         VALUES (?, ?, 'ACP', '{\"share_group_workspace\":true}', 'active', \
+                 '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&group)
+    .bind(&agent_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "run acp"}),
+    )
+    .await;
+    let messages = payloads_of_kind(&events, StreamEventKind::AgentMessage);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content"], "ACP hello");
+    assert!(payloads_of_kind(&events, StreamEventKind::AcpAgentRun)
+        .iter()
+        .any(|payload| payload["status"] == "completed"));
+}
+
+#[tokio::test]
+async fn stream_replay_after_token_event_returns_durable_tail() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "replay-token@example.com").await;
+    let owner = owner_id(&state, "replay-token@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let provider_url = fake_provider_sequence(vec![text_body("hello replay")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Echo",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let frames = stream_frames(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hi"}),
+    )
+    .await;
+    assert_frame_ids_match_payloads(&frames);
+    let token_id = frames
+        .iter()
+        .find(|frame| frame.data["kind"] == "token")
+        .and_then(|frame| frame.id.as_deref())
+        .expect("token event id")
+        .to_string();
+
+    let (status, replay_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "ignored during replay"}),
+        Some(&token_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let replay_frames = parse_sse_frames(&replay_text);
+    assert_frame_ids_match_payloads(&replay_frames);
+    let replay_events: Vec<Value> = replay_frames.into_iter().map(|frame| frame.data).collect();
+    assert!(kinds(&replay_events).contains(&"agent_message".to_string()));
+    assert!(kinds(&replay_events).contains(&"done".to_string()));
+}
+
+#[tokio::test]
 async fn stream_replay_after_user_message_returns_durable_tail_without_duplicates() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "replay-tail@example.com").await;
@@ -1431,7 +1648,12 @@ async fn stream_replay_after_user_message_returns_durable_tail_without_duplicate
 
     assert_eq!(
         kinds(&replay_events),
-        vec!["agent_message".to_string(), "done".to_string()]
+        vec![
+            "agent_start".to_string(),
+            "token".to_string(),
+            "agent_message".to_string(),
+            "done".to_string()
+        ]
     );
     assert!(replay_events
         .iter()
@@ -2099,7 +2321,10 @@ async fn resume_thread_success_appends_to_existing_interrupted_message() {
             .fetch_all(state.db.pool())
             .await
             .unwrap();
-    assert_eq!(durable_kinds, vec!["agent_message", "done"]);
+    assert_eq!(
+        durable_kinds,
+        vec!["agent_start", "token", "agent_message", "done"]
+    );
 }
 
 #[tokio::test]

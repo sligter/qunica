@@ -2694,7 +2694,7 @@ async fn group_agents_add_and_list_return_group_agent_read() {
             "POST",
             &format!("/api/v2/groups/{group_id}/agents"),
             &token,
-            json!({"agent_id": agent, "share_group_workspace": true}),
+            json!({"agent_id": agent}),
         ),
     )
     .await;
