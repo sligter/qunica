@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { ApiError, fetchFormData, fetchJson } from '@/lib/api'
+import { ApiError, fetchFormData, fetchJson } from '@/lib/api-v2/client'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
@@ -125,7 +125,7 @@ export async function downloadGroupWorkspaceFile(
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
   const response = await fetch(
-    apiUrl(`/api/v1/groups/${groupId}/workspace-files/download?${withPath(path)}`),
+    apiUrl(`/api/v2/groups/${groupId}/workspace-files/download?${withPath(path)}`),
     { headers },
   )
   if (!response.ok) {
