@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { fetchFormData, fetchJson } from '@/lib/api'
+import { ApiError, fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type {
   SkillCreate,
@@ -12,6 +12,34 @@ import type {
 
 function encodeResourcePath(path: string) {
   return path.split('/').map(encodeURIComponent).join('/')
+}
+
+function readFileAsBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new ApiError(0, 'file_read_error', 'Unable to read skill package file.'))
+        return
+      }
+
+      const base64Start = reader.result.indexOf(',')
+      resolve(base64Start === -1 ? reader.result : reader.result.slice(base64Start + 1))
+    }
+
+    reader.onerror = () => {
+      reject(
+        new ApiError(
+          0,
+          'file_read_error',
+          reader.error?.message ?? 'Unable to read skill package file.',
+        ),
+      )
+    }
+
+    reader.readAsDataURL(file)
+  })
 }
 
 export function useSkills() {
@@ -120,10 +148,16 @@ export function useImportSkillPackage() {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (file: File) => {
-      const fd = new FormData()
-      fd.append('file', file)
-      return fetchFormData<SkillRead>('/skills/import-package', fd, { token })
+    mutationFn: async (file: File) => {
+      const contentBase64 = await readFileAsBase64(file)
+      return fetchJson<SkillRead>('/skills/import-package', {
+        token,
+        method: 'POST',
+        body: {
+          filename: file.name,
+          content_base64: contentBase64,
+        },
+      })
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['skills'] })
@@ -132,17 +166,16 @@ export function useImportSkillPackage() {
 }
 
 export function useImportSkillFromGithub() {
-  const token = useAuthStore((s) => s.token)
-  const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: SkillGithubImport) =>
-      fetchJson<SkillRead>('/skills/import-github', {
-        token,
-        method: 'POST',
-        body: data,
-      }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['skills'] })
+    mutationFn: (data: SkillGithubImport) => {
+      void data
+      return Promise.reject<SkillRead>(
+        new ApiError(
+          501,
+          'not_implemented',
+          'GitHub skill import is not available in the Rust API v2 backend yet.',
+        ),
+      )
     },
   })
 }
