@@ -406,7 +406,7 @@ fn wait_for_backend(timeout: Duration) -> Result<(), String> {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
             let request = format!(
-                "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                "GET /api/v2/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
                 BACKEND_PORT
             );
             if stream.write_all(request.as_bytes()).is_ok() {
