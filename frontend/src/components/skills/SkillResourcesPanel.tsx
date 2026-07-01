@@ -8,7 +8,7 @@ import {
   useSkillResources,
   useUpdateSkillResource,
 } from '@/hooks/useSkills'
-import { ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/http'
 import { cn } from '@/lib/utils'
 import type { SkillRead } from '@/types/api'
 

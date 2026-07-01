@@ -6,18 +6,25 @@
  */
 
 import { apiUrl } from '@/lib/runtime'
-import { ApiError as BaseApiError } from '@/lib/api'
 
 import type { ApiErrorEnvelope } from './types'
 
 const BASE = '/api/v2'
 
-export class ApiError extends BaseApiError {
+export class ApiError extends Error {
+  status: number
+  code: string
   details?: unknown
 
   constructor(status: number, code: string, message: string, details?: unknown) {
-    super(status, code, message)
-    this.details = details
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    if (details !== undefined) {
+      this.details = details
+    }
+    Object.setPrototypeOf(this, ApiError.prototype)
   }
 }
 

@@ -20,7 +20,7 @@ import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { useAgents } from '@/hooks/useAgents'
 import { useCreateGroup } from '@/hooks/useCreateGroup'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
-import { ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/http'
 import { cn } from '@/lib/utils'
 import type { GroupCommunicationMode } from '@/types/api'
 

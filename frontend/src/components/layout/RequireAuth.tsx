@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 
-import { fetchJson, ApiError } from '@/lib/api-v2/client'
+import { fetchJson, ApiError } from '@/lib/http'
 import { useAuthStore } from '@/stores/authStore'
 import type { UserRead } from '@/types/api'
 

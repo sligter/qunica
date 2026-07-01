@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useCreateProvider } from '@/hooks/useProviders'
-import { ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/http'
 import { cn } from '@/lib/utils'
 import type { ProviderKind } from '@/types/api'
 

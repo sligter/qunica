@@ -11,7 +11,7 @@ import {
   useImportSkillFromGithub,
   useImportSkillPackage,
 } from '@/hooks/useSkills'
-import { ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/http'
 
 interface ImportSkillFormProps {
   onCreated?: (newSkillId: string) => void

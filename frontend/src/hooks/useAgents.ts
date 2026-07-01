@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { fetchJson } from '@/lib/api-v2/client'
+import { fetchJson } from '@/lib/http'
 import { useAuthStore } from '@/stores/authStore'
 import type { AgentRead } from '@/types/api'
 

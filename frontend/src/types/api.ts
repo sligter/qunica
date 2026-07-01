@@ -2,7 +2,7 @@
  * Hand-typed shapes for the backend routes the frontend currently touches.
  *
  * When `pnpm sync-api` is wired into the dev loop, replace these with imports
- * from `@/lib/api/schema`. Until then, keep this file in sync with the
+ * from the generated schema module. Until then, keep this file in sync with the
  * backend Pydantic schemas (see backend/app/schemas/).
  */
 

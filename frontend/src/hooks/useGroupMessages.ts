@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { InfiniteData } from '@tanstack/react-query'
 
-import { fetchJson } from '@/lib/api-v2/client'
+import { fetchJson } from '@/lib/http'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ClearGroupMessagesResponse, Message, MessageSendResponse } from '@/types/api'
