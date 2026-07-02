@@ -25,6 +25,71 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use tower::ServiceExt;
 
+#[cfg(windows)]
+fn write_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
+    let script = root.join("fake-acp.ps1");
+    std::fs::write(
+        &script,
+        r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq "initialize") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/new") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ sessionId = "s1" } } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/prompt") {
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "agent_message_chunk"; content = @{ type = "text"; text = "ACP hello" } } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ stopReason = "end_turn" } } | ConvertTo-Json -Compress
+    break
+  } else {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  }
+}
+"#,
+    )
+    .unwrap();
+    (
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.to_string_lossy().to_string(),
+        ],
+    )
+}
+
+#[cfg(not(windows))]
+fn write_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
+    let script = root.join("fake-acp.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}'
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ACP hello"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+      break
+      ;;
+    *)
+      printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    ("sh".to_string(), vec![script.to_string_lossy().to_string()])
+}
+
 // ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
@@ -1465,27 +1530,7 @@ async fn group_stream_runs_acp_agent_without_llm_provider() {
     let (root, workspace) = create_local_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let script = root.path().join("fake-acp.ps1");
-    std::fs::write(
-        &script,
-        r#"
-while (($line = [Console]::In.ReadLine()) -ne $null) {
-  $request = $line | ConvertFrom-Json
-  if ($request.method -eq "initialize") {
-    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
-  } elseif ($request.method -eq "session/new") {
-    @{ jsonrpc = "2.0"; id = $request.id; result = @{ sessionId = "s1" } } | ConvertTo-Json -Compress
-  } elseif ($request.method -eq "session/prompt") {
-    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "agent_message_chunk"; content = @{ type = "text"; text = "ACP hello" } } } } | ConvertTo-Json -Compress -Depth 8
-    @{ jsonrpc = "2.0"; id = $request.id; result = @{ stopReason = "end_turn" } } | ConvertTo-Json -Compress
-    break
-  } else {
-    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
-  }
-}
-"#,
-    )
-    .unwrap();
+    let (acp_command, acp_args) = write_fake_acp_agent(root.path());
 
     let agent_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
@@ -1500,14 +1545,8 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     .bind(&workspace)
     .bind(
         json!({
-            "command": "powershell",
-            "args": [
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                script.to_string_lossy()
-            ],
+            "command": acp_command,
+            "args": acp_args,
             "timeout_seconds": 10
         })
         .to_string(),
