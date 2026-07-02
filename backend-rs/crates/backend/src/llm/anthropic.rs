@@ -36,11 +36,14 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<V
     let mut system_parts = Vec::new();
     let mut out = Vec::new();
 
-    for message in messages {
+    let mut index = 0;
+    while index < messages.len() {
+        let message = &messages[index];
         if message.role == "system" {
             if !message.content.trim().is_empty() {
                 system_parts.push(message.content.clone());
             }
+            index += 1;
             continue;
         }
         if !message.tool_calls.is_empty() {
@@ -57,16 +60,23 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<V
                 })
             }));
             out.push(json!({ "role": "assistant", "content": content }));
+            index += 1;
             continue;
         }
         if message.role == "tool" {
+            let mut content = Vec::new();
+            while index < messages.len() && messages[index].role == "tool" {
+                let tool_message = &messages[index];
+                content.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_message.tool_call_id.as_deref().unwrap_or_default(),
+                    "content": tool_message.content,
+                }));
+                index += 1;
+            }
             out.push(json!({
                 "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": message.tool_call_id.as_deref().unwrap_or_default(),
-                    "content": message.content,
-                }],
+                "content": content,
             }));
             continue;
         }
@@ -74,6 +84,7 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<V
             "role": message.role,
             "content": message.content,
         }));
+        index += 1;
     }
 
     let system = (!system_parts.is_empty()).then(|| system_parts.join("\n\n"));

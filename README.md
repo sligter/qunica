@@ -114,7 +114,6 @@ frontend/src-tauri/target/release/bundle/portable/AG Swarmer_0.1.0_x64-portable.
 
 ```text
 %APPDATA%\dev.ag-swarmer.desktop\ag-swarmer.sqlite3
-%APPDATA%\dev.ag-swarmer.desktop\langgraph-checkpoints.sqlite3
 %APPDATA%\dev.ag-swarmer.desktop\desktop-secret.key
 ```
 

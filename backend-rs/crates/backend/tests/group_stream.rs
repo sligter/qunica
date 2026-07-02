@@ -2327,6 +2327,89 @@ async fn resume_thread_success_appends_to_existing_interrupted_message() {
 }
 
 #[tokio::test]
+async fn resume_thread_replay_after_token_event_returns_durable_tail_without_reclaiming() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-replay@example.com").await;
+    let owner = owner_id(&state, "resume-replay@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body(" tail")]).await,
+    )
+    .await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "paused").await;
+    let interrupted = seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "interrupted",
+        "agent",
+        Some(&agent),
+        "Start",
+        None,
+    )
+    .await;
+
+    let frames = stream_frames(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({}),
+    )
+    .await;
+    let token_event_id = frames
+        .iter()
+        .find(|frame| frame.data["kind"] == "token")
+        .and_then(|frame| frame.id.as_deref())
+        .expect("token event id")
+        .to_string();
+    let live_message_count = message_count(&state, &group).await;
+
+    let (status, replay_text) = stream_text(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({}),
+        Some(&token_event_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let replay_frames = parse_sse_frames(&replay_text);
+    assert_frame_ids_match_payloads(&replay_frames);
+    let replay_events: Vec<Value> = replay_frames
+        .iter()
+        .map(|frame| frame.data.clone())
+        .collect();
+
+    assert_eq!(
+        kinds(&replay_events),
+        vec!["agent_message".to_string(), "done".to_string()]
+    );
+    assert_eq!(replay_events[0]["payload"]["message_id"], interrupted);
+    assert_eq!(replay_events[0]["payload"]["content"], "Start tail");
+    assert_eq!(message_count(&state, &group).await, live_message_count);
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "active");
+}
+
+#[tokio::test]
 async fn resume_thread_disconnect_completes_message_for_replay() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "resume-cancel@example.com").await;

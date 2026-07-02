@@ -60,6 +60,7 @@ impl ToolAccum {
             id: self.id,
             name: self.name,
             args,
+            provider_metadata: None,
         })
     }
 }

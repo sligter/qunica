@@ -90,9 +90,65 @@ fn continuation_request() -> ChatRequest {
                     id: "call_1".to_string(),
                     name: "Read".to_string(),
                     args: json!({ "file_path": "note.txt" }),
+                    provider_metadata: None,
                 }],
             ),
             ChatMessage::tool_result("call_1", "Read", "file body"),
+        ],
+        temperature: Some(0.0),
+        reasoning_passback: false,
+        tools: Vec::new(),
+    }
+}
+
+fn parallel_continuation_request() -> ChatRequest {
+    ChatRequest {
+        model: "test-model".to_string(),
+        messages: vec![
+            ChatMessage::text("user", "read two files"),
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![
+                    ToolCall {
+                        id: "call_1".to_string(),
+                        name: "Read".to_string(),
+                        args: json!({ "file_path": "a.txt" }),
+                        provider_metadata: None,
+                    },
+                    ToolCall {
+                        id: "call_2".to_string(),
+                        name: "Read".to_string(),
+                        args: json!({ "file_path": "b.txt" }),
+                        provider_metadata: None,
+                    },
+                ],
+            ),
+            ChatMessage::tool_result("call_1", "Read", "a body"),
+            ChatMessage::tool_result("call_2", "Read", "b body"),
+        ],
+        temperature: Some(0.0),
+        reasoning_passback: false,
+        tools: Vec::new(),
+    }
+}
+
+fn gemini_thought_signature_request() -> ChatRequest {
+    ChatRequest {
+        model: "test-model".to_string(),
+        messages: vec![
+            ChatMessage::text("user", "search"),
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![ToolCall {
+                    id: "search".to_string(),
+                    name: "search".to_string(),
+                    args: json!({ "q": "rust" }),
+                    provider_metadata: Some(json!({
+                        "thoughtSignature": "sig-123"
+                    })),
+                }],
+            ),
+            ChatMessage::tool_result("search", "search", "{\"ok\":true}"),
         ],
         temperature: Some(0.0),
         reasoning_passback: false,
@@ -291,6 +347,38 @@ async fn llm_contract_anthropic_serializes_system_and_tool_continuation_messages
 }
 
 #[tokio::test]
+async fn llm_contract_anthropic_coalesces_parallel_tool_results() {
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let _ = collect(
+        provider
+            .stream(parallel_continuation_request())
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let captured = captures.lock().await;
+    let messages = captured[0]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"][0]["type"], "tool_use");
+    assert_eq!(messages[1]["content"][0]["id"], "call_1");
+    assert_eq!(messages[1]["content"][1]["type"], "tool_use");
+    assert_eq!(messages[1]["content"][1]["id"], "call_2");
+    assert_eq!(messages[2]["role"], "user");
+    let content = messages[2]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "tool_result");
+    assert_eq!(content[0]["tool_use_id"], "call_1");
+    assert_eq!(content[0]["content"], "a body");
+    assert_eq!(content[1]["type"], "tool_result");
+    assert_eq!(content[1]["tool_use_id"], "call_2");
+    assert_eq!(content[1]["content"], "b body");
+}
+
+#[tokio::test]
 async fn llm_contract_gemini_maps_text_and_usage() {
     let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\
                 data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" there\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3,\"totalTokenCount\":8}}\n";
@@ -319,6 +407,30 @@ async fn llm_contract_gemini_maps_function_call() {
 }
 
 #[tokio::test]
+async fn llm_contract_gemini_preserves_function_call_thought_signature() {
+    let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thoughtSignature\":\"sig-123\",\"functionCall\":{\"name\":\"search\",\"args\":{\"q\":\"rust\"}}}]}}]}\n";
+    let url = fake_server(body).await;
+    let provider = GeminiProvider::new(url, "test-key");
+
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+
+    let call = deltas
+        .iter()
+        .find_map(|delta| match delta {
+            ChatDelta::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .expect("tool call");
+    assert_eq!(
+        call.provider_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("thoughtSignature"))
+            .and_then(Value::as_str),
+        Some("sig-123")
+    );
+}
+
+#[tokio::test]
 async fn llm_contract_gemini_serializes_function_response_continuation_messages() {
     let (url, captures) = capture_server("data: {}\n").await;
     let provider = GeminiProvider::new(url, "test-key");
@@ -339,5 +451,29 @@ async fn llm_contract_gemini_serializes_function_response_continuation_messages(
     assert_eq!(
         contents[2]["parts"][0]["functionResponse"]["response"]["result"],
         "file body"
+    );
+}
+
+#[tokio::test]
+async fn llm_contract_gemini_replays_function_call_thought_signature() {
+    let (url, captures) = capture_server("data: {}\n").await;
+    let provider = GeminiProvider::new(url, "test-key");
+
+    let _ = collect(
+        provider
+            .stream(gemini_thought_signature_request())
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let captured = captures.lock().await;
+    let contents = captured[0]["contents"].as_array().unwrap();
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(contents[1]["parts"][0]["functionCall"]["name"], "search");
+    assert_eq!(contents[1]["parts"][0]["thoughtSignature"], "sig-123");
+    assert_eq!(
+        contents[2]["parts"][0]["functionResponse"]["name"],
+        "search"
     );
 }

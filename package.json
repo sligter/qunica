@@ -13,11 +13,7 @@
     "desktop:zip": "node scripts/package-desktop-portable.mjs",
     "oracle:python-backend:test": "uv --directory backend run pytest",
     "lint": "pnpm --filter @ag-swarmer/frontend lint",
-    "type-check": "pnpm -r type-check",
-    "sync-api": "openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api/schema.d.ts"
-  },
-  "devDependencies": {
-    "openapi-typescript": "^7.5.0"
+    "type-check": "pnpm -r type-check"
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {

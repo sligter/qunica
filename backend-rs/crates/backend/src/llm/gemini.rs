@@ -38,14 +38,7 @@ fn to_contents(messages: &[ChatMessage]) -> Vec<Value> {
                 if !m.content.trim().is_empty() {
                     parts.push(json!({ "text": m.content }));
                 }
-                parts.extend(m.tool_calls.iter().map(|call| {
-                    json!({
-                        "functionCall": {
-                            "name": call.name,
-                            "args": call.args,
-                        }
-                    })
-                }));
+                parts.extend(m.tool_calls.iter().map(function_call_part));
                 return json!({ "role": "model", "parts": parts });
             }
             if m.role == "tool" {
@@ -112,6 +105,10 @@ fn parse(line: &str) -> Vec<ChatDelta> {
                             id: name.clone(),
                             name,
                             args: function_call["args"].clone(),
+                            provider_metadata: part
+                                .get("thoughtSignature")
+                                .and_then(Value::as_str)
+                                .map(|signature| json!({ "thoughtSignature": signature })),
                         }));
                     }
                 }
@@ -129,6 +126,24 @@ fn parse(line: &str) -> Vec<ChatDelta> {
     }
 
     out
+}
+
+fn function_call_part(call: &ToolCall) -> Value {
+    let mut part = json!({
+        "functionCall": {
+            "name": call.name,
+            "args": call.args,
+        }
+    });
+    if let Some(signature) = call
+        .provider_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("thoughtSignature"))
+        .and_then(Value::as_str)
+    {
+        part["thoughtSignature"] = Value::String(signature.to_string());
+    }
+    part
 }
 
 #[async_trait]

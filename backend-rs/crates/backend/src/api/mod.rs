@@ -6,6 +6,7 @@ pub mod health;
 pub mod llm_providers;
 pub mod messages;
 pub mod skills;
+mod sse_replay;
 pub mod system_settings;
 pub mod threads;
 pub mod workspaces;

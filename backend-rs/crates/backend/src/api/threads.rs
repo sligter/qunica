@@ -21,7 +21,12 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    api::{auth::current_user_id, error::ApiError, AppState},
+    api::{
+        auth::current_user_id,
+        error::ApiError,
+        sse_replay::{fetch_replay_events_for_thread, last_event_id, parse_replay_cursor},
+        AppState,
+    },
     runtime::{
         group::{run_thread_resume, ResumeRequest},
         RuntimeServices,
@@ -114,6 +119,17 @@ pub async fn resume(
 ) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+
+    if let Some(cursor) = last_event_id(&headers)? {
+        let cursor = parse_replay_cursor(&cursor)?;
+        let events =
+            fetch_replay_events_for_thread(state.db.pool(), &thread.id, &thread.group_id, &cursor)
+                .await?;
+        let body = futures_util::stream::iter(events.into_iter().map(event_to_sse)).boxed();
+        return Ok(Sse::new(body));
+    }
+
     let target = resolve_resume_target(state.db.pool(), &thread_id, &owner_id).await?;
     claim_resume_thread(
         state.db.pool(),
