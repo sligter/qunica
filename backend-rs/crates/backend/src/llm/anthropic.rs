@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, Receiver};
 
-use super::{pump, sse_data, ChatDelta, ChatRequest, ContextUsage, LlmProvider, ToolAccum};
+use super::{
+    pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolAccum,
+};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: i64 = 4096;
@@ -28,6 +30,54 @@ impl AnthropicProvider {
             api_key: api_key.into(),
         }
     }
+}
+
+fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<Value>) {
+    let mut system_parts = Vec::new();
+    let mut out = Vec::new();
+
+    for message in messages {
+        if message.role == "system" {
+            if !message.content.trim().is_empty() {
+                system_parts.push(message.content.clone());
+            }
+            continue;
+        }
+        if !message.tool_calls.is_empty() {
+            let mut content = Vec::new();
+            if !message.content.trim().is_empty() {
+                content.push(json!({ "type": "text", "text": message.content }));
+            }
+            content.extend(message.tool_calls.iter().map(|call| {
+                json!({
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": call.args,
+                })
+            }));
+            out.push(json!({ "role": "assistant", "content": content }));
+            continue;
+        }
+        if message.role == "tool" {
+            out.push(json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id.as_deref().unwrap_or_default(),
+                    "content": message.content,
+                }],
+            }));
+            continue;
+        }
+        out.push(json!({
+            "role": message.role,
+            "content": message.content,
+        }));
+    }
+
+    let system = (!system_parts.is_empty()).then(|| system_parts.join("\n\n"));
+    (system, out)
 }
 
 /// Cross-event parser state: tool-use blocks keyed by their content-block index.
@@ -113,13 +163,17 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
 impl LlmProvider for AnthropicProvider {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+        let (system, messages) = split_system_and_messages(&request.messages);
         let mut body = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": messages,
             "temperature": request.temperature,
             "max_tokens": DEFAULT_MAX_TOKENS,
             "stream": true,
         });
+        if let Some(system) = system {
+            body["system"] = Value::String(system);
+        }
         if !request.tools.is_empty() {
             body["tools"] = Value::Array(
                 request

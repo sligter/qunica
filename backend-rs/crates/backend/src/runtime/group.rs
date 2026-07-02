@@ -17,10 +17,10 @@
 //! agent may also pause the turn for human input via the waiting marker, which
 //! emits `waiting_for_user` and stops the remaining proactive fan-out.
 //!
-//! Cancellation is cooperative: every event is pushed through an mpsc channel,
-//! and the moment the receiver (the HTTP response body) is dropped, the next
-//! send fails. If visible agent tokens already reached the client, the runtime
-//! checkpoints that partial reply as `interrupted` so it can be resumed.
+//! Stream delivery is best effort: every durable event is persisted before it is
+//! pushed through the mpsc channel. If the HTTP response body is dropped, the
+//! runtime keeps running to a replayable terminal state so reconnect can
+//! converge from the client's last event id.
 
 use std::sync::Arc;
 use std::{collections::HashSet, path::PathBuf};
@@ -39,8 +39,7 @@ use crate::llm::{
     OpenAiCompatibleProvider, ToolCall, ToolDefinition,
 };
 use crate::runtime::agent_as_tool::{
-    resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AssistantMember, CallerAgent,
-    AGENT_AS_TOOL_NAME,
+    resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, CallerAgent, AGENT_AS_TOOL_NAME,
 };
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
@@ -98,7 +97,7 @@ pub enum TurnOutcome {
     Silence,
     /// An agent paused the turn for human input.
     WaitingForUser,
-    /// The client disconnected mid-stream.
+    /// The client disconnected before any replayable thread state existed.
     Cancelled,
     /// A configuration or provider error ended the turn.
     Error,
@@ -109,6 +108,7 @@ struct Cancelled;
 
 /// A step failed either because the client vanished or because a write errored.
 enum StepErr {
+    #[allow(dead_code)]
     Cancelled,
     Db(anyhow::Error),
 }
@@ -204,18 +204,16 @@ impl StreamCtx {
     /// replay can anchor on any id the client may have observed.
     async fn emit(&mut self, kind: StreamEventKind, payload: Value) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
-        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
         self.allocator
             .persist_event(&self.thread_id, &event)
             .await
             .map_err(StepErr::Db)?;
-        permit.send(event);
+        let _ = self.tx.send(event).await;
         Ok(())
     }
 
-    /// Reserve outbound capacity, then persist a message and its announcing
-    /// event before emitting it. Reserving first lets disconnects stop the
-    /// durable write before the final message checkpoint.
+    /// Persist a message and its announcing event before emitting it. Delivery
+    /// failures are non-fatal because the persisted event can be replayed.
     async fn emit_message(
         &mut self,
         kind: StreamEventKind,
@@ -223,17 +221,16 @@ impl StreamCtx {
         message: &NewMessage,
     ) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
-        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
         self.allocator
             .persist_message_with_event(&self.thread_id, &self.group_id, message, &event)
             .await
             .map_err(StepErr::Db)?;
-        permit.send(event);
+        let _ = self.tx.send(event).await;
         Ok(())
     }
 
-    /// Reserve outbound capacity, update an existing interrupted message and
-    /// persist both final durable events before emitting them.
+    /// Update an existing interrupted message and persist both final durable
+    /// events before emitting them.
     async fn emit_resume_completion(
         &mut self,
         payload: Value,
@@ -242,7 +239,6 @@ impl StreamCtx {
     ) -> Result<(), StepErr> {
         let message_event = self.next_event(StreamEventKind::AgentMessage, payload);
         let done_event = self.next_event(StreamEventKind::Done, json!({}));
-        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
         self.allocator
             .complete_interrupted_message_with_events(
                 &self.thread_id,
@@ -253,25 +249,23 @@ impl StreamCtx {
             )
             .await
             .map_err(StepErr::Db)?;
-        permit.send(message_event);
+        let _ = self.tx.send(message_event).await;
         let _ = self.tx.send(done_event).await;
         Ok(())
     }
 
-    /// Reserve outbound capacity, then persist a durable event with no message
-    /// row before emitting it.
+    /// Persist a durable event with no message row before emitting it.
     async fn emit_durable_event(
         &mut self,
         kind: StreamEventKind,
         payload: Value,
     ) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
-        let permit = self.tx.reserve().await.map_err(|_| StepErr::Cancelled)?;
         self.allocator
             .persist_event(&self.thread_id, &event)
             .await
             .map_err(StepErr::Db)?;
-        permit.send(event);
+        let _ = self.tx.send(event).await;
         Ok(())
     }
 
@@ -280,8 +274,7 @@ impl StreamCtx {
             .await
     }
 
-    /// Emit an `error` then `done` and finish the turn as `Error`. Propagates
-    /// `Cancelled` if the client has already gone.
+    /// Emit an `error` then `done` and finish the turn as `Error`.
     async fn fail(&mut self, message: &str) -> Result<TurnOutcome, Cancelled> {
         if self
             .emit(StreamEventKind::Error, json!({ "message": message }))
@@ -368,10 +361,7 @@ async fn run_inner(
             }
             AgentRunResult::Handoff { helper } => {
                 had_visible = true;
-                match step!(
-                    ctx,
-                    run_agent_turn(services, ctx, &Candidate::from(helper), &group, 1).await
-                ) {
+                match step!(ctx, run_agent_turn(services, ctx, &helper, &group, 1).await) {
                     AgentRunResult::WaitingForUser => waiting = true,
                     AgentRunResult::Visible
                     | AgentRunResult::NoVisible
@@ -593,28 +583,6 @@ struct Candidate {
     speaking_order: Option<i64>,
 }
 
-impl From<AssistantMember> for Candidate {
-    fn from(helper: AssistantMember) -> Self {
-        Self {
-            agent_id: helper.agent_id,
-            owner_id: helper.owner_id,
-            display_name: helper.display_name,
-            system_prompt: helper.system_prompt,
-            runtime_kind: "llm_chat".to_string(),
-            provider_id: helper.provider_id,
-            model_config_json: helper.model_config_json,
-            tool_config_json: helper.tool_config_json,
-            external_runtime_json: None,
-            skill_ids_json: Some("[]".to_string()),
-            workspace_id: None,
-            share_group_workspace: true,
-            response_mode: "mentioned_only".to_string(),
-            topology_role: None,
-            speaking_order: None,
-        }
-    }
-}
-
 struct GroupRuntimeConfig {
     id: String,
     owner_id: String,
@@ -650,7 +618,7 @@ enum AgentRunResult {
     NoVisible,
     Visible,
     WaitingForUser,
-    Handoff { helper: AssistantMember },
+    Handoff { helper: Box<Candidate> },
 }
 
 async fn run_agent_turn(
@@ -792,7 +760,7 @@ async fn run_agent_turn(
                 services,
                 ctx,
                 agent,
-                group.proactive_mode,
+                group,
                 handoff_depth,
                 call,
                 &content,
@@ -800,12 +768,10 @@ async fn run_agent_turn(
             .await;
         }
 
-        if !round_content.trim().is_empty() {
-            messages.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: round_content,
-            });
-        }
+        messages.push(ChatMessage::assistant_tool_calls(
+            round_content,
+            tool_calls.clone(),
+        ));
 
         let mut wait_for_user: Option<Value> = None;
         for call in tool_calls {
@@ -818,13 +784,11 @@ async fn run_agent_turn(
                 &content,
             )
             .await?;
-            messages.push(ChatMessage {
-                role: "user".to_string(),
-                content: format!(
-                    "Tool {} returned status {:?} for call {}:\n{}",
-                    call.name, result.status, call.id, result.output
-                ),
-            });
+            messages.push(ChatMessage::tool_result(
+                call.id,
+                call.name,
+                format!("status: {:?}\n{}", result.status, result.output),
+            ));
             if matches!(result.status, ToolStatus::WaitingForUser) {
                 wait_for_user = Some(tool_input_request_payload(&result.output));
                 break;
@@ -1064,12 +1028,11 @@ async fn handle_agent_as_tool(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
-    proactive: bool,
+    group: &GroupRuntimeConfig,
     handoff_depth: usize,
     call: ToolCall,
     content: &str,
 ) -> Result<AgentRunResult, StepErr> {
-    let _ = proactive;
     emit_tool_call_start(ctx, agent, &call).await?;
 
     let parsed = match AgentAsToolCall::from_args(call.id.clone(), &call.args) {
@@ -1099,11 +1062,34 @@ async fn handle_agent_as_tool(
         &caller,
         &parsed,
         handoff_depth,
+        &group.muted_agent_ids,
     )
     .await
     {
         Ok(dispatch) => dispatch,
         Err(failure) => {
+            emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+            return finish_agent_content(
+                ctx,
+                agent,
+                false,
+                content.to_string(),
+                handoff_depth == 0,
+            )
+            .await;
+        }
+    };
+    let helper_candidate = match load_candidate_by_id(
+        &services.pool,
+        &ctx.group_id,
+        &dispatch.helper.agent_id,
+        group,
+    )
+    .await
+    {
+        Ok(candidate) => candidate,
+        Err(err) => {
+            let failure = AgentAsToolFailure::unavailable(err.to_string());
             emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
             return finish_agent_content(
                 ctx,
@@ -1155,7 +1141,7 @@ async fn handle_agent_as_tool(
     .await?;
 
     Ok(AgentRunResult::Handoff {
-        helper: dispatch.helper,
+        helper: Box::new(helper_candidate),
     })
 }
 
@@ -1417,6 +1403,35 @@ async fn load_resume_candidate(
     .await?;
     row.map(candidate_from_row)
         .ok_or_else(|| anyhow::anyhow!("agent is no longer active in this group"))
+}
+
+async fn load_candidate_by_id(
+    pool: &SqlitePool,
+    group_id: &str,
+    agent_id: &str,
+    group: &GroupRuntimeConfig,
+) -> anyhow::Result<Candidate> {
+    if group.muted_agent_ids.contains(agent_id) {
+        anyhow::bail!("assistant agent is muted in this group");
+    }
+    let row: Option<CandidateRow> = sqlx::query_as(
+        "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
+                a.provider_id, a.model_config_json, a.tool_config_json, \
+                a.external_runtime_json, a.skill_ids_json, a.workspace_id, \
+                ga.context_scope_json, ga.response_mode, ga.topology_role, ga.speaking_order \
+         FROM group_agents ga \
+         JOIN agents a ON a.id = ga.agent_id \
+         WHERE ga.group_id = ? \
+           AND ga.agent_id = ? \
+           AND ga.status = 'active' \
+           AND a.status = 'active'",
+    )
+    .bind(group_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(candidate_from_row)
+        .ok_or_else(|| anyhow::anyhow!("assistant agent is no longer active in this group"))
 }
 
 fn candidate_from_row(row: CandidateRow) -> Candidate {
@@ -2036,20 +2051,14 @@ async fn build_messages(
     .fetch_all(pool)
     .await?;
 
-    let mut messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt.to_string(),
-    }];
+    let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
     for (sender_type, content) in rows {
         let role = if sender_type == "agent" {
             "assistant"
         } else {
             "user"
         };
-        messages.push(ChatMessage {
-            role: role.to_string(),
-            content: content.unwrap_or_default(),
-        });
+        messages.push(ChatMessage::text(role, content.unwrap_or_default()));
     }
     Ok(messages)
 }
@@ -2100,25 +2109,19 @@ async fn build_resume_messages(
     .fetch_all(pool)
     .await?;
 
-    let mut messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt.to_string(),
-    }];
+    let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
     for (_id, sender_type, content) in rows {
         let role = if sender_type == "agent" {
             "assistant"
         } else {
             "user"
         };
-        messages.push(ChatMessage {
-            role: role.to_string(),
-            content: content.unwrap_or_default(),
-        });
+        messages.push(ChatMessage::text(role, content.unwrap_or_default()));
     }
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: RESUME_CONTINUATION_PROMPT.to_string(),
-    });
+    messages.push(ChatMessage::text(
+        "user",
+        RESUME_CONTINUATION_PROMPT.to_string(),
+    ));
     Ok(messages)
 }
 

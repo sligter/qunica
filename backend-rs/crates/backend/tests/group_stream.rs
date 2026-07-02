@@ -1968,7 +1968,7 @@ async fn group_stream_waiting_for_user_stops_remaining_proactive_fanout() {
 }
 
 #[tokio::test]
-async fn group_stream_client_disconnect_after_visible_token_persists_interrupted_message() {
+async fn group_stream_client_disconnect_after_visible_token_persists_replayable_completion() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "cancel-after-token@example.com").await;
     let owner = owner_id(&state, "cancel-after-token@example.com").await;
@@ -2010,7 +2010,7 @@ async fn group_stream_client_disconnect_after_visible_token_persists_interrupted
     drop(rx);
 
     let outcome = handle.await.unwrap();
-    assert_eq!(outcome, TurnOutcome::Cancelled);
+    assert_eq!(outcome, TurnOutcome::Completed);
 
     type AgentMessageAuditRow = (
         String,
@@ -2035,8 +2035,8 @@ async fn group_stream_client_disconnect_after_visible_token_persists_interrupted
     assert_eq!(sender_type, "agent");
     assert_eq!(sender_id.as_deref(), Some(agent.as_str()));
     assert_eq!(message_type, "text");
-    assert_eq!(content.as_deref(), Some("a"));
-    assert_eq!(status, "interrupted");
+    assert_eq!(content.as_deref(), Some("abc"));
+    assert_eq!(status, "visible");
 
     let visible_agent_messages: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages \
@@ -2046,18 +2046,18 @@ async fn group_stream_client_disconnect_after_visible_token_persists_interrupted
     .fetch_one(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(visible_agent_messages, 0);
+    assert_eq!(visible_agent_messages, 1);
 
     let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
         .bind(thread_id)
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(thread_status, "paused");
+    assert_eq!(thread_status, "active");
 }
 
 #[tokio::test]
-async fn group_stream_client_disconnect_cancels_runtime_task() {
+async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal_state() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "cancel@example.com").await;
     let owner = owner_id(&state, "cancel@example.com").await;
@@ -2103,15 +2103,14 @@ async fn group_stream_client_disconnect_cancels_runtime_task() {
     drop(rx);
 
     let outcome = handle.await.unwrap();
-    assert_eq!(outcome, TurnOutcome::Cancelled);
+    assert_eq!(outcome, TurnOutcome::Completed);
 
-    // Cancellation stopped the turn before any agent message was persisted.
     let agent_messages: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'agent'")
             .fetch_one(state.db.pool())
             .await
             .unwrap();
-    assert_eq!(agent_messages, 0);
+    assert_eq!(agent_messages, 1);
 
     let interrupted_messages: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE status = 'interrupted'")
@@ -2328,7 +2327,7 @@ async fn resume_thread_success_appends_to_existing_interrupted_message() {
 }
 
 #[tokio::test]
-async fn resume_thread_cancellation_appends_tokens_and_keeps_thread_paused() {
+async fn resume_thread_disconnect_completes_message_for_replay() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "resume-cancel@example.com").await;
     let owner = owner_id(&state, "resume-cancel@example.com").await;
@@ -2380,7 +2379,7 @@ async fn resume_thread_cancellation_appends_tokens_and_keeps_thread_paused() {
     drop(rx);
 
     let outcome = handle.await.unwrap();
-    assert_eq!(outcome, TurnOutcome::Cancelled);
+    assert_eq!(outcome, TurnOutcome::Completed);
 
     let row: (Option<String>, String) =
         sqlx::query_as("SELECT content, status FROM messages WHERE id = ?")
@@ -2388,8 +2387,8 @@ async fn resume_thread_cancellation_appends_tokens_and_keeps_thread_paused() {
             .fetch_one(state.db.pool())
             .await
             .unwrap();
-    assert_eq!(row.0.as_deref(), Some("Start more"));
-    assert_eq!(row.1, "interrupted");
+    assert_eq!(row.0.as_deref(), Some("Start more later"));
+    assert_eq!(row.1, "visible");
 
     let agent_message_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages WHERE thread_id = ? AND sender_type = 'agent'",
@@ -2405,7 +2404,7 @@ async fn resume_thread_cancellation_appends_tokens_and_keeps_thread_paused() {
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(thread_status, "paused");
+    assert_eq!(thread_status, "active");
 }
 
 #[tokio::test]

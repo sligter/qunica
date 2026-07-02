@@ -258,11 +258,7 @@ pub async fn import_github(
             "GitHub repository archive is too large",
         ));
     }
-    let package_bytes = if let Some(path) = selected_path {
-        crop_github_skill_package(&bytes, &path)?
-    } else {
-        bytes.to_vec()
-    };
+    let package_bytes = crop_github_skill_package(&bytes, selected_path.as_deref())?;
     import_package_bytes(&state, &owner_id, &package_bytes, "github").await
 }
 
@@ -749,11 +745,17 @@ fn validate_github_ref(raw: &str) -> Result<String, ApiError> {
     }
 }
 
-fn crop_github_skill_package(bytes: &[u8], selected_path: &str) -> Result<Vec<u8>, ApiError> {
+fn crop_github_skill_package(
+    bytes: &[u8],
+    selected_path: Option<&str>,
+) -> Result<Vec<u8>, ApiError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|_| ApiError::invalid_input("GitHub archive is not a valid zip"))?;
     let root_prefix = github_archive_root(&mut archive)?;
-    let selected_prefix = format!("{root_prefix}{}/", selected_path.trim_matches('/'));
+    let selected_prefix = match selected_path {
+        Some(path) => format!("{root_prefix}{}/", path.trim_matches('/')),
+        None => detect_github_skill_prefix(&mut archive, &root_prefix)?,
+    };
     let mut output = Cursor::new(Vec::new());
     {
         let mut writer = ZipWriter::new(&mut output);
@@ -766,7 +768,8 @@ fn crop_github_skill_package(bytes: &[u8], selected_path: &str) -> Result<Vec<u8
             if file.is_dir() {
                 continue;
             }
-            let Some(rel) = file.name().strip_prefix(&selected_prefix) else {
+            let name = file.name().replace('\\', "/");
+            let Some(rel) = name.strip_prefix(&selected_prefix) else {
                 continue;
             };
             if rel.is_empty() {
@@ -794,6 +797,50 @@ fn crop_github_skill_package(bytes: &[u8], selected_path: &str) -> Result<Vec<u8
         }
     }
     Ok(output.into_inner())
+}
+
+fn detect_github_skill_prefix(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    root_prefix: &str,
+) -> Result<String, ApiError> {
+    let mut selected: Option<(usize, String)> = None;
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index(index)
+            .map_err(|_| ApiError::invalid_input("GitHub archive cannot be read"))?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name().replace('\\', "/");
+        let Some(rel) = name.strip_prefix(root_prefix) else {
+            continue;
+        };
+        let rel = validate_resource_path(rel)?;
+        if rel == "SKILL.md" || rel.ends_with("/SKILL.md") {
+            let depth = rel.split('/').count();
+            let prefix = match rel.rsplit_once('/') {
+                Some((dir, _)) => format!("{root_prefix}{dir}/"),
+                None => root_prefix.to_string(),
+            };
+            match &selected {
+                None => selected = Some((depth, prefix)),
+                Some((best_depth, _)) if depth < *best_depth => {
+                    selected = Some((depth, prefix));
+                }
+                Some((best_depth, best_prefix))
+                    if depth == *best_depth && best_prefix != &prefix =>
+                {
+                    return Err(ApiError::invalid_input(
+                        "GitHub archive contains multiple equally shallow SKILL.md files",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    selected
+        .map(|(_, prefix)| prefix)
+        .ok_or_else(|| ApiError::invalid_input("GitHub archive does not contain SKILL.md"))
 }
 
 fn github_archive_root(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<String, ApiError> {
@@ -828,4 +875,59 @@ where
     D: Deserializer<'de>,
 {
     Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Write};
+
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    use super::crop_github_skill_package;
+    use crate::skills::parse_skill_package;
+
+    fn codeload_zip(entries: &[(&str, Option<&str>)]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        for (path, content) in entries {
+            match content {
+                Some(content) => {
+                    writer
+                        .start_file(*path, SimpleFileOptions::default())
+                        .unwrap();
+                    writer.write_all(content.as_bytes()).unwrap();
+                }
+                None => writer
+                    .add_directory(*path, SimpleFileOptions::default())
+                    .unwrap(),
+            }
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn github_crop_without_selected_path_strips_root_and_directory_entries() {
+        let zip = codeload_zip(&[
+            ("repo-main/", None),
+            (
+                "repo-main/SKILL.md",
+                Some("---\nname: Root Skill\ndescription: demo\n---\nUse this skill."),
+            ),
+            ("repo-main/references/", None),
+            ("repo-main/references/readme.md", Some("reference")),
+        ]);
+
+        let cropped = crop_github_skill_package(&zip, None).unwrap();
+        let parsed = parse_skill_package(&cropped).unwrap();
+
+        assert_eq!(parsed.parsed.name, "Root Skill");
+        assert!(parsed
+            .files
+            .iter()
+            .any(|file| file.path == "references/readme.md"));
+        assert!(parsed
+            .files
+            .iter()
+            .all(|file| !file.path.starts_with("repo-main")));
+    }
 }

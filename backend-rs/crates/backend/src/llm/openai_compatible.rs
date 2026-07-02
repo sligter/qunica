@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, Receiver};
 
-use super::{pump, sse_data, ChatDelta, ChatRequest, ContextUsage, LlmProvider, ToolAccum};
+use super::{
+    pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolAccum,
+};
 
 /// Streams chat completions from any endpoint that speaks the OpenAI
 /// `/chat/completions` streaming protocol.
@@ -26,6 +28,42 @@ impl OpenAiCompatibleProvider {
             api_key: api_key.into(),
         }
     }
+}
+
+fn to_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            if !message.tool_calls.is_empty() {
+                return json!({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": message.tool_calls.iter().map(|call| {
+                        json!({
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.args.to_string(),
+                            },
+                        })
+                    }).collect::<Vec<_>>(),
+                });
+            }
+            if message.role == "tool" {
+                return json!({
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id.as_deref().unwrap_or_default(),
+                    "name": message.tool_name.as_deref().unwrap_or_default(),
+                    "content": message.content,
+                });
+            }
+            json!({
+                "role": message.role,
+                "content": message.content,
+            })
+        })
+        .collect()
 }
 
 /// Cross-chunk parser state: streamed tool calls keyed by their `index`.
@@ -109,7 +147,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut body = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": to_messages(&request.messages),
             "temperature": request.temperature,
             "stream": true,
             "stream_options": { "include_usage": true },

@@ -5,12 +5,16 @@
 //! provider-specific wire format onto the neutral [`ChatDelta`] vocabulary.
 //! No live external API is contacted.
 
+use std::sync::Arc;
+
 use ag_swarmer_backend::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider,
+    OpenAiCompatibleProvider, ToolCall,
 };
-use axum::{http::header, response::IntoResponse, Router};
+use axum::{body::Body, http::header, response::IntoResponse, Router};
+use serde_json::{json, Value};
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::Mutex;
 
 /// Start a single-shot HTTP server that responds to every request with `body`
 /// as an event stream. Returns the base URL (e.g. `http://127.0.0.1:54321`).
@@ -33,14 +37,63 @@ async fn fake_server(body: &'static str) -> String {
     format!("http://{addr}")
 }
 
+async fn capture_server(body: &'static str) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().fallback({
+        let captures = Arc::clone(&captures);
+        move |request: axum::http::Request<Body>| {
+            let captures = Arc::clone(&captures);
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .expect("request body");
+                let value = serde_json::from_slice::<Value>(&bytes).expect("json request");
+                captures.lock().await.push(value);
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve fake provider");
+    });
+
+    (format!("http://{addr}"), captures)
+}
+
 /// A minimal request; the canned response is independent of these fields.
 fn request() -> ChatRequest {
     ChatRequest {
         model: "test-model".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }],
+        messages: vec![ChatMessage::text("user", "hi")],
+        temperature: Some(0.0),
+        reasoning_passback: false,
+        tools: Vec::new(),
+    }
+}
+
+fn continuation_request() -> ChatRequest {
+    ChatRequest {
+        model: "test-model".to_string(),
+        messages: vec![
+            ChatMessage::text("system", "Use tools carefully."),
+            ChatMessage::text("user", "read the file"),
+            ChatMessage::assistant_tool_calls(
+                "Checking.",
+                vec![ToolCall {
+                    id: "call_1".to_string(),
+                    name: "Read".to_string(),
+                    args: json!({ "file_path": "note.txt" }),
+                }],
+            ),
+            ChatMessage::tool_result("call_1", "Read", "file body"),
+        ],
         temperature: Some(0.0),
         reasoning_passback: false,
         tools: Vec::new(),
@@ -152,6 +205,28 @@ async fn llm_contract_openai_maps_usage_and_streamed_tool_calls() {
 }
 
 #[tokio::test]
+async fn llm_contract_openai_serializes_tool_continuation_messages() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(continuation_request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    let messages = captured[0]["messages"].as_array().unwrap();
+    assert_eq!(messages[2]["role"], "assistant");
+    assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(messages[2]["tool_calls"][0]["function"]["name"], "Read");
+    assert_eq!(
+        messages[2]["tool_calls"][0]["function"]["arguments"],
+        "{\"file_path\":\"note.txt\"}"
+    );
+    assert_eq!(messages[3]["role"], "tool");
+    assert_eq!(messages[3]["tool_call_id"], "call_1");
+    assert_eq!(messages[3]["name"], "Read");
+    assert_eq!(messages[3]["content"], "file body");
+}
+
+#[tokio::test]
 async fn llm_contract_anthropic_maps_text_and_thinking_deltas() {
     let body = "event: message_start\n\
                 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25}}}\n\
@@ -196,6 +271,26 @@ async fn llm_contract_anthropic_maps_streamed_tool_use_block() {
 }
 
 #[tokio::test]
+async fn llm_contract_anthropic_serializes_system_and_tool_continuation_messages() {
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(continuation_request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(captured[0]["system"], "Use tools carefully.");
+    let messages = captured[0]["messages"].as_array().unwrap();
+    assert!(messages.iter().all(|message| message["role"] != "system"));
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"][0]["type"], "text");
+    assert_eq!(messages[1]["content"][1]["type"], "tool_use");
+    assert_eq!(messages[1]["content"][1]["id"], "call_1");
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+    assert_eq!(messages[2]["content"][0]["tool_use_id"], "call_1");
+}
+
+#[tokio::test]
 async fn llm_contract_gemini_maps_text_and_usage() {
     let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\
                 data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" there\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3,\"totalTokenCount\":8}}\n";
@@ -221,4 +316,28 @@ async fn llm_contract_gemini_maps_function_call() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].1, "search");
     assert_eq!(calls[0].2, serde_json::json!({ "q": "rust" }));
+}
+
+#[tokio::test]
+async fn llm_contract_gemini_serializes_function_response_continuation_messages() {
+    let (url, captures) = capture_server("data: {}\n").await;
+    let provider = GeminiProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(continuation_request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(
+        captured[0]["systemInstruction"]["parts"][0]["text"],
+        "Use tools carefully."
+    );
+    let contents = captured[0]["contents"].as_array().unwrap();
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(contents[1]["parts"][0]["text"], "Checking.");
+    assert_eq!(contents[1]["parts"][1]["functionCall"]["name"], "Read");
+    assert_eq!(contents[2]["role"], "user");
+    assert_eq!(contents[2]["parts"][0]["functionResponse"]["name"], "Read");
+    assert_eq!(
+        contents[2]["parts"][0]["functionResponse"]["response"]["result"],
+        "file body"
+    );
 }

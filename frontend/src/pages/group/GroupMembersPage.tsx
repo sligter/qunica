@@ -296,7 +296,7 @@ interface AddAgentRowProps {
 
 function AddAgentRow({ agent, groupId }: AddAgentRowProps) {
   const addAgent = useAddAgentToGroup()
-  const [shareGroupWorkspace, setShareGroupWorkspace] = useState(false)
+  const [shareGroupWorkspace, setShareGroupWorkspace] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const onAdd = () => {

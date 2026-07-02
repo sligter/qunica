@@ -94,6 +94,26 @@ async fn create_workspace(app: &Router, token: &str) -> String {
     workspace["id"].as_str().unwrap().to_string()
 }
 
+async fn create_local_workspace(app: &Router, token: &str) -> (tempfile::TempDir, String) {
+    let root = tempfile::tempdir().unwrap();
+    let (status, workspace) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces",
+            token,
+            json!({
+                "name": "Local WS",
+                "backend_type": "local",
+                "local_path": root.path().to_string_lossy()
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    (root, workspace["id"].as_str().unwrap().to_string())
+}
+
 async fn create_group(app: &Router, token: &str, workspace_id: &str) -> String {
     let (status, group) = send(
         app,
@@ -494,6 +514,165 @@ async fn agent_as_tool_resolves_group_display_name() {
 }
 
 #[tokio::test]
+async fn agent_as_tool_does_not_dispatch_muted_helper() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-muted@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let provider_url = fake_provider_sequence(vec![tool_body(vec![(
+        "call_handoff",
+        "AgentAsTool",
+        json!({"assistant": "Helper", "task": "take over"}),
+    )])])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+    sqlx::query("UPDATE groups SET muted_agent_ids_json = ? WHERE id = ?")
+        .bind(json!([helper.clone()]).to_string())
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller delegate").await;
+
+    assert_eq!(outcome, TurnOutcome::Silence);
+    let helper_starts: Vec<&Value> = payloads_of_kind(&events, StreamEventKind::AgentStart)
+        .into_iter()
+        .filter(|payload| payload["agent_id"] == helper)
+        .collect();
+    assert!(helper_starts.is_empty(), "muted helper must not run");
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "user");
+}
+
+#[tokio::test]
+async fn agent_as_tool_runs_acp_helper_with_full_group_context() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-acp-helper@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let script = root.path().join("fake-acp-helper.ps1");
+    std::fs::write(
+        &script,
+        r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq "initialize") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/new") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ sessionId = "s1" } } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/prompt") {
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "agent_message_chunk"; content = @{ type = "text"; text = "ACP helper done" } } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ stopReason = "end_turn" } } | ConvertTo-Json -Compress
+    break
+  } else {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let provider_url = fake_provider_sequence(vec![tool_body(vec![(
+        "call_handoff",
+        "AgentAsTool",
+        json!({"assistant": "ACP Helper", "task": "finish externally"}),
+    )])])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO agents \
+         (id, owner_id, workspace_id, name, system_prompt, runtime_kind, provider_id, \
+          external_runtime_json, skill_ids_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'acp-helper', 'You are an ACP helper.', 'acp', NULL, ?, '[]', \
+                 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&helper)
+    .bind(&owner)
+    .bind(&workspace)
+    .bind(
+        json!({
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script.to_string_lossy()
+            ],
+            "timeout_seconds": 10
+        })
+        .to_string(),
+    )
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO group_agents \
+         (group_id, agent_id, display_name, context_scope_json, status, joined_at, updated_at) \
+         VALUES (?, ?, 'ACP Helper', '{\"share_group_workspace\":true}', 'active', \
+                 '2024-01-02T00:00:00Z', '2024-01-02T00:00:00Z')",
+    )
+    .bind(&group)
+    .bind(&helper)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller delegate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    assert!(payloads_of_kind(&events, StreamEventKind::AcpAgentRun)
+        .iter()
+        .any(|payload| payload["status"] == "completed"));
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2].1.as_deref(), Some(helper.as_str()));
+    assert_eq!(rows[2].2.as_deref(), Some("ACP helper done"));
+}
+
+#[tokio::test]
 async fn agent_as_tool_rejects_recursive_self_cycle() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "aat-self@example.com";
@@ -546,7 +725,7 @@ mod agent_as_tool {
     use super::*;
 
     #[tokio::test]
-    async fn cancelling_caller_cancels_helper_dispatch() {
+    async fn dropped_subscriber_does_not_cancel_helper_dispatch() {
         let (app, state) = router_with_state_for_tests().await;
         let email = "aat-cancel@example.com";
         let token = register_and_login(&app, email).await;
@@ -631,14 +810,19 @@ mod agent_as_tool {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(outcome, TurnOutcome::Cancelled);
+        assert_eq!(outcome, TurnOutcome::Completed);
 
-        let helper_messages: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_id = ?")
+        let helper_messages: Vec<(Option<String>, String)> =
+            sqlx::query_as("SELECT content, status FROM messages WHERE sender_id = ?")
                 .bind(&helper)
-                .fetch_one(state.db.pool())
+                .fetch_all(state.db.pool())
                 .await
                 .unwrap();
-        assert_eq!(helper_messages, 0);
+        assert_eq!(helper_messages.len(), 1);
+        assert_eq!(
+            helper_messages[0].0.as_deref(),
+            Some("0123456789101112131415")
+        );
+        assert_eq!(helper_messages[0].1, "visible");
     }
 }

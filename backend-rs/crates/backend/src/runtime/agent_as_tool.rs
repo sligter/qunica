@@ -5,6 +5,8 @@
 //! explicitly enabled on the caller and active in the same group can be
 //! dispatched.
 
+use std::collections::HashSet;
+
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -71,13 +73,8 @@ pub(crate) struct CallerAgent {
 #[derive(Debug, Clone)]
 pub(crate) struct AssistantMember {
     pub agent_id: String,
-    pub owner_id: String,
     pub name: String,
     pub display_name: String,
-    pub system_prompt: String,
-    pub provider_id: Option<String>,
-    pub model_config_json: Option<String>,
-    pub tool_config_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +128,7 @@ pub(crate) async fn resolve_dispatch(
     caller: &CallerAgent,
     call: &AgentAsToolCall,
     handoff_depth: usize,
+    muted_agent_ids: &HashSet<String>,
 ) -> Result<AgentAsToolDispatch, AgentAsToolFailure> {
     if handoff_depth >= MAX_HANDOFF_DEPTH {
         return Err(AgentAsToolFailure::unavailable(
@@ -149,9 +147,15 @@ pub(crate) async fn resolve_dispatch(
     let requested_folded = requested.to_lowercase();
     let mut matched_bound_outside_group: Option<String> = None;
 
-    let rows = load_bound_group_members(pool, group_id, &caller.owner_id, &bound_ids)
-        .await
-        .map_err(|_| AgentAsToolFailure::failed("failed to resolve assistant agent"))?;
+    let rows = load_bound_group_members(
+        pool,
+        group_id,
+        &caller.owner_id,
+        &bound_ids,
+        muted_agent_ids,
+    )
+    .await
+    .map_err(|_| AgentAsToolFailure::failed("failed to resolve assistant agent"))?;
 
     for helper in rows {
         if helper.agent_id == caller.agent_id {
@@ -249,12 +253,15 @@ async fn load_bound_group_members(
     group_id: &str,
     owner_id: &str,
     bound_ids: &[String],
+    muted_agent_ids: &HashSet<String>,
 ) -> anyhow::Result<Vec<AssistantMember>> {
     let mut helpers = Vec::new();
     for bound_id in bound_ids {
+        if muted_agent_ids.contains(bound_id) {
+            continue;
+        }
         let row = sqlx::query_as::<_, AssistantRow>(
-            "SELECT a.id, a.owner_id, a.name, ga.display_name, a.system_prompt, a.provider_id, \
-                    a.model_config_json, a.tool_config_json \
+            "SELECT a.id, a.name, ga.display_name \
              FROM group_agents ga \
              JOIN agents a ON a.id = ga.agent_id \
              WHERE ga.group_id = ? AND ga.agent_id = ? AND ga.status = 'active' \
@@ -299,13 +306,8 @@ async fn load_bound_agent_name_match(
 #[derive(sqlx::FromRow)]
 struct AssistantRow {
     id: String,
-    owner_id: String,
     name: String,
     display_name: Option<String>,
-    system_prompt: String,
-    provider_id: Option<String>,
-    model_config_json: Option<String>,
-    tool_config_json: Option<String>,
 }
 
 impl From<AssistantRow> for AssistantMember {
@@ -313,13 +315,8 @@ impl From<AssistantRow> for AssistantMember {
         let display_name = row.display_name.unwrap_or_else(|| row.name.clone());
         Self {
             agent_id: row.id,
-            owner_id: row.owner_id,
             name: row.name,
             display_name,
-            system_prompt: row.system_prompt,
-            provider_id: row.provider_id,
-            model_config_json: row.model_config_json,
-            tool_config_json: row.tool_config_json,
         }
     }
 }

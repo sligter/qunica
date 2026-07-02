@@ -31,7 +31,34 @@ impl GeminiProvider {
 fn to_contents(messages: &[ChatMessage]) -> Vec<Value> {
     messages
         .iter()
+        .filter(|m| m.role != "system")
         .map(|m| {
+            if !m.tool_calls.is_empty() {
+                let mut parts = Vec::new();
+                if !m.content.trim().is_empty() {
+                    parts.push(json!({ "text": m.content }));
+                }
+                parts.extend(m.tool_calls.iter().map(|call| {
+                    json!({
+                        "functionCall": {
+                            "name": call.name,
+                            "args": call.args,
+                        }
+                    })
+                }));
+                return json!({ "role": "model", "parts": parts });
+            }
+            if m.role == "tool" {
+                return json!({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": m.tool_name.as_deref().unwrap_or_default(),
+                            "response": { "result": m.content },
+                        }
+                    }],
+                });
+            }
             let role = if m.role == "assistant" {
                 "model"
             } else {
@@ -40,6 +67,17 @@ fn to_contents(messages: &[ChatMessage]) -> Vec<Value> {
             json!({ "role": role, "parts": [{ "text": m.content }] })
         })
         .collect()
+}
+
+fn system_instruction(messages: &[ChatMessage]) -> Option<Value> {
+    let text = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .map(|message| message.content.as_str())
+        .filter(|content| !content.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then(|| json!({ "parts": [{ "text": text }] }))
 }
 
 /// Map a single Gemini stream chunk to zero or more [`ChatDelta`]s.
@@ -110,6 +148,9 @@ impl LlmProvider for GeminiProvider {
             "contents": to_contents(&request.messages),
             "generationConfig": Value::Object(generation_config),
         });
+        if let Some(system) = system_instruction(&request.messages) {
+            body["systemInstruction"] = system;
+        }
         if !request.tools.is_empty() {
             body["tools"] = json!([{
                 "functionDeclarations": request

@@ -4,10 +4,24 @@ import { apiUrl } from '@/lib/runtime'
 
 import type { StreamEvent } from './types'
 
+const MAX_RETRY_ATTEMPTS = 5
+const BASE_RETRY_MS = 1_000
+const MAX_RETRY_MS = 5_000
+
 export interface ApiV2SseHandlers {
   onEvent: (event: StreamEvent) => void
   onError?: (err: unknown) => void
   onClose?: () => void
+}
+
+class FatalSseError extends Error {}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 export function openApiV2SseStream(opts: {
@@ -18,6 +32,8 @@ export function openApiV2SseStream(opts: {
   handlers: ApiV2SseHandlers
 }): AbortController {
   const ctrl = new AbortController()
+  let retryAttempts = 0
+  let terminalEventSeen = false
   const headers: Record<string, string> = {
     Accept: 'text/event-stream',
     'Content-Type': 'application/json',
@@ -36,18 +52,44 @@ export function openApiV2SseStream(opts: {
     openWhenHidden: true,
     onopen: async (response) => {
       if (!response.ok) {
-        throw new Error(`SSE open failed: ${response.status}`)
+        throw new FatalSseError(`SSE open failed: ${response.status}`)
       }
+      retryAttempts = 0
     },
     onmessage: (msg) => {
-      const parsed = JSON.parse(msg.data) as StreamEvent
+      let parsed: StreamEvent
+      try {
+        parsed = JSON.parse(msg.data) as StreamEvent
+      } catch (err) {
+        throw new FatalSseError(`SSE event was not valid JSON: ${errorMessage(err)}`)
+      }
+      terminalEventSeen = parsed.kind === 'done' || parsed.kind === 'error'
       opts.handlers.onEvent(parsed)
     },
     onerror: (err) => {
-      opts.handlers.onError?.(err)
+      if (ctrl.signal.aborted || isAbortError(err)) {
+        return
+      }
+      if (err instanceof FatalSseError) {
+        opts.handlers.onError?.(err)
+        throw err
+      }
+      retryAttempts += 1
+      if (retryAttempts > MAX_RETRY_ATTEMPTS) {
+        const fatal = new FatalSseError(
+          `SSE retry policy exhausted after ${MAX_RETRY_ATTEMPTS} attempts: ${errorMessage(err)}`,
+        )
+        opts.handlers.onError?.(fatal)
+        throw fatal
+      }
+      return Math.min(BASE_RETRY_MS * retryAttempts, MAX_RETRY_MS)
     },
     onclose: () => {
-      opts.handlers.onClose?.()
+      if (ctrl.signal.aborted || terminalEventSeen) {
+        opts.handlers.onClose?.()
+        return
+      }
+      throw new Error('SSE closed before a terminal event')
     },
   })
 

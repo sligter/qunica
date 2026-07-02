@@ -105,9 +105,11 @@ pub fn parse_skill_package(bytes: &[u8]) -> Result<ParsedSkillPackage, ApiError>
             .by_index(index)
             .map_err(|_| ApiError::invalid_input("zip package cannot be read"))?;
         if file.is_dir() {
-            return Err(ApiError::invalid_input(
-                "zip package must not contain directory entries",
-            ));
+            let dir = file.name().trim_end_matches(['/', '\\']);
+            if !dir.is_empty() {
+                normalize_relative_path(dir)?;
+            }
+            continue;
         }
         let normalized = normalize_archive_entry(file.name())?;
         entries.push((index, normalized, file.size()));

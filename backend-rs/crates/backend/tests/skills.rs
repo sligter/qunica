@@ -149,6 +149,25 @@ fn zip_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
+fn codeload_zip_bytes(entries: &[(&str, Option<&str>)]) -> Vec<u8> {
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    for (path, content) in entries {
+        match content {
+            Some(content) => {
+                writer
+                    .start_file(*path, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(content.as_bytes()).unwrap();
+            }
+            None => writer
+                .add_directory(*path, SimpleFileOptions::default())
+                .unwrap(),
+        }
+    }
+    writer.finish().unwrap().into_inner()
+}
+
 #[tokio::test]
 async fn skills_manual_crud_is_owner_scoped() {
     let app = app().await;
@@ -332,6 +351,43 @@ async fn skills_import_zip_rejects_traversal_and_persists_resources() {
     assert_eq!(resource["path"], "references/readme.md");
     assert_eq!(resource["content"], "hello from a reference");
     assert_eq!(resource["is_text"], true);
+}
+
+#[tokio::test]
+async fn skills_import_package_accepts_safe_directory_entries() {
+    let app = app().await;
+    let token = register_and_login(&app, "skills-dir-zip@example.com").await;
+    let zip = codeload_zip_bytes(&[
+        ("skill-pack/", None),
+        (
+            "skill-pack/SKILL.md",
+            Some("---\nname: Directory Zip\ndescription: packaged\n---\nUse the references."),
+        ),
+        ("skill-pack/references/", None),
+        (
+            "skill-pack/references/readme.md",
+            Some("directory entry survived"),
+        ),
+    ]);
+
+    let (status, skill) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/skills/import-package",
+            &token,
+            json!({"filename": "skill.zip", "content_base64": STANDARD.encode(zip)}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(skill["name"], "Directory Zip");
+    assert!(skill["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "references/readme.md"));
 }
 
 #[tokio::test]
