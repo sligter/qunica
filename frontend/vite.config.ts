@@ -48,12 +48,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/api/v1': {
-        target: 'http://localhost:8000',
+      '/api/v2': {
+        target: 'http://127.0.0.1:8765',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://127.0.0.1:8765',
         ws: true,
         changeOrigin: true,
       },

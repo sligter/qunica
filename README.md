@@ -2,7 +2,7 @@
 
 AG Swarmer 是一个以“群组”为核心交互容器的多 Agent 协作工作台。它把多个 AI Agent 放进同一个项目空间里，让用户像管理一个团队一样，创建角色、分配任务、查看上下文、观察执行过程，并让 Agent 围绕同一份群聊历史、文件和工作区协同完成复杂任务。
 
-项目当前同时支持 Web 开发形态和 Windows 桌面形态。桌面版使用 Tauri 打包前端，并把 Python FastAPI 后端作为 sidecar 一起启动，打包后的应用可在本机用 SQLite 运行，不依赖 Docker、Postgres、Redis 或 MinIO。
+项目当前同时支持 Web 开发形态和 Windows 桌面形态。桌面版使用 Tauri 打包前端，并把 Rust 后端作为 sidecar 一起启动，打包后的应用可在本机用 SQLite 运行，不依赖 Docker、Postgres、Redis 或 MinIO。
 
 ## 项目定位
 
@@ -40,7 +40,7 @@ AG Swarmer 是一个以“群组”为核心交互容器的多 Agent 协作工�
   - Claude Code：`claude -p --output-format stream-json --permission-mode bypassPermissions --max-turns <n> <prompt>`
 - Windows 桌面版：
   - Tauri shell。
-  - Python FastAPI backend sidecar。
+  - Rust backend sidecar。
   - SQLite 本地数据存储。
   - 系统托盘常驻。
   - 原生目录选择。
@@ -53,10 +53,10 @@ frontend/
   React + Vite + TypeScript + TanStack Query + Zustand
   Tauri desktop shell under src-tauri/
 
-backend/
-  FastAPI + SQLAlchemy async + Pydantic
-  LangGraph runtime and checkpointing
-  SQLite for desktop, PostgreSQL-compatible model layer for web/dev
+backend-rs/
+  Rust backend workspace
+  Axum HTTP API and API v2 runtime
+  SQLite desktop data storage
   External CLI runtime adapters
 
 shared/
@@ -69,7 +69,7 @@ shared/
 AG Swarmer.exe
   ├─ Tauri WebView shell
   ├─ starts ag-swarmer-backend.exe sidecar
-  ├─ waits for http://127.0.0.1:8765/api/v1/health
+  ├─ waits for http://127.0.0.1:8765/api/v2/health
   └─ frontend calls backend through runtime API base URL
 ```
 
@@ -111,7 +111,6 @@ frontend/src-tauri/target/release/bundle/portable/AG Swarmer_0.1.0_x64-portable.
 
 ```text
 %APPDATA%\dev.ag-swarmer.desktop\ag-swarmer.sqlite3
-%APPDATA%\dev.ag-swarmer.desktop\langgraph-checkpoints.sqlite3
 %APPDATA%\dev.ag-swarmer.desktop\desktop-secret.key
 ```
 
@@ -162,16 +161,18 @@ pnpm type-check
 pnpm lint
 ```
 
-后端测试和类型检查：
+Rust 后端验证：
 
 ```powershell
-uv --directory backend run pytest
-uv --directory backend run mypy .
+cargo fmt --manifest-path backend-rs/crates/backend/Cargo.toml --all --check
+cargo clippy --manifest-path backend-rs/Cargo.toml --workspace --all-targets -- -D warnings
+cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
+
 
 ## 当前限制
 
 - 首个打包目标是 Windows。
-- 桌面版使用 SQLite，本地数据不会自动从 Docker/Postgres 开发环境迁移。
+- 桌面版使用 SQLite，本地数据不会自动从 legacy 的 Docker/Postgres 环境迁移。
 - Pi Agent 暂未实现，外部 runtime adapter 已预留扩展位置。
 - 外部 CLI Agent 默认具备 full-auto 执行能力，应只绑定到用户确认过的 workspace。

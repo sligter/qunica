@@ -1,32 +1,69 @@
 /**
- * Resume a paused thread.
+ * Resume a paused thread through the API v2 typed SSE contract.
  *
- * `resume()` POSTs to `/threads/{threadId}/resume` and streams continuation
- * tokens. Each token is APPENDED to the existing interrupted message
- * (keyed by `messageId`) in the store; the final `agent_message` event
- * replaces that message with its persisted form (status flips back to
- * `visible`).
+ * `resume()` POSTs to `/api/v2/threads/{threadId}/resume` and streams
+ * continuation tokens. Each token is appended to the existing interrupted
+ * message; the final `agent_message` event replaces that message locally
+ * until query invalidation reconciles with the persisted row.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { z } from 'zod'
 
-import { openSseStream } from '@/lib/sse'
+import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import type { StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
-interface TokenPayload {
-  agent_id: string
-  delta: string
+const tokenPayloadSchema = z.object({
+  delta: z.string().optional(),
+  text: z.string().optional(),
+})
+
+const agentMessagePayloadSchema = z.object({
+  message_id: z.string(),
+  agent_id: z.string().optional(),
+  sender_id: z.string().nullable().optional(),
+  content: z.string().nullable().optional(),
+})
+
+const errorPayloadSchema = z.object({
+  message: z.string().optional(),
+})
+
+type AgentMessagePayload = z.infer<typeof agentMessagePayloadSchema>
+
+function nowIso(): string {
+  return new Date().toISOString()
 }
 
-function safeJson<T>(raw: string): T | null {
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
+function buildAgentMessage(
+  groupId: string,
+  threadId: string,
+  event: StreamEvent,
+  payload: AgentMessagePayload,
+): Message {
+  return {
+    id: payload.message_id,
+    group_id: groupId,
+    thread_id: threadId,
+    sender_type: 'agent',
+    sender_id: payload.sender_id ?? payload.agent_id ?? null,
+    message_type: 'text',
+    content: payload.content ?? '',
+    status: 'visible',
+    refs: null,
+    context_usage: null,
+    reply_to_message_id: event.stream_id,
+    created_at: nowIso(),
   }
+}
+
+function errorMessage(payload: unknown): string {
+  const parsed = errorPayloadSchema.safeParse(payload)
+  return parsed.success ? parsed.data.message ?? 'Resume failed' : 'Resume failed'
 }
 
 export function useResumeStream(
@@ -67,24 +104,51 @@ export function useResumeStream(
     setIsStreaming(true)
     startResume(messageId)
 
-    const ctrl = openSseStream({
-      url: `/api/v1/threads/${threadId}/resume`,
+    const ctrl = openApiV2SseStream({
+      url: `/api/v2/threads/${threadId}/resume`,
       body: {},
       token,
       handlers: {
-        onEvent: (event, data) => {
-          if (event === 'token') {
-            const payload = safeJson<TokenPayload>(data)
-            if (payload?.delta) appendToMessage(groupId, messageId, payload.delta)
-            return
-          }
-          if (event === 'agent_message') {
-            const msg = safeJson<Message>(data)
-            if (msg) replaceMessage(groupId, msg)
-            return
-          }
-          if (event === 'done') {
-            finish()
+        onEvent: (event) => {
+          switch (event.kind) {
+            case 'token': {
+              const parsed = tokenPayloadSchema.safeParse(event.payload)
+              if (!parsed.success) return
+              const delta = parsed.data.delta ?? parsed.data.text ?? ''
+              if (delta) appendToMessage(groupId, messageId, delta)
+              return
+            }
+            case 'agent_message': {
+              const parsed = agentMessagePayloadSchema.safeParse(event.payload)
+              if (!parsed.success) return
+              replaceMessage(groupId, buildAgentMessage(groupId, threadId, event, parsed.data))
+              return
+            }
+            case 'error': {
+              setError(errorMessage(event.payload))
+              finish()
+              return
+            }
+            case 'done': {
+              finish()
+              return
+            }
+            case 'user_message':
+            case 'agent_start':
+            case 'reasoning':
+            case 'tool_call_start':
+            case 'tool_call_result':
+            case 'agent_silent':
+            case 'waiting_for_user':
+            case 'context_usage':
+            case 'acp_agent_run':
+            case 'silence':
+            case 'warning':
+              return
+            default: {
+              const _exhaustive: never = event.kind
+              return _exhaustive
+            }
           }
         },
         onError: (err) => {

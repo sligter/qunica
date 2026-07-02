@@ -7,7 +7,7 @@ import {
   useSystemSettings,
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
-import { ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/api-v2/client'
 import type { TavilySearchDepth } from '@/types/api'
 import {
   composePickedPath,

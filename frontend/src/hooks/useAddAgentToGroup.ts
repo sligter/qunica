@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { fetchJson } from '@/lib/api'
+import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type { GroupAgentAdd, GroupAgentRead } from '@/types/api'
 
@@ -14,15 +14,19 @@ export function useAddAgentToGroup() {
   const qc = useQueryClient()
   const token = useAuthStore((s) => s.token)
   return useMutation({
-    mutationFn: ({ groupId, agentId, shareGroupWorkspace }: AddAgentVars) =>
-      fetchJson<GroupAgentRead>(`/groups/${groupId}/agents`, {
+    mutationFn: ({ groupId, agentId, shareGroupWorkspace }: AddAgentVars) => {
+      const body = {
+        agent_id: agentId,
+        ...(shareGroupWorkspace === undefined
+          ? {}
+          : { share_group_workspace: shareGroupWorkspace }),
+      } satisfies GroupAgentAdd
+      return fetchJson<GroupAgentRead>(`/groups/${groupId}/agents`, {
         method: 'POST',
-        body: {
-          agent_id: agentId,
-          share_group_workspace: shareGroupWorkspace ?? false,
-        } satisfies GroupAgentAdd,
+        body,
         token,
-      }),
+      })
+    },
     onSuccess: (_data, { groupId }) => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
       void qc.invalidateQueries({ queryKey: ['groups', groupId] })

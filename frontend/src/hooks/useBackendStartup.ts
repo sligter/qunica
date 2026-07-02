@@ -74,7 +74,7 @@ export function useBackendStartup(): BackendStartupState {
       const timeout = window.setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS)
 
       try {
-        const response = await fetch(apiUrl('/api/v1/health'), {
+        const response = await fetch(apiUrl('/api/v2/health'), {
           cache: 'no-store',
           signal: controller.signal,
         })

@@ -54,7 +54,7 @@ fs.writeFileSync(
     "Data: %APPDATA%\\dev.ag-swarmer.desktop",
     "Logs: %APPDATA%\\dev.ag-swarmer.desktop\\logs",
     "- launcher.log: Tauri launcher and sidecar lifecycle",
-    "- backend.log: Python FastAPI/Uvicorn backend",
+    "- backend.log: Rust backend sidecar",
     "",
     "Desktop secret: %APPDATA%\\dev.ag-swarmer.desktop\\desktop-secret.key",
     "If the desktop secret is deleted, existing login tokens may become invalid; log in again.",

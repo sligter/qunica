@@ -1,0 +1,12 @@
+[package]
+name = "ag-swarmer-domain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+time = { version = "0.3", features = ["serde", "formatting"] }
+uuid = { version = "1", features = ["serde", "v4", "v7"] }

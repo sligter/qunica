@@ -8,15 +8,11 @@
     "build": "pnpm --filter @ag-swarmer/frontend build",
     "desktop:dev": "pnpm desktop:icons && pnpm desktop:backend && pnpm --filter @ag-swarmer/frontend tauri dev",
     "desktop:build": "pnpm desktop:icons && pnpm desktop:backend && pnpm --filter @ag-swarmer/frontend tauri build && pnpm desktop:zip",
-    "desktop:backend": "uv --directory backend run pyinstaller --noconsole --name ag-swarmer-backend --onefile --paths . --distpath dist --workpath build --specpath build --hidden-import app.main --collect-all langgraph --collect-all langgraph_checkpoint --collect-all langgraph_checkpoint_sqlite --collect-all tiktoken --collect-all tiktoken_ext app/desktop_server.py && node -e \"const fs=require('fs');fs.copyFileSync('backend/dist/ag-swarmer-backend.exe','backend/dist/ag-swarmer-backend-x86_64-pc-windows-msvc.exe')\"",
+    "desktop:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-rust-backend-sidecar.ps1",
     "desktop:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-desktop-icons.ps1",
     "desktop:zip": "node scripts/package-desktop-portable.mjs",
     "lint": "pnpm --filter @ag-swarmer/frontend lint",
-    "type-check": "pnpm -r type-check",
-    "sync-api": "openapi-typescript http://localhost:8000/openapi.json -o frontend/src/lib/api/schema.d.ts"
-  },
-  "devDependencies": {
-    "openapi-typescript": "^7.5.0"
+    "type-check": "pnpm -r type-check"
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
-import { ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/api-v2/client'
 import {
   composePickedPath,
   pickFolder,

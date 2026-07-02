@@ -1,9 +1,7 @@
 /**
- * Hand-typed shapes for the backend routes the frontend currently touches.
- *
- * When `pnpm sync-api` is wired into the dev loop, replace these with imports
- * from `@/lib/api/schema`. Until then, keep this file in sync with the
- * backend Pydantic schemas (see backend/app/schemas/).
+ * Hand-maintained shapes for the Rust API v2 routes the frontend currently
+ * touches. Keep this file aligned with backend-rs route request/response
+ * contracts until a Rust schema generation flow is introduced.
  */
 
 export interface UserRead {

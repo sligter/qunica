@@ -1,0 +1,37 @@
+[package]
+name = "ag-swarmer-backend"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+ag-swarmer-domain = { path = "../domain" }
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros", "multipart"] }
+base64 = "0.22"
+bcrypt = "0.15"
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+globset = "0.4"
+jsonwebtoken = "9"
+regex = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+shlex = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "time", "json", "macros", "migrate"] }
+tempfile = "3"
+thiserror = "1"
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "process", "fs", "io-util", "sync", "time", "net"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+walkdir = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -18,6 +18,7 @@ interface MessageListProps {
 const EMPTY_MESSAGES: readonly Message[] = []
 const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_STREAM_RUNS: Record<string, never> = {}
+const EMPTY_STREAM_RUN_IDS: Record<string, never> = {}
 const BOTTOM_PROXIMITY_PX = 120
 const MESSAGE_SCROLL_KEY_PREFIX = 'ag-swarmer:groups:message-scroll:'
 
@@ -68,6 +69,9 @@ export function MessageList({
   )
   const streamRuns = useMessageStore(
     (s) => s.streamRunsByGroup[groupId] ?? EMPTY_STREAM_RUNS,
+  )
+  const streamRunIdsByUserMessageId = useMessageStore(
+    (s) => s.streamRunIdByUserMessageIdByGroup[groupId] ?? EMPTY_STREAM_RUN_IDS,
   )
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
@@ -175,7 +179,8 @@ export function MessageList({
       )}
       {messages.map((m) => {
         if (hiddenMessageIds.has(m.id)) return null
-        const run = m.sender_type === 'user' ? streamRuns[m.id] : undefined
+        const runId = streamRunIdsByUserMessageId[m.id] ?? m.id
+        const run = m.sender_type === 'user' ? streamRuns[runId] : undefined
         return (
           <Fragment key={m.id}>
             <MessageItem
