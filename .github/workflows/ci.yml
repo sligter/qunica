@@ -2,66 +2,30 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
-  backend:
+  rust-backend:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: agentchat
-          POSTGRES_PASSWORD: agentchat
-          POSTGRES_DB: agentchat
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U agentchat"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          enable-cache: true
+          workspaces: backend-rs
 
-      - name: Set up Python
-        run: uv python install 3.12
+      - name: Format
+        run: cargo fmt --manifest-path backend-rs/crates/backend/Cargo.toml --all --check
 
-      - name: Install dependencies
-        working-directory: backend
-        run: uv sync --all-extras --dev
+      - name: Clippy
+        run: cargo clippy --manifest-path backend-rs/Cargo.toml --workspace --all-targets -- -D warnings
 
-      - name: Lint (ruff)
-        working-directory: backend
-        run: uv run ruff check .
-
-      - name: Type check (mypy)
-        working-directory: backend
-        run: uv run mypy app
-
-      - name: Run migrations
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql+asyncpg://agentchat:agentchat@localhost:5432/agentchat
-        run: uv run alembic upgrade head
-
-      - name: Tests
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql+asyncpg://agentchat:agentchat@localhost:5432/agentchat
-          # Fake key so app.llm.chat_model.make_chat_model passes its
-          # "no api key configured" guard during test process startup; the
-          # actual LLM call is monkey-patched in tests/conftest.py and
-          # never hits the network.
-          LLM_API_KEY: ci-fake-key
-        run: uv run pytest -v
+      - name: Test
+        run: cargo test --manifest-path backend-rs/Cargo.toml --workspace
 
   frontend:
     runs-on: ubuntu-latest

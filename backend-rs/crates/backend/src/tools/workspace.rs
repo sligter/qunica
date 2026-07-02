@@ -3,8 +3,8 @@
 //! [`WorkspaceTools`] is the file-tool facade the Task 8b runtime tool loop will
 //! drive. Every method routes caller-supplied paths through
 //! [`resolve_workspace_path`](crate::tools::resolve_workspace_path) so no access
-//! escapes the workspace root, and enforces the same line/size/result bounds as
-//! the Python oracle in `backend/app/agents/workspace_tools.py`.
+//! escapes the workspace root, and enforces the runtime line/size/result bounds
+//! used by Rust provider-native tools.
 
 use std::{
     fs,

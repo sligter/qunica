@@ -23,9 +23,9 @@
 //!
 //! The reader **skips any stdout line that is not a JSON object** (blank lines,
 //! banner text, and, in tests, the integration harness's `running N tests`
-//! header). The Python oracle feeds every line to a strict parser; tolerating
-//! non-JSON lines here keeps a real agent's incidental stdout chatter — and the
-//! self-spawned fake-child test fixture — from corrupting the protocol stream.
+//! header). Tolerating non-JSON lines here keeps a real agent's incidental
+//! stdout chatter and the self-spawned fake-child test fixture from corrupting
+//! the protocol stream.
 
 use std::{
     collections::HashMap,

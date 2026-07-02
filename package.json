@@ -11,7 +11,6 @@
     "desktop:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-rust-backend-sidecar.ps1",
     "desktop:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-desktop-icons.ps1",
     "desktop:zip": "node scripts/package-desktop-portable.mjs",
-    "oracle:python-backend:test": "uv --directory backend run pytest",
     "lint": "pnpm --filter @ag-swarmer/frontend lint",
     "type-check": "pnpm -r type-check"
   },

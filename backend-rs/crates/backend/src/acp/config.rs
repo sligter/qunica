@@ -1,12 +1,10 @@
 //! ACP runtime config normalization.
 //!
-//! This mirrors the Python oracle `backend/app/external_agents/adapters.py`:
-//! an agent's stored `external_runtime_json` is untrusted input that must be
+//! An agent's stored `external_runtime_json` is untrusted input that must be
 //! normalized into an [`AcpRuntimeConfig`] before any ACP child process is
 //! launched (Task 9b). Normalization rejects host-environment leaks, legacy CLI
-//! adapter fields, and malformed values, and applies the same defaults and
-//! ranges as the Python implementation so both backends accept and reject the
-//! exact same configs.
+//! adapter fields, and malformed values, and applies stable defaults and ranges
+//! for the Rust ACP runtime.
 
 use std::collections::BTreeMap;
 
@@ -134,7 +132,7 @@ fn invalid(message: impl Into<String>) -> AcpConfigError {
 ///
 /// `raw` is the parsed `external_runtime_json`. A missing config, a non-object
 /// config, or any malformed/forbidden field is rejected with an
-/// [`AcpConfigError`] whose message matches the Python oracle.
+/// [`AcpConfigError`] with a stable user-facing message.
 pub fn normalize_acp_runtime(raw: Option<&Value>) -> Result<AcpRuntimeConfig, AcpConfigError> {
     let map = match raw {
         Some(Value::Object(map)) => map,

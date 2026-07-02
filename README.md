@@ -59,9 +59,6 @@ backend-rs/
   SQLite desktop data storage
   External CLI runtime adapters
 
-backend/
-  Legacy Python FastAPI oracle retained for parity checks only
-
 shared/
   Cross-package TypeScript event/contracts
 ```
@@ -172,16 +169,10 @@ cargo clippy --manifest-path backend-rs/Cargo.toml --workspace --all-targets -- 
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
 
-Python oracle（非默认运行时）测试：
-
-```powershell
-pnpm oracle:python-backend:test
-# equivalent: uv --directory backend run pytest
-```
 
 ## 当前限制
 
 - 首个打包目标是 Windows。
-- 桌面版使用 SQLite，本地数据不会自动从 legacy Python oracle 的 Docker/Postgres 环境迁移。
+- 桌面版使用 SQLite，本地数据不会自动从 legacy 的 Docker/Postgres 环境迁移。
 - Pi Agent 暂未实现，外部 runtime adapter 已预留扩展位置。
 - 外部 CLI Agent 默认具备 full-auto 执行能力，应只绑定到用户确认过的 workspace。

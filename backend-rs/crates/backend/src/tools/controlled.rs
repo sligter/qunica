@@ -1,11 +1,10 @@
 //! Controlled (non-executing) tools and the shared controlled-result encoder.
 //!
-//! These mirror the Python oracle's `_controlled_tool_result` helper and the
-//! tools that return a structured status instead of performing an action:
+//! These are tools that return a structured status instead of performing an action:
 //! `WebSearch` (setup-required without a provider), `AskUser`, the media stubs
 //! `GenerateImage`/`GenerateVideo`, `TodoWrite`, and `ExitPlanMode`. Each returns
-//! a [`ToolResult`] whose `output` is a JSON object carrying the same `tool` /
-//! `status` / `message` shape as the Python implementation.
+//! a [`ToolResult`] whose `output` is a JSON object carrying the stable `tool` /
+//! `status` / `message` shape used by the Rust runtime.
 
 use serde_json::{Map, Value};
 

@@ -1,11 +1,10 @@
 //! Guarded `Bash` tool.
 //!
-//! [`run_bash`] runs a shell command in the workspace root with the same safety
-//! envelope as the Python oracle (`_guard_bash_command` / `_run_bash` in
-//! `backend/app/agents/workspace_tools.py`): destructive commands are blocked,
-//! shell redirection targets must stay inside the workspace, the command runs
-//! with a bounded timeout, and the combined output is capped. Execution uses
-//! `tokio::process` so it never blocks the async executor.
+//! [`run_bash`] runs a shell command in the workspace root with a conservative
+//! safety envelope: destructive commands are blocked, shell redirection targets
+//! must stay inside the workspace, the command runs with a bounded timeout, and
+//! the combined output is capped. Execution uses `tokio::process` so it never
+//! blocks the async executor.
 
 use std::{path::Path, process::Stdio, sync::OnceLock, time::Duration};
 
@@ -21,8 +20,8 @@ pub const MAX_BASH_TIMEOUT_SECONDS: u64 = 3_600;
 /// Largest combined stdout+stderr length (in characters) returned to the model.
 pub const MAX_BASH_OUTPUT_CHARS: usize = 12_000;
 
-/// Compiled destructive-command patterns, mirroring the Python oracle. Matched
-/// against the lowercased command so they catch case variants.
+/// Compiled destructive-command patterns. Matched against the lowercased
+/// command so they catch case variants.
 fn destructive_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
@@ -58,9 +57,8 @@ fn guard_command(command: &str, root: &Path) -> Result<(), ToolError> {
         }
     }
 
-    // Split like the Python oracle's `shlex.split(command, posix=True)` so a
-    // redirection target written as a separate token (`> out`) or attached
-    // (`2>out`) is validated against the workspace root.
+    // Split shell words so a redirection target written as a separate token
+    // (`> out`) or attached (`2>out`) is validated against the workspace root.
     let tokens = shlex::split(command)
         .ok_or_else(|| ToolError::invalid("command could not be parsed safely"))?;
     for (index, token) in tokens.iter().enumerate() {

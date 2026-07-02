@@ -1,9 +1,9 @@
 //! Bounded HTTP reader backing the `Fetch` tool.
 //!
-//! [`fetch`] mirrors the Python oracle's `_fetch_url`: only `http`/`https` GET
-//! requests, a short timeout, redirects followed, text-like responses only, and
-//! both the response body and the returned snippet bounded. Network and decode
-//! errors are mapped to model-safe text and never expose internals.
+//! [`fetch`] allows only `http`/`https` GET requests with a short timeout,
+//! redirects followed, text-like responses only, and both the response body and
+//! the returned snippet bounded. Network and decode errors are mapped to
+//! model-safe text and never expose internals.
 
 use std::time::Duration;
 

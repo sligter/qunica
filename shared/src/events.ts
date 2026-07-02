@@ -1,7 +1,7 @@
 /**
  * WebSocket event contract shared between backend and frontend.
  *
- * The backend defines matching Pydantic models with the same `type` literals.
+ * Keep these TypeScript payloads aligned with the Rust API v2 event payloads.
  * Update both sides when adding events.
  */
 

@@ -1,10 +1,9 @@
 //! Workspace path safety.
 //!
 //! [`resolve_workspace_path`] is the single gate every file tool passes a
-//! caller-supplied path through. It mirrors the Python oracle in
-//! `backend/app/agents/workspace_tools.py` (`_reject_unsafe_relative_path` +
-//! `_resolve_inside`) while being strict about Windows drive and UNC prefixes
-//! on every host so the same rules hold regardless of where the backend runs.
+//! caller-supplied path through. It is strict about Windows drive and UNC
+//! prefixes on every host so the same rules hold regardless of where the
+//! backend runs.
 
 use std::{
     fs, io,

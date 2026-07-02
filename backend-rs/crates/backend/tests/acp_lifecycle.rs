@@ -132,7 +132,7 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
     assert!(blanks.mode.is_none());
     assert!(blanks.config_options.is_none());
 
-    // Rejections, each matching the Python oracle message.
+    // Rejections with stable user-facing messages.
     assert_eq!(
         normalize_acp_runtime(None).unwrap_err().to_string(),
         "ACP runtime config is required for ACP agents"
