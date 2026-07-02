@@ -2409,7 +2409,7 @@ async fn workspace_files_rejects_explicit_dot_path() {
     let unsafe_path_message =
         "workspace file paths must be relative and stay inside the group workspace";
 
-    for request in vec![
+    for request in [
         authed("GET", &workspace_file_url(group_id, "."), &token),
         authed(
             "GET",
