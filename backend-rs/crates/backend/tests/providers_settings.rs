@@ -513,8 +513,18 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
         let preset = by_id
             .get(id)
             .unwrap_or_else(|| panic!("missing preset {id}"));
-        assert_eq!(preset["installed"], false);
-        assert_eq!(preset["command"], "npx");
+        let installed = preset["installed"].as_bool().unwrap();
+        let command = preset["command"].as_str().unwrap();
+        if installed {
+            assert!(
+                command.ends_with("npx")
+                    || command.ends_with("npx.cmd")
+                    || command.ends_with("npx.exe"),
+                "unexpected resolved npx command: {command}"
+            );
+        } else {
+            assert_eq!(command, "npx");
+        }
         assert_eq!(preset["source"], "fallback");
         assert!(!preset["args"].as_array().unwrap().is_empty());
         assert!(!preset["mode_options"].as_array().unwrap().is_empty());

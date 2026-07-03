@@ -7,6 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
+use std::env;
+use std::ffi::OsString;
+use std::path::{Path as FsPath, PathBuf};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
@@ -113,7 +116,7 @@ struct AcpRuntimePresetResponse {
     description: &'static str,
     profile: &'static str,
     installed: bool,
-    command: Option<&'static str>,
+    command: Option<String>,
     args: Vec<&'static str>,
     env: BTreeMap<String, String>,
     timeout_seconds: i64,
@@ -687,14 +690,16 @@ fn tool(
 }
 
 fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
+    let npx = fallback_npx_command();
+
     vec![
         AcpRuntimePresetResponse {
             id: "codex",
             name: "Codex",
             description: "Codex CLI through the Zed Codex ACP adapter.",
             profile: "codex",
-            installed: false,
-            command: Some("npx"),
+            installed: npx.installed,
+            command: Some(npx.command.clone()),
             args: vec!["@zed-industries/codex-acp"],
             env: BTreeMap::new(),
             timeout_seconds: 3600,
@@ -736,8 +741,8 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             name: "Claude Code",
             description: "Claude Agent SDK through the official Claude Agent ACP adapter.",
             profile: "claude",
-            installed: false,
-            command: Some("npx"),
+            installed: npx.installed,
+            command: Some(npx.command.clone()),
             args: vec!["@agentclientprotocol/claude-agent-acp"],
             env: BTreeMap::new(),
             timeout_seconds: 3600,
@@ -770,6 +775,105 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
     ]
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedCommand {
+    command: String,
+    installed: bool,
+}
+
+fn fallback_npx_command() -> ResolvedCommand {
+    match find_command_on_path("npx") {
+        Some(path) => ResolvedCommand {
+            command: path.to_string_lossy().into_owned(),
+            installed: true,
+        },
+        None => ResolvedCommand {
+            command: "npx".to_string(),
+            installed: false,
+        },
+    }
+}
+
+fn find_command_on_path(command: &str) -> Option<PathBuf> {
+    find_command_on_path_with_env(command, env::var_os("PATH"), env::var_os("PATHEXT"))
+}
+
+fn find_command_on_path_with_env(
+    command: &str,
+    path_env: Option<OsString>,
+    pathext_env: Option<OsString>,
+) -> Option<PathBuf> {
+    let path_env = path_env?;
+    let candidates = command_candidates(command, pathext_env);
+
+    env::split_paths(&path_env)
+        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
+        .find(|path| is_executable_file(path))
+        .map(absolute_command_path)
+}
+
+fn absolute_command_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn command_candidates(command: &str, pathext_env: Option<OsString>) -> Vec<String> {
+    let command_path = FsPath::new(command);
+    if command_path.extension().is_some() {
+        return vec![command.to_string()];
+    }
+
+    let mut candidates: Vec<String> = Vec::new();
+
+    #[cfg(windows)]
+    {
+        let pathext = pathext_env.unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+        let mut extensions = vec![".cmd".to_string()];
+        extensions.extend(
+            pathext
+                .to_string_lossy()
+                .split(';')
+                .filter_map(|extension| {
+                    if extension.is_empty() {
+                        return None;
+                    }
+                    Some(if extension.starts_with('.') {
+                        extension.to_string()
+                    } else {
+                        format!(".{extension}")
+                    })
+                }),
+        );
+
+        for extension in extensions {
+            if candidates
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&format!("{command}{extension}")))
+            {
+                continue;
+            }
+            candidates.push(format!("{command}{extension}"));
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pathext_env;
+        candidates.push(command.to_string());
+    }
+
+    candidates
+}
+
+fn is_executable_file(path: &FsPath) -> bool {
+    path.is_file()
+}
+
 fn choice(
     value: &'static str,
     label: &'static str,
@@ -800,4 +904,98 @@ where
     D: Deserializer<'de>,
 {
     Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+
+    #[test]
+    #[cfg(windows)]
+    fn find_command_on_path_prefers_cmd_for_npx_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let npx_cmd = dir.path().join("npx.cmd");
+        File::create(&npx_cmd).unwrap();
+        File::create(dir.path().join("npx.exe")).unwrap();
+        let path_env = env::join_paths([dir.path()]).unwrap();
+
+        let resolved =
+            find_command_on_path_with_env("npx", Some(path_env), Some(OsString::from(".EXE;.CMD")))
+                .unwrap();
+
+        assert_eq!(resolved, npx_cmd);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn find_command_on_path_uses_pathext_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let npx_bat = dir.path().join("npx.bat");
+        File::create(&npx_bat).unwrap();
+        let path_env = env::join_paths([dir.path()]).unwrap();
+
+        let resolved =
+            find_command_on_path_with_env("npx", Some(path_env), Some(OsString::from(".EXE;.BAT")))
+                .unwrap();
+
+        assert!(resolved
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&npx_bat.to_string_lossy()));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn find_command_on_path_returns_absolute_path_from_relative_path_env_on_windows() {
+        let cwd = env::current_dir().unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("ag-swarmer-npx-")
+            .tempdir_in(&cwd)
+            .unwrap();
+        let relative_dir = dir.path().strip_prefix(&cwd).unwrap();
+        let npx_cmd = dir.path().join("npx.cmd");
+        File::create(&npx_cmd).unwrap();
+        let path_env = env::join_paths([relative_dir]).unwrap();
+
+        let resolved =
+            find_command_on_path_with_env("npx", Some(path_env), Some(OsString::from(".CMD")))
+                .unwrap();
+
+        assert!(resolved.is_absolute());
+        assert!(resolved
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&npx_cmd.to_string_lossy()));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn find_command_on_path_uses_bare_command_off_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let npx = dir.path().join("npx");
+        File::create(&npx).unwrap();
+        let path_env = env::join_paths([dir.path()]).unwrap();
+
+        let resolved = find_command_on_path_with_env("npx", Some(path_env), None).unwrap();
+
+        assert_eq!(resolved, npx);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn find_command_on_path_returns_absolute_path_from_relative_path_env_off_windows() {
+        let cwd = env::current_dir().unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("ag-swarmer-npx-")
+            .tempdir_in(&cwd)
+            .unwrap();
+        let relative_dir = dir.path().strip_prefix(&cwd).unwrap();
+        let npx = dir.path().join("npx");
+        File::create(&npx).unwrap();
+        let path_env = env::join_paths([relative_dir]).unwrap();
+
+        let resolved = find_command_on_path_with_env("npx", Some(path_env), None).unwrap();
+
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, npx);
+    }
 }
