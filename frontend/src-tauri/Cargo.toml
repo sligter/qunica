@@ -1,6 +1,6 @@
 [package]
 name = "ag-swarmer-desktop"
-version = "0.1.0-alpha"
+version = "0.1.0"
 description = "AgentChat desktop shell"
 authors = ["ag-swarmer"]
 edition = "2021"
