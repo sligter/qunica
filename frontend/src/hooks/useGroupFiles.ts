@@ -6,10 +6,24 @@ import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
 import type {
   GroupFileRead,
+  GroupWorkspaceGitCommitRequest,
+  GroupWorkspaceGitPathsRequest,
+  GroupWorkspaceGitStatus,
   GroupWorkspaceFilePreview,
   GroupWorkspaceFileRead,
   GroupWorkspaceRoot,
 } from '@/types/api'
+
+export class WorkspaceUploadManyError extends Error {
+  uploaded: GroupWorkspaceFileRead[]
+
+  constructor(message: string, uploaded: GroupWorkspaceFileRead[]) {
+    super(message)
+    this.name = 'WorkspaceUploadManyError'
+    this.uploaded = uploaded
+    Object.setPrototypeOf(this, WorkspaceUploadManyError.prototype)
+  }
+}
 
 export function useGroupFiles(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
@@ -49,6 +63,10 @@ export function useDeleteGroupFile(groupId: string) {
 
 export function workspaceFilesQueryKey(groupId: string | undefined, path = '') {
   return ['groups', groupId, 'workspace-files', path] as const
+}
+
+export function workspaceGitQueryKey(groupId: string | undefined) {
+  return ['groups', groupId, 'workspace-git'] as const
 }
 
 function withPath(path: string) {
@@ -113,6 +131,38 @@ export function useUploadGroupWorkspaceFile(groupId: string | undefined) {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
+    },
+  })
+}
+
+export function useUploadGroupWorkspaceFiles(groupId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (files: File[]) => {
+      if (!groupId) throw new Error('Group is required to upload workspace files')
+      const uploaded: GroupWorkspaceFileRead[] = []
+      for (const file of files) {
+        const fd = new FormData()
+        fd.append('file', file)
+        try {
+          const result = await fetchFormData<GroupWorkspaceFileRead>(
+            `/groups/${groupId}/workspace-files/upload`,
+            fd,
+            { token },
+          )
+          uploaded.push(result)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          throw new WorkspaceUploadManyError(message, uploaded)
+        }
+      }
+      return uploaded
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
     },
   })
 }
@@ -170,8 +220,65 @@ export function useRenameGroupWorkspaceFile(groupId: string | undefined) {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
     },
   })
+}
+
+export function useGroupWorkspaceGitStatus(groupId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: workspaceGitQueryKey(groupId),
+    queryFn: () =>
+      fetchJson<GroupWorkspaceGitStatus>(`/groups/${groupId}/workspace-git/status`, { token }),
+    enabled: token !== null && !!groupId,
+    refetchInterval: 10_000,
+  })
+}
+
+function useWorkspaceGitMutation<TBody>(
+  groupId: string | undefined,
+  action: 'stage' | 'unstage' | 'commit' | 'pull' | 'push',
+  invalidateFiles = false,
+) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: TBody) => {
+      if (!groupId) throw new Error('Group is required for workspace Git operations')
+      return fetchJson<GroupWorkspaceGitStatus>(`/groups/${groupId}/workspace-git/${action}`, {
+        token,
+        method: 'POST',
+        body,
+      })
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
+      if (invalidateFiles) {
+        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+      }
+    },
+  })
+}
+
+export function useStageGroupWorkspaceGit(groupId: string | undefined) {
+  return useWorkspaceGitMutation<GroupWorkspaceGitPathsRequest>(groupId, 'stage')
+}
+
+export function useUnstageGroupWorkspaceGit(groupId: string | undefined) {
+  return useWorkspaceGitMutation<GroupWorkspaceGitPathsRequest>(groupId, 'unstage')
+}
+
+export function useCommitGroupWorkspaceGit(groupId: string | undefined) {
+  return useWorkspaceGitMutation<GroupWorkspaceGitCommitRequest>(groupId, 'commit')
+}
+
+export function usePullGroupWorkspaceGit(groupId: string | undefined) {
+  return useWorkspaceGitMutation<Record<string, never>>(groupId, 'pull', true)
+}
+
+export function usePushGroupWorkspaceGit(groupId: string | undefined) {
+  return useWorkspaceGitMutation<Record<string, never>>(groupId, 'push')
 }
 
 export function useDeleteGroupWorkspaceFile(groupId: string | undefined) {
@@ -187,6 +294,7 @@ export function useDeleteGroupWorkspaceFile(groupId: string | undefined) {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
     },
   })
 }

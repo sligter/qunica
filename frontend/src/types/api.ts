@@ -494,6 +494,29 @@ export interface GroupWorkspaceFileRename {
   new_path: string
 }
 
+export interface GroupWorkspaceGitFileStatus {
+  path: string
+  status: string
+  staged: boolean
+  unstaged: boolean
+}
+
+export interface GroupWorkspaceGitStatus {
+  available: boolean
+  branch: string | null
+  clean: boolean
+  files: GroupWorkspaceGitFileStatus[]
+  message: string | null
+}
+
+export interface GroupWorkspaceGitPathsRequest {
+  paths: string[]
+}
+
+export interface GroupWorkspaceGitCommitRequest {
+  message: string
+}
+
 export interface GroupNoteRead {
   id: string
   group_id: string

@@ -1,9 +1,14 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Paperclip } from 'lucide-react'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { useUploadGroupWorkspaceFiles, WorkspaceUploadManyError } from '@/hooks/useGroupFiles'
+import { WORKSPACE_PATHS_MIME, workspacePathsFromDataTransfer } from '@/lib/workspaceDrag'
 import type { GroupAgentRead } from '@/types/api'
+
+export type WorkspacePathInserter = (paths: string[]) => void
 
 interface ComposerProps {
   onSend: (content: string) => void
@@ -11,14 +16,62 @@ interface ComposerProps {
   isStreaming?: boolean
   hint?: string
   groupAgents?: GroupAgentRead[]
+  groupId?: string
+  onRegisterWorkspacePathInserter?: (insert: WorkspacePathInserter | null) => void
 }
 
-export function Composer({ onSend, onCancel, isStreaming, hint, groupAgents = [] }: ComposerProps) {
+function displayError(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export function Composer({
+  onSend,
+  onCancel,
+  isStreaming,
+  hint,
+  groupAgents = [],
+  groupId,
+  onRegisterWorkspacePathInserter,
+}: ComposerProps) {
   const [value, setValue] = useState('')
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const [mentionQuery, setMentionQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
   const [mentionStart, setMentionStart] = useState(-1)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const uploadWorkspaceFiles = useUploadGroupWorkspaceFiles(groupId)
+
+  const insertWorkspacePaths = useCallback(
+    (paths: string[]) => {
+      const cleanPaths = paths.map((path) => path.trim()).filter((path) => path.length > 0)
+      if (cleanPaths.length === 0) return
+      const insertedText = cleanPaths.join('\n')
+      const textarea = textareaRef.current
+      const start = textarea?.selectionStart ?? value.length
+      const end = textarea?.selectionEnd ?? start
+      const before = value.slice(0, start)
+      const after = value.slice(end)
+      const leading = before.length > 0 && !before.endsWith('\n') ? '\n' : ''
+      const trailing = after.length > 0 && !after.startsWith('\n') ? '\n' : ''
+      const nextValue = `${before}${leading}${insertedText}${trailing}${after}`
+      const cursor = before.length + leading.length + insertedText.length
+      setValue(nextValue)
+      setShowMention(false)
+      requestAnimationFrame(() => {
+        const target = textareaRef.current
+        if (!target) return
+        target.setSelectionRange(cursor, cursor)
+        target.focus()
+      })
+    },
+    [value],
+  )
+
+  useEffect(() => {
+    onRegisterWorkspacePathInserter?.(insertWorkspacePaths)
+    return () => onRegisterWorkspacePathInserter?.(null)
+  }, [insertWorkspacePaths, onRegisterWorkspacePathInserter])
 
   const send = () => {
     const trimmed = value.trim()
@@ -27,6 +80,29 @@ export function Composer({ onSend, onCancel, isStreaming, hint, groupAgents = []
     setValue('')
     setShowMention(false)
   }
+
+  const uploadFiles = useCallback(
+    (fileList: FileList | null) => {
+      const files = Array.from(fileList ?? [])
+      if (files.length === 0) return
+      setUploadError(null)
+      void uploadWorkspaceFiles
+        .mutateAsync(files)
+        .then((uploaded) => {
+          insertWorkspacePaths(uploaded.map((file) => file.path))
+        })
+        .catch((error: unknown) => {
+          if (error instanceof WorkspaceUploadManyError && error.uploaded.length > 0) {
+            insertWorkspacePaths(error.uploaded.map((file) => file.path))
+          }
+          setUploadError(displayError(error))
+        })
+        .finally(() => {
+          if (fileInputRef.current) fileInputRef.current.value = ''
+        })
+    },
+    [insertWorkspacePaths, uploadWorkspaceFiles],
+  )
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value
@@ -73,6 +149,22 @@ export function Composer({ onSend, onCancel, isStreaming, hint, groupAgents = []
     [value, mentionStart],
   )
 
+  const handleDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const paths = workspacePathsFromDataTransfer(event.dataTransfer)
+    if (paths.length === 0) return
+    event.preventDefault()
+    insertWorkspacePaths(paths)
+  }
+
+  const handleDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const types = Array.from(event.dataTransfer.types)
+    if (!types.includes(WORKSPACE_PATHS_MIME) && !types.includes('text/plain')) {
+      return
+    }
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (showMention) return
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -84,6 +176,11 @@ export function Composer({ onSend, onCancel, isStreaming, hint, groupAgents = []
   return (
     <div className="border-t border-border bg-background px-4 py-3">
       {hint && <p className="mb-1.5 text-[11px] text-muted-foreground">{hint}</p>}
+      {uploadError && (
+        <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {uploadError}
+        </p>
+      )}
       <div className="relative flex items-end gap-2">
         <div className="relative flex-1">
           <MentionPopover
@@ -98,11 +195,33 @@ export function Composer({ onSend, onCancel, isStreaming, hint, groupAgents = []
             value={value}
             onChange={handleChange}
             onKeyDown={onKeyDown}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
             placeholder="Type a message. Use @ to mention an agent. Enter to send, Shift+Enter for newline."
             rows={2}
             className="resize-none"
           />
         </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="sr-only"
+          onChange={(event) => uploadFiles(event.target.files)}
+          aria-label="Upload files to workspace uploads"
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 shrink-0"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={!groupId || uploadWorkspaceFiles.isPending}
+          aria-label="Upload files to workspace uploads"
+          title="Upload files to uploads/"
+        >
+          <Paperclip className="h-4 w-4" />
+        </Button>
         {isStreaming && (
           <Button variant="outline" size="sm" onClick={onCancel}>
             Stop all

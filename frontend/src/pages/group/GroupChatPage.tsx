@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Files, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucide-react'
 
-import { Composer } from '@/components/chat/Composer'
+import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
 import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
 import { GroupWorkspaceFilesPanel } from '@/components/chat/GroupWorkspaceFilesPanel'
 import { MessageList } from '@/components/chat/MessageList'
@@ -42,6 +42,7 @@ export function GroupChatPage() {
   const stream = useSendMessageStream(groupId)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const fileNavRequest = useFileNavStore((s) => s.request)
+  const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
     readWorkspaceFilesOpen(groupId),
@@ -67,6 +68,14 @@ export function GroupChatPage() {
     },
     [groupId],
   )
+
+  const registerComposerPathInserter = useCallback((insert: WorkspacePathInserter | null) => {
+    composerPathInserterRef.current = insert
+  }, [])
+
+  const insertWorkspacePaths = useCallback((paths: string[]) => {
+    composerPathInserterRef.current?.(paths)
+  }, [])
 
   useEffect(() => {
     if (groupId) clearWarnings(groupId)
@@ -168,11 +177,13 @@ export function GroupChatPage() {
           )}
 
           <Composer
+            groupId={groupId}
             isStreaming={stream.isStreaming}
             onSend={stream.send}
             onCancel={stream.cancel}
             hint={hint}
             groupAgents={agents}
+            onRegisterWorkspacePathInserter={registerComposerPathInserter}
           />
         </div>
         {workspaceFilesOpen && (
@@ -189,6 +200,7 @@ export function GroupChatPage() {
             <GroupWorkspaceFilesPanel
               groupId={groupId}
               width={workspaceFilesPane.width}
+              onInsertPaths={insertWorkspacePaths}
             />
           </>
         )}

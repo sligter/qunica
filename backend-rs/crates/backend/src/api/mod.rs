@@ -174,6 +174,30 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(groups::rename_group_workspace_file),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-git/status",
+            get(groups::get_group_workspace_git_status),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/stage",
+            axum::routing::post(groups::stage_group_workspace_git_paths),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/unstage",
+            axum::routing::post(groups::unstage_group_workspace_git_paths),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/commit",
+            axum::routing::post(groups::commit_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/pull",
+            axum::routing::post(groups::pull_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/push",
+            axum::routing::post(groups::push_group_workspace_git),
+        )
+        .route(
             "/api/v2/groups/:group_id/members/:user_id",
             axum::routing::delete(groups::remove_group_member),
         )

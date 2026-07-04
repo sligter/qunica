@@ -80,7 +80,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
       className={cn(
         'min-w-0 break-words text-sm leading-6',
         isUser && 'whitespace-pre-wrap',
-        isUser ? 'text-primary-foreground' : 'text-foreground',
+        isUser ? 'chat-user-message text-current' : 'text-foreground',
       )}
     >
       <ReactMarkdown
@@ -101,7 +101,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
                   onClick={() => openFile(groupId, rel)}
                   className={cn(
                     'inline cursor-pointer break-all font-medium underline underline-offset-4',
-                    isUser ? 'text-primary-foreground' : 'text-primary',
+                    isUser ? 'text-current' : 'text-primary',
                   )}
                 >
                   {children}
@@ -115,7 +115,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
                 rel="noreferrer"
                 className={cn(
                   'font-medium underline underline-offset-4',
-                  isUser ? 'text-primary-foreground' : 'text-primary',
+                  isUser ? 'text-current' : 'text-primary',
                 )}
               >
                 {children}
@@ -129,7 +129,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
             <blockquote
               className={cn(
                 'my-3 border-l-2 pl-3 italic',
-                isUser ? 'border-primary-foreground/50' : 'border-primary/50 text-muted-foreground',
+                isUser ? 'border-current/50' : 'border-primary/50 text-muted-foreground',
               )}
             >
               {children}
@@ -155,7 +155,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
               <code
                 className={cn(
                   'rounded px-1.5 py-0.5 text-[0.85em]',
-                  isUser ? 'bg-primary-foreground/15' : 'bg-muted text-foreground',
+                  isUser ? 'bg-current/15 text-current' : 'bg-muted text-foreground',
                 )}
               >
                 {children}
