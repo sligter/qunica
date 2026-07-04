@@ -175,7 +175,7 @@ export function ExternalRuntimeFields({
           {presets.map((preset) => (
             <option key={preset.id} value={preset.profile}>
               {preset.name}
-              {preset.installed ? '' : ' (npx fallback)'}
+              {preset.installed ? '' : ' (fallback command)'}
             </option>
           ))}
         </select>
@@ -197,7 +197,7 @@ export function ExternalRuntimeFields({
                 >
                   <span className="block font-medium">{preset.name}</span>
                   <span className="block text-[11px] text-muted-foreground">
-                    {preset.installed ? 'Local adapter detected' : 'Uses npx fallback'}
+                    {preset.installed ? 'Local adapter detected' : 'Uses fallback command'}
                   </span>
                 </button>
               )

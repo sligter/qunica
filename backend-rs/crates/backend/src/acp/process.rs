@@ -258,7 +258,7 @@ fn now_rfc3339() -> String {
 
 /// Host environment keys that carry a CLI's auth/config location. For the
 /// `codex`/`claude` profiles these are inherited so the agent can reuse the
-/// host user's existing login; for the `custom` profile they are instead
+/// host user's existing login; for generic profiles they are instead
 /// redirected to an isolated temp tree (see [`acp_agent_env`]). Mirrors the
 /// Python `_host_cli_auth_env`.
 fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
@@ -276,7 +276,7 @@ fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
         AcpRuntimeProfile::Claude => {
             keys.extend(["CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "ANTHROPIC_MODEL"]);
         }
-        AcpRuntimeProfile::Custom => {}
+        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => {}
     }
     keys.into_iter()
         .filter_map(|key| {
@@ -291,8 +291,8 @@ fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
 /// `_acp_agent_env`.
 ///
 /// Always sets [`ACP_AGENT_ENV_FLAG`]. For `codex`/`claude` it inherits the host
-/// CLI auth env then applies the runtime env. For `custom` it points every home
-/// /config/data/cache key at an isolated tree rooted under `isolated_home`
+/// CLI auth env then applies the runtime env. For generic profiles it points
+/// every home/config/data/cache key at an isolated tree rooted under `isolated_home`
 /// (created here) so the agent cannot read or poison the host user's CLI state,
 /// then applies the runtime env. The runtime env is applied last; the blocked
 /// keys it could otherwise use to override these are already rejected by config
@@ -311,7 +311,7 @@ fn acp_agent_env(
                 env.insert(key, value);
             }
         }
-        AcpRuntimeProfile::Custom => {
+        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => {
             let config_dir = isolated_home.join("config");
             let data_dir = isolated_home.join("data");
             let cache_dir = isolated_home.join("cache");

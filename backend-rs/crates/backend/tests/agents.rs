@@ -455,6 +455,64 @@ async fn agent_runtime_kind_acp_clears_provider_and_stores_runtime() {
 }
 
 #[tokio::test]
+async fn acp_runtime_presets_include_pi_and_opencode() {
+    let app = app().await;
+    let token = register_and_login(&app, "acp-presets@example.com").await;
+
+    let (status, body) = send(
+        &app,
+        authed("GET", "/api/v2/agents/acp-runtime-presets", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let presets = body["presets"].as_array().expect("presets array");
+    let ids: Vec<&str> = presets
+        .iter()
+        .filter_map(|preset| preset["id"].as_str())
+        .collect();
+
+    assert!(ids.contains(&"codex"), "ids: {ids:?}");
+    assert!(ids.contains(&"claude"), "ids: {ids:?}");
+    assert!(ids.contains(&"pi"), "ids: {ids:?}");
+    assert!(ids.contains(&"opencode"), "ids: {ids:?}");
+
+    let pi = presets.iter().find(|preset| preset["id"] == "pi").unwrap();
+    assert_eq!(pi["profile"], "pi");
+    assert_eq!(pi["permission_policy"], "deny");
+    assert_eq!(pi["timeout_seconds"], 3600);
+    if pi["installed"].as_bool().unwrap_or(false) {
+        let command = pi["command"].as_str().expect("pi command");
+        assert!(
+            command.to_ascii_lowercase().contains("pi-acp"),
+            "command: {command}"
+        );
+        assert_eq!(pi["args"], json!([]));
+    } else {
+        assert_ne!(pi["command"], Value::Null);
+        assert_eq!(pi["args"], json!(["-y", "pi-acp"]));
+    }
+
+    let opencode = presets
+        .iter()
+        .find(|preset| preset["id"] == "opencode")
+        .unwrap();
+    assert_eq!(opencode["profile"], "opencode");
+    assert_eq!(opencode["permission_policy"], "deny");
+    assert_eq!(opencode["timeout_seconds"], 3600);
+    assert_eq!(opencode["args"], json!(["acp"]));
+    let opencode_command = opencode["command"].as_str().expect("opencode command");
+    if opencode["installed"].as_bool().unwrap_or(false) {
+        assert!(
+            opencode_command.to_ascii_lowercase().contains("opencode"),
+            "command: {opencode_command}"
+        );
+    } else {
+        assert_eq!(opencode_command, "opencode");
+    }
+}
+
+#[tokio::test]
 async fn agent_delete_soft_deletes_and_hides_from_list() {
     let app = app().await;
     let token = register_and_login(&app, "delete@example.com").await;

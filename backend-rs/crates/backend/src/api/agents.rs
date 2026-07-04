@@ -691,6 +691,8 @@ fn tool(
 
 fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
     let npx = fallback_npx_command();
+    let pi_acp = command_or_name("pi-acp");
+    let opencode = command_or_name("opencode");
 
     vec![
         AcpRuntimePresetResponse {
@@ -772,6 +774,54 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             install_hint: "Install @agentclientprotocol/claude-agent-acp so claude-agent-acp is on PATH, or keep the npx fallback command.",
             source: Some("fallback"),
         },
+        AcpRuntimePresetResponse {
+            id: "pi",
+            name: "Pi Agent",
+            description: "Pi Agent through the pi-acp ACP adapter.",
+            profile: "pi",
+            installed: pi_acp.installed,
+            command: Some(if pi_acp.installed {
+                pi_acp.command.clone()
+            } else {
+                npx.command.clone()
+            }),
+            args: if pi_acp.installed {
+                Vec::new()
+            } else {
+                vec!["-y", "pi-acp"]
+            },
+            env: BTreeMap::new(),
+            timeout_seconds: 3600,
+            permission_policy: "deny",
+            default_model: None,
+            default_mode: None,
+            default_thinking_effort: None,
+            model_options: Vec::new(),
+            mode_options: Vec::new(),
+            thinking_effort_options: Vec::new(),
+            install_hint: "Install pi-acp so it is on PATH, or keep the npx fallback command.",
+            source: Some("fallback"),
+        },
+        AcpRuntimePresetResponse {
+            id: "opencode",
+            name: "OpenCode",
+            description: "OpenCode ACP server through the opencode CLI.",
+            profile: "opencode",
+            installed: opencode.installed,
+            command: Some(opencode.command.clone()),
+            args: vec!["acp"],
+            env: BTreeMap::new(),
+            timeout_seconds: 3600,
+            permission_policy: "deny",
+            default_model: None,
+            default_mode: None,
+            default_thinking_effort: None,
+            model_options: Vec::new(),
+            mode_options: Vec::new(),
+            thinking_effort_options: Vec::new(),
+            install_hint: "Install opencode so it is on PATH; the ACP command is opencode acp.",
+            source: Some("fallback"),
+        },
     ]
 }
 
@@ -789,6 +839,19 @@ fn fallback_npx_command() -> ResolvedCommand {
         },
         None => ResolvedCommand {
             command: "npx".to_string(),
+            installed: false,
+        },
+    }
+}
+
+fn command_or_name(command: &str) -> ResolvedCommand {
+    match find_command_on_path(command) {
+        Some(path) => ResolvedCommand {
+            command: path.to_string_lossy().into_owned(),
+            installed: true,
+        },
+        None => ResolvedCommand {
+            command: command.to_string(),
             installed: false,
         },
     }

@@ -88,7 +88,7 @@ export interface AgentToolConfig {
 }
 
 export type AgentRuntimeKind = 'llm_chat' | 'acp'
-export type AcpRuntimeProfile = 'custom' | 'codex' | 'claude'
+export type AcpRuntimeProfile = 'custom' | 'codex' | 'claude' | 'pi' | 'opencode'
 export type AcpPermissionPolicy = 'deny' | 'auto_allow'
 export type AcpConfigValue = string | boolean
 
@@ -112,10 +112,10 @@ export interface AcpRuntimeChoice {
 }
 
 export interface AcpRuntimePresetRead {
-  id: 'codex' | 'claude'
+  id: 'codex' | 'claude' | 'pi' | 'opencode'
   name: string
   description: string
-  profile: 'codex' | 'claude'
+  profile: Exclude<AcpRuntimeProfile, 'custom'>
   installed: boolean
   command: string | null
   args: string[]

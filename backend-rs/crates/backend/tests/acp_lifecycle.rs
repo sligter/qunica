@@ -133,6 +133,21 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
     assert!(blanks.mode.is_none());
     assert!(blanks.config_options.is_none());
 
+    let pi = normalize_acp_runtime(Some(&json!({
+        "command": "pi-acp",
+        "profile": "pi",
+    })))
+    .expect("pi profile should normalize");
+    assert_eq!(pi.profile, AcpRuntimeProfile::Pi);
+
+    let opencode = normalize_acp_runtime(Some(&json!({
+        "command": "opencode",
+        "args": ["acp"],
+        "profile": "opencode",
+    })))
+    .expect("opencode profile should normalize");
+    assert_eq!(opencode.profile, AcpRuntimeProfile::Opencode);
+
     // Rejections with stable user-facing messages.
     assert_eq!(
         normalize_acp_runtime(None).unwrap_err().to_string(),
@@ -182,7 +197,7 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
     );
     assert_eq!(
         err_message(json!({ "command": "agent", "profile": "rogue" })),
-        "ACP runtime profile must be custom, codex, or claude"
+        "ACP runtime profile must be custom, codex, claude, pi, or opencode"
     );
     assert_eq!(
         err_message(json!({ "command": "agent", "model": 5 })),
@@ -652,14 +667,16 @@ async fn acp_lifecycle_stream_cancel_kills_child_and_persists_cancelled_status()
     assert!(row.ended_at.is_some());
 }
 
-#[tokio::test]
-async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
-    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
-    let cwd = tempfile::tempdir().unwrap();
-
+async fn assert_child_env_is_isolated_for_profile(
+    pool: SqlitePool,
+    owner_id: &str,
+    agent_id: &str,
+    cwd: &std::path::Path,
+    profile: &str,
+) {
     let config = fake_child_config(
         "env",
-        "custom",
+        profile,
         json!({
             "timeout_seconds": 30,
             "env": { "SAFE_KEY": "safe" },
@@ -668,12 +685,12 @@ async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
     let mut run = run_acp_agent_stream(
         pool.clone(),
         AcpRunRequest {
-            owner_id,
+            owner_id: owner_id.to_string(),
             group_id: None,
-            agent_id,
+            agent_id: agent_id.to_string(),
             thread_id: None,
             config,
-            cwd: cwd.path().to_path_buf(),
+            cwd: cwd.to_path_buf(),
             prompt: "hi".to_string(),
             incremental_prompt: None,
             context_hash: None,
@@ -694,6 +711,7 @@ async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
             _ => {}
         }
     }
+    run.join().await.expect("run joins");
 
     assert_eq!(terminal_status.as_deref(), Some("completed"));
     let child_env: Value = serde_json::from_str(&env_text.expect("env child echoes environment"))
@@ -704,12 +722,13 @@ async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
     let home = child_env["HOME"].as_str().expect("HOME set");
     assert!(
         home.contains("ag-swarmer-acp-"),
-        "expected isolated temp home, got {home:?}"
+        "{profile}: expected isolated temp home, got {home:?}"
     );
-    assert_eq!(child_env["USERPROFILE"], json!(home));
 
     let home_path = std::path::Path::new(home);
     for key in [
+        "HOME",
+        "USERPROFILE",
         "APPDATA",
         "LOCALAPPDATA",
         "XDG_CONFIG_HOME",
@@ -722,13 +741,30 @@ async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
         let value = child_env[key].as_str().unwrap_or_default();
         assert!(
             std::path::Path::new(value).starts_with(home_path),
-            "{key} should live under HOME; {key}={value:?}, HOME={home:?}"
+            "{profile}: {key} should live under HOME; {key}={value:?}, HOME={home:?}"
         );
     }
 
     let row = fetch_run(&pool, &run_id).await;
     assert_eq!(row.status, "completed");
     assert!(row.ended_at.is_some());
+}
+
+#[tokio::test]
+async fn acp_lifecycle_child_env_is_isolated_for_generic_profiles() {
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+
+    for profile in ["custom", "pi", "opencode"] {
+        assert_child_env_is_isolated_for_profile(
+            pool.clone(),
+            &owner_id,
+            &agent_id,
+            cwd.path(),
+            profile,
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

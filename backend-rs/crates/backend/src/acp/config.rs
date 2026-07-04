@@ -68,6 +68,10 @@ pub enum AcpRuntimeProfile {
     Codex,
     /// The `claude` CLI profile.
     Claude,
+    /// The Pi Agent ACP adapter profile.
+    Pi,
+    /// The OpenCode ACP server profile.
+    Opencode,
 }
 
 impl AcpRuntimeProfile {
@@ -77,6 +81,8 @@ impl AcpRuntimeProfile {
             AcpRuntimeProfile::Custom => "custom",
             AcpRuntimeProfile::Codex => "codex",
             AcpRuntimeProfile::Claude => "claude",
+            AcpRuntimeProfile::Pi => "pi",
+            AcpRuntimeProfile::Opencode => "opencode",
         }
     }
 }
@@ -223,8 +229,10 @@ fn normalize_profile(value: Option<&Value>) -> Result<AcpRuntimeProfile, AcpConf
             "custom" => Ok(AcpRuntimeProfile::Custom),
             "codex" => Ok(AcpRuntimeProfile::Codex),
             "claude" => Ok(AcpRuntimeProfile::Claude),
+            "pi" => Ok(AcpRuntimeProfile::Pi),
+            "opencode" => Ok(AcpRuntimeProfile::Opencode),
             _ => Err(invalid(
-                "ACP runtime profile must be custom, codex, or claude",
+                "ACP runtime profile must be custom, codex, claude, pi, or opencode",
             )),
         },
         Some(_) => Err(invalid("ACP runtime profile must be a string")),

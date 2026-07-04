@@ -51,7 +51,7 @@ const schema = z.object({
   description: z.string().optional(),
   system_prompt: z.string().min(1, 'Required'),
   runtime_kind: z.enum(['llm_chat', 'acp']),
-  acp_profile: z.enum(['custom', 'codex', 'claude']),
+  acp_profile: z.enum(['custom', 'codex', 'claude', 'pi', 'opencode']),
   acp_command: z.string().optional(),
   acp_args: z.string().optional(),
   acp_env: z.string().optional(),
