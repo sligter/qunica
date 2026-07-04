@@ -32,6 +32,8 @@ const SERVER_ARTIFACTS = [
   "ag-swarmer-server-windows-x64.zip",
 ];
 
+const WINDOWS_PORTABLE_ARCHES = ["x64", "arm64"];
+
 const failures = [];
 const notes = [];
 
@@ -86,6 +88,9 @@ function checkWorkflowShape(text) {
   for (const artifact of SERVER_ARTIFACTS) {
     expect(text.includes(artifact), `missing server artifact ${artifact}`);
   }
+  for (const arch of WINDOWS_PORTABLE_ARCHES) {
+    expect(text.includes(`portable_arch: ${arch}`), `missing Windows portable desktop arch ${arch}`);
+  }
 
   expect(text.includes("tauri-apps/tauri-action@v1"), "desktop job must use tauri-apps/tauri-action@v1");
   expect(text.includes("releaseDraft: true"), "tauri-action must upload to a draft release");
@@ -94,6 +99,12 @@ function checkWorkflowShape(text) {
   expect(text.includes("updaterJsonPreferNsis: true"), "Windows updater JSON should prefer NSIS installers");
   expect(text.includes("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"), "workflow must reference TAURI_SIGNING_PRIVATE_KEY secret");
   expect(text.includes("TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"), "workflow must reference TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret");
+  expect(text.includes("Upload Windows portable desktop executable"), "workflow must upload Windows portable desktop executables");
+  expect(text.includes("contains(matrix.target, 'pc-windows-msvc')"), "Windows portable upload step must be limited to Windows desktop targets");
+  expect(text.includes('portable_name="ag-swarmer_${RELEASE_VERSION}_${PORTABLE_ARCH}-portable.exe"'), "Windows portable executable names must include version and arch");
+  expect(text.includes('source_exe="frontend/src-tauri/target/${RELEASE_TARGET}/release/ag-swarmer-desktop.exe"'), "Windows portable upload must copy the built desktop exe for the target triple");
+  expect(text.includes('pnpm --dir frontend exec tauri signer sign "../${portable_exe}"'), "Windows portable executables must be signed with the Tauri signer");
+  expect(text.includes('gh release upload "${TAG}" "${portable_exe}" "${portable_exe}.sig" --clobber'), "Windows portable executable and signature must be uploaded to the release");
   expect(text.includes('pnpm --dir frontend exec tauri signer sign "../${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}"'), "server archives must be signed with the Tauri signer from the frontend working directory");
   expect(!text.includes('> "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig"'), "server signing must not redirect signer stdout into .sig files");
   expect(text.includes('test -s "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig"'), "server signing must verify the signer-created .sig file exists");

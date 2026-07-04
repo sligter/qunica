@@ -263,9 +263,11 @@ jobs:
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             args: --target x86_64-pc-windows-msvc --bundles nsis
+            portable_arch: x64
           - target: aarch64-pc-windows-msvc
             runner: windows-latest
             args: --target aarch64-pc-windows-msvc --bundles nsis
+            portable_arch: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -366,6 +368,34 @@ jobs:
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
+
+      - name: Upload Windows portable desktop executable
+        if: ${{ needs.validate-release.outputs.publish == 'true' && contains(matrix.target, 'pc-windows-msvc') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.validate-release.outputs.tag }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+          PORTABLE_ARCH: ${{ matrix.portable_arch }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          portable_dir="dist/release-desktop"
+          portable_name="ag-swarmer_${RELEASE_VERSION}_${PORTABLE_ARCH}-portable.exe"
+          source_exe="frontend/src-tauri/target/${RELEASE_TARGET}/release/ag-swarmer-desktop.exe"
+          portable_exe="${portable_dir}/${portable_name}"
+
+          test -s "${source_exe}"
+          mkdir -p "${portable_dir}"
+          cp "${source_exe}" "${portable_exe}"
+
+          pnpm --dir frontend exec tauri signer sign "../${portable_exe}"
+          test -s "${portable_exe}.sig"
+
+          gh release upload "${TAG}" "${portable_exe}" "${portable_exe}.sig" --clobber
 
       - name: Build desktop only
         if: ${{ needs.validate-release.outputs.publish == 'false' }}
