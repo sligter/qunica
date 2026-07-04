@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ChevronLeft,
   Download,
   File,
@@ -12,6 +13,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -29,6 +31,7 @@ import {
   downloadGroupWorkspaceFile,
   useCommitGroupWorkspaceGit,
   useDeleteGroupWorkspaceFile,
+  useGenerateGroupWorkspaceGitCommitMessage,
   useGroupWorkspaceFilePreview,
   useGroupWorkspaceFiles,
   useGroupWorkspaceGitStatus,
@@ -125,6 +128,7 @@ export function GroupWorkspaceFilesPanel({
   const gitStage = useStageGroupWorkspaceGit(groupId)
   const gitUnstage = useUnstageGroupWorkspaceGit(groupId)
   const gitCommit = useCommitGroupWorkspaceGit(groupId)
+  const gitGenerateCommitMessage = useGenerateGroupWorkspaceGitCommitMessage(groupId)
   const gitPull = usePullGroupWorkspaceGit(groupId)
   const gitPush = usePushGroupWorkspaceGit(groupId)
   const navRequest = useFileNavStore((s) => s.request)
@@ -140,6 +144,7 @@ export function GroupWorkspaceFilesPanel({
     gitStage.isPending ||
     gitUnstage.isPending ||
     gitCommit.isPending ||
+    gitGenerateCommitMessage.isPending ||
     gitPull.isPending ||
     gitPush.isPending
   const canUseGit = hasGroupId && gitStatus.data?.available === true && !isGitBusy
@@ -220,6 +225,14 @@ export function GroupWorkspaceFilesPanel({
       .then(() => {
         if (clearCommit) setCommitMessage('')
       })
+      .catch((error: unknown) => setGitError(displayError(error)))
+  }
+
+  const generateCommitMessage = () => {
+    setGitError(null)
+    void gitGenerateCommitMessage
+      .mutateAsync()
+      .then((result) => setCommitMessage(result.message))
       .catch((error: unknown) => setGitError(displayError(error)))
   }
 
@@ -411,6 +424,7 @@ export function GroupWorkspaceFilesPanel({
             onClick={() => void gitStatus.refetch()}
             disabled={gitStatus.isFetching || !hasGroupId}
             aria-label="Refresh Git status"
+            title="Refresh Git status"
           >
             <RefreshCw className={cn('h-3.5 w-3.5', gitStatus.isFetching && 'animate-spin')} />
           </Button>
@@ -431,50 +445,54 @@ export function GroupWorkspaceFilesPanel({
         )}
         {gitStatus.data?.available === true && (
           <div className="space-y-2">
-            <div className="grid grid-cols-2 gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="h-7 justify-start gap-1 px-2 text-[11px]"
+                size="icon"
+                className="h-7 w-7 shrink-0"
                 onClick={() => runGit(gitStage.mutateAsync({ paths: [] }))}
                 disabled={!canUseGit || gitFiles.length === 0}
+                aria-label="Stage all changes"
+                title="Stage all changes"
               >
-                <Plus className="h-3 w-3" />
-                Stage all
+                <Plus className="h-3.5 w-3.5" />
               </Button>
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="h-7 justify-start gap-1 px-2 text-[11px]"
+                size="icon"
+                className="h-7 w-7 shrink-0"
                 onClick={() => runGit(gitUnstage.mutateAsync({ paths: [] }))}
                 disabled={!canUseGit || !gitFiles.some((file) => file.staged)}
+                aria-label="Unstage all changes"
+                title="Unstage all changes"
               >
-                <Minus className="h-3 w-3" />
-                Unstage all
+                <Minus className="h-3.5 w-3.5" />
               </Button>
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="h-7 justify-start gap-1 px-2 text-[11px]"
+                size="icon"
+                className="h-7 w-7 shrink-0"
                 onClick={() => runGit(gitPull.mutateAsync({}))}
                 disabled={!canUseGit}
+                aria-label="Pull Git changes"
+                title="Pull Git changes"
               >
-                <ArrowDown className="h-3 w-3" />
-                Pull
+                <ArrowDown className="h-3.5 w-3.5" />
               </Button>
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="h-7 justify-start gap-1 px-2 text-[11px]"
+                size="icon"
+                className="h-7 w-7 shrink-0"
                 onClick={() => runGit(gitPush.mutateAsync({}))}
                 disabled={!canUseGit}
+                aria-label="Push Git changes"
+                title="Push Git changes"
               >
-                <ArrowUp className="h-3 w-3" />
-                Push
+                <ArrowUp className="h-3.5 w-3.5" />
               </Button>
             </div>
 
@@ -526,7 +544,7 @@ export function GroupWorkspaceFilesPanel({
             )}
 
             <form
-              className="flex gap-1"
+              className="flex items-center gap-1"
               onSubmit={(event) => {
                 event.preventDefault()
                 runGit(gitCommit.mutateAsync({ message: commitMessage.trim() }), true)
@@ -536,16 +554,36 @@ export function GroupWorkspaceFilesPanel({
                 value={commitMessage}
                 onChange={(event) => setCommitMessage(event.target.value)}
                 placeholder="Commit message"
-                className="h-8 text-xs"
+                className="h-8 min-w-0 text-xs"
                 disabled={!canUseGit}
+                aria-label="Commit message"
               />
               <Button
-                type="submit"
-                size="sm"
-                className="h-8 shrink-0 px-2 text-xs"
-                disabled={!canUseGit || !commitMessage.trim()}
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={generateCommitMessage}
+                disabled={!canUseGit}
+                aria-label="Generate commit message"
+                title="Generate commit message"
               >
-                Commit
+                <Sparkles
+                  className={cn(
+                    'h-3.5 w-3.5',
+                    gitGenerateCommitMessage.isPending && 'animate-pulse',
+                  )}
+                />
+              </Button>
+              <Button
+                type="submit"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                disabled={!canUseGit || !commitMessage.trim()}
+                aria-label="Commit staged changes"
+                title="Commit staged changes"
+              >
+                <Check className="h-3.5 w-3.5" />
               </Button>
             </form>
           </div>

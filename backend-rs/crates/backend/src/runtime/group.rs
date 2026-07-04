@@ -35,8 +35,8 @@ use uuid::Uuid;
 
 use crate::acp::{normalize_acp_runtime, run_acp_agent_stream, AcpEventKind, AcpRunRequest};
 use crate::llm::{
-    AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider, ToolCall, ToolDefinition,
+    build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
+    ToolCall, ToolDefinition,
 };
 use crate::runtime::agent_as_tool::{
     resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, CallerAgent, AGENT_AS_TOOL_NAME,
@@ -603,15 +603,6 @@ struct InvocationContext {
     tools: Vec<ToolDefinition>,
     executor: ToolExecutor,
     workspace_root: Option<PathBuf>,
-}
-
-/// Resolved LLM provider connection settings.
-struct ProviderConfig {
-    kind: String,
-    base_url: Option<String>,
-    api_key: String,
-    default_model: String,
-    reasoning_passback: bool,
 }
 
 enum AgentRunResult {
@@ -2015,33 +2006,6 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
         default_model,
         reasoning_passback: reasoning_passback != 0,
     })
-}
-
-fn build_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let base_url = cfg.base_url.clone().unwrap_or_default();
-    let provider: Box<dyn LlmProvider> = match cfg.kind.as_str() {
-        "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
-        | "openrouter" => Box::new(OpenAiCompatibleProvider::new(base_url, cfg.api_key.clone())),
-        "anthropic" | "anthropic-compatible" | "anthropic_compatible" => {
-            Box::new(AnthropicProvider::new(base_url, cfg.api_key.clone()))
-        }
-        "gemini" | "google" => Box::new(GeminiProvider::new(base_url, cfg.api_key.clone())),
-        other => anyhow::bail!("unsupported provider kind: {other}"),
-    };
-    Ok(provider)
-}
-
-fn model_from_config(model_config_json: &Option<String>, default_model: &str) -> String {
-    model_config_json
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        .and_then(|value| {
-            value
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| default_model.to_string())
 }
 
 async fn build_messages(

@@ -27,6 +27,15 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 
+/// Resolved LLM provider connection settings.
+pub struct ProviderConfig {
+    pub kind: String,
+    pub base_url: Option<String>,
+    pub api_key: String,
+    pub default_model: String,
+    pub reasoning_passback: bool,
+}
+
 /// A streaming chat completion provider.
 ///
 /// Implementors issue a streaming HTTP request to a specific vendor API and
@@ -36,6 +45,33 @@ use tokio::sync::mpsc::{Receiver, Sender};
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>>;
+}
+
+pub fn build_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
+    let base_url = cfg.base_url.clone().unwrap_or_default();
+    let provider: Box<dyn LlmProvider> = match cfg.kind.as_str() {
+        "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
+        | "openrouter" => Box::new(OpenAiCompatibleProvider::new(base_url, cfg.api_key.clone())),
+        "anthropic" | "anthropic-compatible" | "anthropic_compatible" => {
+            Box::new(AnthropicProvider::new(base_url, cfg.api_key.clone()))
+        }
+        "gemini" | "google" => Box::new(GeminiProvider::new(base_url, cfg.api_key.clone())),
+        other => anyhow::bail!("unsupported provider kind: {other}"),
+    };
+    Ok(provider)
+}
+
+pub fn model_from_config(model_config_json: &Option<String>, default_model: &str) -> String {
+    model_config_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| default_model.to_string())
 }
 
 /// Accumulates the fragments of a single streamed tool call.

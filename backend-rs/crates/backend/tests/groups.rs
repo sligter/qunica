@@ -1,7 +1,7 @@
 use ag_swarmer_backend::api::{router_with_state_for_tests, AppState};
 use axum::{
     body::Body,
-    http::{HeaderMap, Request, StatusCode},
+    http::{header, HeaderMap, Request, StatusCode},
     Router,
 };
 use serde_json::{json, Value};
@@ -192,6 +192,53 @@ async fn create_agent(app: &Router, token: &str, workspace_id: &str, name: &str)
     agent["id"].as_str().unwrap().to_string()
 }
 
+async fn create_llm_provider(app: &Router, token: &str, base_url: &str) -> String {
+    let (status, provider) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers",
+            token,
+            json!({
+                "name": "Fake",
+                "kind": "openai-compatible",
+                "base_url": base_url,
+                "api_key": "test-key",
+                "default_model": "test-model"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    provider["id"].as_str().unwrap().to_string()
+}
+
+async fn create_llm_agent(
+    app: &Router,
+    token: &str,
+    workspace_id: &str,
+    provider_id: &str,
+    name: &str,
+) -> String {
+    let (status, agent) = send(
+        app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            token,
+            json!({
+                "name": name,
+                "workspace_id": workspace_id,
+                "runtime_kind": "llm_chat",
+                "llm_provider_id": provider_id
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    agent["id"].as_str().unwrap().to_string()
+}
+
 async fn create_group_with_initial_agents(
     app: &Router,
     token: &str,
@@ -308,6 +355,19 @@ fn init_git_repo(root: &Path) {
     std::fs::write(root.join("tracked.txt"), b"initial").unwrap();
     run_git(root, &["add", "tracked.txt"]);
     run_git(root, &["commit", "-m", "initial"]);
+}
+
+async fn fake_provider(body: String) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().fallback(move || {
+        let body = body.clone();
+        async move { ([(header::CONTENT_TYPE, "text/event-stream")], body) }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
 }
 
 fn git_status_file<'a>(status: &'a Value, path: &str) -> &'a Value {
@@ -2475,6 +2535,107 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     assert_eq!(committed["available"], true);
     assert_eq!(committed["clean"], true);
     assert_eq!(committed["files"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn workspace_git_commit_message_generates_from_staged_diff() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-ai-message@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let provider_body = format!(
+        "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": "```\n\"Update tracked file\"\n```"}}]})
+    );
+    let provider = create_llm_provider(&app, &token, &fake_provider(provider_body).await).await;
+    let agent = create_llm_agent(&app, &token, &workspace, &provider, "Committer").await;
+    let group =
+        create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[agent.as_str()]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), b"changed").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "POST",
+            &workspace_git_url(group_id, "commit-message"),
+            &token,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["message"], "Update tracked file");
+}
+
+#[tokio::test]
+async fn workspace_git_commit_message_requires_staged_changes() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-ai-no-staged@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "POST",
+            &workspace_git_url(group_id, "commit-message"),
+            &token,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("stage changes"));
+}
+
+#[tokio::test]
+async fn workspace_git_commit_message_requires_active_provider() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-ai-no-provider@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let agent = create_agent(&app, &token, &workspace, "No Provider").await;
+    let group =
+        create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[agent.as_str()]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), b"changed").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "POST",
+            &workspace_git_url(group_id, "commit-message"),
+            &token,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("LLM provider"));
 }
 
 #[tokio::test]

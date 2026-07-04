@@ -520,6 +520,10 @@ export interface GroupWorkspaceGitCommitRequest {
   message: string
 }
 
+export interface GroupWorkspaceGitCommitMessageResponse {
+  message: string
+}
+
 export interface GroupNoteRead {
   id: string
   group_id: string

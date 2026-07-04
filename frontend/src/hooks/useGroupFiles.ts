@@ -6,6 +6,7 @@ import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
 import type {
   GroupFileRead,
+  GroupWorkspaceGitCommitMessageResponse,
   GroupWorkspaceGitCommitRequest,
   GroupWorkspaceGitPathsRequest,
   GroupWorkspaceGitStatus,
@@ -271,6 +272,22 @@ export function useUnstageGroupWorkspaceGit(groupId: string | undefined) {
 
 export function useCommitGroupWorkspaceGit(groupId: string | undefined) {
   return useWorkspaceGitMutation<GroupWorkspaceGitCommitRequest>(groupId, 'commit')
+}
+
+export function useGenerateGroupWorkspaceGitCommitMessage(groupId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: () => {
+      if (!groupId) throw new Error('Group is required for workspace Git operations')
+      return fetchJson<GroupWorkspaceGitCommitMessageResponse>(
+        `/groups/${groupId}/workspace-git/commit-message`,
+        {
+          token,
+          method: 'POST',
+        },
+      )
+    },
+  })
 }
 
 export function usePullGroupWorkspaceGit(groupId: string | undefined) {

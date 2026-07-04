@@ -186,6 +186,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(groups::unstage_group_workspace_git_paths),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-git/commit-message",
+            axum::routing::post(groups::generate_group_workspace_git_commit_message),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-git/commit",
             axum::routing::post(groups::commit_group_workspace_git),
         )

@@ -18,6 +18,9 @@ use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::git::{self as workspace_git, WorkspaceGitStatus};
+use crate::llm::{
+    build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
+};
 use crate::tools::{resolve_workspace_path, ToolError};
 
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
@@ -45,6 +48,8 @@ const MAX_WORKSPACE_PREVIEW_BYTES: usize = 64 * 1024;
 const TEXT_WORKSPACE_PREVIEW_CHARS: usize = 20_000;
 const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
+const MAX_COMMIT_DIFF_PROMPT_CHARS: usize = 20_000;
+const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -176,6 +181,11 @@ pub struct GroupWorkspaceGitPathsRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct GroupWorkspaceGitCommitRequest {
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupWorkspaceGitCommitMessageResponse {
     message: String,
 }
 
@@ -376,6 +386,16 @@ struct GroupNoteWorkspaceRow {
     backend_type: String,
     local_path: Option<String>,
     status: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CommitMessageProviderRow {
+    kind: String,
+    base_url: Option<String>,
+    api_key: String,
+    default_model: String,
+    reasoning_passback: i64,
+    model_config_json: Option<String>,
 }
 
 impl From<GroupRow> for GroupResponse {
@@ -1125,6 +1145,68 @@ pub async fn unstage_group_workspace_git_paths(
         .await
         .map_err(workspace_git_error)?;
     Ok(Json(workspace_git::status(&root).await))
+}
+
+pub async fn generate_group_workspace_git_commit_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<GroupWorkspaceGitCommitMessageResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let diff = workspace_git::staged_diff(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    if diff.trim().is_empty() {
+        return Err(ApiError::invalid_input(
+            "stage changes before generating a commit message",
+        ));
+    }
+
+    let provider_row = load_group_commit_message_provider(state.db.pool(), &group_id, &owner_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::invalid_input("no active LLM provider is configured for this group")
+        })?;
+    let provider_config = ProviderConfig {
+        kind: provider_row.kind,
+        base_url: provider_row.base_url,
+        api_key: provider_row.api_key,
+        default_model: provider_row.default_model,
+        reasoning_passback: provider_row.reasoning_passback != 0,
+    };
+    let provider = build_provider(&provider_config).map_err(|err| {
+        ApiError::invalid_input(format!("commit message generation failed: {err}"))
+    })?;
+    let model = model_from_config(
+        &provider_row.model_config_json,
+        &provider_config.default_model,
+    );
+    let request = ChatRequest {
+        model,
+        messages: commit_message_prompt(&diff),
+        temperature: Some(0.2),
+        reasoning_passback: provider_config.reasoning_passback,
+        tools: Vec::new(),
+    };
+    let mut deltas = provider.stream(request).await.map_err(|err| {
+        ApiError::invalid_input(format!("commit message generation failed: {err}"))
+    })?;
+
+    let mut raw = String::new();
+    while let Some(delta) = deltas.recv().await {
+        match delta {
+            ChatDelta::Token(text) => raw.push_str(&text),
+            ChatDelta::Done => break,
+            ChatDelta::Reasoning(_) | ChatDelta::ToolCall(_) | ChatDelta::Usage(_) => {}
+        }
+    }
+
+    let message = clean_generated_commit_message(&raw)?;
+    Ok(Json(GroupWorkspaceGitCommitMessageResponse { message }))
 }
 
 pub async fn commit_group_workspace_git(
@@ -2117,6 +2199,98 @@ fn validate_git_paths(root: &FsPath, raw_paths: &[String]) -> Result<Vec<String>
 
 fn workspace_git_error(err: workspace_git::GitOperationError) -> ApiError {
     ApiError::invalid_input(err.to_string())
+}
+
+async fn load_group_commit_message_provider(
+    pool: &SqlitePool,
+    group_id: &str,
+    owner_id: &str,
+) -> Result<Option<CommitMessageProviderRow>, ApiError> {
+    sqlx::query_as(
+        "SELECT p.kind, p.base_url, p.api_key, p.default_model, p.reasoning_passback, \
+                a.model_config_json \
+         FROM group_agents ga \
+         JOIN agents a ON a.id = ga.agent_id \
+         JOIN llm_providers p ON p.id = a.provider_id \
+         WHERE ga.group_id = ? \
+           AND ga.status = 'active' \
+           AND a.status = 'active' \
+           AND a.owner_id = ? \
+           AND a.runtime_kind = 'llm_chat' \
+           AND a.provider_id IS NOT NULL \
+           AND p.owner_id = ? \
+           AND p.status = 'active' \
+         ORDER BY COALESCE(NULLIF(ga.speaking_order, 0), 9223372036854775807) ASC, \
+                  ga.joined_at ASC, a.id ASC \
+         LIMIT 1",
+    )
+    .bind(group_id)
+    .bind(owner_id)
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))
+}
+
+fn commit_message_prompt(diff: &str) -> Vec<ChatMessage> {
+    let mut prompt_diff: String = diff.chars().take(MAX_COMMIT_DIFF_PROMPT_CHARS).collect();
+    if diff.chars().count() > MAX_COMMIT_DIFF_PROMPT_CHARS {
+        prompt_diff.push_str("\n[diff truncated]");
+    }
+
+    vec![
+        ChatMessage::text(
+            "system",
+            "Write one concise Git commit subject for the staged diff. Return only the subject line. No markdown, quotes, bullets, or prefixes. Use imperative mood when natural. Keep it under 72 characters.",
+        ),
+        ChatMessage::text("user", prompt_diff),
+    ]
+}
+
+fn clean_generated_commit_message(raw: &str) -> Result<String, ApiError> {
+    let without_fences = raw
+        .lines()
+        .filter(|line| !line.trim().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for line in without_fences.lines() {
+        let mut message = line.trim();
+        if message.is_empty() {
+            continue;
+        }
+        message = message
+            .strip_prefix("- ")
+            .or_else(|| message.strip_prefix("* "))
+            .unwrap_or(message)
+            .trim();
+
+        let mut message = strip_wrapping_quotes(message).trim().to_string();
+        if message.chars().count() > MAX_COMMIT_SUBJECT_CHARS {
+            message = message.chars().take(MAX_COMMIT_SUBJECT_CHARS).collect();
+        }
+        if !message.is_empty() {
+            return Ok(message);
+        }
+    }
+
+    Err(ApiError::invalid_input(
+        "provider returned an empty commit message",
+    ))
+}
+
+fn strip_wrapping_quotes(message: &str) -> &str {
+    let trimmed = message.trim();
+    if trimmed.len() < 2 {
+        return trimmed;
+    }
+    let pairs = [('"', '"'), ('\'', '\''), ('`', '`')];
+    for (open, close) in pairs {
+        if trimmed.starts_with(open) && trimmed.ends_with(close) {
+            return &trimmed[open.len_utf8()..trimmed.len() - close.len_utf8()];
+        }
+    }
+    trimmed
 }
 
 fn validate_git_commit_message(raw: &str) -> Result<String, ApiError> {

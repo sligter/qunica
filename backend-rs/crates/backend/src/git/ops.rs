@@ -65,6 +65,34 @@ pub async fn commit(root: &Path, message: String) -> Result<(), GitOperationErro
     run_git_or_error(root, &args, "git commit failed").await
 }
 
+pub async fn staged_diff(root: &Path) -> Result<String, GitOperationError> {
+    let output = run_git_command(
+        root,
+        &git_args(&[
+            "--no-optional-locks",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--find-renames",
+            "--stat",
+            "--patch",
+        ]),
+    )
+    .await
+    .map_err(|err| GitOperationError {
+        message: git_command_error_message(err),
+    })?;
+    if output.success {
+        Ok(output.stdout)
+    } else {
+        Err(GitOperationError {
+            message: format_git_failure("git staged diff failed", &output),
+        })
+    }
+}
+
 pub async fn pull(root: &Path) -> Result<(), GitOperationError> {
     run_git_or_error(root, &git_args(&["pull", "--ff-only"]), "git pull failed").await
 }
