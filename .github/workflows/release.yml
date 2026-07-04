@@ -212,12 +212,19 @@ jobs:
               exit 1
             fi
           else
-            args=(release create "${TAG}" --draft --target "${TAG_COMMIT}" --title "AG Swarmer ${TAG}" --notes "Automated release draft for ${TAG}.")
-            if [ "${PRERELEASE}" = "true" ]; then
-              args+=(--prerelease)
-            fi
-            gh "${args[@]}"
-            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1)"
+            release_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${TAG}" \
+              -f target_commitish="${TAG_COMMIT}" \
+              -f name="AG Swarmer ${TAG}" \
+              -f body="Automated release draft for ${TAG}." \
+              -F draft=true \
+              -F prerelease="${PRERELEASE}" \
+              --jq '.id')"
+          fi
+
+          if [ -z "${release_id}" ]; then
+            echo "Unable to resolve release id for ${TAG}." >&2
+            exit 1
           fi
 
           asset_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --paginate --jq '.[].id' || true)"
