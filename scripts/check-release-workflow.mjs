@@ -108,7 +108,11 @@ function checkWorkflowShape(text) {
 
   const desktopJob = jobBlock(text, "desktop");
   const serverJob = jobBlock(text, "server");
+  const createDraftReleaseJob = jobBlock(text, "create-draft-release");
   const publishJob = jobBlock(text, "publish-release");
+  expect(createDraftReleaseJob.includes("actions/checkout@v4"), "create draft release job must checkout before using gh release create");
+  expect(createDraftReleaseJob.includes("ref: ${{ needs.validate-release.outputs.tag_commit }}"), "create draft release job must checkout the validated tag commit");
+  expect(text.includes('if [[ "${tag}" == *-* ]]; then'), "semver prerelease tags such as alpha and beta must publish as prereleases");
   expect(desktopJob.includes("needs: [validate-release, create-draft-release]"), "desktop job must wait for validation and draft creation");
   expect(serverJob.includes("needs: [validate-release, create-draft-release]"), "server job must wait for validation and draft creation");
   expect(desktopJob.includes("ref: ${{ needs.validate-release.outputs.tag_commit }}"), "desktop job must build the validated tag commit");

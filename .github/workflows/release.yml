@@ -169,7 +169,7 @@ jobs:
           fi
 
           prerelease="false"
-          if [[ "${tag}" == *-rc* ]]; then
+          if [[ "${tag}" == *-* ]]; then
             prerelease="true"
           fi
 
@@ -189,6 +189,10 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release.outputs.tag_commit }}
+
       - name: Create or validate draft release
         id: release
         env:
