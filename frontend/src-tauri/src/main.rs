@@ -396,7 +396,11 @@ fn start_in_process_backend(
     log_dir: PathBuf,
 ) -> Result<oneshot::Sender<()>, String> {
     let config = AppConfig::for_desktop_app_data(app_data_dir, BACKEND_PORT)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| {
+            let message = err.to_string();
+            append_launcher_log(&log_dir, format!("failed to build backend config: {message}"));
+            message
+        })?;
     if let Err(err) = telemetry::setup_tracing(&config) {
         append_launcher_log(
             &log_dir,
@@ -410,7 +414,14 @@ fn start_in_process_backend(
         let (listener, addr) = server::bind_listener(&server_config).await?;
         anyhow::Ok((state, listener, addr))
     })
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| {
+        let message = format!("{err:#}");
+        append_launcher_log(
+            &log_dir,
+            format!("failed to start in-process backend: {message}"),
+        );
+        message
+    })?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let backend_log_dir = log_dir.clone();
     tauri::async_runtime::spawn(async move {
