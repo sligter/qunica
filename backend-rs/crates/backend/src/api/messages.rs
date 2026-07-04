@@ -228,6 +228,82 @@ pub async fn clear(
     Ok(Json(ClearMessagesResponse { cleared_count }))
 }
 
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, message_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let message_id = validate_uuid(&message_id, "message id")?;
+
+    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+
+    let _guard = state.write_lock.lock().await;
+    let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start message delete transaction"))?;
+
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT thread_id FROM messages \
+         WHERE id = ? AND group_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(&message_id)
+    .bind(&group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::not_found("message not found"))?;
+    let thread_id = row.0;
+
+    let changed = sqlx::query(
+        "UPDATE messages \
+         SET status = 'cleared' \
+         WHERE id = ? AND group_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(&message_id)
+    .bind(&group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to delete message"))?
+    .rows_affected();
+    if changed == 0 {
+        return Err(ApiError::not_found("message not found"));
+    }
+
+    sqlx::query(
+        "UPDATE threads \
+         SET status = 'cleared', updated_at = ? \
+         WHERE id = ? \
+           AND group_id = ? \
+           AND agent_id IS NULL \
+           AND status IN ('active', 'running', 'paused', 'completed', 'failed', 'created') \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM messages \
+             WHERE messages.thread_id = threads.id \
+               AND messages.group_id = ? \
+               AND messages.status IN ('visible', 'interrupted') \
+           )",
+    )
+    .bind(&now)
+    .bind(&thread_id)
+    .bind(&group_id)
+    .bind(&group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to update message thread"))?;
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit message delete"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn send(
     State(state): State<AppState>,
     headers: HeaderMap,

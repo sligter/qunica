@@ -210,6 +210,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(messages::clear),
         )
         .route(
+            "/api/v2/groups/:group_id/messages/:message_id",
+            axum::routing::delete(messages::delete),
+        )
+        .route(
             "/api/v2/groups/:group_id/messages/stream",
             axum::routing::post(messages::stream),
         )

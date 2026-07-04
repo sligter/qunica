@@ -18,6 +18,17 @@ function emptyMessagePages(): InfiniteData<Message[], string | undefined> {
   }
 }
 
+function removeMessageFromPages(
+  data: InfiniteData<Message[], string | undefined> | undefined,
+  messageId: string,
+): InfiniteData<Message[], string | undefined> | undefined {
+  if (!data) return data
+  return {
+    ...data,
+    pages: data.pages.map((page) => page.filter((message) => message.id !== messageId)),
+  }
+}
+
 export function useClearGroupMessages(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
@@ -37,6 +48,27 @@ export function useClearGroupMessages(groupId: string | undefined) {
         // refetch so the avatar ring/tooltip drop the stale baseline immediately.
         void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
       }
+    },
+  })
+}
+
+export function useDeleteGroupMessage(groupId: string) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  const removeMessage = useMessageStore((s) => s.removeMessage)
+  return useMutation({
+    mutationFn: ({ messageId }: { messageId: string }) =>
+      fetchJson<void>(`/groups/${groupId}/messages/${messageId}`, {
+        method: 'DELETE',
+        token,
+      }),
+    onSuccess: (_, variables) => {
+      qc.setQueryData<InfiniteData<Message[], string | undefined>>(
+        ['groups', groupId, 'messages'],
+        (current) => removeMessageFromPages(current, variables.messageId),
+      )
+      removeMessage(groupId, variables.messageId)
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
     },
   })
 }

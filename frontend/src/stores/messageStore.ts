@@ -163,6 +163,7 @@ interface MessageState {
   setHistory: (groupId: string, messages: Message[]) => void
   prependHistory: (groupId: string, messages: Message[]) => void
   clearGroupMessages: (groupId: string) => void
+  removeMessage: (groupId: string, messageId: string) => void
   appendMessage: (groupId: string, message: Message) => void
   patchInFlight: (groupId: string, agentId: string, delta: string, streamId?: string | null) => void
   finalizeInFlight: (groupId: string, message: Message) => void
@@ -373,6 +374,41 @@ export const useMessageStore = create<MessageState>((set) => ({
       },
       streamRunOrderByGroup: { ...s.streamRunOrderByGroup, [groupId]: [] },
     })),
+
+  removeMessage: (groupId, messageId) =>
+    set((s) => {
+      const messages = s.byGroup[groupId] ?? []
+      const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
+      const runId = groupRunIdsByMessage[messageId]
+      const nextState: Partial<MessageState> = {
+        byGroup: {
+          ...s.byGroup,
+          [groupId]: messages.filter((message) => message.id !== messageId),
+        },
+      }
+
+      if (!runId) return nextState
+
+      const nextRunIdsByMessage = { ...groupRunIdsByMessage }
+      delete nextRunIdsByMessage[messageId]
+
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const nextRuns = { ...groupRuns }
+      delete nextRuns[runId]
+
+      return {
+        ...nextState,
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: nextRuns },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: nextRunIdsByMessage,
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: (s.streamRunOrderByGroup[groupId] ?? []).filter((id) => id !== runId),
+        },
+      }
+    }),
 
   appendMessage: (groupId, message) =>
     set((s) => ({

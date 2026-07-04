@@ -98,6 +98,7 @@ export function MessageItem({
           )}
           {message.content && !showStreamingDot && (
             <MessageActions
+              messageId={message.id}
               content={message.content}
               senderName={senderName}
               timeLabel={time}

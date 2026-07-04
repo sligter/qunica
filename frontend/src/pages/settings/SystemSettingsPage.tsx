@@ -8,7 +8,7 @@ import {
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
-import type { TavilySearchDepth } from '@/types/api'
+import type { Appearance, TavilySearchDepth } from '@/types/api'
 import {
   composePickedPath,
   pickFolder,
@@ -18,12 +18,18 @@ import {
 } from '@/lib/folderPicker'
 
 const PICKER_SCOPE = 'group-workspace-root'
+const APPEARANCE_OPTIONS: Array<{ value: Appearance; label: string }> = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'system', label: 'System' },
+]
 
 export function SystemSettingsPage() {
   const settings = useSystemSettings()
   const update = useUpdateSystemSettings()
   const fallbackInputRef = useRef<HTMLInputElement | null>(null)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
+  const [appearance, setAppearance] = useState<Appearance>('system')
   const [root, setRoot] = useState('')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [tavilySearchUrl, setTavilySearchUrl] = useState('')
@@ -33,9 +39,11 @@ export function SystemSettingsPage() {
   const [tavilyIncludeRawContent, setTavilyIncludeRawContent] = useState(false)
   const [clearTavilyKey, setClearTavilyKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [appearanceError, setAppearanceError] = useState<string | null>(null)
 
   useEffect(() => {
     if (settings.data) {
+      setAppearance(settings.data.appearance)
       setRoot(settings.data.group_workspace_root ?? '')
       setTavilyApiKey('')
       setTavilySearchUrl(settings.data.tavily_search_url ?? 'https://api.tavily.com/search')
@@ -46,6 +54,22 @@ export function SystemSettingsPage() {
       setClearTavilyKey(false)
     }
   }, [settings.data])
+
+  const errorMessage = (err: unknown, fallback: string): string =>
+    err instanceof ApiError ? err.message : fallback
+
+  const onAppearanceChange = async (next: Appearance) => {
+    if (next === appearance || update.isPending) return
+    const previous = appearance
+    setAppearance(next)
+    setAppearanceError(null)
+    try {
+      await update.mutateAsync({ appearance: next })
+    } catch (err) {
+      setAppearance(previous)
+      setAppearanceError(errorMessage(err, 'Appearance update failed'))
+    }
+  }
 
   const onRootChange = (next: string) => {
     setRoot(next)
@@ -111,7 +135,7 @@ export function SystemSettingsPage() {
       setClearTavilyKey(false)
       if (value) saveRememberedPrefix(PICKER_SCOPE, value)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Network error')
+      setError(errorMessage(err, 'Network error'))
     }
   }
 
@@ -121,7 +145,7 @@ export function SystemSettingsPage() {
       await update.mutateAsync({ group_workspace_root: null })
       setRoot('')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Network error')
+      setError(errorMessage(err, 'Network error'))
     }
   }
 
@@ -132,6 +156,41 @@ export function SystemSettingsPage() {
       </header>
       <main className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-2xl space-y-6">
+          <section className="rounded-lg border border-border bg-card p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-sm font-semibold">Appearance</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Choose the app theme for this account.
+                </p>
+              </div>
+              <div
+                className="inline-flex rounded-md border border-border bg-background p-1"
+                role="radiogroup"
+                aria-label="Appearance"
+              >
+                {APPEARANCE_OPTIONS.map((option) => (
+                  <Button
+                    key={option.value}
+                    type="button"
+                    variant={appearance === option.value ? 'default' : 'ghost'}
+                    size="sm"
+                    className="min-w-20"
+                    role="radio"
+                    aria-checked={appearance === option.value}
+                    disabled={update.isPending || settings.isLoading}
+                    onClick={() => void onAppearanceChange(option.value)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            {appearanceError ? (
+              <p className="mt-3 text-sm text-destructive">{appearanceError}</p>
+            ) : null}
+          </section>
+
           <section className="rounded-lg border border-border bg-card p-5">
             <h2 className="text-sm font-semibold">Group workspace root</h2>
             <div className="mt-4 space-y-2">
@@ -165,7 +224,7 @@ export function SystemSettingsPage() {
               />
             </div>
 
-            {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
+            {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
 
             <div className="mt-4 flex items-center gap-2">
               <Button onClick={onSave} disabled={update.isPending}>
@@ -219,7 +278,7 @@ export function SystemSettingsPage() {
                     Clear key
                   </Button>
                 </div>
-                {clearTavilyKey ? <p className="text-xs text-amber-700">The saved API key will be cleared on save.</p> : null}
+                {clearTavilyKey ? <p className="text-xs text-warning-foreground">The saved API key will be cleared on save.</p> : null}
               </div>
 
               <div className="space-y-2">

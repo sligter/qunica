@@ -312,6 +312,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     let (status, defaults) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(defaults["owner_id"].as_str().is_some());
+    assert_eq!(defaults["appearance"], "system");
     assert_eq!(defaults["group_workspace_root"], Value::Null);
     assert_eq!(defaults["web_search_provider"], "tavily");
     assert_eq!(defaults["tavily_api_key_configured"], false);
@@ -338,6 +339,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             "/api/v2/settings/system",
             &token,
             json!({
+                "appearance": "dark",
                 "group_workspace_root": raw_root,
                 "web_search_provider": "tavily",
                 "tavily_api_key": "tvly-secret-value",
@@ -351,6 +353,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["appearance"], "dark");
     assert_eq!(updated["group_workspace_root"], expected_root);
     assert_eq!(updated["tavily_api_key_configured"], true);
     assert!(!updated.to_string().contains("tvly-secret-value"));
@@ -365,6 +368,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
 
     let (status, fetched) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["appearance"], "dark");
     assert_eq!(fetched["tavily_api_key_configured"], true);
     assert_eq!(fetched["tavily_search_depth"], "advanced");
     assert!(!fetched.to_string().contains("tvly-secret-value"));
@@ -376,6 +380,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             "/api/v2/settings/system",
             &token,
             json!({
+                "appearance": Value::Null,
                 "group_workspace_root": "",
                 "tavily_api_key": Value::Null,
                 "tavily_search_url": Value::Null,
@@ -388,6 +393,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(reset["appearance"], "system");
     assert_eq!(reset["group_workspace_root"], Value::Null);
     assert_eq!(reset["tavily_api_key_configured"], false);
     assert_eq!(reset["tavily_search_url"], "https://api.tavily.com/search");
@@ -432,6 +438,7 @@ async fn providers_settings_system_settings_validation_rejects_invalid_values() 
     let token = register_and_login(&app, "settings-validation@example.com").await;
 
     let invalid_cases = [
+        json!({"appearance": "sepia"}),
         json!({"web_search_provider": "other"}),
         json!({"tavily_search_depth": "deep"}),
         json!({"tavily_max_results": 0}),

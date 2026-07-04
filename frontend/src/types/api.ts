@@ -382,10 +382,12 @@ export interface ClearGroupMessagesResponse {
 
 export type WebSearchProvider = 'tavily'
 export type TavilySearchDepth = 'basic' | 'advanced'
+export type Appearance = 'light' | 'dark' | 'system'
 
 export interface SystemSettingsRead {
   id: string
   owner_id: string
+  appearance: Appearance
   group_workspace_root: string | null
   web_search_provider: WebSearchProvider
   tavily_api_key_configured: boolean
@@ -399,6 +401,7 @@ export interface SystemSettingsRead {
 }
 
 export interface SystemSettingsUpdate {
+  appearance?: Appearance | null
   group_workspace_root?: string | null
   web_search_provider?: WebSearchProvider | null
   tavily_api_key?: string | null

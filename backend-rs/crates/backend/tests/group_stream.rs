@@ -820,6 +820,7 @@ async fn messages_list_and_clear_reject_cross_owner_access() {
     let intruder_token = register_and_login(&app, "messages-intruder@example.com").await;
     let workspace = create_workspace(&app, &owner_token).await;
     let group = create_group(&app, &owner_token, &workspace, json!({})).await;
+    let message_id = uuid::Uuid::new_v4();
 
     let (status, body) = send(
         &app,
@@ -838,6 +839,18 @@ async fn messages_list_and_clear_reject_cross_owner_access() {
         authed_empty(
             "POST",
             &format!("/api/v2/groups/{group}/messages/clear"),
+            &intruder_token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "permission_denied");
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "DELETE",
+            &format!("/api/v2/groups/{group}/messages/{message_id}"),
             &intruder_token,
         ),
     )
@@ -1313,6 +1326,150 @@ async fn messages_clear_marks_visible_history_and_preserves_rows() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["cleared_count"].as_u64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn messages_delete_soft_deletes_visible_message_and_preserves_rows() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "messages-delete@example.com").await;
+    let owner = owner_id(&state, "messages-delete@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let other_group = create_group(&app, &token, &workspace, json!({"name": "Other"})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+    let other_thread = seed_thread(&state, &other_group, "active").await;
+    let agent_id = uuid::Uuid::new_v4().to_string();
+
+    let visible = seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "visible",
+        None,
+    )
+    .await;
+    let interrupted = seed_message(
+        &state,
+        &group,
+        &thread,
+        2,
+        "interrupted",
+        "agent",
+        Some(&agent_id),
+        "interrupted",
+        None,
+    )
+    .await;
+    let hidden = seed_message(
+        &state,
+        &group,
+        &thread,
+        3,
+        "cleared",
+        "user",
+        Some(&owner),
+        "already-cleared",
+        None,
+    )
+    .await;
+    let outside = seed_message(
+        &state,
+        &other_group,
+        &other_thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "outside",
+        None,
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "DELETE",
+            &format!("/api/v2/groups/{group}/messages/{visible}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+
+    let (status, body) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let contents: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, vec!["interrupted"]);
+
+    let visible_status: String = sqlx::query_scalar("SELECT status FROM messages WHERE id = ?")
+        .bind(&visible)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(visible_status, "cleared");
+    assert_eq!(message_count(&state, &group).await, 3);
+
+    for message_id in [&visible, &hidden, &outside] {
+        let (status, body) = send(
+            &app,
+            authed_empty(
+                "DELETE",
+                &format!("/api/v2/groups/{group}/messages/{message_id}"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "not_found");
+    }
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "active");
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "DELETE",
+            &format!("/api/v2/groups/{group}/messages/{interrupted}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+
+    let (status, body) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.as_array().unwrap().is_empty());
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "cleared");
 }
 
 #[tokio::test]

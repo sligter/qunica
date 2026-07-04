@@ -8,15 +8,46 @@
   --color-muted-foreground: hsl(240 3.8% 46.1%);
   --color-primary: hsl(217 91% 50%);
   --color-primary-foreground: hsl(0 0% 100%);
+  --color-secondary: hsl(240 4.8% 95.9%);
+  --color-secondary-foreground: hsl(240 5.9% 10%);
   --color-card: hsl(240 5% 98.5%);
   --color-card-hover: hsl(240 6% 95%);
   --color-border: hsl(240 5.9% 90%);
   --color-input: hsl(240 5.9% 90%);
   --color-ring: hsl(217 91% 50%);
+  --color-destructive: hsl(0 72% 51%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+  --color-warning: hsl(38 92% 92%);
+  --color-warning-foreground: hsl(32 95% 29%);
   --radius: 0.5rem;
 }
 
 @layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --color-background: hsl(220 14% 9%);
+    --color-foreground: hsl(220 20% 96%);
+    --color-muted: hsl(220 11% 17%);
+    --color-muted-foreground: hsl(220 9% 68%);
+    --color-primary: hsl(211 100% 62%);
+    --color-primary-foreground: hsl(220 24% 10%);
+    --color-secondary: hsl(220 11% 18%);
+    --color-secondary-foreground: hsl(220 20% 96%);
+    --color-card: hsl(220 13% 13%);
+    --color-card-hover: hsl(220 11% 18%);
+    --color-border: hsl(220 10% 24%);
+    --color-input: hsl(220 10% 24%);
+    --color-ring: hsl(211 100% 62%);
+    --color-destructive: hsl(0 72% 58%);
+    --color-destructive-foreground: hsl(0 0% 100%);
+    --color-warning: hsl(37 42% 20%);
+    --color-warning-foreground: hsl(39 90% 75%);
+  }
+
   body {
     font-family:
       -apple-system,

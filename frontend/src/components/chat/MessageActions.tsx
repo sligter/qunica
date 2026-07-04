@@ -1,4 +1,4 @@
-import { Check, Copy, Share2 } from 'lucide-react'
+import { Check, Copy, Share2, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -11,9 +11,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useGroups } from '@/hooks/useGroups'
-import { useSendGroupMessage } from '@/hooks/useGroupMessages'
+import { useDeleteGroupMessage, useSendGroupMessage } from '@/hooks/useGroupMessages'
+import { ApiError } from '@/lib/api-v2/client'
 
 interface MessageActionsProps {
+  messageId: string
   content: string
   senderName: string
   timeLabel: string
@@ -26,12 +28,20 @@ function shareText(senderName: string, timeLabel: string, content: string): stri
   return `${senderName} · ${timeLabel}\n\n${content}`.trim()
 }
 
-export function MessageActions({ content, senderName, timeLabel, groupId }: MessageActionsProps) {
+export function MessageActions({
+  messageId,
+  content,
+  senderName,
+  timeLabel,
+  groupId,
+}: MessageActionsProps) {
   const [copiedAction, setCopiedAction] = useState<CopiedAction>(null)
   const [shareOpen, setShareOpen] = useState(false)
   const [shareError, setShareError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const groups = useGroups()
   const sendGroupMessage = useSendGroupMessage()
+  const deleteGroupMessage = useDeleteGroupMessage(groupId)
   const shareContent = shareText(senderName, timeLabel, content)
   const targetGroups = groups.data?.filter((group) => group.id !== groupId) ?? []
 
@@ -51,29 +61,54 @@ export function MessageActions({ content, senderName, timeLabel, groupId }: Mess
     }
   }
 
+  const deleteMessage = async () => {
+    setDeleteError(null)
+    try {
+      await deleteGroupMessage.mutateAsync({ messageId })
+    } catch (error) {
+      setDeleteError(error instanceof ApiError ? error.message : 'Delete failed')
+    }
+  }
+
   return (
     <>
-      <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-          onClick={() => void copy('message', content)}
-          aria-label="Copy message"
-        >
-          {copiedAction === 'message' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-          onClick={() => setShareOpen(true)}
-          aria-label="Share message to group"
-        >
-          <Share2 className="h-3.5 w-3.5" />
-        </Button>
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={() => void copy('message', content)}
+            aria-label="Copy message"
+          >
+            {copiedAction === 'message' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={() => setShareOpen(true)}
+            aria-label="Share message to group"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+            disabled={deleteGroupMessage.isPending}
+            onClick={() => void deleteMessage()}
+            aria-label="Delete message"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        {deleteError ? (
+          <p className="max-w-44 text-right text-xs text-destructive">{deleteError}</p>
+        ) : null}
       </div>
 
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
@@ -107,7 +142,7 @@ export function MessageActions({ content, senderName, timeLabel, groupId }: Mess
             ))}
           </div>
 
-          {shareError ? <p className="text-sm text-red-600">{shareError}</p> : null}
+          {shareError ? <p className="text-sm text-destructive">{shareError}</p> : null}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setShareOpen(false)}>
