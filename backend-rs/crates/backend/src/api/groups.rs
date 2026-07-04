@@ -12,15 +12,12 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::{Path as FsPath, PathBuf},
-    process::{Command as StdCommand, Stdio},
-    time::Duration as StdDuration,
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
-use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
-use crate::process::tokio_command_no_window;
+use crate::git::{self as workspace_git, WorkspaceGitStatus};
 use crate::tools::{resolve_workspace_path, ToolError};
 
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
@@ -47,8 +44,6 @@ const UPLOADS_DIR: &str = "uploads";
 const MAX_WORKSPACE_PREVIEW_BYTES: usize = 64 * 1024;
 const TEXT_WORKSPACE_PREVIEW_CHARS: usize = 20_000;
 const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
-const MAX_GIT_OUTPUT_CHARS: usize = 8_000;
-const GIT_COMMAND_TIMEOUT_SECONDS: u64 = 120;
 const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
 
 #[derive(Debug, Deserialize)]
@@ -288,23 +283,6 @@ pub struct GroupWorkspaceFilePreviewResponse {
     truncated: bool,
     message: Option<String>,
     size: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GroupWorkspaceGitFileStatusResponse {
-    path: String,
-    status: String,
-    staged: bool,
-    unstaged: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GroupWorkspaceGitStatusResponse {
-    available: bool,
-    branch: Option<String>,
-    clean: bool,
-    files: Vec<GroupWorkspaceGitFileStatusResponse>,
-    message: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1104,13 +1082,13 @@ pub async fn get_group_workspace_git_status(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-) -> Result<Json<GroupWorkspaceGitStatusResponse>, ApiError> {
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    Ok(Json(group_workspace_git_status(&root).await?))
+    Ok(Json(workspace_git::status(&root).await))
 }
 
 pub async fn stage_group_workspace_git_paths(
@@ -1118,20 +1096,17 @@ pub async fn stage_group_workspace_git_paths(
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<GroupWorkspaceGitPathsRequest>,
-) -> Result<Json<GroupWorkspaceGitStatusResponse>, ApiError> {
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let paths = validate_git_paths(&root, &body.paths)?;
-    let args = if paths.is_empty() {
-        git_args(&["add", "-A"])
-    } else {
-        git_args_with_paths(&["add", "--"], &paths)
-    };
-    run_git_or_api_error(&root, &args, "git stage failed").await?;
-    Ok(Json(group_workspace_git_status(&root).await?))
+    workspace_git::stage(&root, &paths)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
 }
 
 pub async fn unstage_group_workspace_git_paths(
@@ -1139,20 +1114,17 @@ pub async fn unstage_group_workspace_git_paths(
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<GroupWorkspaceGitPathsRequest>,
-) -> Result<Json<GroupWorkspaceGitStatusResponse>, ApiError> {
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let paths = validate_git_paths(&root, &body.paths)?;
-    let args = if paths.is_empty() {
-        git_args(&["reset", "--", "."])
-    } else {
-        git_args_with_paths(&["reset", "--"], &paths)
-    };
-    run_git_or_api_error(&root, &args, "git unstage failed").await?;
-    Ok(Json(group_workspace_git_status(&root).await?))
+    workspace_git::unstage(&root, &paths)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
 }
 
 pub async fn commit_group_workspace_git(
@@ -1160,44 +1132,49 @@ pub async fn commit_group_workspace_git(
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<GroupWorkspaceGitCommitRequest>,
-) -> Result<Json<GroupWorkspaceGitStatusResponse>, ApiError> {
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let message = validate_git_commit_message(&body.message)?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    let args = vec!["commit".to_string(), "-m".to_string(), message];
-    run_git_or_api_error(&root, &args, "git commit failed").await?;
-    Ok(Json(group_workspace_git_status(&root).await?))
+    workspace_git::commit(&root, message)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
 }
 
 pub async fn pull_group_workspace_git(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-) -> Result<Json<GroupWorkspaceGitStatusResponse>, ApiError> {
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    run_git_or_api_error(&root, &git_args(&["pull", "--ff-only"]), "git pull failed").await?;
-    Ok(Json(group_workspace_git_status(&root).await?))
+    workspace_git::pull(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
 }
 
 pub async fn push_group_workspace_git(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-) -> Result<Json<GroupWorkspaceGitStatusResponse>, ApiError> {
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    run_git_or_api_error(&root, &git_args(&["push"]), "git push failed").await?;
-    Ok(Json(group_workspace_git_status(&root).await?))
+    workspace_git::push(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
 }
 
 pub async fn list_group_notes(
@@ -2122,96 +2099,6 @@ async fn group_files_workspace_root(
     Ok(root)
 }
 
-async fn group_workspace_git_status(
-    root: &FsPath,
-) -> Result<GroupWorkspaceGitStatusResponse, ApiError> {
-    let args = git_args(&[
-        "-c",
-        "core.quotePath=false",
-        "status",
-        "--porcelain=v1",
-        "-b",
-    ]);
-    match run_git_command(root, &args).await {
-        Ok(output) if output.success => Ok(parse_git_status(&output.stdout)),
-        Ok(output) if git_output_is_not_repository(&output) => {
-            Ok(unavailable_git_status("workspace is not a Git repository"))
-        }
-        Ok(output) => Ok(unavailable_git_status(format_git_failure(
-            "git status failed",
-            &output,
-        ))),
-        Err(GitCommandError::MissingGit) => {
-            Ok(unavailable_git_status("git executable was not found"))
-        }
-        Err(err) => Ok(unavailable_git_status(git_command_error_message(err))),
-    }
-}
-
-fn unavailable_git_status(message: impl Into<String>) -> GroupWorkspaceGitStatusResponse {
-    GroupWorkspaceGitStatusResponse {
-        available: false,
-        branch: None,
-        clean: true,
-        files: Vec::new(),
-        message: Some(message.into()),
-    }
-}
-
-fn parse_git_status(stdout: &str) -> GroupWorkspaceGitStatusResponse {
-    let mut branch = None;
-    let mut files = Vec::new();
-    for line in stdout.lines() {
-        if let Some(summary) = line.strip_prefix("## ") {
-            branch = parse_git_branch(summary);
-            continue;
-        }
-        if line.len() < 4 {
-            continue;
-        }
-        let status = line[..2].to_string();
-        let mut path = line[3..].to_string();
-        if let Some((_, renamed_to)) = path.rsplit_once(" -> ") {
-            path = renamed_to.to_string();
-        }
-        let bytes = status.as_bytes();
-        let staged = bytes
-            .first()
-            .is_some_and(|value| *value != b' ' && *value != b'?');
-        let unstaged = bytes.get(1).is_some_and(|value| *value != b' ');
-        files.push(GroupWorkspaceGitFileStatusResponse {
-            path,
-            status,
-            staged,
-            unstaged,
-        });
-    }
-
-    GroupWorkspaceGitStatusResponse {
-        available: true,
-        branch,
-        clean: files.is_empty(),
-        files,
-        message: None,
-    }
-}
-
-fn parse_git_branch(summary: &str) -> Option<String> {
-    let branch = summary
-        .split("...")
-        .next()
-        .unwrap_or(summary)
-        .trim()
-        .strip_prefix("No commits yet on ")
-        .unwrap_or_else(|| summary.split("...").next().unwrap_or(summary).trim())
-        .trim();
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch.to_string())
-    }
-}
-
 fn validate_git_paths(root: &FsPath, raw_paths: &[String]) -> Result<Vec<String>, ApiError> {
     let mut paths = Vec::with_capacity(raw_paths.len());
     for raw in raw_paths {
@@ -2228,6 +2115,10 @@ fn validate_git_paths(root: &FsPath, raw_paths: &[String]) -> Result<Vec<String>
     Ok(paths)
 }
 
+fn workspace_git_error(err: workspace_git::GitOperationError) -> ApiError {
+    ApiError::invalid_input(err.to_string())
+}
+
 fn validate_git_commit_message(raw: &str) -> Result<String, ApiError> {
     let message = raw.trim().to_string();
     if message.is_empty() {
@@ -2239,136 +2130,6 @@ fn validate_git_commit_message(raw: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(message)
-}
-
-fn git_args(parts: &[&str]) -> Vec<String> {
-    parts.iter().map(|part| (*part).to_string()).collect()
-}
-
-fn git_args_with_paths(prefix: &[&str], paths: &[String]) -> Vec<String> {
-    let mut args = git_args(prefix);
-    args.extend(paths.iter().cloned());
-    args
-}
-
-async fn run_git_or_api_error(
-    root: &FsPath,
-    args: &[String],
-    context: &'static str,
-) -> Result<GitCommandOutput, ApiError> {
-    let output = run_git_command(root, args)
-        .await
-        .map_err(|err| ApiError::invalid_input(git_command_error_message(err)))?;
-    if output.success {
-        Ok(output)
-    } else {
-        Err(ApiError::invalid_input(format_git_failure(
-            context, &output,
-        )))
-    }
-}
-
-#[derive(Debug)]
-struct GitCommandOutput {
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Debug)]
-enum GitCommandError {
-    MissingGit,
-    TimedOut,
-    Io(&'static str),
-}
-
-async fn run_git_command(
-    root: &FsPath,
-    args: &[String],
-) -> Result<GitCommandOutput, GitCommandError> {
-    let mut child = git_command(root, args).spawn().map_err(|err| {
-        if err.kind() == io::ErrorKind::NotFound {
-            GitCommandError::MissingGit
-        } else {
-            GitCommandError::Io("failed to start git command")
-        }
-    })?;
-
-    let mut stdout_handle = child.stdout.take().expect("stdout was piped");
-    let mut stderr_handle = child.stderr.take().expect("stderr was piped");
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    let wait = async {
-        let (stdout_result, stderr_result, status_result) = tokio::join!(
-            stdout_handle.read_to_end(&mut stdout_buf),
-            stderr_handle.read_to_end(&mut stderr_buf),
-            child.wait(),
-        );
-        stdout_result.map_err(|_| GitCommandError::Io("failed to read git stdout"))?;
-        stderr_result.map_err(|_| GitCommandError::Io("failed to read git stderr"))?;
-        status_result.map_err(|_| GitCommandError::Io("failed to wait for git command"))
-    };
-
-    match timeout(StdDuration::from_secs(GIT_COMMAND_TIMEOUT_SECONDS), wait).await {
-        Ok(status) => {
-            let status = status?;
-            Ok(GitCommandOutput {
-                success: status.success(),
-                stdout: truncate_git_output(&String::from_utf8_lossy(&stdout_buf)),
-                stderr: truncate_git_output(&String::from_utf8_lossy(&stderr_buf)),
-            })
-        }
-        Err(_) => {
-            let _ = child.start_kill();
-            Err(GitCommandError::TimedOut)
-        }
-    }
-}
-
-fn git_command(root: &FsPath, args: &[String]) -> Command {
-    let mut command = StdCommand::new("git");
-    command
-        .args(args)
-        .current_dir(root)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut command = tokio_command_no_window(command);
-    command.kill_on_drop(true);
-    command
-}
-
-fn git_command_error_message(err: GitCommandError) -> String {
-    match err {
-        GitCommandError::MissingGit => "git executable was not found".to_string(),
-        GitCommandError::TimedOut => {
-            format!("git command timed out after {GIT_COMMAND_TIMEOUT_SECONDS} seconds")
-        }
-        GitCommandError::Io(message) => message.to_string(),
-    }
-}
-
-fn git_output_is_not_repository(output: &GitCommandOutput) -> bool {
-    let combined = format!("{}\n{}", output.stdout, output.stderr).to_lowercase();
-    combined.contains("not a git repository")
-}
-
-fn format_git_failure(context: &str, output: &GitCommandOutput) -> String {
-    let details = [output.stderr.trim(), output.stdout.trim()]
-        .into_iter()
-        .find(|part| !part.is_empty())
-        .unwrap_or("command exited with a non-zero status");
-    format!("{context}: {details}")
-}
-
-fn truncate_git_output(output: &str) -> String {
-    if output.chars().count() <= MAX_GIT_OUTPUT_CHARS {
-        return output.to_string();
-    }
-    let truncated: String = output.chars().take(MAX_GIT_OUTPUT_CHARS).collect();
-    format!("{truncated}\n[output truncated]")
 }
 
 async fn group_notes_workspace_root(

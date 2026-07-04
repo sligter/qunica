@@ -80,6 +80,18 @@ function gitStatusLabel(file: GroupWorkspaceGitFileStatus) {
   return labels.join(', ') || file.status
 }
 
+function gitSummary(status: ReturnType<typeof useGroupWorkspaceGitStatus>['data'], changed: number) {
+  if (status?.available !== true) return 'Workspace Git'
+  const parts: string[] = []
+  if (status.state === 'conflict') parts.push('Conflicts')
+  if (status.state === 'detached') parts.push('Detached HEAD')
+  if (status.state === 'initial') parts.push('No commits yet')
+  if (status.ahead) parts.push(`${status.ahead} ahead`)
+  if (status.behind) parts.push(`${status.behind} behind`)
+  if (parts.length > 0) return parts.join(' · ')
+  return status.clean ? 'Clean workspace' : `${changed} changed`
+}
+
 export function GroupWorkspaceFilesPanel({
   groupId,
   width,
@@ -387,9 +399,7 @@ export function GroupWorkspaceFilesPanel({
               </p>
               <p className="truncate text-[10px] text-muted-foreground">
                 {gitStatus.data?.available === true
-                  ? gitStatus.data.clean
-                    ? 'Clean workspace'
-                    : `${gitFiles.length} changed`
+                  ? gitSummary(gitStatus.data, gitFiles.length)
                   : 'Workspace Git'}
               </p>
             </div>

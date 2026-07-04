@@ -507,6 +507,9 @@ export interface GroupWorkspaceGitStatus {
   clean: boolean
   files: GroupWorkspaceGitFileStatus[]
   message: string | null
+  ahead?: number | null
+  behind?: number | null
+  state?: 'conflict' | 'detached' | 'initial' | null
 }
 
 export interface GroupWorkspaceGitPathsRequest {

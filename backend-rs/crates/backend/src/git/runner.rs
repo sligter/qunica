@@ -1,0 +1,116 @@
+use std::{
+    io,
+    path::Path,
+    process::{Command as StdCommand, Stdio},
+    time::Duration,
+};
+
+use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+
+use crate::process::tokio_command_no_window;
+
+const MAX_GIT_OUTPUT_CHARS: usize = 8_000;
+const GIT_COMMAND_TIMEOUT_SECONDS: u64 = 120;
+
+#[derive(Debug)]
+pub(super) struct GitCommandOutput {
+    pub(super) success: bool,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+}
+
+#[derive(Debug)]
+pub(super) enum GitCommandError {
+    MissingGit,
+    TimedOut,
+    Io(&'static str),
+}
+
+pub(super) async fn run_git_command(
+    root: &Path,
+    args: &[String],
+) -> Result<GitCommandOutput, GitCommandError> {
+    let mut child = git_command(root, args).spawn().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            GitCommandError::MissingGit
+        } else {
+            GitCommandError::Io("failed to start git command")
+        }
+    })?;
+
+    let mut stdout_handle = child.stdout.take().expect("stdout was piped");
+    let mut stderr_handle = child.stderr.take().expect("stderr was piped");
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    let wait = async {
+        let (stdout_result, stderr_result, status_result) = tokio::join!(
+            stdout_handle.read_to_end(&mut stdout_buf),
+            stderr_handle.read_to_end(&mut stderr_buf),
+            child.wait(),
+        );
+        stdout_result.map_err(|_| GitCommandError::Io("failed to read git stdout"))?;
+        stderr_result.map_err(|_| GitCommandError::Io("failed to read git stderr"))?;
+        status_result.map_err(|_| GitCommandError::Io("failed to wait for git command"))
+    };
+
+    match timeout(Duration::from_secs(GIT_COMMAND_TIMEOUT_SECONDS), wait).await {
+        Ok(status) => {
+            let status = status?;
+            Ok(GitCommandOutput {
+                success: status.success(),
+                stdout: truncate_git_output(&String::from_utf8_lossy(&stdout_buf)),
+                stderr: truncate_git_output(&String::from_utf8_lossy(&stderr_buf)),
+            })
+        }
+        Err(_) => {
+            let _ = child.start_kill();
+            Err(GitCommandError::TimedOut)
+        }
+    }
+}
+
+fn git_command(root: &Path, args: &[String]) -> Command {
+    let mut command = StdCommand::new("git");
+    command
+        .args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut command = tokio_command_no_window(command);
+    command.kill_on_drop(true);
+    command
+}
+
+pub(super) fn git_command_error_message(err: GitCommandError) -> String {
+    match err {
+        GitCommandError::MissingGit => "git executable was not found".to_string(),
+        GitCommandError::TimedOut => {
+            format!("git command timed out after {GIT_COMMAND_TIMEOUT_SECONDS} seconds")
+        }
+        GitCommandError::Io(message) => message.to_string(),
+    }
+}
+
+pub(super) fn git_output_is_not_repository(output: &GitCommandOutput) -> bool {
+    let combined = format!("{}\n{}", output.stdout, output.stderr).to_lowercase();
+    combined.contains("not a git repository")
+}
+
+pub(super) fn format_git_failure(context: &str, output: &GitCommandOutput) -> String {
+    let details = [output.stderr.trim(), output.stdout.trim()]
+        .into_iter()
+        .find(|part| !part.is_empty())
+        .unwrap_or("command exited with a non-zero status");
+    format!("{context}: {details}")
+}
+
+fn truncate_git_output(output: &str) -> String {
+    if output.chars().count() <= MAX_GIT_OUTPUT_CHARS {
+        return output.to_string();
+    }
+    let truncated: String = output.chars().take(MAX_GIT_OUTPUT_CHARS).collect();
+    format!("{truncated}\n[output truncated]")
+}

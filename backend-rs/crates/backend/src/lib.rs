@@ -2,6 +2,7 @@ pub mod acp;
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod git;
 pub mod llm;
 mod process;
 pub mod runtime;
