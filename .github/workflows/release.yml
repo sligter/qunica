@@ -207,10 +207,7 @@ jobs:
           release_draft="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"${TAG}\") | .draft" | head -n 1 || true)"
 
           if [ -n "${release_id}" ]; then
-            if [ "${release_draft}" != "true" ]; then
-              echo "Release ${TAG} already exists and is not a draft." >&2
-              exit 1
-            fi
+            echo "Reusing existing release ${TAG}; draft=${release_draft}."
           else
             release_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="${TAG}" \
@@ -227,7 +224,10 @@ jobs:
             exit 1
           fi
 
-          asset_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --paginate --jq '.[].id' || true)"
+          asset_ids=""
+          if [ "${release_draft}" = "true" ]; then
+            asset_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --paginate --jq '.[].id' || true)"
+          fi
           if [ -n "${asset_ids}" ]; then
             echo "Deleting existing draft release assets before uploading fresh artifacts."
             while IFS= read -r asset_id; do

@@ -110,6 +110,8 @@ function checkWorkflowShape(text) {
   expect(text.includes('test -s "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig"'), "server signing must verify the signer-created .sig file exists");
   expect(text.includes("sha256"), "server archives must receive sha256 files");
   expect(text.includes('gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"') && text.includes("-F draft=true"), "workflow must create a draft release before uploads");
+  expect(text.includes("Reusing existing release ${TAG}; draft=${release_draft}."), "workflow must allow rerunning against an already published release");
+  expect(text.includes('if [ "${release_draft}" = "true" ]; then'), "workflow must only bulk-delete stale assets while the release is still a draft");
   expect(text.includes("releases/assets/${asset_id}"), "workflow must clear stale draft release assets before fresh uploads");
   expect(text.includes("draft=false"), "publish job must clear the draft flag");
   expect(text.includes("merge-base --is-ancestor"), "validate job must enforce default-branch reachability");
