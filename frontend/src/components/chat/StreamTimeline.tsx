@@ -48,20 +48,22 @@ function toolStatusLabel(status: ToolActivityStatus): string {
 }
 
 function toolStatusClasses(status: ToolActivityStatus): string {
-  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (status === 'started') return 'border-amber-200 bg-amber-50 text-amber-700'
-  if (status === 'failed') return 'border-red-200 bg-red-50 text-red-700'
+  if (status === 'completed') return 'border-primary/30 bg-primary/10 text-primary'
+  if (status === 'started') return 'border-warning bg-warning text-warning-foreground'
+  if (status === 'failed') return 'border-destructive/30 bg-destructive/10 text-destructive'
   if (status === 'input_required' || status === 'approval_required') {
-    return 'border-amber-200 bg-amber-50 text-amber-700'
+    return 'border-warning bg-warning text-warning-foreground'
   }
   return 'border-border bg-muted text-muted-foreground'
 }
 
 function toolRailClasses(status: ToolActivityStatus): string {
-  if (status === 'completed') return 'border-l-emerald-400'
-  if (status === 'started') return 'border-l-amber-400'
-  if (status === 'failed') return 'border-l-red-400'
-  if (status === 'input_required' || status === 'approval_required') return 'border-l-amber-400'
+  if (status === 'completed') return 'border-l-primary/60'
+  if (status === 'started') return 'border-l-warning-foreground/70'
+  if (status === 'failed') return 'border-l-destructive/70'
+  if (status === 'input_required' || status === 'approval_required') {
+    return 'border-l-warning-foreground/70'
+  }
   return 'border-l-muted-foreground/40'
 }
 
@@ -77,12 +79,12 @@ function toolSummary(status: ToolActivityStatus): string {
 }
 
 function externalStatusClasses(status: string | undefined): string {
-  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (status === 'running') return 'border-amber-200 bg-amber-50 text-amber-700'
+  if (status === 'completed') return 'border-primary/30 bg-primary/10 text-primary'
+  if (status === 'running') return 'border-warning bg-warning text-warning-foreground'
   if (status === 'cancelled' || status === 'timeout') {
-    return 'border-amber-200 bg-amber-50 text-amber-700'
+    return 'border-warning bg-warning text-warning-foreground'
   }
-  if (status) return 'border-red-200 bg-red-50 text-red-700'
+  if (status) return 'border-destructive/30 bg-destructive/10 text-destructive'
   return 'border-border bg-muted text-muted-foreground'
 }
 
@@ -142,11 +144,11 @@ function shouldRenderInputRequest(
 
 function WaitingHint({ label }: { label: string }) {
   return (
-    <div className="inline-flex w-fit items-center gap-2 rounded-md border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-xs text-amber-700">
+    <div className="inline-flex w-fit items-center gap-2 rounded-md border border-warning bg-warning px-2.5 py-1.5 text-xs text-warning-foreground">
       <span className="inline-flex items-center gap-0.5" aria-hidden="true">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500 [animation-delay:140ms]" />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500 [animation-delay:280ms]" />
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground [animation-delay:140ms]" />
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground [animation-delay:280ms]" />
       </span>
       <span>{label}</span>
     </div>
@@ -173,19 +175,19 @@ function ReasoningBlock({
   return (
     <div
       className={cn(
-        'w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-dashed bg-amber-50/45',
-        streaming ? 'border-amber-300' : 'border-amber-200/80',
+        'w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-dashed bg-warning/55',
+        streaming ? 'border-warning-foreground/60' : 'border-warning',
       )}
     >
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100/60"
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-warning-foreground hover:bg-warning"
       >
         <Brain className="h-3 w-3" />
         <span>{streaming ? 'Reasoning...' : 'Reasoning'}</span>
-        {streaming && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />}
-        <span className="ml-auto truncate text-[10px] font-normal text-amber-700/70">
+        {streaming && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />}
+        <span className="ml-auto truncate text-[10px] font-normal text-warning-foreground/70">
           {event.content ? `${event.content.length} chars` : 'empty'}
         </span>
         <ChevronRight
@@ -193,7 +195,7 @@ function ReasoningBlock({
         />
       </button>
       {open && (
-        <div className="max-h-44 overflow-auto whitespace-pre-wrap break-words border-t border-amber-200/80 px-2 py-1.5 text-xs leading-snug text-amber-950/80">
+        <div className="max-h-44 overflow-auto whitespace-pre-wrap break-words border-t border-warning px-2 py-1.5 text-xs leading-snug text-foreground">
           {event.content || ' '}
         </div>
       )}
@@ -280,7 +282,7 @@ function ExternalCard({ event }: { event: StreamExternalRunEvent }) {
   const statusLabel = event.status ?? exitCode
   const running = event.status === 'running' || statusLabel === ''
   return (
-    <div className="w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-l-2 border-border border-l-sky-400 bg-background">
+    <div className="w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-l-2 border-border border-l-primary/60 bg-background">
       <details open={running} className="group/external">
         <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1.5 text-[11px] [&::-webkit-details-marker]:hidden">
           <Terminal className="h-3 w-3 text-muted-foreground" />
@@ -360,7 +362,7 @@ function TextPart({
     )
   }
   return (
-    <div className="w-fit max-w-full min-w-0 rounded-md border border-l-4 border-border border-l-primary/60 bg-card/90 px-3 py-2 text-foreground shadow-sm">
+    <div className="w-fit max-w-full min-w-0 rounded-md border border-l-4 border-border border-l-primary/60 bg-card px-3 py-2 text-foreground shadow-sm">
       <MarkdownMessage content={content || ' '} groupId={groupId} />
     </div>
   )
@@ -370,14 +372,14 @@ function NoticeShell({
   tone,
   children,
 }: {
-  tone: 'amber' | 'red' | 'muted'
+  tone: 'warning' | 'destructive' | 'muted'
   children: ReactNode
 }) {
   const classes =
-    tone === 'red'
-      ? 'border-red-200 border-l-red-400 bg-red-50/70 text-red-700'
-      : tone === 'amber'
-        ? 'border-amber-200 border-l-amber-400 bg-amber-50/70 text-amber-700'
+    tone === 'destructive'
+      ? 'border-destructive/30 border-l-destructive/70 bg-destructive/10 text-destructive'
+      : tone === 'warning'
+        ? 'border-warning border-l-warning-foreground/70 bg-warning text-warning-foreground'
         : 'border-border border-l-muted-foreground/40 bg-background text-muted-foreground'
   return (
     <div
@@ -414,7 +416,7 @@ function AgentNotice({
       )
     }
     return (
-      <NoticeShell tone="amber">
+      <NoticeShell tone="warning">
         <PauseCircle className="h-3.5 w-3.5" />
         {event.message}
       </NoticeShell>
@@ -422,7 +424,7 @@ function AgentNotice({
   }
   if (event.type === 'agent_error') {
     return (
-      <NoticeShell tone="red">
+      <NoticeShell tone="destructive">
         <XCircle className="h-3.5 w-3.5" />
         {event.message}
       </NoticeShell>
@@ -669,8 +671,8 @@ function AgentBlockView({
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{block.displayName}</span>
           {streaming ? (
-            <span className="inline-flex items-center gap-1 rounded-[3px] border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+            <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
               streaming
             </span>
           ) : (
@@ -718,8 +720,8 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
         <div className="flex min-w-0 max-w-[88%] flex-col gap-1.5 md:max-w-[82%]">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">Assistant</span>
-            <span className="inline-flex items-center gap-1 rounded-[3px] border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+            <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
               starting
             </span>
           </div>

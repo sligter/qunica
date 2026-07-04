@@ -85,14 +85,14 @@ export function MessageItem({
           <span className="font-medium text-foreground">{senderName}</span>
           {!showStreamingDot && !isInterrupted && <span>{time}</span>}
           {showStreamingDot && (
-            <span className="inline-flex items-center gap-1 text-amber-600">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+            <span className="inline-flex items-center gap-1 text-warning-foreground">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
               streaming
             </span>
           )}
           {isInterrupted && !isResuming && (
-            <span className="inline-flex items-center gap-1 text-amber-700">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            <span className="inline-flex items-center gap-1 text-warning-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-warning-foreground" />
               interrupted
             </span>
           )}
@@ -112,9 +112,9 @@ export function MessageItem({
             inputRequest
               ? 'w-full'
               : isUser
-                ? 'bg-primary px-3 py-2 text-primary-foreground'
-                : 'border border-l-4 border-border border-l-primary/60 bg-card/90 px-3 py-2 text-foreground shadow-sm',
-            isInterrupted && !isResuming && 'border-amber-300/70',
+                ? 'chat-user-bubble px-3 py-2'
+                : 'border border-l-4 border-border border-l-primary/60 bg-card px-3 py-2 text-foreground shadow-sm',
+            isInterrupted && !isResuming && 'border-warning',
           )}
         >
           {inputRequest ? (

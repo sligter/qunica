@@ -62,6 +62,18 @@
   }
 }
 
+@layer components {
+  .chat-user-bubble {
+    background-color: var(--color-primary);
+    color: var(--color-primary-foreground);
+  }
+
+  :root[data-theme="dark"] .chat-user-bubble {
+    background-color: color-mix(in hsl, var(--color-primary) 58%, var(--color-background));
+    color: var(--color-foreground);
+  }
+}
+
 @keyframes startup-progress {
   0% {
     transform: translateX(-120%);
