@@ -17,10 +17,11 @@ use serde_json::json;
 use sqlx::SqlitePool;
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command as TokioCommand};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use uuid::Uuid;
 
 use crate::acp::config::AcpRuntimeProfile;
+use crate::process::tokio_command_no_window;
 
 /// Maximum number of characters retained in a captured stdout/stderr tail.
 pub const MAX_TAIL_CHARS: usize = 12_000;
@@ -28,11 +29,6 @@ pub const MAX_TAIL_CHARS: usize = 12_000;
 /// Marker env var set on every ACP child so a spawned agent can detect it runs
 /// under ag-swarmer. Matches the Python runtime.
 pub const ACP_AGENT_ENV_FLAG: &str = "AG_SWARMER_ACP_AGENT";
-
-/// `CreateNoWindow` process-creation flag, so a Windows GUI session does not
-/// flash a console window when spawning a CLI agent.
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// A failure while persisting an ACP audit row.
 #[derive(Debug, Error)]
@@ -391,13 +387,7 @@ pub fn spawn_acp_child(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        std_cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut cmd = TokioCommand::from(std_cmd);
+    let mut cmd = tokio_command_no_window(std_cmd);
     cmd.kill_on_drop(true);
     let mut child = cmd.spawn()?;
 

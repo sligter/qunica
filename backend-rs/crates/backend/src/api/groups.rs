@@ -12,7 +12,7 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::{Path as FsPath, PathBuf},
-    process::Stdio,
+    process::{Command as StdCommand, Stdio},
     time::Duration as StdDuration,
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -20,6 +20,7 @@ use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::process::tokio_command_no_window;
 use crate::tools::{resolve_workspace_path, ToolError};
 
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
@@ -2285,22 +2286,13 @@ async fn run_git_command(
     root: &FsPath,
     args: &[String],
 ) -> Result<GitCommandOutput, GitCommandError> {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|err| {
-            if err.kind() == io::ErrorKind::NotFound {
-                GitCommandError::MissingGit
-            } else {
-                GitCommandError::Io("failed to start git command")
-            }
-        })?;
+    let mut child = git_command(root, args).spawn().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            GitCommandError::MissingGit
+        } else {
+            GitCommandError::Io("failed to start git command")
+        }
+    })?;
 
     let mut stdout_handle = child.stdout.take().expect("stdout was piped");
     let mut stderr_handle = child.stderr.take().expect("stderr was piped");
@@ -2331,6 +2323,21 @@ async fn run_git_command(
             Err(GitCommandError::TimedOut)
         }
     }
+}
+
+fn git_command(root: &FsPath, args: &[String]) -> Command {
+    let mut command = StdCommand::new("git");
+    command
+        .args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut command = tokio_command_no_window(command);
+    command.kill_on_drop(true);
+    command
 }
 
 fn git_command_error_message(err: GitCommandError) -> String {

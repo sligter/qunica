@@ -6,10 +6,17 @@
 //! the combined output is capped. Execution uses `tokio::process` so it never
 //! blocks the async executor.
 
-use std::{path::Path, process::Stdio, sync::OnceLock, time::Duration};
+use std::{
+    path::Path,
+    process::{Command as StdCommand, Stdio},
+    sync::OnceLock,
+    time::Duration,
+};
 
 use regex::Regex;
 use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+
+use crate::process::tokio_command_no_window;
 
 use super::{resolve_workspace_path, ToolError, ToolResult};
 
@@ -103,14 +110,7 @@ pub async fn run_bash(
     #[cfg(not(windows))]
     let (shell, flag) = ("sh", "-c");
 
-    let mut child = Command::new(shell)
-        .arg(flag)
-        .arg(command)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
+    let mut child = shell_command(shell, flag, command, root)
         .spawn()
         .map_err(|_| ToolError::invalid("failed to start command"))?;
 
@@ -167,6 +167,21 @@ pub async fn run_bash(
             Ok(ToolResult::completed(truncate_output(&summary)))
         }
     }
+}
+
+fn shell_command(shell: &str, flag: &str, command: &str, root: &Path) -> Command {
+    let mut std_cmd = StdCommand::new(shell);
+    std_cmd
+        .arg(flag)
+        .arg(command)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut command = tokio_command_no_window(std_cmd);
+    command.kill_on_drop(true);
+    command
 }
 
 /// Cap `output` to [`MAX_BASH_OUTPUT_CHARS`] characters, appending a marker when
