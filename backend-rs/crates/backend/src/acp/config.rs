@@ -38,7 +38,7 @@ pub const BLOCKED_ENV_KEYS: [&str; 12] = [
 ];
 
 /// How the ACP client answers permission requests from the agent process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PermissionPolicy {
     /// Deny every permission request (the safe default).
     #[default]
@@ -59,7 +59,7 @@ impl PermissionPolicy {
 
 /// A known agent runtime profile, selecting host-auth and session-setting
 /// behavior in Task 9b.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AcpRuntimeProfile {
     /// A generic ACP agent run with an isolated home (no host credential leak).
     #[default]
@@ -82,7 +82,7 @@ impl AcpRuntimeProfile {
 }
 
 /// A single ACP config-option value: a string or a boolean.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AcpConfigValue {
     /// A string option value (trimmed, non-empty, control-char-free).
     Str(String),
@@ -93,7 +93,7 @@ pub enum AcpConfigValue {
 /// A normalized, ready-to-launch ACP runtime configuration.
 ///
 /// Field semantics mirror the Python `AcpRuntimeConfig` dataclass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AcpRuntimeConfig {
     /// The executable to spawn (trimmed, non-empty, control-char-free).
     pub command: String,

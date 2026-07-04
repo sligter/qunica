@@ -1,0 +1,510 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Version tag to validate/build, for example v0.1.0. Defaults to v<package version>.'
+        required: false
+        type: string
+      create_release:
+        description: 'Create/upload/publish a real GitHub Release. Leave false for dry-run build validation.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    name: Validate release inputs
+    runs-on: ubuntu-22.04
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      tag_commit: ${{ steps.release.outputs.tag_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate workflow structure and updater readiness
+        env:
+          RELEASE_REQUIRE_UPDATER: ${{ github.event_name == 'push' || inputs.create_release == true }}
+        run: node scripts/check-release-workflow.mjs
+
+      - name: Validate tag, version, and branch reachability
+        id: release
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name || '' }}
+          INPUT_CREATE_RELEASE: ${{ inputs.create_release || false }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          read_version() {
+            local ref="$1"
+            node - "${ref}" <<'NODE'
+          const cp = require("node:child_process");
+
+          const ref = process.argv[2] || "HEAD";
+
+          function readFromGit(file) {
+            try {
+              return cp.execFileSync("git", ["show", `${ref}:${file}`], {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            } catch (error) {
+              const detail = error.stderr ? String(error.stderr).trim() : error.message;
+              console.error(`failed to read ${file} at ${ref}: ${detail}`);
+              process.exit(1);
+            }
+          }
+
+          function readJsonVersion(file) {
+            return JSON.parse(readFromGit(file)).version;
+          }
+
+          function readTomlVersion(file, label) {
+            const match = readFromGit(file).match(/^\s*version\s*=\s*"([^"]+)"/m);
+            if (!match) {
+              console.error(`missing ${label} version in ${file}`);
+              process.exit(1);
+            }
+            return match[1];
+          }
+
+          function readWorkspaceVersion(file) {
+            const match = readFromGit(file).match(/^\[workspace\.package\][\s\S]*?^\s*version\s*=\s*"([^"]+)"/m);
+            if (!match) {
+              console.error(`missing workspace package version in ${file}`);
+              process.exit(1);
+            }
+            return match[1];
+          }
+
+          const versions = new Map([
+            ["package.json", readJsonVersion("package.json")],
+            ["frontend/package.json", readJsonVersion("frontend/package.json")],
+            ["frontend/src-tauri/tauri.conf.json", readJsonVersion("frontend/src-tauri/tauri.conf.json")],
+            ["frontend/src-tauri/Cargo.toml", readTomlVersion("frontend/src-tauri/Cargo.toml", "Tauri crate")],
+            ["backend-rs/Cargo.toml", readWorkspaceVersion("backend-rs/Cargo.toml")],
+          ]);
+          const unique = new Set(versions.values());
+          if (unique.size !== 1) {
+            const detail = [...versions.entries()].map(([file, version]) => `${file}=${version}`).join(", ");
+            console.error(`version mismatch at ${ref}: ${detail}`);
+            process.exit(1);
+          }
+          process.stdout.write([...unique][0]);
+          NODE
+          }
+
+          current_version="$(read_version HEAD)"
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            publish="true"
+          else
+            tag="${INPUT_TAG_NAME}"
+            if [ -z "${tag}" ]; then
+              tag="v${current_version}"
+            fi
+            publish="${INPUT_CREATE_RELEASE}"
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag ${tag} must match vMAJOR.MINOR.PATCH with optional semver suffix." >&2
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+          tag_commit="${GITHUB_SHA}"
+          tag_exists="false"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tag_commit="$(git rev-list -n 1 "refs/tags/${tag}")"
+            tag_exists="true"
+          elif [ "${publish}" = "true" ]; then
+            echo "Publishing requires an existing tag: ${tag}" >&2
+            exit 1
+          fi
+
+          version_ref="HEAD"
+          if [ "${tag_exists}" = "true" ]; then
+            version_ref="${tag_commit}"
+          fi
+          app_version="$(read_version "${version_ref}")"
+
+          tag_version="${tag#v}"
+          if [ "${tag_version}" != "${app_version}" ]; then
+            echo "Tag ${tag} does not match app version ${app_version} at ${version_ref}." >&2
+            exit 1
+          fi
+
+          if [ "${publish}" = "true" ]; then
+            git fetch --force origin "${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+            if ! git merge-base --is-ancestor "${tag_commit}" "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+              echo "Tag ${tag} (${tag_commit}) is not reachable from ${DEFAULT_BRANCH}." >&2
+              exit 1
+            fi
+          fi
+
+          prerelease="false"
+          if [[ "${tag}" == *-rc* ]]; then
+            prerelease="true"
+          fi
+
+          {
+            echo "publish=${publish}"
+            echo "tag=${tag}"
+            echo "version=${app_version}"
+            echo "prerelease=${prerelease}"
+            echo "tag_commit=${tag_commit}"
+          } >> "${GITHUB_OUTPUT}"
+
+  create-draft-release:
+    name: Create draft GitHub Release
+    runs-on: ubuntu-22.04
+    needs: validate-release
+    if: ${{ needs.validate-release.outputs.publish == 'true' }}
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Create or validate draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.validate-release.outputs.tag }}
+          TAG_COMMIT: ${{ needs.validate-release.outputs.tag_commit }}
+          PRERELEASE: ${{ needs.validate-release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1 || true)"
+          release_draft="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"${TAG}\") | .draft" | head -n 1 || true)"
+
+          if [ -n "${release_id}" ]; then
+            if [ "${release_draft}" != "true" ]; then
+              echo "Release ${TAG} already exists and is not a draft." >&2
+              exit 1
+            fi
+          else
+            args=(release create "${TAG}" --draft --target "${TAG_COMMIT}" --title "AG Swarmer ${TAG}" --notes "Automated release draft for ${TAG}.")
+            if [ "${PRERELEASE}" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1)"
+          fi
+
+          asset_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --paginate --jq '.[].id' || true)"
+          if [ -n "${asset_ids}" ]; then
+            echo "Deleting existing draft release assets before uploading fresh artifacts."
+            while IFS= read -r asset_id; do
+              if [ -n "${asset_id}" ]; then
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
+              fi
+            done <<< "${asset_ids}"
+          fi
+
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+
+  desktop:
+    name: Desktop ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: [validate-release, create-draft-release]
+    if: ${{ always() && needs.validate-release.result == 'success' && (needs.create-draft-release.result == 'success' || needs.validate-release.outputs.publish == 'false') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            args: --target x86_64-apple-darwin --bundles app,dmg
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            args: --target aarch64-apple-darwin --bundles app,dmg
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            args: --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            args: --target aarch64-unknown-linux-gnu --bundles deb,rpm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            args: --target x86_64-pc-windows-msvc --bundles nsis
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            args: --target aarch64-pc-windows-msvc --bundles nsis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release.outputs.tag_commit }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            backend-rs
+            frontend/src-tauri
+
+      - name: Install Linux desktop dependencies
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils rpm
+
+      - name: Install Linux arm64 desktop cross dependencies
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          cat > /tmp/sources.list << 'EOF'
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+          EOF
+          sudo mv /etc/apt/sources.list /etc/apt/sources.list.default
+          sudo mv /tmp/sources.list /etc/apt/sources.list
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y --only-upgrade libgraphite2-3 libharfbuzz0b libfreetype6 libssl3
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libwebkit2gtk-4.1-dev:arm64 \
+            libayatana-appindicator3-dev:arm64 \
+            librsvg2-dev:arm64 \
+            libssl-dev:arm64 \
+            patchelf \
+            pkg-config \
+            rpm \
+            xdg-utils
+
+      - name: Configure Linux arm64 desktop cross environment
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu"
+          } >> "${GITHUB_ENV}"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # UPDATER_LIMITATION:
+      # tauri-action is configured to upload latest.json and .sig updater assets.
+      # The current app does not include tauri-plugin-updater or plugins.updater
+      # in tauri.conf.json, so latest.json may not be emitted until that app
+      # configuration is added in a separate app-config change.
+      - name: Build desktop and upload to draft release
+        if: ${{ needs.validate-release.outputs.publish == 'true' }}
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.create-draft-release.outputs.release_id }}
+          tagName: ${{ needs.validate-release.outputs.tag }}
+          releaseName: AG Swarmer ${{ needs.validate-release.outputs.tag }}
+          releaseDraft: true
+          prerelease: ${{ needs.validate-release.outputs.prerelease }}
+          projectPath: frontend
+          tauriScript: pnpm tauri
+          args: ${{ matrix.args }}
+          releaseAssetNamePattern: ag-swarmer_[version]_[arch][setup][ext]
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
+
+      - name: Build desktop only
+        if: ${{ needs.validate-release.outputs.publish == 'false' }}
+        uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: frontend
+          tauriScript: pnpm tauri
+          args: ${{ matrix.args }}
+          releaseAssetNamePattern: ag-swarmer_[version]_[arch][setup][ext]
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
+
+  server:
+    name: Server ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: [validate-release, create-draft-release]
+    if: ${{ always() && needs.validate-release.result == 'success' && (needs.create-draft-release.result == 'success' || needs.validate-release.outputs.publish == 'false') }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            artifact: ag-swarmer-server-linux-x64.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            artifact: ag-swarmer-server-linux-arm64.tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            artifact: ag-swarmer-server-darwin-x64.tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact: ag-swarmer-server-darwin-arm64.tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: ag-swarmer-server-windows-x64.zip
+    env:
+      RELEASE_TARGET: ${{ matrix.target }}
+      RELEASE_ARTIFACT: ${{ matrix.artifact }}
+      RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+      RELEASE_DIST_DIR: dist/release-server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release.outputs.tag_commit }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend-rs
+
+      - name: Install Linux server cross dependencies
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          cat > /tmp/sources.list << 'EOF'
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+          EOF
+          sudo mv /etc/apt/sources.list /etc/apt/sources.list.default
+          sudo mv /tmp/sources.list /etc/apt/sources.list
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y --only-upgrade libssl3
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev:arm64 pkg-config
+
+      - name: Configure Linux arm64 server cross environment
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu"
+          } >> "${GITHUB_ENV}"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend web assets
+        run: pnpm build
+
+      - name: Build backend server
+        run: cargo build --manifest-path backend-rs/Cargo.toml --package ag-swarmer-backend --release --target "${RELEASE_TARGET}"
+
+      - name: Package and smoke-check server archive
+        run: node scripts/package-server-release.mjs
+
+      - name: Create server checksum
+        run: |
+          node -e 'const crypto=require("crypto"); const fs=require("fs"); const path=require("path"); const file=process.argv[1]; const hash=crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); fs.writeFileSync(file + ".sha256", hash + "  " + path.basename(file) + "\n");' "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}"
+
+      - name: Sign server archive
+        if: ${{ needs.validate-release.outputs.publish == 'true' }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pnpm --dir frontend exec tauri signer sign "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}"
+          test -s "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig"
+
+      - name: Upload server archive assets
+        if: ${{ needs.validate-release.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.validate-release.outputs.tag }}
+        run: |
+          gh release upload "${TAG}" \
+            "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}" \
+            "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sha256" \
+            "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig" \
+            --clobber
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [validate-release, create-draft-release, desktop, server]
+    if: ${{ needs.validate-release.outputs.publish == 'true' && needs.create-draft-release.result == 'success' && needs.desktop.result == 'success' && needs.server.result == 'success' }}
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-draft-release.outputs.release_id }}
+          PRERELEASE: ${{ needs.validate-release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false -F prerelease="${PRERELEASE}"

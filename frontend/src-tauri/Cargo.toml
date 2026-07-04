@@ -1,6 +1,6 @@
 [package]
 name = "ag-swarmer-desktop"
-version = "0.1.0"
+version = "0.1.0-alpha"
 description = "AgentChat desktop shell"
 authors = ["ag-swarmer"]
 edition = "2021"
@@ -9,9 +9,13 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ag-swarmer-backend = { path = "../../backend-rs/crates/backend" }
+anyhow = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+tokio = { version = "1", features = ["sync"] }

@@ -1,6 +1,4 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,86 +6,18 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 const releaseDir = path.join(rootDir, "frontend", "src-tauri", "target", "release");
 const portableDir = path.join(releaseDir, "bundle", "portable");
-const zipPath = path.join(portableDir, `AG Swarmer_${pkg.version}_x64-portable.zip`);
-const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ag-swarmer-portable-"));
-const appDir = path.join(stagingRoot, "AG Swarmer");
+const sourceExe = path.join(releaseDir, "ag-swarmer-desktop.exe");
+const portableExe = path.join(portableDir, `AG Swarmer_${pkg.version}_x64-portable.exe`);
 
-const files = [
-  {
-    from: path.join(releaseDir, "ag-swarmer-desktop.exe"),
-    to: path.join(appDir, "AG Swarmer.exe"),
-  },
-  {
-    from: path.join(releaseDir, "ag-swarmer-backend.exe"),
-    to: path.join(appDir, "ag-swarmer-backend.exe"),
-  },
-];
-
-for (const file of files) {
-  if (!fs.existsSync(file.from)) {
-    throw new Error(`Missing desktop build artifact: ${file.from}`);
-  }
+if (!fs.existsSync(sourceExe)) {
+  throw new Error(`Missing desktop build artifact: ${sourceExe}`);
 }
 
-fs.mkdirSync(appDir, { recursive: true });
-
-for (const file of files) {
-  fs.copyFileSync(file.from, file.to);
+fs.mkdirSync(portableDir, { recursive: true });
+for (const entry of fs.readdirSync(portableDir)) {
+  fs.rmSync(path.join(portableDir, entry), { recursive: true, force: true });
 }
 
-fs.writeFileSync(
-  path.join(appDir, "README.txt"),
-  [
-    "AG Swarmer portable build",
-    "",
-    "AG Swarmer is a group-based multi-agent collaboration workspace.",
-    "It lets users create project groups, invite LLM or external CLI agents,",
-    "stream their replies, and let agents work inside the resolved local workspace.",
-    "",
-    "Run AG Swarmer.exe directly. Keep ag-swarmer-backend.exe in the same folder.",
-    "",
-    "Runtime behavior:",
-    "- Closing the window hides AG Swarmer to the system tray.",
-    "- Right-click the tray icon to open the main page, settings, logs, or exit.",
-    "- Startup clears any process listening on TCP 127.0.0.1:8765 before launching the backend.",
-    "",
-    "Data: %APPDATA%\\dev.ag-swarmer.desktop",
-    "Logs: %APPDATA%\\dev.ag-swarmer.desktop\\logs",
-    "- launcher.log: Tauri launcher and sidecar lifecycle",
-    "- backend.log: Rust backend sidecar",
-    "",
-    "Desktop secret: %APPDATA%\\dev.ag-swarmer.desktop\\desktop-secret.key",
-    "If the desktop secret is deleted, existing login tokens may become invalid; log in again.",
-    "",
-  ].join("\r\n"),
-  "utf8",
-);
+fs.copyFileSync(sourceExe, portableExe);
 
-fs.rmSync(zipPath, { force: true });
-
-function psQuote(value) {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-const command = [
-  "Compress-Archive",
-  "-LiteralPath",
-  psQuote(appDir),
-  "-DestinationPath",
-  psQuote(zipPath),
-  "-Force",
-].join(" ");
-
-const result = spawnSync(
-  "powershell",
-  ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-  { stdio: "inherit" },
-);
-
-if (result.status !== 0) {
-  throw new Error(`Portable zip packaging failed with exit code ${result.status}`);
-}
-
-console.log(`Portable zip: ${zipPath}`);
-
-fs.rmSync(stagingRoot, { recursive: true, force: true });
+console.log(`Portable exe: ${portableExe}`);

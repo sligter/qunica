@@ -18,10 +18,12 @@ pub mod process;
 pub mod protocol;
 
 use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -32,7 +34,7 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Child,
-    sync::{mpsc, Notify},
+    sync::{mpsc, Mutex, Notify},
     task::JoinHandle,
     time::timeout,
 };
@@ -139,6 +141,14 @@ pub struct AcpRunRequest {
     pub cwd: PathBuf,
     /// The user prompt text for this turn.
     pub prompt: String,
+    /// Incremental prompt to use when a matching live ACP session is reused.
+    ///
+    /// If no reusable session is available this is ignored and `prompt` is sent
+    /// as the first full-context prompt.
+    pub incremental_prompt: Option<String>,
+    /// Optional hash of host-side context that should invalidate a reusable ACP
+    /// session when it changes.
+    pub context_hash: Option<String>,
 }
 
 /// A cancellation handle for an in-flight ACP run.
@@ -247,11 +257,16 @@ pub async fn run_acp_agent_stream(
     let task = DriveTask {
         audit,
         run_id: run_id.clone(),
+        owner_id: request.owner_id,
+        group_id: request.group_id,
         agent_id: request.agent_id,
+        thread_id: request.thread_id,
         config: request.config,
         cwd,
         cwd_display,
         prompt: request.prompt,
+        incremental_prompt: request.incremental_prompt,
+        context_hash: request.context_hash,
         events_tx,
         cancelled: control.cancelled.clone(),
         notify: control.notify.clone(),
@@ -292,11 +307,16 @@ struct TurnOutcome {
 struct DriveTask {
     audit: AcpRunAudit,
     run_id: String,
+    owner_id: String,
+    group_id: Option<String>,
     agent_id: String,
+    thread_id: Option<String>,
     config: AcpRuntimeConfig,
     cwd: PathBuf,
     cwd_display: String,
     prompt: String,
+    incremental_prompt: Option<String>,
+    context_hash: Option<String>,
     events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
     cancelled: Arc<AtomicBool>,
     notify: Arc<Notify>,
@@ -307,17 +327,40 @@ async fn drive_run(task: DriveTask) {
     let DriveTask {
         audit,
         run_id,
+        owner_id,
+        group_id,
         agent_id,
+        thread_id,
         config,
         cwd,
         cwd_display,
         prompt,
+        incremental_prompt,
+        context_hash,
         events_tx,
         cancelled,
         notify,
     } = task;
 
-    let outcome = run_turn(&config, &cwd, &prompt, &events_tx, &cancelled, &notify).await;
+    let reuse_key = reusable_session_key(group_id.as_deref(), thread_id.as_deref(), &agent_id);
+    let outcome = if let Some(key) = reuse_key {
+        run_reusable_turn(ReusableTurn {
+            key,
+            owner_id,
+            agent_id: agent_id.clone(),
+            config: config.clone(),
+            cwd: cwd.clone(),
+            full_prompt: prompt,
+            incremental_prompt,
+            context_hash,
+            events_tx: events_tx.clone(),
+            cancelled: cancelled.clone(),
+            notify: notify.clone(),
+        })
+        .await
+    } else {
+        run_one_shot_turn(&config, &cwd, &prompt, &events_tx, &cancelled, &notify).await
+    };
 
     let stdout_tail = outcome.stdout_tail.as_deref();
     let stderr_tail = outcome.stderr_tail.as_deref();
@@ -365,7 +408,7 @@ async fn drive_run(task: DriveTask) {
 
 /// Spawn the child, drive the ACP session under a timeout and cancellation, and
 /// return the turn outcome.
-async fn run_turn(
+async fn run_one_shot_turn(
     config: &AcpRuntimeConfig,
     cwd: &Path,
     prompt: &str,
@@ -373,57 +416,343 @@ async fn run_turn(
     cancelled: &Arc<AtomicBool>,
     notify: &Arc<Notify>,
 ) -> TurnOutcome {
-    let home = match tempfile::Builder::new().prefix("ag-swarmer-acp-").tempdir() {
-        Ok(dir) => dir,
-        Err(err) => return failed_outcome(format!("failed to create ACP home: {err}")),
+    let mut session = match LiveAcpSession::start(config, cwd, events_tx.clone()).await {
+        Ok(session) => session,
+        Err(message) => return failed_outcome(message),
     };
-    let env = match build_child_env(config.profile, home.path(), &config.env) {
-        Ok(env) => env,
-        Err(err) => return failed_outcome(format!("failed to build ACP environment: {err}")),
-    };
-
-    let spawned = match spawn_acp_child(&config.command, &config.args, cwd, &env) {
-        Ok(spawned) => spawned,
-        Err(err) => return failed_outcome(format!("failed to start ACP agent: {err}")),
-    };
-    let SpawnedAcpChild {
-        mut child,
-        stdin,
-        stdout,
-        stderr,
-    } = spawned;
-
-    // Capture stderr into a bounded tail concurrently so a chatty agent cannot
-    // deadlock on a full pipe.
-    let stderr_task: JoinHandle<String> = tokio::spawn(async move {
-        let mut tail = Tail::new();
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            tail.append(&line);
-            tail.append("\n");
-        }
-        tail.into_string()
-    });
-
-    let conn = AcpConnection::spawn(stdin, stdout, config.permission_policy, events_tx.clone());
-
     let cwd_string = cwd.to_string_lossy().to_string();
+    let phase = drive_new_session_prompt(
+        session.conn(),
+        &cwd_string,
+        prompt,
+        config,
+        cancelled,
+        notify,
+    )
+    .await;
+
+    let (status, error_message, was_cancelled, completed_cleanly) = phase_status(phase, config);
+
+    finish_session(&mut session, status, completed_cleanly)
+        .await
+        .into_outcome(status, error_message, was_cancelled)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReusableSessionKey {
+    group_id: String,
+    thread_id: String,
+    agent_id: String,
+}
+
+fn reusable_session_key(
+    group_id: Option<&str>,
+    thread_id: Option<&str>,
+    agent_id: &str,
+) -> Option<ReusableSessionKey> {
+    Some(ReusableSessionKey {
+        group_id: group_id?.to_string(),
+        thread_id: thread_id?.to_string(),
+        agent_id: agent_id.to_string(),
+    })
+}
+
+struct ReusableTurn {
+    key: ReusableSessionKey,
+    owner_id: String,
+    agent_id: String,
+    config: AcpRuntimeConfig,
+    cwd: PathBuf,
+    full_prompt: String,
+    incremental_prompt: Option<String>,
+    context_hash: Option<String>,
+    events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+struct SessionManager {
+    sessions: Mutex<HashMap<ReusableSessionKey, Arc<Mutex<ManagedAcpSession>>>>,
+}
+
+impl SessionManager {
+    fn new() -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn get_or_insert(&self, key: ReusableSessionKey) -> Arc<Mutex<ManagedAcpSession>> {
+        let mut sessions = self.sessions.lock().await;
+        sessions
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(ManagedAcpSession::empty())))
+            .clone()
+    }
+}
+
+fn session_manager() -> &'static SessionManager {
+    static MANAGER: OnceLock<SessionManager> = OnceLock::new();
+    MANAGER.get_or_init(SessionManager::new)
+}
+
+/// Terminate all reusable in-process ACP sessions.
+///
+/// This is primarily used by tests and by future application shutdown hooks;
+/// ordinary failed/cancelled turns clear the live session from their slot.
+pub async fn shutdown_reusable_acp_sessions() {
+    let sessions = {
+        let mut sessions = session_manager().sessions.lock().await;
+        sessions
+            .drain()
+            .map(|(_, session)| session)
+            .collect::<Vec<_>>()
+    };
+    for session in sessions {
+        let mut managed = session.lock().await;
+        if let Some(mut live) = managed.session.take() {
+            let _ = terminate_live_session(&mut live).await;
+        }
+        managed.initialized = false;
+    }
+}
+
+struct ManagedAcpSession {
+    session: Option<LiveAcpSession>,
+    signature: Option<SessionSignature>,
+    initialized: bool,
+}
+
+impl ManagedAcpSession {
+    fn empty() -> Self {
+        Self {
+            session: None,
+            signature: None,
+            initialized: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionSignature {
+    owner_id: String,
+    agent_id: String,
+    cwd: PathBuf,
+    config_hash: u64,
+    context_hash: Option<String>,
+}
+
+impl SessionSignature {
+    fn new(
+        owner_id: String,
+        agent_id: String,
+        cwd: PathBuf,
+        config: &AcpRuntimeConfig,
+        context_hash: Option<String>,
+    ) -> Self {
+        let mut hasher = DefaultHasher::new();
+        config.hash(&mut hasher);
+        Self {
+            owner_id,
+            agent_id,
+            cwd,
+            config_hash: hasher.finish(),
+            context_hash,
+        }
+    }
+}
+
+async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
+    let manager = session_manager();
+    let slot = manager.get_or_insert(turn.key.clone()).await;
+    let mut managed = slot.lock().await;
+
+    let signature = SessionSignature::new(
+        turn.owner_id.clone(),
+        turn.agent_id.clone(),
+        turn.cwd.clone(),
+        &turn.config,
+        turn.context_hash.clone(),
+    );
+    if managed.signature.as_ref() != Some(&signature) {
+        if let Some(mut old) = managed.session.take() {
+            let _ = terminate_live_session(&mut old).await;
+        }
+        managed.initialized = false;
+        managed.signature = Some(signature);
+    }
+
+    if managed.session.is_none() {
+        match LiveAcpSession::start(&turn.config, &turn.cwd, turn.events_tx.clone()).await {
+            Ok(session) => managed.session = Some(session),
+            Err(message) => {
+                managed.initialized = false;
+                return failed_outcome(message);
+            }
+        }
+    } else if let Some(session) = managed.session.as_ref() {
+        session.conn().set_events_tx(turn.events_tx.clone()).await;
+    }
+
+    let was_initialized = managed.initialized;
+    let cwd_string = turn.cwd.to_string_lossy().to_string();
+    let prompt = if was_initialized {
+        turn.incremental_prompt
+            .as_deref()
+            .unwrap_or(&turn.full_prompt)
+    } else {
+        turn.full_prompt.as_str()
+    };
     let phase = {
-        let cancel_fut = wait_for_cancel(cancelled, notify);
-        let session = drive_session(&conn, &cwd_string, prompt, config);
-        let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
-        tokio::pin!(session);
-        tokio::select! {
-            biased;
-            _ = cancel_fut => Phase::Cancelled,
-            result = &mut session => match result {
-                Ok(inner) => Phase::Done(inner),
-                Err(_elapsed) => Phase::TimedOut,
-            },
+        let session = managed.session.as_mut().expect("managed session present");
+        if was_initialized {
+            drive_existing_session_prompt(
+                session.conn(),
+                &session.session_id,
+                prompt,
+                &turn.config,
+                &turn.cancelled,
+                &turn.notify,
+            )
+            .await
+        } else {
+            drive_new_session_prompt(
+                session.conn(),
+                &cwd_string,
+                prompt,
+                &turn.config,
+                &turn.cancelled,
+                &turn.notify,
+            )
+            .await
         }
     };
+    if !was_initialized {
+        if let Phase::Done(Ok(outcome)) = &phase {
+            if outcome.stop_reason != "cancelled" {
+                if let Some(session_id) = &outcome.session_id {
+                    if let Some(session) = managed.session.as_mut() {
+                        session.session_id = session_id.clone();
+                    }
+                }
+                managed.initialized = true;
+            }
+        }
+    }
 
-    let (status, error_message, was_cancelled, completed_cleanly) = match phase {
+    let (status, error_message, was_cancelled, completed_cleanly) =
+        phase_status(phase, &turn.config);
+    if status == TurnStatus::Completed && completed_cleanly {
+        let conn = managed
+            .session
+            .as_ref()
+            .expect("managed session present")
+            .conn();
+        let stdout_tail = conn.take_stdout_tail().await;
+        conn.clear_events_tx().await;
+        return TurnOutcome {
+            status,
+            error_message,
+            exit_code: None,
+            stdout_tail,
+            stderr_tail: None,
+            was_cancelled,
+        };
+    }
+
+    let mut dead_session = managed.session.take();
+    managed.initialized = false;
+    drop(managed);
+    if let Some(mut session) = dead_session.take() {
+        return finish_session(&mut session, status, completed_cleanly)
+            .await
+            .into_outcome(status, error_message, was_cancelled);
+    }
+    failed_outcome(error_message.unwrap_or_else(|| "ACP session unavailable".to_string()))
+}
+
+struct LiveAcpSession {
+    child: Child,
+    conn: Option<AcpConnection>,
+    stderr_task: Option<JoinHandle<String>>,
+    home: Option<tempfile::TempDir>,
+    session_id: String,
+}
+
+impl LiveAcpSession {
+    async fn start(
+        config: &AcpRuntimeConfig,
+        cwd: &Path,
+        events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
+    ) -> Result<Self, String> {
+        let home = tempfile::Builder::new()
+            .prefix("ag-swarmer-acp-")
+            .tempdir()
+            .map_err(|err| format!("failed to create ACP home: {err}"))?;
+        let env = build_child_env(config.profile, home.path(), &config.env)
+            .map_err(|err| format!("failed to build ACP environment: {err}"))?;
+        let spawned = spawn_acp_child(&config.command, &config.args, cwd, &env)
+            .map_err(|err| format!("failed to start ACP agent: {err}"))?;
+        let SpawnedAcpChild {
+            child,
+            stdin,
+            stdout,
+            stderr,
+        } = spawned;
+
+        let stderr_task: JoinHandle<String> = tokio::spawn(async move {
+            let mut tail = Tail::new();
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tail.append(&line);
+                tail.append("\n");
+            }
+            tail.into_string()
+        });
+
+        let conn = AcpConnection::spawn(stdin, stdout, config.permission_policy, events_tx);
+        Ok(Self {
+            child,
+            conn: Some(conn),
+            stderr_task: Some(stderr_task),
+            home: Some(home),
+            session_id: String::new(),
+        })
+    }
+
+    fn conn(&self) -> &AcpConnection {
+        self.conn.as_ref().expect("live ACP connection present")
+    }
+
+    fn take_conn(&mut self) -> AcpConnection {
+        self.conn.take().expect("live ACP connection present")
+    }
+
+    fn take_stderr_task(&mut self) -> JoinHandle<String> {
+        self.stderr_task.take().expect("stderr task present")
+    }
+
+    fn drop_home(&mut self) {
+        drop(self.home.take());
+    }
+}
+
+async fn terminate_live_session(session: &mut LiveAcpSession) -> SessionFinish {
+    finish_session(session, TurnStatus::Cancelled, false).await
+}
+
+/// The branch the turn took out of the timeout/cancel select.
+enum Phase {
+    Done(Result<PromptOutcome, ProtocolError>),
+    TimedOut,
+    Cancelled,
+}
+
+fn phase_status(
+    phase: Phase,
+    config: &AcpRuntimeConfig,
+) -> (TurnStatus, Option<String>, bool, bool) {
+    match phase {
         Phase::Done(Ok(prompt_outcome)) => {
             if prompt_outcome.stop_reason == "cancelled" {
                 (
@@ -437,70 +766,90 @@ async fn run_turn(
             }
         }
         Phase::Done(Err(err)) => (TurnStatus::Failed, Some(err.to_string()), false, false),
-        Phase::TimedOut => {
-            conn.notify(METHOD_SESSION_CANCEL, json!({}));
-            (
-                TurnStatus::Timeout,
-                Some(format!(
-                    "ACP agent timed out after {} seconds",
-                    config.timeout_seconds
-                )),
-                false,
-                false,
-            )
+        Phase::TimedOut => (
+            TurnStatus::Timeout,
+            Some(format!(
+                "ACP agent timed out after {} seconds",
+                config.timeout_seconds
+            )),
+            false,
+            false,
+        ),
+        Phase::Cancelled => (
+            TurnStatus::Cancelled,
+            Some("ACP agent run was cancelled".to_string()),
+            true,
+            false,
+        ),
+    }
+}
+
+struct SessionFinish {
+    exit_code: Option<i64>,
+    stdout_tail: Option<String>,
+    stderr_tail: Option<String>,
+}
+
+impl SessionFinish {
+    fn into_outcome(
+        self,
+        status: TurnStatus,
+        error_message: Option<String>,
+        was_cancelled: bool,
+    ) -> TurnOutcome {
+        TurnOutcome {
+            status,
+            error_message,
+            exit_code: self.exit_code,
+            stdout_tail: self.stdout_tail,
+            stderr_tail: self.stderr_tail,
+            was_cancelled,
         }
-        Phase::Cancelled => {
-            conn.notify(METHOD_SESSION_CANCEL, json!({}));
-            (
-                TurnStatus::Cancelled,
-                Some("ACP agent run was cancelled".to_string()),
-                true,
-                false,
-            )
-        }
-    };
+    }
+}
+
+async fn finish_session(
+    session: &mut LiveAcpSession,
+    status: TurnStatus,
+    completed_cleanly: bool,
+) -> SessionFinish {
+    if matches!(status, TurnStatus::Timeout | TurnStatus::Cancelled) {
+        session.conn().notify(METHOD_SESSION_CANCEL, json!({}));
+    }
 
     let exit_code = if completed_cleanly && status == TurnStatus::Completed {
         // Close stdin so a child looping on stdin sees EOF and exits on its
         // own, then collect its exit code while stdout continues to drain.
-        conn.close_stdin();
-        wait_for_exit(&mut child).await
+        session.conn().close_stdin();
+        wait_for_exit(&mut session.child).await
     } else if status == TurnStatus::Failed {
-        wait_for_exit(&mut child).await
+        wait_for_exit(&mut session.child).await
     } else {
-        let _ = child.start_kill();
-        let _ = timeout(CHILD_EXIT_GRACE, child.wait()).await;
+        let _ = session.child.start_kill();
+        let _ = timeout(CHILD_EXIT_GRACE, session.child.wait()).await;
         None
     };
-    let stdout_tail = conn.shutdown(STDOUT_DRAIN_GRACE).await;
+    let stdout_tail = session.take_conn().shutdown(STDOUT_DRAIN_GRACE).await;
 
+    let stderr_task = session.take_stderr_task();
     let stderr_tail = match timeout(STDERR_DRAIN_GRACE, stderr_task).await {
         Ok(Ok(text)) if !text.is_empty() => Some(text),
         _ => None,
     };
     // Keep the isolated home alive until the child has exited.
-    drop(home);
+    session.drop_home();
 
-    TurnOutcome {
-        status,
-        error_message,
+    SessionFinish {
         exit_code,
         stdout_tail,
         stderr_tail,
-        was_cancelled,
     }
-}
-
-/// The branch the turn took out of the timeout/cancel select.
-enum Phase {
-    Done(Result<PromptOutcome, ProtocolError>),
-    TimedOut,
-    Cancelled,
 }
 
 /// The result of a completed `session/prompt`.
 struct PromptOutcome {
     stop_reason: String,
+    session_id: Option<String>,
 }
 
 /// Resolve once cancellation has been requested. Uses the documented
@@ -523,7 +872,7 @@ async fn wait_for_cancel(cancelled: &Arc<AtomicBool>, notify: &Arc<Notify>) {
 /// settings → `session/prompt`, returning the prompt outcome. `session/update`
 /// notifications are mapped to events by the connection's reader task while
 /// this awaits the prompt response.
-async fn drive_session(
+async fn new_session_prompt(
     conn: &AcpConnection,
     cwd: &str,
     prompt: &str,
@@ -567,7 +916,80 @@ async fn drive_session(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    Ok(PromptOutcome { stop_reason })
+    Ok(PromptOutcome {
+        stop_reason,
+        session_id: Some(session_id),
+    })
+}
+
+async fn drive_existing_session_prompt(
+    conn: &AcpConnection,
+    session_id: &str,
+    prompt: &str,
+    config: &AcpRuntimeConfig,
+    cancelled: &Arc<AtomicBool>,
+    notify: &Arc<Notify>,
+) -> Phase {
+    let cancel_fut = wait_for_cancel(cancelled, notify);
+    let session = prompt_existing_session(conn, session_id, prompt);
+    let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
+    tokio::pin!(session);
+    tokio::select! {
+        biased;
+        _ = cancel_fut => Phase::Cancelled,
+        result = &mut session => match result {
+            Ok(inner) => Phase::Done(inner),
+            Err(_elapsed) => Phase::TimedOut,
+        },
+    }
+}
+
+async fn drive_new_session_prompt(
+    conn: &AcpConnection,
+    cwd: &str,
+    prompt: &str,
+    config: &AcpRuntimeConfig,
+    cancelled: &Arc<AtomicBool>,
+    notify: &Arc<Notify>,
+) -> Phase {
+    let cancel_fut = wait_for_cancel(cancelled, notify);
+    let session = new_session_prompt(conn, cwd, prompt, config);
+    let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
+    tokio::pin!(session);
+    tokio::select! {
+        biased;
+        _ = cancel_fut => Phase::Cancelled,
+        result = &mut session => match result {
+            Ok(inner) => Phase::Done(inner),
+            Err(_elapsed) => Phase::TimedOut,
+        },
+    }
+}
+
+async fn prompt_existing_session(
+    conn: &AcpConnection,
+    session_id: &str,
+    prompt: &str,
+) -> Result<PromptOutcome, ProtocolError> {
+    let response = conn
+        .request(
+            METHOD_SESSION_PROMPT,
+            json!({
+                "sessionId": session_id,
+                "prompt": [{ "type": "text", "text": prompt }],
+                "messageId": Uuid::new_v4().to_string(),
+            }),
+        )
+        .await?;
+    let stop_reason = response
+        .get("stopReason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(PromptOutcome {
+        stop_reason,
+        session_id: None,
+    })
 }
 
 /// Build the `session/new` `_meta`, mirroring Python `_new_session_meta`: for

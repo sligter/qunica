@@ -8,9 +8,10 @@
 //! protocol instead of running assertions. No Python/Node and no live network.
 
 use ag_swarmer_backend::acp::{
-    normalize_acp_runtime, run_acp_agent_stream, AcpConfigValue, AcpEventKind, AcpRunAudit,
-    AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy,
-    BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS, MAX_TIMEOUT_SECONDS,
+    normalize_acp_runtime, run_acp_agent_stream, shutdown_reusable_acp_sessions, AcpConfigValue,
+    AcpEventKind, AcpRunAudit, AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile,
+    PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
+    MAX_TIMEOUT_SECONDS,
 };
 use ag_swarmer_backend::db::Db;
 use serde_json::{json, Value};
@@ -432,7 +433,7 @@ fn fake_child_config(mode: &str, profile: &str, extra: Value) -> AcpRuntimeConfi
 
 #[tokio::test]
 async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
-    let (pool, owner_id, agent_id, group_id, thread_id) = seeded_db().await;
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
     let cwd = tempfile::tempdir().unwrap();
 
     let config = fake_child_config("normal", "custom", json!({ "timeout_seconds": 30 }));
@@ -440,12 +441,14 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
         pool.clone(),
         AcpRunRequest {
             owner_id,
-            group_id: Some(group_id),
+            group_id: None,
             agent_id,
-            thread_id: Some(thread_id),
+            thread_id: None,
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            incremental_prompt: None,
+            context_hash: None,
         },
     )
     .await
@@ -528,6 +531,8 @@ async fn acp_lifecycle_timeout_kills_child_and_persists_failed_status() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            incremental_prompt: None,
+            context_hash: None,
         },
     )
     .await
@@ -586,6 +591,8 @@ async fn acp_lifecycle_failed_child_exit_code_is_persisted() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            incremental_prompt: None,
+            context_hash: None,
         },
     )
     .await
@@ -618,6 +625,8 @@ async fn acp_lifecycle_stream_cancel_kills_child_and_persists_cancelled_status()
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            incremental_prompt: None,
+            context_hash: None,
         },
     )
     .await
@@ -666,6 +675,8 @@ async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            incremental_prompt: None,
+            context_hash: None,
         },
     )
     .await
@@ -722,7 +733,7 @@ async fn acp_lifecycle_custom_profile_child_env_is_isolated() {
 
 #[tokio::test]
 async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
-    let (pool, owner_id, agent_id, group_id, thread_id) = seeded_db().await;
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
     let cwd = tempfile::tempdir().unwrap();
 
     // The `settings` child rejects `session/set_model`/`session/set_mode` with
@@ -743,12 +754,14 @@ async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
         pool.clone(),
         AcpRunRequest {
             owner_id,
-            group_id: Some(group_id),
+            group_id: None,
             agent_id,
-            thread_id: Some(thread_id),
+            thread_id: None,
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            incremental_prompt: None,
+            context_hash: None,
         },
     )
     .await
@@ -801,6 +814,118 @@ async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
     assert!(row.ended_at.is_some());
 }
 
+#[tokio::test]
+async fn acp_lifecycle_reuses_keyed_session_and_sends_incremental_prompt() {
+    let (pool, owner_id, agent_id, group_id, thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config("reuse", "custom", json!({ "timeout_seconds": 30 }));
+
+    let first = run_and_collect_tokens(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id: owner_id.clone(),
+            group_id: Some(group_id.clone()),
+            agent_id: agent_id.clone(),
+            thread_id: Some(thread_id.clone()),
+            config: config.clone(),
+            cwd: cwd.path().to_path_buf(),
+            prompt: "FULL_CONTEXT_ONE".to_string(),
+            incremental_prompt: Some("INCREMENT_ONE".to_string()),
+            context_hash: Some("ctx-a".to_string()),
+        },
+    )
+    .await;
+    let second = run_and_collect_tokens(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id,
+            group_id: Some(group_id),
+            agent_id,
+            thread_id: Some(thread_id),
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "FULL_CONTEXT_TWO".to_string(),
+            incremental_prompt: Some("INCREMENT_TWO".to_string()),
+            context_hash: Some("ctx-a".to_string()),
+        },
+    )
+    .await;
+
+    let first_payload: Value = serde_json::from_str(&first).expect("first token json");
+    let second_payload: Value = serde_json::from_str(&second).expect("second token json");
+    assert_eq!(first_payload["new_count"], json!(1));
+    assert_eq!(first_payload["prompt_count"], json!(1));
+    assert_eq!(first_payload["prompt"], json!("FULL_CONTEXT_ONE"));
+    assert_eq!(second_payload["new_count"], json!(1));
+    assert_eq!(second_payload["prompt_count"], json!(2));
+    assert_eq!(second_payload["prompt"], json!("INCREMENT_TWO"));
+    shutdown_reusable_acp_sessions().await;
+}
+
+#[tokio::test]
+async fn acp_lifecycle_context_hash_change_restarts_keyed_session() {
+    let (pool, owner_id, agent_id, group_id, thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config("reuse", "custom", json!({ "timeout_seconds": 30 }));
+
+    let _ = run_and_collect_tokens(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id: owner_id.clone(),
+            group_id: Some(group_id.clone()),
+            agent_id: agent_id.clone(),
+            thread_id: Some(thread_id.clone()),
+            config: config.clone(),
+            cwd: cwd.path().to_path_buf(),
+            prompt: "FULL_CONTEXT_ONE".to_string(),
+            incremental_prompt: Some("INCREMENT_ONE".to_string()),
+            context_hash: Some("ctx-a".to_string()),
+        },
+    )
+    .await;
+    let second = run_and_collect_tokens(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id,
+            group_id: Some(group_id),
+            agent_id,
+            thread_id: Some(thread_id),
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "FULL_CONTEXT_TWO".to_string(),
+            incremental_prompt: Some("INCREMENT_TWO".to_string()),
+            context_hash: Some("ctx-b".to_string()),
+        },
+    )
+    .await;
+
+    let second_payload: Value = serde_json::from_str(&second).expect("second token json");
+    assert_eq!(second_payload["new_count"], json!(1));
+    assert_eq!(second_payload["prompt_count"], json!(1));
+    assert_eq!(second_payload["prompt"], json!("FULL_CONTEXT_TWO"));
+    shutdown_reusable_acp_sessions().await;
+}
+
+async fn run_and_collect_tokens(pool: SqlitePool, request: AcpRunRequest) -> String {
+    let mut run = run_acp_agent_stream(pool, request)
+        .await
+        .expect("run starts");
+    let mut tokens = String::new();
+    let mut terminal_status = None;
+    while let Some(event) = run.next_event().await {
+        match event.kind {
+            AcpEventKind::Token => tokens.push_str(event.data.as_str().unwrap_or_default()),
+            AcpEventKind::Run => {
+                terminal_status = event.data["status"].as_str().map(str::to_string)
+            }
+            _ => {}
+        }
+    }
+    run.join().await.expect("run joins");
+    assert_eq!(terminal_status.as_deref(), Some("completed"));
+    tokens
+}
+
 // ---------------------------------------------------------------------------
 // Fake ACP child process
 // ---------------------------------------------------------------------------
@@ -830,6 +955,8 @@ fn run_fake_child(mode: &str) {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut applied: Vec<Value> = Vec::new();
+    let mut new_count = 0;
+    let mut prompt_count = 0;
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -846,10 +973,13 @@ fn run_fake_child(mode: &str) {
 
         match method {
             "initialize" => write_line(&stdout, &rpc_result(&id, json!({ "protocolVersion": 1 }))),
-            "session/new" => write_line(
-                &stdout,
-                &rpc_result(&id, json!({ "sessionId": "sess-fake" })),
-            ),
+            "session/new" => {
+                new_count += 1;
+                write_line(
+                    &stdout,
+                    &rpc_result(&id, json!({ "sessionId": "sess-fake" })),
+                );
+            }
             "session/set_model" | "session/set_mode" => {
                 if mode == "settings" {
                     write_line(&stdout, &rpc_error(&id, -32601, "method not found"));
@@ -909,6 +1039,33 @@ fn run_fake_child(mode: &str) {
                         &stdout,
                         &session_update(json!({
                             "sessionUpdate": "usage_update", "used": 10, "size": 1000,
+                        })),
+                    );
+                    write_line(
+                        &stdout,
+                        &rpc_result(&id, json!({ "stopReason": "end_turn" })),
+                    );
+                }
+                "reuse" => {
+                    prompt_count += 1;
+                    let prompt = params
+                        .get("prompt")
+                        .and_then(Value::as_array)
+                        .and_then(|items| items.first())
+                        .and_then(|item| item.get("text"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let summary = json!({
+                        "new_count": new_count,
+                        "prompt_count": prompt_count,
+                        "prompt": prompt,
+                    })
+                    .to_string();
+                    write_line(
+                        &stdout,
+                        &session_update(json!({
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": { "type": "text", "text": summary },
                         })),
                     );
                     write_line(

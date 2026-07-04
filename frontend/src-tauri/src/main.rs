@@ -1,22 +1,31 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ag_swarmer_backend::{config::AppConfig, server, telemetry};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::oneshot;
 
-struct BackendChild(Mutex<Option<CommandChild>>);
+struct BackendShutdown(std::sync::Mutex<Option<oneshot::Sender<()>>>);
+
+impl Drop for BackendShutdown {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.0.lock() {
+            if let Some(sender) = guard.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+}
 
 const BACKEND_PORT: u16 = 8765;
 const BACKEND_BASE_URL: &str = "http://127.0.0.1:8765";
@@ -25,16 +34,6 @@ const TRAY_OPEN_MAIN_ID: &str = "open-main";
 const TRAY_OPEN_SETTINGS_ID: &str = "open-settings";
 const TRAY_OPEN_LOGS_ID: &str = "open-logs";
 const TRAY_EXIT_ID: &str = "exit";
-
-impl Drop for BackendChild {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(child) = guard.take() {
-                let _ = child.kill();
-            }
-        }
-    }
-}
 
 #[tauri::command]
 fn backend_base_url() -> &'static str {
@@ -61,7 +60,7 @@ fn reveal_path(path: &str) -> Result<(), String> {
             .arg(format!("/select,{path}"))
             .spawn()
             .map_err(|err| err.to_string())?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     {
@@ -69,7 +68,7 @@ fn reveal_path(path: &str) -> Result<(), String> {
             .args(["-R", path])
             .spawn()
             .map_err(|err| err.to_string())?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -81,7 +80,7 @@ fn reveal_path(path: &str) -> Result<(), String> {
             .arg(target)
             .spawn()
             .map_err(|err| err.to_string())?;
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -136,6 +135,10 @@ fn append_launcher_log(log_dir: &Path, message: impl AsRef<str>) {
     append_log(log_dir, "launcher.log", message);
 }
 
+fn append_backend_log(log_dir: &Path, message: impl AsRef<str>) {
+    append_log(log_dir, "backend.log", message);
+}
+
 fn append_optional_launcher_log(log_dir: Option<&Path>, message: impl AsRef<str>) {
     if let Some(log_dir) = log_dir {
         append_launcher_log(log_dir, message);
@@ -168,42 +171,19 @@ fn shutdown_backend(app: &tauri::AppHandle) {
     let log_dir = app_logs_dir(app).ok();
     append_optional_launcher_log(log_dir.as_deref(), "shutting down backend");
 
-    let state = app.state::<BackendChild>();
-    let child = state.0.lock().expect("backend child mutex poisoned").take();
-    if let Some(child) = child {
-        terminate_backend_child(log_dir.as_deref(), child);
+    let state = app.state::<BackendShutdown>();
+    let sender = state
+        .0
+        .lock()
+        .expect("backend shutdown mutex poisoned")
+        .take();
+    if let Some(sender) = sender {
+        let _ = sender.send(());
     } else {
         append_optional_launcher_log(
             log_dir.as_deref(),
-            "backend shutdown requested but no sidecar child was recorded",
+            "backend shutdown requested but no in-process backend was recorded",
         );
-    }
-}
-
-fn terminate_backend_child(log_dir: Option<&Path>, child: CommandChild) {
-    let pid = child.pid();
-    append_optional_launcher_log(log_dir, format!("shutting down backend sidecar PID {pid}"));
-
-    #[cfg(target_os = "windows")]
-    {
-        if terminate_process_tree_with_taskkill(log_dir, pid) {
-            return;
-        }
-        append_optional_launcher_log(
-            log_dir,
-            format!("falling back to direct kill for backend sidecar PID {pid}"),
-        );
-    }
-
-    match child.kill() {
-        Ok(()) => append_optional_launcher_log(
-            log_dir,
-            format!("direct kill sent to backend sidecar PID {pid}"),
-        ),
-        Err(err) => append_optional_launcher_log(
-            log_dir,
-            format!("failed to directly kill backend sidecar PID {pid}: {err}"),
-        ),
     }
 }
 
@@ -243,7 +223,7 @@ fn taskkill_process_tree_args(pid: u32) -> Vec<String> {
 fn terminate_process_tree_with_taskkill(log_dir: Option<&Path>, pid: u32) -> bool {
     append_optional_launcher_log(
         log_dir,
-        format!("terminating process tree for backend sidecar PID {pid}"),
+        format!("terminating process tree for stale backend listener PID {pid}"),
     );
     let args = taskkill_process_tree_args(pid);
     match ProcessCommand::new("taskkill")
@@ -311,7 +291,7 @@ fn clear_backend_port(log_dir: &Path, port: u16) {
     for pid in pids {
         append_launcher_log(
             log_dir,
-            format!("killing PID {pid} listening on TCP port {port}"),
+            format!("killing stale PID {pid} listening on TCP port {port}"),
         );
         if !terminate_process_tree_with_taskkill(Some(log_dir), pid) {
             append_launcher_log(
@@ -342,6 +322,18 @@ fn open_route(app: &tauri::AppHandle, route: &str) {
         let _ = window.set_focus();
         let _ = window.eval(route_script(route));
     }
+}
+
+fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
+    if app.get_webview_window(MAIN_WINDOW_LABEL).is_some() {
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
+        .title("AG Swarmer")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(1024.0, 680.0)
+        .build()?;
+    Ok(())
 }
 
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -399,39 +391,53 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn wait_for_backend(timeout: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", BACKEND_PORT)) {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-            let request = format!(
-                "GET /api/v2/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-                BACKEND_PORT
-            );
-            if stream.write_all(request.as_bytes()).is_ok() {
-                let mut response = String::new();
-                if stream.read_to_string(&mut response).is_ok()
-                    && response.starts_with("HTTP/1.1 200")
-                    && response.contains("\"status\":\"ok\"")
-                {
-                    return Ok(());
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(250));
+fn start_in_process_backend(
+    app_data_dir: PathBuf,
+    log_dir: PathBuf,
+) -> Result<oneshot::Sender<()>, String> {
+    let config = AppConfig::for_desktop_app_data(app_data_dir, BACKEND_PORT)
+        .map_err(|err| err.to_string())?;
+    if let Err(err) = telemetry::setup_tracing(&config) {
+        append_launcher_log(
+            &log_dir,
+            format!("tracing already initialized or failed: {err}"),
+        );
     }
-    Err(format!(
-        "backend did not become healthy within {} seconds",
-        timeout.as_secs()
-    ))
+
+    let server_config = server::ServerConfig::from(config);
+    let (state, listener, addr) = tauri::async_runtime::block_on(async {
+        let state = server::build_state(&server_config).await?;
+        let (listener, addr) = server::bind_listener(&server_config).await?;
+        anyhow::Ok((state, listener, addr))
+    })
+    .map_err(|err| err.to_string())?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let backend_log_dir = log_dir.clone();
+    tauri::async_runtime::spawn(async move {
+        append_backend_log(&backend_log_dir, "in-process backend starting");
+        let result = server::serve_listener_with_shutdown(listener, addr, state, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await;
+        match result {
+            Ok(()) => append_backend_log(&backend_log_dir, "in-process backend stopped"),
+            Err(err) => append_backend_log(
+                &backend_log_dir,
+                format!("in-process backend stopped with error: {err:#}"),
+            ),
+        }
+    });
+
+    append_launcher_log(&log_dir, "backend task spawned");
+    Ok(shutdown_tx)
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(BackendChild(Mutex::new(None)))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(BackendShutdown(std::sync::Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             backend_base_url,
             pick_workspace_folder,
@@ -452,68 +458,10 @@ fn main() {
 
             create_tray(app)?;
             clear_backend_port(&log_dir, BACKEND_PORT);
-            let app_data_arg = app_data_dir.to_string_lossy().to_string();
-            let port_arg = BACKEND_PORT.to_string();
-            let command = app.shell().sidecar("ag-swarmer-backend")?.args([
-                "--port",
-                &port_arg,
-                "--app-data-dir",
-                &app_data_arg,
-            ]);
-            append_launcher_log(&log_dir, "spawning backend sidecar");
-            let (mut rx, child) = command.spawn()?;
-
-            let sidecar_log_dir = log_dir.clone();
-            thread::spawn(move || {
-                while let Some(event) = rx.blocking_recv() {
-                    match event {
-                        CommandEvent::Stdout(line) => {
-                            append_launcher_log(
-                                &sidecar_log_dir,
-                                format!(
-                                    "backend stdout: {}",
-                                    String::from_utf8_lossy(&line).trim_end()
-                                ),
-                            );
-                        }
-                        CommandEvent::Stderr(line) => {
-                            append_launcher_log(
-                                &sidecar_log_dir,
-                                format!(
-                                    "backend stderr: {}",
-                                    String::from_utf8_lossy(&line).trim_end()
-                                ),
-                            );
-                        }
-                        CommandEvent::Terminated(payload) => {
-                            append_launcher_log(
-                                &sidecar_log_dir,
-                                format!("backend terminated: {:?}", payload),
-                            );
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            });
-
-            let state = app.state::<BackendChild>();
-            *state.0.lock().expect("backend child mutex poisoned") = Some(child);
-
-            let health_log_dir = log_dir.clone();
-            thread::spawn(move || {
-                append_launcher_log(
-                    &health_log_dir,
-                    "waiting for backend health check in background",
-                );
-                match wait_for_backend(Duration::from_secs(60)) {
-                    Ok(()) => append_launcher_log(&health_log_dir, "backend healthy"),
-                    Err(message) => append_launcher_log(
-                        &health_log_dir,
-                        format!("backend health check is still pending: {message}"),
-                    ),
-                }
-            });
+            let shutdown = start_in_process_backend(app_data_dir, log_dir.clone())?;
+            let state = app.state::<BackendShutdown>();
+            *state.0.lock().expect("backend shutdown mutex poisoned") = Some(shutdown);
+            create_main_window(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {

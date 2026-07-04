@@ -18,8 +18,9 @@
 //! task that serializes outgoing lines, and a reader task that demultiplexes
 //! incoming lines into (a) responses routed back to the matching pending
 //! [`AcpConnection::request`], (b) `session/update` notifications mapped to
-//! [`AcpAgentEvent`]s, and (c) `session/request_permission` requests answered
-//! per the configured [`PermissionPolicy`].
+//! [`AcpAgentEvent`]s and sent to the currently active turn's event sink, and
+//! (c) `session/request_permission` requests answered per the configured
+//! [`PermissionPolicy`].
 //!
 //! The reader **skips any stdout line that is not a JSON object** (blank lines,
 //! banner text, and, in tests, the integration harness's `running N tests`
@@ -115,6 +116,7 @@ struct RpcError {
 }
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, RpcError>>>>>;
+type EventSink = Arc<Mutex<Option<mpsc::UnboundedSender<AcpAgentEvent>>>>;
 
 /// Messages sent to the background writer task.
 enum WriterMessage {
@@ -126,6 +128,7 @@ enum WriterMessage {
 pub struct AcpConnection {
     writer_tx: mpsc::UnboundedSender<WriterMessage>,
     pending: PendingMap,
+    events_tx: EventSink,
     next_id: Arc<AtomicI64>,
     stdout_tail: Arc<Mutex<Tail>>,
     reader: JoinHandle<()>,
@@ -145,6 +148,7 @@ impl AcpConnection {
     ) -> Self {
         let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<WriterMessage>();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let events_tx: EventSink = Arc::new(Mutex::new(Some(events_tx)));
         let stdout_tail = Arc::new(Mutex::new(Tail::new()));
 
         let writer = tokio::spawn(async move {
@@ -167,6 +171,7 @@ impl AcpConnection {
 
         let reader_pending = pending.clone();
         let reader_writer_tx = writer_tx.clone();
+        let reader_events_tx = events_tx.clone();
         let reader_stdout_tail = stdout_tail.clone();
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -182,7 +187,7 @@ impl AcpConnection {
                     &reader_pending,
                     &reader_writer_tx,
                     permission_policy,
-                    &events_tx,
+                    &reader_events_tx,
                 )
                 .await;
             }
@@ -194,11 +199,27 @@ impl AcpConnection {
         Self {
             writer_tx,
             pending,
+            events_tx,
             next_id: Arc::new(AtomicI64::new(1)),
             stdout_tail,
             reader,
             writer,
         }
+    }
+
+    /// Replace the event sink used for future `session/update` notifications.
+    ///
+    /// Reusable ACP sessions keep one reader task across many prompt turns;
+    /// each turn installs its own sink before calling `session/prompt` so
+    /// streamed updates flow to that turn's [`AcpRun`].
+    pub async fn set_events_tx(&self, events_tx: mpsc::UnboundedSender<AcpAgentEvent>) {
+        *self.events_tx.lock().await = Some(events_tx);
+    }
+
+    /// Clear the current turn's event sink so that its receiver can close
+    /// while a reusable ACP session stays alive for later prompts.
+    pub async fn clear_events_tx(&self) {
+        *self.events_tx.lock().await = None;
     }
 
     /// Send a JSON-RPC request and await its response.
@@ -249,6 +270,12 @@ impl AcpConnection {
         (!text.is_empty()).then_some(text)
     }
 
+    /// Take and clear the bounded stdout tail captured so far.
+    pub async fn take_stdout_tail(&self) -> Option<String> {
+        let text = std::mem::take(&mut *self.stdout_tail.lock().await).into_string();
+        (!text.is_empty()).then_some(text)
+    }
+
     /// Close the connection and return the bounded stdout tail.
     ///
     /// Call this after the child has exited (or after requesting a kill). The
@@ -282,7 +309,7 @@ async fn route_incoming(
     pending: &PendingMap,
     writer_tx: &mpsc::UnboundedSender<WriterMessage>,
     permission_policy: PermissionPolicy,
-    events_tx: &mpsc::UnboundedSender<AcpAgentEvent>,
+    events_tx: &EventSink,
 ) {
     let trimmed = line.trim();
     if trimmed.is_empty() || !trimmed.starts_with('{') {
@@ -307,7 +334,10 @@ async fn route_incoming(
         (Some(method), _) => {
             if method == METHOD_SESSION_UPDATE {
                 if let Some(event) = message.get("params").and_then(event_from_update) {
-                    let _ = events_tx.send(event);
+                    let events_tx = events_tx.lock().await.clone();
+                    if let Some(events_tx) = events_tx {
+                        let _ = events_tx.send(event);
+                    }
                 }
             }
         }

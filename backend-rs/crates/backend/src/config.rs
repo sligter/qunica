@@ -47,6 +47,25 @@ impl AppConfig {
         Ok(config)
     }
 
+    pub fn for_desktop_app_data(app_data_dir: PathBuf, port: u16) -> Result<Self, ConfigError> {
+        let mut config = Self {
+            host: "127.0.0.1".to_string(),
+            port,
+            app_data_dir: Some(app_data_dir),
+            log_level: std::env::var("AG_SWARMER_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            database_url: std::env::var("AG_SWARMER_DATABASE_URL")
+                .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string()),
+            secret_key: std::env::var("SECRET_KEY")
+                .unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string()),
+            access_token_expire_minutes: std::env::var("ACCESS_TOKEN_EXPIRE_MINUTES")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(10080),
+        };
+        config.apply_app_data_defaults()?;
+        Ok(config)
+    }
+
     fn apply_app_data_defaults(&mut self) -> Result<(), ConfigError> {
         let Some(app_data_dir) = self.app_data_dir.clone() else {
             return Ok(());

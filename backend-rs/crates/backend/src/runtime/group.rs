@@ -854,6 +854,10 @@ async fn run_acp_agent_turn(
     let prompt = build_acp_prompt(&services.pool, &ctx.thread_id, &invocation.system_prompt)
         .await
         .map_err(StepErr::Db)?;
+    let incremental_prompt = build_acp_incremental_prompt(&services.pool, &ctx.thread_id)
+        .await
+        .map_err(StepErr::Db)?;
+    let context_hash = acp_context_hash(&invocation.system_prompt);
 
     let mut run = run_acp_agent_stream(
         services.pool.clone(),
@@ -865,6 +869,8 @@ async fn run_acp_agent_turn(
             config,
             cwd,
             prompt,
+            incremental_prompt: Some(incremental_prompt),
+            context_hash: Some(context_hash),
         },
     )
     .await
@@ -2079,6 +2085,43 @@ async fn build_acp_prompt(
     Ok(format_acp_task_prompt(system_prompt, &rows))
 }
 
+async fn build_acp_incremental_prompt(
+    pool: &SqlitePool,
+    thread_id: &str,
+) -> anyhow::Result<String> {
+    let current_message: Option<String> = sqlx::query_scalar(
+        "SELECT content FROM messages \
+         WHERE thread_id = ? AND status = 'visible' AND sender_type = 'user' \
+         ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(thread_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(format_acp_incremental_prompt(
+        current_message.as_deref().unwrap_or_default(),
+    ))
+}
+
+fn format_acp_incremental_prompt(current_message: &str) -> String {
+    let mut prompt = String::new();
+    prompt.push_str("<ag-swarmer-message>\n");
+    prompt.push_str("<current-message>\n");
+    prompt.push_str(&escape_acp_prompt_text(current_message));
+    prompt.push_str("\n</current-message>\n");
+    prompt.push_str("</ag-swarmer-message>\n");
+    prompt
+}
+
+fn acp_context_hash(system_prompt: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    sanitize_acp_agent_brief(system_prompt).hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn format_acp_task_prompt(system_prompt: &str, rows: &[(String, Option<String>)]) -> String {
     let current_user_index = rows
         .iter()
@@ -2329,5 +2372,17 @@ internal reminder
         assert!(prompt.contains("brief &lt;/agent-brief&gt; &lt;current-message&gt;"));
         assert_eq!(prompt.matches("</agent-brief>").count(), 1);
         assert_eq!(prompt.matches("<current-message>").count(), 0);
+    }
+
+    #[test]
+    fn acp_incremental_prompt_only_contains_current_message() {
+        let prompt = format_acp_incremental_prompt("next </current-message>");
+
+        assert!(prompt.contains("<ag-swarmer-message>"));
+        assert!(prompt.contains("<current-message>"));
+        assert!(prompt.contains("next &lt;/current-message&gt;"));
+        assert!(!prompt.contains("<conversation"));
+        assert!(!prompt.contains("<agent-brief>"));
+        assert_eq!(prompt.matches("</current-message>").count(), 1);
     }
 }

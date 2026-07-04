@@ -6,15 +6,6 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "shell:allow-execute",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "ag-swarmer-backend",
-          "sidecar": true
-        }
-      ]
-    }
+    "shell:allow-open"
   ]
 }

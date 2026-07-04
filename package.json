@@ -1,16 +1,16 @@
 {
   "name": "ag-swarmer",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "description": "AgentChat 群式多 Agent 协作工作台",
   "scripts": {
     "dev": "pnpm --filter @ag-swarmer/frontend dev",
     "build": "pnpm --filter @ag-swarmer/frontend build",
-    "desktop:dev": "pnpm desktop:icons && pnpm desktop:backend && pnpm --filter @ag-swarmer/frontend tauri dev",
-    "desktop:build": "pnpm desktop:icons && pnpm desktop:backend && pnpm --filter @ag-swarmer/frontend tauri build && pnpm desktop:zip",
-    "desktop:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-rust-backend-sidecar.ps1",
+    "desktop:dev": "pnpm desktop:icons && pnpm --filter @ag-swarmer/frontend tauri dev",
+    "desktop:build": "pnpm desktop:icons && pnpm --filter @ag-swarmer/frontend tauri build && pnpm desktop:portable",
+    "desktop:backend": "cargo build --manifest-path backend-rs/Cargo.toml --package ag-swarmer-backend --release",
     "desktop:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-desktop-icons.ps1",
-    "desktop:zip": "node scripts/package-desktop-portable.mjs",
+    "desktop:portable": "node scripts/package-desktop-portable.mjs",
     "lint": "pnpm --filter @ag-swarmer/frontend lint",
     "type-check": "pnpm -r type-check"
   },
