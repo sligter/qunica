@@ -94,7 +94,7 @@ function checkWorkflowShape(text) {
   expect(text.includes("updaterJsonPreferNsis: true"), "Windows updater JSON should prefer NSIS installers");
   expect(text.includes("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"), "workflow must reference TAURI_SIGNING_PRIVATE_KEY secret");
   expect(text.includes("TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"), "workflow must reference TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret");
-  expect(text.includes("pnpm --dir frontend exec tauri signer sign"), "server archives must be signed with the Tauri signer");
+  expect(text.includes('pnpm --dir frontend exec tauri signer sign "../${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}"'), "server archives must be signed with the Tauri signer from the frontend working directory");
   expect(!text.includes('> "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig"'), "server signing must not redirect signer stdout into .sig files");
   expect(text.includes('test -s "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig"'), "server signing must verify the signer-created .sig file exists");
   expect(text.includes("sha256"), "server archives must receive sha256 files");
