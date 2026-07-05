@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { ImportSkillForm } from '@/components/skills/ImportSkillForm'
 
-export function CreateSkillRightPane() {
+export function SkillCreatePage() {
   const navigate = useNavigate()
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background">

@@ -1,0 +1,191 @@
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+
+import { SkillResourcesPanel } from '@/components/skills/SkillResourcesPanel'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { useDeleteSkill, useSkill, useUpdateSkill } from '@/hooks/useSkills'
+import { ApiError } from '@/lib/api-v2/client'
+import type { SkillRead } from '@/types/api'
+
+export function SkillDetailPage() {
+  const { skillId } = useParams<{ skillId: string }>()
+  const skill = useSkill(skillId)
+  const del = useDeleteSkill()
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  if (skill.isLoading) {
+    return <div className="p-6 text-sm text-muted-foreground">Loading skill…</div>
+  }
+  if (skill.error) {
+    return (
+      <div className="p-6 text-sm text-destructive">
+        Failed to load skill: {String(skill.error)}
+      </div>
+    )
+  }
+  if (!skill.data) {
+    return <div className="p-6 text-sm text-muted-foreground">Skill not found.</div>
+  }
+
+  const s = skill.data
+
+  if (editing) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
+        <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
+          <header className="flex items-baseline justify-between gap-4">
+            <h1 className="font-serif text-xl font-semibold tracking-tight">
+              Edit {s.name}
+            </h1>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+          </header>
+          <EditSkillForm skill={s} onSaved={() => setEditing(false)} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
+      <div className="mx-auto w-full max-w-3xl space-y-6 p-8">
+        <header className="flex items-baseline justify-between gap-4">
+          <div className="space-y-1">
+            <h1 className="font-serif text-xl font-semibold tracking-tight">{s.name}</h1>
+            {s.description && (
+              <p className="text-sm text-muted-foreground">{s.description}</p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => setConfirmOpen(true)}
+              disabled={del.isPending}
+            >
+              {del.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
+        </header>
+
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-[10px] uppercase">
+            source: {s.source}
+          </Badge>
+          <Badge
+            variant={s.status === 'active' ? 'default' : 'secondary'}
+            className="text-[10px]"
+          >
+            {s.status}
+          </Badge>
+        </div>
+
+        <section className="space-y-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Body (rendered as appended system-prompt fragment)
+          </h3>
+          <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-4 text-sm">
+            {s.body_markdown}
+          </pre>
+        </section>
+
+        <SkillResourcesPanel skill={s} />
+      </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Delete skill "${s.name}"?`}
+        description="Mounted agents will lose this system-prompt fragment."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          await del.mutateAsync(s.id)
+          void navigate('/skills')
+        }}
+      />
+    </div>
+  )
+}
+
+interface EditSkillFormProps {
+  skill: SkillRead
+  onSaved: () => void
+}
+
+function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
+  const update = useUpdateSkill(skill.id)
+  const [name, setName] = useState(skill.name)
+  const [description, setDescription] = useState(skill.description ?? '')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setName(skill.name)
+    setDescription(skill.description ?? '')
+  }, [skill.description, skill.name])
+
+  const trimmedName = name.trim()
+  const trimmedDescription = description.trim()
+  const dirty =
+    trimmedName !== skill.name || trimmedDescription !== (skill.description ?? '')
+  const canSave = dirty && trimmedName.length > 0 && !update.isPending
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    update.mutate(
+      {
+        name: trimmedName,
+        description: trimmedDescription || null,
+      },
+      {
+        onSuccess: () => onSaved(),
+        onError: (err) => {
+          setError(err instanceof ApiError ? err.message : 'Failed to update skill')
+        },
+      },
+    )
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="skill-edit-name">Name</Label>
+        <Input
+          id="skill-edit-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="skill-edit-description">Description</Label>
+        <Textarea
+          id="skill-edit-description"
+          rows={3}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="One-line summary of what this skill does."
+        />
+      </div>
+      {error && (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+      <Button type="submit" disabled={!canSave}>
+        {update.isPending ? 'Saving…' : 'Save changes'}
+      </Button>
+    </form>
+  )
+}

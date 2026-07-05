@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Files, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucide-react'
+import { Files, PanelRightClose, Settings } from 'lucide-react'
 
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
-import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
@@ -43,7 +42,6 @@ export function GroupChatPage() {
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const fileNavRequest = useFileNavStore((s) => s.request)
   const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
     readWorkspaceFilesOpen(groupId),
   )
@@ -121,11 +119,6 @@ export function GroupChatPage() {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="icon" asChild aria-label="Manage group members">
-            <Link to={`/groups/${groupId}/members`}>
-              <UsersRound className="h-4 w-4" />
-            </Link>
-          </Button>
           <Button
             variant={workspaceFilesOpen ? 'secondary' : 'ghost'}
             size="icon"
@@ -138,18 +131,10 @@ export function GroupChatPage() {
               <Files className="h-4 w-4" />
             )}
           </Button>
-          <Button variant="ghost" size="icon" asChild aria-label="Group notes">
-            <Link to={`/groups/${groupId}/notes`}>
-              <NotebookPen className="h-4 w-4" />
+          <Button variant="ghost" size="icon" asChild aria-label="Manage group">
+            <Link to={`/groups/${groupId}/manage`}>
+              <Settings className="h-4 w-4" />
             </Link>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setSettingsOpen(true)}
-            aria-label="Group settings"
-          >
-            <Settings className="h-4 w-4" />
           </Button>
         </div>
       </header>
@@ -205,14 +190,6 @@ export function GroupChatPage() {
           </>
         )}
       </div>
-
-      {group.data && (
-        <GroupSettingsDialog
-          group={group.data}
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-        />
-      )}
 
     </div>
   )

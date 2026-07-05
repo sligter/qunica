@@ -17,7 +17,7 @@ const items: RailItem[] = [
   { to: '/providers', label: 'Providers', icon: Plug },
   { to: '/skills', label: 'Skills', icon: Sparkles },
   { to: '/workspaces', label: 'Workspace', icon: Folder },
-  { to: '/settings/system', label: 'Settings', icon: Settings },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
 const LAST_GROUP_PATH_KEY = 'ag-swarmer:navigation:last-group-path'

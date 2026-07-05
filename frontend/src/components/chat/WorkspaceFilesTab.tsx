@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   Dialog,
   DialogContent,
@@ -67,6 +68,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
   )
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [renaming, setRenaming] = useState<GroupWorkspaceFileRead | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<GroupWorkspaceFileRead | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
@@ -255,29 +257,30 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
 
   const deletePath = (file: GroupWorkspaceFileRead) => {
     if (!hasGroupId) return
-    const confirmed = window.confirm(`Delete ${file.path}?`)
-    if (!confirmed) return
-    void del.mutateAsync(file.path).then(() => {
-      const deletesSelectedPath =
-        selectedPath === file.path || (file.is_dir && selectedPath?.startsWith(`${file.path}/`))
-      setSelectedPath((selected) => {
-        if (selected === file.path) return null
-        if (file.is_dir && selected?.startsWith(`${file.path}/`)) return null
-        return selected
-      })
-      setSelectedWorkspacePaths((current) => {
-        const next = new Set<string>()
-        for (const path of current) {
-          if (path === file.path) continue
-          if (file.is_dir && path.startsWith(`${file.path}/`)) continue
-          next.add(path)
-        }
-        return next
-      })
-      if (deletesSelectedPath) {
-        setIsPreviewOpen(false)
-      }
+    setPendingDelete(file)
+  }
+
+  const performDelete = async (file: GroupWorkspaceFileRead) => {
+    await del.mutateAsync(file.path)
+    const deletesSelectedPath =
+      selectedPath === file.path || (file.is_dir && selectedPath?.startsWith(`${file.path}/`))
+    setSelectedPath((selected) => {
+      if (selected === file.path) return null
+      if (file.is_dir && selected?.startsWith(`${file.path}/`)) return null
+      return selected
     })
+    setSelectedWorkspacePaths((current) => {
+      const next = new Set<string>()
+      for (const path of current) {
+        if (path === file.path) continue
+        if (file.is_dir && path.startsWith(`${file.path}/`)) continue
+        next.add(path)
+      }
+      return next
+    })
+    if (deletesSelectedPath) {
+      setIsPreviewOpen(false)
+    }
   }
 
   return (
@@ -443,6 +446,24 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
           </ul>
         )}
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPendingDelete(null)
+          }}
+          title={`Delete ${pendingDelete.path}?`}
+          description={
+            pendingDelete.is_dir
+              ? 'This folder and everything inside it will be deleted.'
+              : 'This file will be deleted from the group workspace.'
+          }
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => performDelete(pendingDelete)}
+        />
+      )}
 
       <Dialog open={isPreviewOpen && selectedPath !== null} onOpenChange={setIsPreviewOpen}>
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-0">

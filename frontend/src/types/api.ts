@@ -272,6 +272,13 @@ export interface SkillCreate {
   body_markdown: string
 }
 
+export interface SkillUpdate {
+  name?: string
+  description?: string | null
+  body_markdown?: string
+  metadata?: Record<string, unknown> | null
+}
+
 export interface SkillImport {
   raw: string
 }

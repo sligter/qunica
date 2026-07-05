@@ -69,8 +69,8 @@ interface GroupFormDialogProps {
 
 /**
  * Modal dialog for creating a new group. Editing an existing group is handled
- * by `GroupSettingsDialog` (mounted on the chat header's gear icon), which
- * also covers muted/admin agent management — out of scope here.
+ * on the group manage page (`/groups/:groupId/manage`), reached from the chat
+ * header's gear icon — out of scope here.
  */
 export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
   const navigate = useNavigate()
@@ -183,7 +183,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
                 Group workspace root is not configured.{' '}
                 <Link
                   className="underline"
-                  to="/settings/system"
+                  to="/settings"
                   onClick={() => onOpenChange(false)}
                 >
                   Set it in system settings

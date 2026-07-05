@@ -8,6 +8,7 @@ import type {
   SkillImport,
   SkillRead,
   SkillResourceRead,
+  SkillUpdate,
 } from '@/types/api'
 
 function encodeResourcePath(path: string) {
@@ -128,6 +129,23 @@ export function useUpdateSkillResource(skillId: string | undefined, path: string
       qc.setQueryData(['skills', skillId, 'resources', updated.path], updated)
       void qc.invalidateQueries({ queryKey: ['skills'] })
       void qc.invalidateQueries({ queryKey: ['skills', skillId] })
+    },
+  })
+}
+
+export function useUpdateSkill(skillId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: SkillUpdate) =>
+      fetchJson<SkillRead>(`/skills/${skillId}`, {
+        token,
+        method: 'PATCH',
+        body: data,
+      }),
+    onSuccess: (updated) => {
+      qc.setQueryData(['skills', skillId], updated)
+      void qc.invalidateQueries({ queryKey: ['skills'] })
     },
   })
 }

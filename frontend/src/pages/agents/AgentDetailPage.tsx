@@ -2,13 +2,15 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { EditAgentForm } from '@/components/agents/EditAgentForm'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useAgent } from '@/hooks/useAgents'
 import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 
-export function AgentDetailRightPane() {
+export function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>()
   const agent = useAgent(agentId)
   const providers = useProviders()
@@ -16,9 +18,10 @@ export function AgentDetailRightPane() {
   const navigate = useNavigate()
   const del = useDeleteAgent()
   const [editing, setEditing] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (agent.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading agent...</div>
+    return <div className="p-6 text-sm text-muted-foreground">Loading agent…</div>
   }
   if (agent.error) {
     return (
@@ -37,31 +40,19 @@ export function AgentDetailRightPane() {
     : null
   const mountedSkills = (skills.data ?? []).filter((s) => a.skill_ids.includes(s.id))
 
-  const onDelete = async () => {
-    if (!confirm(`Delete agent "${a.name}"? This will remove it from active agent lists.`)) {
-      return
-    }
-    await del.mutateAsync(a.id)
-    void navigate('/agents')
-  }
-
   if (editing) {
     return (
       <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
         <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
           <header className="flex items-baseline justify-between gap-4">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">Edit {a.name}</h1>
+            <h1 className="font-serif text-xl font-semibold tracking-tight">
+              Edit {a.name}
+            </h1>
             <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
               Cancel
             </Button>
           </header>
-          <EditAgentForm
-            agent={a}
-            onSaved={() => {
-              setEditing(false)
-              void navigate(`/agents/${a.id}`)
-            }}
-          />
+          <EditAgentForm agent={a} onSaved={() => setEditing(false)} />
         </div>
       </div>
     )
@@ -90,11 +81,11 @@ export function AgentDetailRightPane() {
             </Button>
             <Button
               size="sm"
-              variant="outline"
-              onClick={onDelete}
+              variant="destructive"
+              onClick={() => setConfirmOpen(true)}
               disabled={del.isPending}
             >
-              {del.isPending ? 'Deleting...' : 'Delete'}
+              {del.isPending ? 'Deleting…' : 'Delete'}
             </Button>
           </div>
         </header>
@@ -119,9 +110,26 @@ export function AgentDetailRightPane() {
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Status
             </h3>
-            <p>{a.status}</p>
+            <Badge variant={a.status === 'active' ? 'default' : 'secondary'}>
+              {a.status}
+            </Badge>
           </div>
         </section>
+
+        {a.llm_config && Object.keys(a.llm_config).length > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Model parameters
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(a.llm_config).map(([k, v]) => (
+                <Badge key={k} variant="outline">
+                  {k}: {String(v)}
+                </Badge>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="space-y-2">
           <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -130,18 +138,29 @@ export function AgentDetailRightPane() {
           {mountedSkills.length === 0 ? (
             <p className="text-sm text-muted-foreground">No skills mounted.</p>
           ) : (
-            <ul className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2">
               {mountedSkills.map((s) => (
-                <li key={s.id}>
-                  <span className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs">
-                    <span className="font-medium">{s.name}</span>
-                  </span>
-                </li>
+                <Badge key={s.id} variant="secondary">
+                  {s.name}
+                </Badge>
               ))}
-            </ul>
+            </div>
           )}
         </section>
       </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Delete agent "${a.name}"?`}
+        description="This will remove it from active agent lists."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          await del.mutateAsync(a.id)
+          void navigate('/agents')
+        }}
+      />
     </div>
   )
 }

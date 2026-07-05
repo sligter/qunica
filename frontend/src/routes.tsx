@@ -3,18 +3,24 @@ import { Navigate, createBrowserRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { RequireAuth } from '@/components/layout/RequireAuth'
 import { NotFoundPage } from '@/pages/NotFoundPage'
-import { AgentsPage } from '@/pages/agents/AgentsPage'
+import { AgentCreatePage } from '@/pages/agents/AgentCreatePage'
+import { AgentDetailPage } from '@/pages/agents/AgentDetailPage'
+import { AgentsIndexPage } from '@/pages/agents/AgentsIndexPage'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { GroupChatPage } from '@/pages/group/GroupChatPage'
-import { GroupMembersPage } from '@/pages/group/GroupMembersPage'
-import { GroupNotesPage } from '@/pages/group/GroupNotesPage'
+import { GroupManagePage } from '@/pages/group/GroupManagePage'
 import { GroupsRightPane } from '@/pages/groups/GroupsRightPane'
-import { ProvidersPage } from '@/pages/providers/ProvidersPage'
-import { SettingsRedirectPage } from '@/pages/settings/SettingsRedirectPage'
+import { ProviderCreatePage } from '@/pages/providers/ProviderCreatePage'
+import { ProviderDetailPage } from '@/pages/providers/ProviderDetailPage'
+import { ProvidersIndexPage } from '@/pages/providers/ProvidersIndexPage'
 import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
-import { SkillsPage } from '@/pages/skills/SkillsPage'
-import { WorkspacesPage } from '@/pages/workspace/WorkspacesPage'
+import { SkillCreatePage } from '@/pages/skills/SkillCreatePage'
+import { SkillDetailPage } from '@/pages/skills/SkillDetailPage'
+import { SkillsIndexPage } from '@/pages/skills/SkillsIndexPage'
+import { WorkspaceCreatePage } from '@/pages/workspace/WorkspaceCreatePage'
+import { WorkspaceDetailPage } from '@/pages/workspace/WorkspaceDetailPage'
+import { WorkspacesIndexPage } from '@/pages/workspace/WorkspacesIndexPage'
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -27,15 +33,21 @@ export const router = createBrowserRouter([
         children: [
           { path: '/', element: <Navigate to="/groups" replace /> },
           { path: '/groups', element: <GroupsRightPane /> },
-          { path: '/groups/:groupId/members', element: <GroupMembersPage /> },
-          { path: '/groups/:groupId/notes', element: <GroupNotesPage /> },
+          { path: '/groups/:groupId/manage', element: <GroupManagePage /> },
           { path: '/groups/:groupId', element: <GroupChatPage /> },
-          { path: '/agents', element: <AgentsPage /> },
-          { path: '/providers', element: <ProvidersPage /> },
-          { path: '/skills', element: <SkillsPage /> },
-          { path: '/workspaces', element: <WorkspacesPage /> },
-          { path: '/settings', element: <SettingsRedirectPage /> },
-          { path: '/settings/system', element: <SystemSettingsPage /> },
+          { path: '/agents', element: <AgentsIndexPage /> },
+          { path: '/agents/new', element: <AgentCreatePage /> },
+          { path: '/agents/:agentId', element: <AgentDetailPage /> },
+          { path: '/providers', element: <ProvidersIndexPage /> },
+          { path: '/providers/new', element: <ProviderCreatePage /> },
+          { path: '/providers/:providerId', element: <ProviderDetailPage /> },
+          { path: '/skills', element: <SkillsIndexPage /> },
+          { path: '/skills/new', element: <SkillCreatePage /> },
+          { path: '/skills/:skillId', element: <SkillDetailPage /> },
+          { path: '/workspaces', element: <WorkspacesIndexPage /> },
+          { path: '/workspaces/new', element: <WorkspaceCreatePage /> },
+          { path: '/workspaces/:workspaceId', element: <WorkspaceDetailPage /> },
+          { path: '/settings', element: <SystemSettingsPage /> },
         ],
       },
     ],
