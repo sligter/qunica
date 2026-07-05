@@ -230,7 +230,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         <Label htmlFor="ea-name">Name</Label>
         <Input id="ea-name" {...form.register('name')} />
         {form.formState.errors.name && (
-          <p className="text-xs text-red-600">{form.formState.errors.name.message}</p>
+          <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
         )}
       </div>
 
@@ -256,7 +256,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           inputRef={systemPromptField.ref}
         />
         {form.formState.errors.system_prompt && (
-          <p className="text-xs text-red-600">
+          <p className="text-xs text-destructive">
             {form.formState.errors.system_prompt.message}
           </p>
         )}
@@ -310,7 +310,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           error={form.formState.errors.workspace_id?.message}
         />
         {!agent.workspace_id && (
-          <p className="text-xs text-amber-700">
+          <p className="text-xs text-warning-foreground">
             This existing agent has no workspace yet. Select one before saving.
           </p>
         )}
@@ -509,7 +509,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       </section>
 
       {submitError && (
-        <p className="text-sm text-red-600" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {submitError}
         </p>
       )}

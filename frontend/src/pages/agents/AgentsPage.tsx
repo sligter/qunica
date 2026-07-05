@@ -31,7 +31,7 @@ export function AgentsPage() {
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
         <div className="flex items-center gap-2">
           <Bot className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-base font-semibold tracking-tight">Agents</h1>
+          <h1 className="font-serif text-base font-semibold tracking-tight">Agents</h1>
           {agents.data && (
             <span className="text-xs text-muted-foreground">({agents.data.length})</span>
           )}
@@ -47,7 +47,7 @@ export function AgentsPage() {
           <p className="text-sm text-muted-foreground">Loading agents…</p>
         )}
         {agents.error && (
-          <p className="text-sm text-red-600">Failed to load agents.</p>
+          <p className="text-sm text-destructive">Failed to load agents.</p>
         )}
         {agents.data && agents.data.length === 0 && (
           <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
@@ -83,7 +83,7 @@ export function AgentsPage() {
                 >
                   <CardHeader className="flex flex-row items-start gap-3 space-y-0 pb-3">
                     <Avatar className="h-10 w-10 shrink-0">
-                      <AvatarFallback className="bg-emerald-500/90 text-white font-semibold">
+                      <AvatarFallback className="bg-avatar-5 text-avatar-foreground font-semibold">
                         {a.name.slice(0, 1).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>

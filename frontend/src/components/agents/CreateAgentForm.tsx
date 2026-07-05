@@ -241,7 +241,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
         <Label htmlFor="agent-name">Name</Label>
         <Input id="agent-name" placeholder="Echo" {...form.register('name')} />
         {form.formState.errors.name && (
-          <p className="text-xs text-red-600">{form.formState.errors.name.message}</p>
+          <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
         )}
       </div>
 
@@ -272,7 +272,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
           inputRef={systemPromptField.ref}
         />
         {form.formState.errors.system_prompt && (
-          <p className="text-xs text-red-600">
+          <p className="text-xs text-destructive">
             {form.formState.errors.system_prompt.message}
           </p>
         )}
@@ -526,12 +526,12 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       </section>
 
       {submitError && (
-        <p className="text-sm text-red-600" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {submitError}
         </p>
       )}
       {submittedName && (
-        <p className="text-sm text-green-700">Created agent: {submittedName}</p>
+        <p className="text-sm text-success">Created agent: {submittedName}</p>
       )}
       <Button type="submit" disabled={createAgent.isPending}>
         {createAgent.isPending ? 'Creating...' : 'Create agent'}

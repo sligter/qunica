@@ -72,7 +72,7 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
           <Label htmlFor="name">Name</Label>
           <Input id="name" autoComplete="name" {...form.register('name')} />
           {form.formState.errors.name && (
-            <p className="text-xs text-red-600">
+            <p className="text-xs text-destructive">
               {form.formState.errors.name.message}
             </p>
           )}
@@ -82,7 +82,7 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
         <Label htmlFor="email">Email</Label>
         <Input id="email" type="email" autoComplete="email" {...form.register('email')} />
         {form.formState.errors.email && (
-          <p className="text-xs text-red-600">{form.formState.errors.email.message}</p>
+          <p className="text-xs text-destructive">{form.formState.errors.email.message}</p>
         )}
       </div>
       <div className="space-y-1.5">
@@ -94,13 +94,13 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
           {...form.register('password')}
         />
         {form.formState.errors.password && (
-          <p className="text-xs text-red-600">
+          <p className="text-xs text-destructive">
             {form.formState.errors.password.message}
           </p>
         )}
       </div>
       {submitError && (
-        <p className="text-sm text-red-600" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {submitError}
         </p>
       )}

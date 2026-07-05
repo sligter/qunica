@@ -8,7 +8,7 @@ export function CreateSkillRightPane() {
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
       <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
         <header className="space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight">Import a skill</h1>
+          <h1 className="font-serif text-xl font-semibold tracking-tight">Import a skill</h1>
           <p className="text-sm text-muted-foreground">
             Import a skill from a zip package, GitHub repository, or Anthropic-style
             SKILL.md. When mounted on an agent, the body is appended to that agent's

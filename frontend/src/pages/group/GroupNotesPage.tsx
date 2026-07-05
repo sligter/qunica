@@ -22,7 +22,7 @@ export function GroupNotesPage() {
           </Link>
         </Button>
         <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold">Group notes</h1>
+          <h1 className="font-serif truncate text-base font-semibold">Group notes</h1>
           <p className="truncate text-xs text-muted-foreground">{group.data?.name}</p>
         </div>
       </header>

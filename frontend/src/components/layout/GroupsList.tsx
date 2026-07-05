@@ -17,14 +17,14 @@ function avatarColor(seed: string): string {
   // Stable hue from the first chars of the group id/name. Limited to a few
   // pleasing pastels so the rail looks calm.
   const palette = [
-    'bg-blue-500/90 text-white',
-    'bg-emerald-500/90 text-white',
-    'bg-amber-500/90 text-white',
-    'bg-violet-500/90 text-white',
-    'bg-rose-500/90 text-white',
-    'bg-teal-500/90 text-white',
-    'bg-indigo-500/90 text-white',
-    'bg-orange-500/90 text-white',
+    'bg-avatar-3 text-avatar-foreground',
+    'bg-avatar-5 text-avatar-foreground',
+    'bg-avatar-2 text-avatar-foreground',
+    'bg-avatar-4 text-avatar-foreground',
+    'bg-avatar-8 text-avatar-foreground',
+    'bg-avatar-6 text-avatar-foreground',
+    'bg-avatar-7 text-avatar-foreground',
+    'bg-avatar-1 text-avatar-foreground',
   ]
   let h = 0
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
@@ -75,7 +75,7 @@ export function GroupsList({ width, className }: GroupsListProps) {
           <p className="px-4 text-xs text-muted-foreground">Loading…</p>
         )}
         {groups.error && (
-          <p className="px-4 text-xs text-red-600">Failed to load groups.</p>
+          <p className="px-4 text-xs text-destructive">Failed to load groups.</p>
         )}
         {groups.data && groups.data.length === 0 && (
           <p className="px-4 text-xs text-muted-foreground">

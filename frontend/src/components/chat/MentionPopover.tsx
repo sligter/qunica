@@ -79,7 +79,7 @@ export function MentionPopover({
           }}
         >
           <Avatar className="h-6 w-6 shrink-0">
-            <AvatarFallback className="bg-emerald-500/90 text-white text-[10px]">
+            <AvatarFallback className="bg-avatar-5 text-avatar-foreground text-[10px]">
               <Bot className="h-3.5 w-3.5" />
             </AvatarFallback>
           </Avatar>

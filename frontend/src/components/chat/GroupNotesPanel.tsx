@@ -145,7 +145,7 @@ export function GroupNotesPanel({ groupId, open = true, onOpenChange, embedded =
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-600"
+                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
                       onClick={() => del.mutate(n.id)}
                       disabled={del.isPending}
                     >

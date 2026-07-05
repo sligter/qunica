@@ -51,7 +51,7 @@ export function AddAgentToGroupForm({ groupId }: AddAgentToGroupFormProps) {
           + {a.name}
         </Button>
       ))}
-      {error && <span className="text-red-600">{error}</span>}
+      {error && <span className="text-destructive">{error}</span>}
     </div>
   )
 }

@@ -32,7 +32,7 @@ export function AgentsList() {
           <p className="px-4 text-xs text-muted-foreground">Loading…</p>
         )}
         {agents.error && (
-          <p className="px-4 text-xs text-red-600">Failed to load agents.</p>
+          <p className="px-4 text-xs text-destructive">Failed to load agents.</p>
         )}
         {agents.data && agents.data.length === 0 && (
           <p className="px-4 text-xs text-muted-foreground">
@@ -60,7 +60,7 @@ export function AgentsList() {
                   )}
                 >
                   <Avatar className="h-9 w-9 shrink-0">
-                    <AvatarFallback className="bg-emerald-500/90 text-white">
+                    <AvatarFallback className="bg-avatar-5 text-avatar-foreground">
                       {a.name.slice(0, 1).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>

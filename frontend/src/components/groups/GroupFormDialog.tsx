@@ -154,7 +154,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             <Label htmlFor="gd-name">Name</Label>
             <Input id="gd-name" {...form.register('name')} />
             {form.formState.errors.name && (
-              <p className="text-xs text-red-600">
+              <p className="text-xs text-destructive">
                 {form.formState.errors.name.message}
               </p>
             )}
@@ -179,7 +179,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
                 <code>{settings.data?.group_workspace_root}</code>.
               </p>
             ) : (
-              <p className="text-red-600">
+              <p className="text-destructive">
                 Group workspace root is not configured.{' '}
                 <Link
                   className="underline"
@@ -263,7 +263,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
           </div>
 
           {submitError && (
-            <p className="text-sm text-red-600" role="alert">
+            <p className="text-sm text-destructive" role="alert">
               {submitError}
             </p>
           )}

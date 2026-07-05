@@ -143,7 +143,7 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
             </option>
           ))}
         </select>
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="text-xs text-destructive">{error}</p>}
         {workspaces.data && workspaces.data.length === 0 && !showCreate && (
           <p className="text-[11px] text-muted-foreground">
             Create a local workspace first. Cloud sandbox workspaces can use the same field later.
@@ -176,7 +176,7 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
                 value={localPath}
                 onChange={(event) => onManualPathChange(event.target.value)}
                 placeholder="D:/absolute/path/to/project or /absolute/path/to/project"
-                className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-red-500')}
+                className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-destructive')}
               />
               <Button
                 type="button"
@@ -199,7 +199,7 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
               onChange={onFallbackChange}
             />
           </div>
-          {createError && <p className="text-xs text-red-600">{createError}</p>}
+          {createError && <p className="text-xs text-destructive">{createError}</p>}
           <Button
             type="button"
             size="sm"

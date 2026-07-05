@@ -213,7 +213,7 @@ function CreateWorkspacePanel() {
               onChange={(event) => onPathChange(event.target.value)}
               placeholder="D:/absolute/path/to/project"
               className={
-                trimmedPath && !looksAbsolute(trimmedPath) ? 'border-red-500' : undefined
+                trimmedPath && !looksAbsolute(trimmedPath) ? 'border-destructive' : undefined
               }
             />
             <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
@@ -227,7 +227,7 @@ function CreateWorkspacePanel() {
           </Button>
         </div>
       </div>
-      {error ? <p className="mt-3 text-xs text-red-600">{error}</p> : null}
+      {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
     </section>
   )
 }
@@ -358,7 +358,7 @@ function WorkspaceCard({ workspace }: WorkspaceCardProps) {
                   id={`workspace-local-${workspace.id}`}
                   value={localPath}
                   onChange={(event) => onPathChange(event.target.value)}
-                  className={localPathInvalid ? 'border-red-500' : undefined}
+                  className={localPathInvalid ? 'border-destructive' : undefined}
                 />
                 <Button
                   type="button"
@@ -399,9 +399,9 @@ function WorkspaceCard({ workspace }: WorkspaceCardProps) {
           </Button>
         </div>
         {localPathInvalid ? (
-          <p className="text-xs text-red-600">Local workspace paths must be absolute.</p>
+          <p className="text-xs text-destructive">Local workspace paths must be absolute.</p>
         ) : null}
-        {error ? <p className="text-xs text-red-600">{error}</p> : null}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </CardContent>
     </Card>
   )
@@ -461,7 +461,7 @@ function GroupBindingRow({
           onChange={onWorkspaceChange}
         />
       </div>
-      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </li>
   )
 }
@@ -521,7 +521,7 @@ function AgentBindingRow({
           onChange={onWorkspaceChange}
         />
       </div>
-      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </li>
   )
 }
@@ -586,7 +586,7 @@ function GroupAgentSharingRow({
           {membership.share_group_workspace ? 'Use agent workspace' : 'Use group workspace'}
         </Button>
       </div>
-      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </li>
   )
 }
@@ -622,7 +622,7 @@ function GroupSharingCard({
         <p className="text-sm text-muted-foreground">Loading agents...</p>
       ) : null}
       {groupAgents.error ? (
-        <p className="text-sm text-red-600">Failed to load group agents.</p>
+        <p className="text-sm text-destructive">Failed to load group agents.</p>
       ) : null}
       {groupAgents.data && groupAgents.data.length === 0 ? (
         <p className="text-sm text-muted-foreground">No agents in this group.</p>
@@ -773,7 +773,7 @@ export function WorkspacesPage() {
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
         <div className="flex items-center gap-2">
           <Folder className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-base font-semibold tracking-tight">Workspace</h1>
+          <h1 className="font-serif text-base font-semibold tracking-tight">Workspace</h1>
           <span className="text-xs text-muted-foreground">({workspaceList.length})</span>
         </div>
         <Button type="button" size="sm" variant="outline" onClick={onRefresh}>
@@ -792,7 +792,7 @@ export function WorkspacesPage() {
         </div>
 
         {loadError ? (
-          <div className="border-b border-border px-6 py-3 text-sm text-red-600">
+          <div className="border-b border-border px-6 py-3 text-sm text-destructive">
             Failed to load workspace data: {errorMessage(loadError, 'Network error')}
           </div>
         ) : null}

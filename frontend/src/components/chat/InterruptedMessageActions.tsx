@@ -27,7 +27,7 @@ export function InterruptedMessageActions({
         <Play className="h-3 w-3" />
         Continue
       </Button>
-      {error && <span className="text-red-600">Resume failed: {error}</span>}
+      {error && <span className="text-destructive">Resume failed: {error}</span>}
     </div>
   )
 }

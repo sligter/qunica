@@ -15,7 +15,7 @@ export function SkillDetailRightPane() {
   }
   if (skill.error) {
     return (
-      <div className="p-6 text-sm text-red-600">
+      <div className="p-6 text-sm text-destructive">
         Failed to load: {String(skill.error)}
       </div>
     )
@@ -39,7 +39,7 @@ export function SkillDetailRightPane() {
       <div className="mx-auto w-full max-w-3xl space-y-6 p-8">
         <header className="flex items-baseline justify-between gap-4">
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">{s.name}</h1>
+            <h1 className="font-serif text-xl font-semibold tracking-tight">{s.name}</h1>
             {s.description && (
               <p className="text-sm text-muted-foreground">{s.description}</p>
             )}

@@ -46,14 +46,14 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
   }
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-border bg-foreground text-background shadow-sm">
-      <div className="flex items-center justify-between border-b border-background/10 bg-background/10 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-background/70">
+    <div className="my-3 overflow-hidden rounded-xl border border-border bg-code text-code-foreground shadow-sm">
+      <div className="flex items-center justify-between border-b border-code-foreground/10 bg-code-foreground/10 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-code-foreground/70">
         <span>{language ?? 'code'}</span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-[11px] text-background/80 hover:bg-background/15 hover:text-background"
+          className="h-7 px-2 text-[11px] text-code-foreground/80 hover:bg-code-foreground/15 hover:text-code-foreground"
           onClick={() => void copyCode()}
           aria-label="Copy code block"
         >
@@ -136,7 +136,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
             </blockquote>
           ),
           hr: () => <hr className="my-4 border-border" />,
-          h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-semibold">{children}</h1>,
+          h1: ({ children }) => <h1 className="font-serif mb-2 mt-3 text-lg font-semibold">{children}</h1>,
           h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-semibold">{children}</h2>,
           h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-sm font-semibold">{children}</h3>,
           table: ({ children }) => (

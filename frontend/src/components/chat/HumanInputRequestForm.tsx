@@ -46,7 +46,7 @@ export function HumanInputRequestForm({
   return (
     <form
       className={cn(
-        'min-w-0 rounded-md border border-amber-200 bg-amber-50/55 p-3 text-foreground',
+        'min-w-0 rounded-md border border-warning bg-warning/55 p-3 text-foreground',
         compact && 'p-2.5',
         className,
       )}
@@ -54,13 +54,13 @@ export function HumanInputRequestForm({
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs font-semibold text-amber-800">Input requested</div>
+          <div className="text-xs font-semibold text-warning-foreground">Input requested</div>
           <div className="mt-1 text-sm leading-6 text-foreground">
             <MarkdownMessage content={request.question} />
           </div>
         </div>
         {request.required === false ? (
-          <span className="shrink-0 rounded-full border border-amber-200 bg-background px-2 py-0.5 text-[10px] font-medium text-amber-700">
+          <span className="shrink-0 rounded-full border border-warning bg-background px-2 py-0.5 text-[10px] font-medium text-warning-foreground">
             Optional
           </span>
         ) : null}
@@ -82,8 +82,8 @@ export function HumanInputRequestForm({
                     className={cn(
                       'rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
                       selected
-                        ? 'border-amber-400 bg-amber-100 text-amber-950'
-                        : 'border-amber-200 bg-background text-foreground hover:bg-amber-100/70',
+                        ? 'border-warning-foreground/60 bg-warning text-warning-foreground'
+                        : 'border-warning bg-background text-foreground hover:bg-warning/70',
                       'disabled:cursor-not-allowed disabled:opacity-60',
                     )}
                     onClick={() => setSelectedChoice(selected ? '' : choice)}

@@ -14,18 +14,16 @@ interface AgentAvatarProps {
   contextUsage?: ContextUsage | null
 }
 
-/** Deterministic, readable color pairs for agent initials avatars. */
+/** Deterministic, readable color pairs for agent initials avatars (warm token palette). */
 const AGENT_PALETTE = [
-  'bg-blue-100 text-blue-700',
-  'bg-emerald-100 text-emerald-700',
-  'bg-violet-100 text-violet-700',
-  'bg-amber-100 text-amber-700',
-  'bg-rose-100 text-rose-700',
-  'bg-cyan-100 text-cyan-700',
-  'bg-indigo-100 text-indigo-700',
-  'bg-teal-100 text-teal-700',
-  'bg-fuchsia-100 text-fuchsia-700',
-  'bg-lime-100 text-lime-700',
+  'bg-avatar-1/15 text-avatar-1',
+  'bg-avatar-2/15 text-avatar-2',
+  'bg-avatar-3/15 text-avatar-3',
+  'bg-avatar-4/15 text-avatar-4',
+  'bg-avatar-5/15 text-avatar-5',
+  'bg-avatar-6/15 text-avatar-6',
+  'bg-avatar-7/15 text-avatar-7',
+  'bg-avatar-8/15 text-avatar-8',
 ]
 
 export function avatarInitials(name: string): string {
@@ -47,9 +45,9 @@ function colorFor(name: string): string {
 
 /** Ring/badge color by how full the context window is. */
 function usageColor(ratio: number): string {
-  if (ratio >= 0.9) return 'hsl(0 72% 51%)'
-  if (ratio >= 0.75) return 'hsl(38 92% 50%)'
-  return 'hsl(160 84% 39%)'
+  if (ratio >= 0.9) return 'var(--color-destructive)'
+  if (ratio >= 0.75) return 'var(--color-warning-foreground)'
+  return 'var(--color-success)'
 }
 
 function formatTokens(value: number | null | undefined): string {

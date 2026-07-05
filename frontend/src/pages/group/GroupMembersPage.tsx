@@ -97,13 +97,13 @@ function MemberRow({ member, groupId }: MemberRowProps) {
             variant="outline"
             onClick={onRemove}
             disabled={removeMember.isPending}
-            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             Remove
           </Button>
         </div>
       </div>
-      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </li>
   )
 }
@@ -247,13 +247,13 @@ function AgentRow({ agent, groupId, isMuted, communicationMode }: AgentRowProps)
             variant="outline"
             onClick={onRemove}
             disabled={removeAgent.isPending}
-            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             Remove
           </Button>
         </div>
       </div>
-      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </li>
   )
 }
@@ -280,7 +280,7 @@ function AddUserRow({ user, groupId }: AddUserRowProps) {
       <div className="min-w-0">
         <p className="truncate text-sm font-medium">{user.name}</p>
         <p className="truncate text-xs text-muted-foreground">{user.email}</p>
-        {error ? <p className="text-xs text-red-600">{error}</p> : null}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
       <Button size="sm" onClick={onAdd} disabled={addMember.isPending}>
         Add
@@ -320,7 +320,7 @@ function AddAgentRow({ agent, groupId }: AddAgentRowProps) {
           />
           Allow group workspace
         </label>
-        {error ? <p className="text-xs text-red-600">{error}</p> : null}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
       <Button
         size="sm"
@@ -373,14 +373,14 @@ export function GroupMembersPage() {
             </Link>
           </Button>
           <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold">Manage members</h1>
+            <h1 className="font-serif truncate text-base font-semibold">Manage members</h1>
             <p className="truncate text-xs text-muted-foreground">{group.data?.name}</p>
           </div>
         </div>
       </header>
 
       {loadError ? (
-        <div className="p-6 text-sm text-red-600">Failed to load members: {String(loadError)}</div>
+        <div className="p-6 text-sm text-destructive">Failed to load members: {String(loadError)}</div>
       ) : null}
       {isLoading ? <div className="p-6 text-sm text-muted-foreground">Loading…</div> : null}
 

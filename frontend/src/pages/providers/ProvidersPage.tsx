@@ -11,10 +11,10 @@ import { useProviders } from '@/hooks/useProviders'
 import type { LLMProviderRead, ProviderKind } from '@/types/api'
 
 function kindColor(kind: ProviderKind) {
-  if (kind === 'anthropic') return 'bg-orange-500/90 text-white'
-  if (kind === 'anthropic-compatible') return 'bg-amber-500/90 text-white'
-  if (kind === 'gemini') return 'bg-blue-500/90 text-white'
-  return 'bg-violet-500/90 text-white'
+  if (kind === 'anthropic') return 'bg-avatar-1 text-avatar-foreground'
+  if (kind === 'anthropic-compatible') return 'bg-avatar-2 text-avatar-foreground'
+  if (kind === 'gemini') return 'bg-avatar-3 text-avatar-foreground'
+  return 'bg-avatar-4 text-avatar-foreground'
 }
 
 function kindInitial(kind: ProviderKind): string {
@@ -35,7 +35,7 @@ export function ProvidersPage() {
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
         <div className="flex items-center gap-2">
           <Plug className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-base font-semibold tracking-tight">Providers</h1>
+          <h1 className="font-serif text-base font-semibold tracking-tight">Providers</h1>
           {providers.data && (
             <span className="text-xs text-muted-foreground">({providers.data.length})</span>
           )}
@@ -51,7 +51,7 @@ export function ProvidersPage() {
           <p className="text-sm text-muted-foreground">Loading providers...</p>
         )}
         {providers.error && (
-          <p className="text-sm text-red-600">Failed to load providers.</p>
+          <p className="text-sm text-destructive">Failed to load providers.</p>
         )}
         {providers.data && providers.data.length === 0 && (
           <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">

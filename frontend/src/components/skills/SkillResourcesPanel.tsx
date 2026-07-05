@@ -88,7 +88,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
       </div>
 
       {resources.error && (
-        <p className="text-xs text-red-600">
+        <p className="text-xs text-destructive">
           Failed to load resource editability. Showing package metadata only.
         </p>
       )}
@@ -146,7 +146,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                 <p className="text-sm text-muted-foreground">Loading file…</p>
               )}
               {selected.error && (
-                <p className="text-sm text-red-600">
+                <p className="text-sm text-destructive">
                   {selected.error instanceof ApiError
                     ? selected.error.message
                     : 'Failed to load file.'}
@@ -161,7 +161,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                       spellCheck={false}
                     />
                     {saveError && (
-                      <p className="text-xs text-red-600" role="alert">
+                      <p className="text-xs text-destructive" role="alert">
                         {saveError}
                       </p>
                     )}

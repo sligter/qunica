@@ -162,7 +162,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             Optional: <code>scripts/</code>, <code>references/</code>, <code>assets/</code> directories.
           </p>
           {error && (
-            <p className="text-sm text-red-600" role="alert">
+            <p className="text-sm text-destructive" role="alert">
               {error}
             </p>
           )}
@@ -207,7 +207,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             The repository, or selected directory, must contain a <code>SKILL.md</code>.
           </p>
           {error && (
-            <p className="text-sm text-red-600" role="alert">
+            <p className="text-sm text-destructive" role="alert">
               {error}
             </p>
           )}
@@ -236,7 +236,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             </p>
           </div>
           {error && (
-            <p className="text-sm text-red-600" role="alert">
+            <p className="text-sm text-destructive" role="alert">
               {error}
             </p>
           )}

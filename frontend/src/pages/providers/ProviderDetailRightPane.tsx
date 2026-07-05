@@ -17,7 +17,7 @@ export function ProviderDetailRightPane() {
   }
   if (provider.error) {
     return (
-      <div className="p-6 text-sm text-red-600">
+      <div className="p-6 text-sm text-destructive">
         Failed to load: {String(provider.error)}
       </div>
     )
@@ -41,7 +41,7 @@ export function ProviderDetailRightPane() {
       <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
         <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
           <header className="flex items-baseline justify-between gap-4">
-            <h1 className="text-xl font-semibold tracking-tight">Edit {p.name}</h1>
+            <h1 className="font-serif text-xl font-semibold tracking-tight">Edit {p.name}</h1>
             <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
               Cancel
             </Button>
@@ -63,7 +63,7 @@ export function ProviderDetailRightPane() {
       <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
         <header className="flex items-baseline justify-between gap-4">
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">{p.name}</h1>
+            <h1 className="font-serif text-xl font-semibold tracking-tight">{p.name}</h1>
             <p className="text-sm text-muted-foreground">
               {p.kind} - {p.default_model}
             </p>

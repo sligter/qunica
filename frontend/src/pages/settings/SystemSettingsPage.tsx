@@ -152,7 +152,7 @@ export function SystemSettingsPage() {
   return (
     <div className="flex h-full flex-col bg-background">
       <header className="flex h-14 shrink-0 items-center border-b border-border px-6">
-        <h1 className="text-base font-semibold">System settings</h1>
+        <h1 className="font-serif text-base font-semibold">System settings</h1>
       </header>
       <main className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-2xl space-y-6">

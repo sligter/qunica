@@ -122,7 +122,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
         <Label htmlFor={`provider-name-${provider.id}`}>Name</Label>
         <Input id={`provider-name-${provider.id}`} {...form.register('name')} />
         {form.formState.errors.name && (
-          <p className="text-xs text-red-600">{form.formState.errors.name.message}</p>
+          <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
         )}
       </div>
 
@@ -181,7 +181,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
           {...form.register('default_model')}
         />
         {form.formState.errors.default_model && (
-          <p className="text-xs text-red-600">
+          <p className="text-xs text-destructive">
             {form.formState.errors.default_model.message}
           </p>
         )}
@@ -200,7 +200,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
             {...form.register('context_window_tokens', { valueAsNumber: true })}
           />
           {form.formState.errors.context_window_tokens && (
-            <p className="text-xs text-red-600">
+            <p className="text-xs text-destructive">
               {form.formState.errors.context_window_tokens.message}
             </p>
           )}
@@ -215,7 +215,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
             {...form.register('context_output_reserve_percent', { valueAsNumber: true })}
           />
           {form.formState.errors.context_output_reserve_percent && (
-            <p className="text-xs text-red-600">
+            <p className="text-xs text-destructive">
               {form.formState.errors.context_output_reserve_percent.message}
             </p>
           )}
@@ -235,7 +235,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
       </div>
 
       {submitError && (
-        <p className="text-sm text-red-600" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {submitError}
         </p>
       )}

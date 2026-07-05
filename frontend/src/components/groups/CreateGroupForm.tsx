@@ -72,7 +72,7 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
         <Label htmlFor="group-name">Group name</Label>
         <Input id="group-name" {...form.register('name')} />
         {form.formState.errors.name && (
-          <p className="text-xs text-red-600">{form.formState.errors.name.message}</p>
+          <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
         )}
       </div>
       <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
@@ -94,7 +94,7 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
             <code>{settings.data?.group_workspace_root}</code>.
           </p>
         ) : (
-          <p className="text-red-600">
+          <p className="text-destructive">
             Group workspace root is not configured.{' '}
             <Link className="underline" to="/settings/system">
               Set it in system settings
@@ -150,7 +150,7 @@ export function CreateGroupForm({ onCreated }: CreateGroupFormProps) {
         )}
       </div>
       {submitError && (
-        <p className="text-sm text-red-600" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {submitError}
         </p>
       )}

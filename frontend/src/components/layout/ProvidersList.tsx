@@ -8,10 +8,10 @@ import { cn } from '@/lib/utils'
 import type { ProviderKind } from '@/types/api'
 
 function kindColor(kind: ProviderKind): string {
-  if (kind === 'anthropic') return 'bg-orange-500/90 text-white'
-  if (kind === 'anthropic-compatible') return 'bg-amber-500/90 text-white'
-  if (kind === 'gemini') return 'bg-blue-500/90 text-white'
-  return 'bg-violet-500/90 text-white'
+  if (kind === 'anthropic') return 'bg-avatar-1 text-avatar-foreground'
+  if (kind === 'anthropic-compatible') return 'bg-avatar-2 text-avatar-foreground'
+  if (kind === 'gemini') return 'bg-avatar-3 text-avatar-foreground'
+  return 'bg-avatar-4 text-avatar-foreground'
 }
 
 function kindInitial(kind: ProviderKind, name: string): string {
@@ -46,7 +46,7 @@ export function ProvidersList() {
           <p className="px-4 text-xs text-muted-foreground">Loading...</p>
         )}
         {providers.error && (
-          <p className="px-4 text-xs text-red-600">Failed to load providers.</p>
+          <p className="px-4 text-xs text-destructive">Failed to load providers.</p>
         )}
         {providers.data && providers.data.length === 0 && (
           <p className="px-4 text-xs text-muted-foreground">

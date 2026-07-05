@@ -88,7 +88,7 @@ export function ToolSelector({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+      <div className="rounded-md border border-warning bg-warning/55 p-3 text-xs text-warning-foreground">
         Selected built-ins are bound as executable provider-native tools with bounded safeguards.
         Some tools may return setup-required or input-required results when a provider or resume
         contract is not configured; they are still truthful runtime tool calls, not saved-only claims.
@@ -151,7 +151,7 @@ export function ToolSelector({
                     className={cn(
                       'rounded-md border p-3 text-left transition-colors',
                       checked && executable && 'border-primary bg-primary/10 text-foreground',
-                      checked && !executable && 'border-amber-300 bg-amber-50 text-foreground',
+                      checked && !executable && 'border-warning-foreground/50 bg-warning/55 text-foreground',
                       !checked && 'border-border bg-background hover:bg-muted',
                       disabled && 'cursor-not-allowed opacity-50 hover:bg-background',
                     )}
@@ -164,7 +164,7 @@ export function ToolSelector({
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{tool.description}</p>
                     {!executable && checked && (
-                      <p className="mt-2 text-[11px] font-medium text-amber-700">
+                      <p className="mt-2 text-[11px] font-medium text-warning-foreground">
                         This tool is unavailable for the selected workspace backend or disabled by policy.
                       </p>
                     )}

@@ -205,7 +205,7 @@ export function MessageList({
               />
             </div>
           ) : (
-            <div className="text-center text-xs text-amber-600">{latestWarning}</div>
+            <div className="text-center text-xs text-warning-foreground">{latestWarning}</div>
           )}
         </div>
       )}

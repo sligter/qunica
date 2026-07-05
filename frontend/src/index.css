@@ -2,24 +2,49 @@
 @import "tailwindcss";
 
 @theme {
-  --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(240 10% 3.9%);
-  --color-muted: hsl(240 4.8% 95.9%);
-  --color-muted-foreground: hsl(240 3.8% 46.1%);
-  --color-primary: hsl(217 91% 50%);
-  --color-primary-foreground: hsl(0 0% 100%);
-  --color-secondary: hsl(240 4.8% 95.9%);
-  --color-secondary-foreground: hsl(240 5.9% 10%);
-  --color-card: hsl(240 5% 98.5%);
-  --color-card-hover: hsl(240 6% 95%);
-  --color-border: hsl(240 5.9% 90%);
-  --color-input: hsl(240 5.9% 90%);
-  --color-ring: hsl(217 91% 50%);
-  --color-destructive: hsl(0 72% 51%);
-  --color-destructive-foreground: hsl(0 0% 100%);
-  --color-warning: hsl(38 92% 92%);
-  --color-warning-foreground: hsl(32 95% 29%);
-  --radius: 0.5rem;
+  /* Claude-style warm palette — light */
+  --color-background: hsl(48 33% 97%);
+  --color-foreground: hsl(30 10% 15%);
+  --color-muted: hsl(45 20% 92%);
+  --color-muted-foreground: hsl(30 8% 45%);
+  --color-primary: hsl(15 55% 50%);
+  --color-primary-foreground: hsl(30 40% 98%);
+  --color-secondary: hsl(45 22% 92%);
+  --color-secondary-foreground: hsl(30 10% 18%);
+  --color-accent: hsl(45 25% 90%);
+  --color-accent-foreground: hsl(30 10% 18%);
+  --color-card: hsl(45 30% 98.5%);
+  --color-card-hover: hsl(45 25% 94%);
+  --color-border: hsl(40 18% 86%);
+  --color-input: hsl(40 18% 86%);
+  --color-ring: hsl(15 55% 50%);
+  --color-destructive: hsl(8 55% 48%);
+  --color-destructive-foreground: hsl(30 40% 98%);
+  --color-warning: hsl(40 60% 90%);
+  --color-warning-foreground: hsl(30 60% 32%);
+  --color-success: hsl(140 30% 38%);
+
+  /* Code blocks stay warm-dark in both themes */
+  --color-code: hsl(30 10% 16%);
+  --color-code-foreground: hsl(40 20% 92%);
+
+  /* Deterministic avatar palette — warm, desaturated */
+  --color-avatar-1: hsl(15 55% 48%);
+  --color-avatar-2: hsl(35 55% 42%);
+  --color-avatar-3: hsl(215 30% 48%);
+  --color-avatar-4: hsl(260 25% 52%);
+  --color-avatar-5: hsl(140 25% 40%);
+  --color-avatar-6: hsl(180 28% 38%);
+  --color-avatar-7: hsl(320 25% 48%);
+  --color-avatar-8: hsl(355 40% 52%);
+  --color-avatar-foreground: hsl(40 40% 98%);
+
+  --radius: 0.625rem;
+  --radius-md: 0.4375rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+
+  --font-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
 }
 
 @layer base {
@@ -29,23 +54,40 @@
 
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --color-background: hsl(220 14% 9%);
-    --color-foreground: hsl(220 20% 96%);
-    --color-muted: hsl(220 11% 17%);
-    --color-muted-foreground: hsl(220 9% 68%);
-    --color-primary: hsl(211 100% 62%);
-    --color-primary-foreground: hsl(220 24% 10%);
-    --color-secondary: hsl(220 11% 18%);
-    --color-secondary-foreground: hsl(220 20% 96%);
-    --color-card: hsl(220 13% 13%);
-    --color-card-hover: hsl(220 11% 18%);
-    --color-border: hsl(220 10% 24%);
-    --color-input: hsl(220 10% 24%);
-    --color-ring: hsl(211 100% 62%);
-    --color-destructive: hsl(0 72% 58%);
-    --color-destructive-foreground: hsl(0 0% 100%);
-    --color-warning: hsl(37 42% 20%);
-    --color-warning-foreground: hsl(39 90% 75%);
+    /* Claude-style warm palette — dark (warm deep gray, not cold blue-gray) */
+    --color-background: hsl(30 8% 12%);
+    --color-foreground: hsl(40 20% 92%);
+    --color-muted: hsl(30 7% 19%);
+    --color-muted-foreground: hsl(35 10% 65%);
+    --color-primary: hsl(17 60% 58%);
+    --color-primary-foreground: hsl(25 30% 10%);
+    --color-secondary: hsl(30 7% 20%);
+    --color-secondary-foreground: hsl(40 20% 92%);
+    --color-accent: hsl(30 8% 22%);
+    --color-accent-foreground: hsl(40 20% 92%);
+    --color-card: hsl(30 8% 15%);
+    --color-card-hover: hsl(30 8% 19%);
+    --color-border: hsl(30 8% 24%);
+    --color-input: hsl(30 8% 24%);
+    --color-ring: hsl(17 60% 58%);
+    --color-destructive: hsl(8 55% 58%);
+    --color-destructive-foreground: hsl(30 40% 98%);
+    --color-warning: hsl(35 28% 20%);
+    --color-warning-foreground: hsl(38 55% 68%);
+    --color-success: hsl(140 25% 55%);
+
+    --color-code: hsl(30 10% 9%);
+    --color-code-foreground: hsl(40 20% 90%);
+
+    --color-avatar-1: hsl(15 55% 60%);
+    --color-avatar-2: hsl(35 50% 55%);
+    --color-avatar-3: hsl(215 32% 62%);
+    --color-avatar-4: hsl(260 28% 66%);
+    --color-avatar-5: hsl(140 25% 54%);
+    --color-avatar-6: hsl(180 28% 52%);
+    --color-avatar-7: hsl(320 26% 62%);
+    --color-avatar-8: hsl(355 42% 66%);
+    --color-avatar-foreground: hsl(30 25% 12%);
   }
 
   body {
