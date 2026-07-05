@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 
 /**
  * Chat home ("/"): a centered welcome surface shown when no group is
- * selected — serif greeting, New chat button, and a few recent chats.
+ * selected — serif greeting, New group button, and a few recent groups.
  */
 export function ChatHomePage() {
   const groups = useGroups()
@@ -30,19 +30,19 @@ export function ChatHomePage() {
         </p>
         <Button size="lg" className="gap-2 rounded-lg" onClick={() => setDialogOpen(true)}>
           <MessageSquarePlus className="h-4 w-4" />
-          New chat
+          New group
         </Button>
 
         {groups.isLoading && (
-          <p className="text-xs text-muted-foreground">Loading recent chats…</p>
+          <p className="text-xs text-muted-foreground">Loading recent groups…</p>
         )}
         {groups.error && (
-          <p className="text-xs text-destructive">Failed to load recent chats.</p>
+          <p className="text-xs text-destructive">Failed to load recent groups.</p>
         )}
         {recent.length > 0 && (
           <div className="w-full">
             <p className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Recent chats
+              Recent groups
             </p>
             <ul className="space-y-1.5">
               {recent.map((g) => (

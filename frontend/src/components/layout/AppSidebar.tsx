@@ -74,7 +74,7 @@ function initials(name: string | undefined): string {
 }
 
 /**
- * Unified app sidebar: New chat, searchable chat list, Library links into the
+ * Unified app sidebar: New group, searchable group list, Library links into the
  * settings surface, and a bottom Settings row plus user menu. Collapses to a
  * narrow icon strip; the collapsed state persists in localStorage.
  */
@@ -140,7 +140,7 @@ export function AppSidebar() {
         </Button>
       </div>
 
-      {/* New chat */}
+      {/* New group */}
       <div className={cn('shrink-0', collapsed ? 'flex justify-center pb-2' : 'px-3 pb-2')}>
         {collapsed ? (
           <Tooltip>
@@ -148,12 +148,12 @@ export function AppSidebar() {
               <Button
                 size="icon"
                 onClick={() => setDialogOpen(true)}
-                aria-label="New chat"
+                aria-label="New group"
               >
                 <MessageSquarePlus className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="right">New chat</TooltipContent>
+            <TooltipContent side="right">New group</TooltipContent>
           </Tooltip>
         ) : (
           <Button
@@ -161,27 +161,27 @@ export function AppSidebar() {
             onClick={() => setDialogOpen(true)}
           >
             <MessageSquarePlus className="h-4 w-4" />
-            New chat
+            New group
           </Button>
         )}
       </div>
 
-      {/* Chats */}
+      {/* Groups */}
       {collapsed ? (
         <div className="min-h-0 flex-1" />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="shrink-0 px-3 pt-2">
             <p className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Chats
+              Groups
             </p>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search chats"
-                aria-label="Search chats"
+                placeholder="Search groups"
+                aria-label="Search groups"
                 className="h-8 pl-8 text-xs"
               />
             </div>
@@ -191,11 +191,11 @@ export function AppSidebar() {
               <p className="px-2 text-xs text-muted-foreground">Loading…</p>
             )}
             {groups.error && (
-              <p className="px-2 text-xs text-destructive">Failed to load chats.</p>
+              <p className="px-2 text-xs text-destructive">Failed to load groups.</p>
             )}
             {groups.data && groups.data.length === 0 && (
               <p className="px-2 text-xs text-muted-foreground">
-                No chats yet. Click New chat to start one.
+                No groups yet. Click New group to start one.
               </p>
             )}
             {groups.data && groups.data.length > 0 && filteredGroups.length === 0 && (
