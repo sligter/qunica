@@ -12,7 +12,7 @@ export function LoginPage() {
           <CardTitle>Log in to AgentChat</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <AuthForm mode="login" onSuccess={() => void navigate('/groups')} />
+          <AuthForm mode="login" onSuccess={() => void navigate('/')} />
           <p className="text-sm text-muted-foreground">
             Don't have an account?{' '}
             <Link to="/register" className="font-medium text-foreground hover:underline">

@@ -31,8 +31,9 @@ export interface ListColumnProps {
 }
 
 /**
- * Generic middle-column list: header with a "new" link, local search filter,
- * and avatar/name/summary rows highlighted by route match.
+ * Generic entity list column (used inside the settings surface): header with
+ * a "new" link, local search filter, and avatar/name/summary rows highlighted
+ * by route match.
  */
 export function ListColumn({
   title,

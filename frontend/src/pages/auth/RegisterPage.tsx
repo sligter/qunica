@@ -12,7 +12,7 @@ export function RegisterPage() {
           <CardTitle>Create your AgentChat account</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <AuthForm mode="register" onSuccess={() => void navigate('/groups')} />
+          <AuthForm mode="register" onSuccess={() => void navigate('/')} />
           <p className="text-sm text-muted-foreground">
             Already have an account?{' '}
             <Link to="/login" className="font-medium text-foreground hover:underline">

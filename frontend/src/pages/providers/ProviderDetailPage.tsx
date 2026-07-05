@@ -115,7 +115,7 @@ export function ProviderDetailPage() {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(p.id)
-          void navigate('/providers')
+          void navigate('/settings/providers')
         }}
       />
     </DetailShell>

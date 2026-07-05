@@ -56,7 +56,7 @@ export function WorkspaceDetailPage() {
     <WorkspaceDetail
       key={workspace.id}
       workspace={workspace}
-      onDeleted={() => void navigate('/workspaces')}
+      onDeleted={() => void navigate('/settings/workspaces')}
     />
   )
 }

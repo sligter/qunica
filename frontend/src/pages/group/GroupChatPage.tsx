@@ -109,7 +109,7 @@ export function GroupChatPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background px-6">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-background px-6">
         <div className="flex min-w-0 items-baseline gap-3">
           <h1 className="font-serif truncate text-base font-semibold tracking-tight">
             {group.data?.name}
@@ -140,7 +140,7 @@ export function GroupChatPage() {
       </header>
 
       {group.data?.announcement && (
-        <div className="shrink-0 border-b border-border bg-card px-6 py-2 text-xs text-muted-foreground">
+        <div className="shrink-0 border-b border-border/60 bg-card px-6 py-2 text-xs text-muted-foreground">
           Announcement: {group.data.announcement}
         </div>
       )}
@@ -156,8 +156,10 @@ export function GroupChatPage() {
           />
 
           {stream.error && (
-            <div className="border-t border-border bg-destructive/10 px-6 py-2 text-xs text-destructive">
-              Stream error: {stream.error}
+            <div className="shrink-0 px-4">
+              <div className="mx-auto w-full max-w-3xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                Stream error: {stream.error}
+              </div>
             </div>
           )}
 

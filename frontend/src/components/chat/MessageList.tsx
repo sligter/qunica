@@ -160,55 +160,57 @@ export function MessageList({
       className="relative flex flex-1 flex-col overflow-y-auto py-4"
       onScroll={updateNearBottom}
     >
-      {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
-        <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
-          No messages yet. Try sending <code>@AgentName hello</code> to start.
-        </div>
-      )}
-      {hasOlderMessages && (
-        <div className="flex justify-center px-4 pb-3">
-          <button
-            type="button"
-            className="rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isLoadingOlderMessages}
-            onClick={onLoadOlderMessages}
-          >
-            {isLoadingOlderMessages ? 'Loading earlier messages...' : 'Load earlier messages'}
-          </button>
-        </div>
-      )}
-      {messages.map((m) => {
-        if (hiddenMessageIds.has(m.id)) return null
-        const runId = streamRunIdsByUserMessageId[m.id] ?? m.id
-        const run = m.sender_type === 'user' ? streamRuns[runId] : undefined
-        return (
-          <Fragment key={m.id}>
-            <MessageItem
-              message={m}
-              groupId={groupId}
-              onSubmitHumanInput={onSubmitHumanInput}
-            />
-            {run ? (
-              <StreamTimeline run={run} onSubmitHumanInput={onSubmitHumanInput} />
-            ) : null}
-          </Fragment>
-        )
-      })}
-      {latestWarning && Object.keys(streamRuns).length === 0 && (
-        <div className="mt-2 px-4">
-          {warningInputRequest ? (
-            <div className="mx-auto max-w-2xl">
-              <HumanInputRequestForm
-                request={warningInputRequest}
-                onSubmitResponse={onSubmitHumanInput}
-                compact
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
+        {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
+          <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
+            No messages yet. Try sending <code>@AgentName hello</code> to start.
+          </div>
+        )}
+        {hasOlderMessages && (
+          <div className="flex justify-center px-4 pb-3">
+            <button
+              type="button"
+              className="rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isLoadingOlderMessages}
+              onClick={onLoadOlderMessages}
+            >
+              {isLoadingOlderMessages ? 'Loading earlier messages...' : 'Load earlier messages'}
+            </button>
+          </div>
+        )}
+        {messages.map((m) => {
+          if (hiddenMessageIds.has(m.id)) return null
+          const runId = streamRunIdsByUserMessageId[m.id] ?? m.id
+          const run = m.sender_type === 'user' ? streamRuns[runId] : undefined
+          return (
+            <Fragment key={m.id}>
+              <MessageItem
+                message={m}
+                groupId={groupId}
+                onSubmitHumanInput={onSubmitHumanInput}
               />
-            </div>
-          ) : (
-            <div className="text-center text-xs text-warning-foreground">{latestWarning}</div>
-          )}
-        </div>
-      )}
+              {run ? (
+                <StreamTimeline run={run} onSubmitHumanInput={onSubmitHumanInput} />
+              ) : null}
+            </Fragment>
+          )
+        })}
+        {latestWarning && Object.keys(streamRuns).length === 0 && (
+          <div className="mt-2 px-4">
+            {warningInputRequest ? (
+              <div className="mx-auto max-w-2xl">
+                <HumanInputRequestForm
+                  request={warningInputRequest}
+                  onSubmitResponse={onSubmitHumanInput}
+                  compact
+                />
+              </div>
+            ) : (
+              <div className="text-center text-xs text-warning-foreground">{latestWarning}</div>
+            )}
+          </div>
+        )}
+      </div>
       {showJumpToLatest && (
         <div className="sticky bottom-3 z-10 flex justify-center">
           <button

@@ -155,7 +155,7 @@ export function AgentDetailPage() {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(a.id)
-          void navigate('/agents')
+          void navigate('/settings/agents')
         }}
       />
     </DetailShell>

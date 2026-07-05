@@ -183,7 +183,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
                 Group workspace root is not configured.{' '}
                 <Link
                   className="underline"
-                  to="/settings"
+                  to="/settings/general"
                   onClick={() => onOpenChange(false)}
                 >
                   Set it in system settings

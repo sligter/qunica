@@ -425,7 +425,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(group.id)
-          void navigate('/groups')
+          void navigate('/')
         }}
       />
     </div>

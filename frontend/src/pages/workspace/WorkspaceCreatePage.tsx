@@ -78,7 +78,7 @@ export function WorkspaceCreatePage() {
       },
       {
         onSuccess: (created) => {
-          void navigate(`/workspaces/${created.id}`)
+          void navigate(`/settings/workspaces/${created.id}`)
         },
         onError: (err) => {
           setError(err instanceof ApiError ? err.message : 'Failed to create workspace')

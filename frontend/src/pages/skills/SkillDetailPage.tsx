@@ -107,7 +107,7 @@ export function SkillDetailPage() {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(s.id)
-          void navigate('/skills')
+          void navigate('/settings/skills')
         }}
       />
     </DetailShell>
