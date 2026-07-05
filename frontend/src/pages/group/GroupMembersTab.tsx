@@ -384,7 +384,7 @@ export function GroupMembersTab({ groupId }: GroupMembersTabProps) {
   }
 
   return (
-    <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[1fr_360px]">
+    <div className="grid w-full grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr]">
       <section className="space-y-6">
         <div className="space-y-3">
           <div>

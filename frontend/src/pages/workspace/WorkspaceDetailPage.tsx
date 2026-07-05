@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Bot, Users } from 'lucide-react'
 
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroups } from '@/hooks/useGroups'
 import {
@@ -122,8 +123,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     setError(result.message)
   }
 
-  const onSave = (e: React.FormEvent) => {
-    e.preventDefault()
+  const onSave = () => {
     const payload: WorkspaceUpdate = { name: trimmedName }
     if (workspace.backend_type === 'local') {
       payload.local_path = trimmedLocalPath
@@ -139,43 +139,52 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
-        <header className="flex items-baseline justify-between gap-4">
-          <div className="min-w-0 space-y-1">
-            <h1 className="truncate font-serif text-xl font-semibold tracking-tight">
-              {workspace.name}
-            </h1>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{workspace.backend_type}</Badge>
-              <Badge variant={workspace.status === 'active' ? 'default' : 'secondary'}>
-                {workspace.status}
-              </Badge>
-            </div>
-          </div>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={() => setConfirmOpen(true)}
-            disabled={updateWorkspace.isPending || deleteWorkspace.isPending}
-          >
-            {deleteWorkspace.isPending ? 'Deleting…' : 'Delete'}
-          </Button>
-        </header>
-
-        <form onSubmit={onSave} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="workspace-edit-name">Name</Label>
+    <DetailShell
+      title={workspace.name}
+      subtitle={
+        <>
+          <Badge variant="outline">{workspace.backend_type}</Badge>
+          <Badge variant={workspace.status === 'active' ? 'default' : 'secondary'}>
+            {workspace.status}
+          </Badge>
+        </>
+      }
+      actions={
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={() => setConfirmOpen(true)}
+          disabled={updateWorkspace.isPending || deleteWorkspace.isPending}
+        >
+          {deleteWorkspace.isPending ? 'Deleting…' : 'Delete'}
+        </Button>
+      }
+    >
+      <div className="space-y-10">
+        <SettingsSection
+          title="Workspace"
+          aside={
+            <Button size="sm" onClick={onSave} disabled={!canSave}>
+              {updateWorkspace.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          }
+        >
+          <SettingsRow label="Name" htmlFor="workspace-edit-name" stacked>
             <Input
               id="workspace-edit-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
+              className="max-w-xl"
             />
-          </div>
+          </SettingsRow>
           {workspace.backend_type === 'local' ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="workspace-edit-path">Backend local path</Label>
-              <div className="flex gap-2">
+            <SettingsRow
+              label="Backend local path"
+              description="Absolute folder on the backend host."
+              htmlFor="workspace-edit-path"
+              stacked
+            >
+              <div className="flex max-w-xl gap-2">
                 <Input
                   id="workspace-edit-path"
                   value={localPath}
@@ -195,26 +204,23 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
                   Local workspace paths must be absolute.
                 </p>
               ) : null}
-            </div>
+            </SettingsRow>
           ) : (
-            <div className="space-y-1.5">
-              <Label htmlFor="workspace-edit-sandbox">Sandbox ref</Label>
+            <SettingsRow label="Sandbox ref" htmlFor="workspace-edit-sandbox" stacked>
               <Input
                 id="workspace-edit-sandbox"
                 value={sandboxRef}
                 onChange={(event) => setSandboxRef(event.target.value)}
+                className="max-w-xl"
               />
-            </div>
+            </SettingsRow>
           )}
           {error ? (
-            <p className="text-sm text-destructive" role="alert">
+            <p className="py-2 text-sm text-destructive" role="alert">
               {error}
             </p>
           ) : null}
-          <Button type="submit" disabled={!canSave}>
-            {updateWorkspace.isPending ? 'Saving…' : 'Save changes'}
-          </Button>
-        </form>
+        </SettingsSection>
 
         <WorkspaceUsageSection workspaceId={workspace.id} />
       </div>
@@ -231,7 +237,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
           onDeleted()
         }}
       />
-    </div>
+    </DetailShell>
   )
 }
 
@@ -252,43 +258,40 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
   const isLoading = groups.isLoading || agents.isLoading
 
   return (
-    <section className="space-y-3 border-t border-border pt-6">
-      <div>
-        <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Used by
-        </h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Bindings are configured on each group or agent, not here.
-        </p>
+    <SettingsSection
+      title="Used by"
+      description="Bindings are configured on each group or agent, not here."
+    >
+      <div className="py-4">
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading usage…</p>
+        ) : boundGroups.length === 0 && boundAgents.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No groups or agents use this workspace.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {boundGroups.map((group) => (
+              <li key={group.id} className="flex items-center gap-2 text-sm">
+                <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{group.name}</span>
+                <Badge variant="outline" className="text-[10px]">
+                  group
+                </Badge>
+              </li>
+            ))}
+            {boundAgents.map((agent) => (
+              <li key={agent.id} className="flex items-center gap-2 text-sm">
+                <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{agent.name}</span>
+                <Badge variant="outline" className="text-[10px]">
+                  agent
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading usage…</p>
-      ) : boundGroups.length === 0 && boundAgents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No groups or agents use this workspace.
-        </p>
-      ) : (
-        <ul className="space-y-1.5">
-          {boundGroups.map((group) => (
-            <li key={group.id} className="flex items-center gap-2 text-sm">
-              <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate">{group.name}</span>
-              <Badge variant="outline" className="text-[10px]">
-                group
-              </Badge>
-            </li>
-          ))}
-          {boundAgents.map((agent) => (
-            <li key={agent.id} className="flex items-center gap-2 text-sm">
-              <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate">{agent.name}</span>
-              <Badge variant="outline" className="text-[10px]">
-                agent
-              </Badge>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+    </SettingsSection>
   )
 }

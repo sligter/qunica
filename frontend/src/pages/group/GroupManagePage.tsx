@@ -2,6 +2,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 
 import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useGroup } from '@/hooks/useGroups'
@@ -29,49 +30,46 @@ export function GroupManagePage() {
   }
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-6">
+    <DetailShell
+      title="Manage group"
+      subtitle={group.data?.name}
+      leading={
         <Button variant="ghost" size="icon" asChild aria-label="Back to group chat">
           <Link to={`/groups/${groupId}`}>
             <ArrowLeft className="h-4 w-4" />
           </Link>
         </Button>
-        <div className="min-w-0">
-          <h1 className="font-serif truncate text-base font-semibold">Manage group</h1>
-          <p className="truncate text-xs text-muted-foreground">{group.data?.name}</p>
-        </div>
-      </header>
-
+      }
+      contentClassName="max-w-none"
+    >
       {group.error ? (
-        <div className="p-6 text-sm text-destructive">
+        <div className="text-sm text-destructive">
           Failed to load group: {String(group.error)}
         </div>
       ) : group.isLoading ? (
-        <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+        <div className="text-sm text-muted-foreground">Loading…</div>
       ) : group.data ? (
-        <main className="flex-1 overflow-y-auto p-6">
-          <Tabs value={tab} onValueChange={onTabChange} className="mx-auto max-w-6xl">
-            <TabsList>
-              <TabsTrigger value="settings">Settings</TabsTrigger>
-              <TabsTrigger value="members">Members</TabsTrigger>
-              <TabsTrigger value="notes">Notes</TabsTrigger>
-            </TabsList>
-            <TabsContent value="settings" className="mt-6">
-              <GroupSettingsTab group={group.data} />
-            </TabsContent>
-            <TabsContent value="members" className="mt-6">
-              <GroupMembersTab groupId={groupId} />
-            </TabsContent>
-            <TabsContent value="notes" className="mt-6">
-              <div className="mx-auto max-w-2xl rounded-lg border border-border bg-card p-4">
-                <GroupNotesPanel groupId={groupId} />
-              </div>
-            </TabsContent>
-          </Tabs>
-        </main>
+        <Tabs value={tab} onValueChange={onTabChange} className="w-full">
+          <TabsList>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="members">Members</TabsTrigger>
+            <TabsTrigger value="notes">Notes</TabsTrigger>
+          </TabsList>
+          <TabsContent value="settings" className="mt-6">
+            <GroupSettingsTab group={group.data} />
+          </TabsContent>
+          <TabsContent value="members" className="mt-6">
+            <GroupMembersTab groupId={groupId} />
+          </TabsContent>
+          <TabsContent value="notes" className="mt-6">
+            <div className="w-full rounded-lg border border-border bg-card p-4">
+              <GroupNotesPanel groupId={groupId} />
+            </div>
+          </TabsContent>
+        </Tabs>
       ) : (
-        <div className="p-6 text-sm text-muted-foreground">Group not found.</div>
+        <div className="text-sm text-muted-foreground">Group not found.</div>
       )}
-    </div>
+    </DetailShell>
   )
 }

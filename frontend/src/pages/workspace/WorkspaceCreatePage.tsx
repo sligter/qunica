@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -87,62 +88,54 @@ export function WorkspaceCreatePage() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
-        <header className="space-y-1">
-          <h1 className="font-serif text-xl font-semibold tracking-tight">
-            New local workspace
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            A workspace points at an absolute folder on the backend host. Groups and
-            agents bound to it read and write files there.
-          </p>
-        </header>
-
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="workspace-new-name">Name</Label>
+    <DetailShell
+      title="New local workspace"
+      subtitle="A workspace points at an absolute folder on the backend host. Groups and agents bound to it read and write files there."
+    >
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="workspace-new-name">Name</Label>
+          <Input
+            id="workspace-new-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Current project"
+            className="max-w-xl"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="workspace-new-path">Backend local path</Label>
+          <div className="flex max-w-xl gap-2">
             <Input
-              id="workspace-new-name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Current project"
+              id="workspace-new-path"
+              value={localPath}
+              onChange={(event) => onPathChange(event.target.value)}
+              placeholder="D:/absolute/path/to/project"
+              className={
+                trimmedPath && !looksAbsolute(trimmedPath)
+                  ? 'border-destructive'
+                  : undefined
+              }
             />
+            <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
+              Pick folder
+            </Button>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="workspace-new-path">Backend local path</Label>
-            <div className="flex gap-2">
-              <Input
-                id="workspace-new-path"
-                value={localPath}
-                onChange={(event) => onPathChange(event.target.value)}
-                placeholder="D:/absolute/path/to/project"
-                className={
-                  trimmedPath && !looksAbsolute(trimmedPath)
-                    ? 'border-destructive'
-                    : undefined
-                }
-              />
-              <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
-                Pick folder
-              </Button>
-            </div>
-            {trimmedPath && !looksAbsolute(trimmedPath) ? (
-              <p className="text-xs text-destructive">
-                Local workspace paths must be absolute.
-              </p>
-            ) : null}
-          </div>
-          {error ? (
-            <p className="text-sm text-destructive" role="alert">
-              {error}
+          {trimmedPath && !looksAbsolute(trimmedPath) ? (
+            <p className="text-xs text-destructive">
+              Local workspace paths must be absolute.
             </p>
           ) : null}
-          <Button type="submit" disabled={!canCreate}>
-            {createWorkspace.isPending ? 'Creating…' : 'Create workspace'}
-          </Button>
-        </form>
-      </div>
-    </div>
+        </div>
+        {error ? (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <Button type="submit" disabled={!canCreate}>
+          {createWorkspace.isPending ? 'Creating…' : 'Create workspace'}
+        </Button>
+      </form>
+    </DetailShell>
   )
 }

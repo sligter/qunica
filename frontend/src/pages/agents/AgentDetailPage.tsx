@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { EditAgentForm } from '@/components/agents/EditAgentForm'
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -42,19 +43,16 @@ export function AgentDetailPage() {
 
   if (editing) {
     return (
-      <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-        <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
-          <header className="flex items-baseline justify-between gap-4">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">
-              Edit {a.name}
-            </h1>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-          </header>
-          <EditAgentForm agent={a} onSaved={() => setEditing(false)} />
-        </div>
-      </div>
+      <DetailShell
+        title={`Edit ${a.name}`}
+        actions={
+          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        }
+      >
+        <EditAgentForm agent={a} onSaved={() => setEditing(false)} />
+      </DetailShell>
     )
   }
 
@@ -66,29 +64,45 @@ export function AgentDetailPage() {
         : 'LLM chat - Default (env settings)'
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
-        <header className="flex items-baseline justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">{a.name}</h1>
-            {a.description && (
-              <p className="text-sm text-muted-foreground">{a.description}</p>
-            )}
+    <DetailShell
+      title={a.name}
+      subtitle={a.description || undefined}
+      actions={
+        <>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => setConfirmOpen(true)}
+            disabled={del.isPending}
+          >
+            {del.isPending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-8">
+        <section className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2 xl:grid-cols-3">
+          <div>
+            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Runtime
+            </h3>
+            <p className="mt-1">{runtimeText}</p>
           </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => setConfirmOpen(true)}
-              disabled={del.isPending}
+          <div>
+            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Status
+            </h3>
+            <Badge
+              variant={a.status === 'active' ? 'default' : 'secondary'}
+              className="mt-1"
             >
-              {del.isPending ? 'Deleting…' : 'Delete'}
-            </Button>
+              {a.status}
+            </Badge>
           </div>
-        </header>
+        </section>
 
         <section className="space-y-2">
           <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -97,23 +111,6 @@ export function AgentDetailPage() {
           <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-4 text-sm">
             {a.system_prompt}
           </pre>
-        </section>
-
-        <section className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Runtime
-            </h3>
-            <p>{runtimeText}</p>
-          </div>
-          <div>
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Status
-            </h3>
-            <Badge variant={a.status === 'active' ? 'default' : 'secondary'}>
-              {a.status}
-            </Badge>
-          </div>
         </section>
 
         {a.llm_config && Object.keys(a.llm_config).length > 0 && (
@@ -161,6 +158,6 @@ export function AgentDetailPage() {
           void navigate('/agents')
         }}
       />
-    </div>
+    </DetailShell>
   )
 }

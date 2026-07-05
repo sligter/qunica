@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { SkillResourcesPanel } from '@/components/skills/SkillResourcesPanel'
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -38,48 +39,25 @@ export function SkillDetailPage() {
 
   if (editing) {
     return (
-      <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-        <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
-          <header className="flex items-baseline justify-between gap-4">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">
-              Edit {s.name}
-            </h1>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-          </header>
-          <EditSkillForm skill={s} onSaved={() => setEditing(false)} />
-        </div>
-      </div>
+      <DetailShell
+        title={`Edit ${s.name}`}
+        actions={
+          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        }
+      >
+        <EditSkillForm skill={s} onSaved={() => setEditing(false)} />
+      </DetailShell>
     )
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-3xl space-y-6 p-8">
-        <header className="flex items-baseline justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">{s.name}</h1>
-            {s.description && (
-              <p className="text-sm text-muted-foreground">{s.description}</p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => setConfirmOpen(true)}
-              disabled={del.isPending}
-            >
-              {del.isPending ? 'Deleting…' : 'Delete'}
-            </Button>
-          </div>
-        </header>
-
-        <div className="flex items-center gap-2">
+    <DetailShell
+      title={s.name}
+      subtitle={
+        <>
+          {s.description ? <span>{s.description}</span> : null}
           <Badge variant="outline" className="text-[10px] uppercase">
             source: {s.source}
           </Badge>
@@ -89,8 +67,25 @@ export function SkillDetailPage() {
           >
             {s.status}
           </Badge>
-        </div>
-
+        </>
+      }
+      actions={
+        <>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => setConfirmOpen(true)}
+            disabled={del.isPending}
+          >
+            {del.isPending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-8">
         <section className="space-y-2">
           <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Body (rendered as appended system-prompt fragment)
@@ -115,7 +110,7 @@ export function SkillDetailPage() {
           void navigate('/skills')
         }}
       />
-    </div>
+    </DetailShell>
   )
 }
 
@@ -166,6 +161,7 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
           id="skill-edit-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          className="max-w-xl"
         />
       </div>
       <div className="space-y-1.5">
@@ -176,6 +172,7 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="One-line summary of what this skill does."
+          className="max-w-xl"
         />
       </div>
       {error && (

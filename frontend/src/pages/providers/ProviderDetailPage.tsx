@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { EditProviderForm } from '@/components/providers/EditProviderForm'
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -33,48 +34,41 @@ export function ProviderDetailPage() {
 
   if (editing) {
     return (
-      <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-        <div className="mx-auto w-full max-w-2xl space-y-4 p-8">
-          <header className="flex items-baseline justify-between gap-4">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">
-              Edit {p.name}
-            </h1>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-          </header>
-          <EditProviderForm provider={p} onSaved={() => setEditing(false)} />
-        </div>
-      </div>
+      <DetailShell
+        title={`Edit ${p.name}`}
+        actions={
+          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        }
+      >
+        <EditProviderForm provider={p} onSaved={() => setEditing(false)} />
+      </DetailShell>
     )
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-2xl space-y-6 p-8">
-        <header className="flex items-baseline justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="font-serif text-xl font-semibold tracking-tight">{p.name}</h1>
-            <p className="text-sm text-muted-foreground">
-              {p.kind} · {p.default_model}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setConfirmOpen(true)}
-              disabled={del.isPending}
-            >
-              {del.isPending ? 'Deleting…' : 'Delete'}
-            </Button>
-          </div>
-        </header>
-
-        <section className="grid grid-cols-2 gap-4 text-sm">
+    <DetailShell
+      title={p.name}
+      subtitle={`${p.kind} · ${p.default_model}`}
+      actions={
+        <>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setConfirmOpen(true)}
+            disabled={del.isPending}
+          >
+            {del.isPending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-8">
+        <section className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
           <Field label="Kind" value={p.kind} />
           <Field label="Default model" value={p.default_model} />
           <Field
@@ -124,7 +118,7 @@ export function ProviderDetailPage() {
           void navigate('/providers')
         }}
       />
-    </div>
+    </DetailShell>
   )
 }
 
@@ -144,7 +138,9 @@ function Field({
       <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </h3>
-      {children ?? <p className={mono ? 'font-mono text-sm' : 'text-sm'}>{value}</p>}
+      {children ?? (
+        <p className={mono ? 'mt-1 font-mono text-sm' : 'mt-1 text-sm'}>{value}</p>
+      )}
     </div>
   )
 }
