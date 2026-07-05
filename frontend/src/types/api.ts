@@ -470,15 +470,6 @@ export interface ModelInfo {
   name: string
 }
 
-export interface GroupFileRead {
-  id: string
-  group_id: string
-  filename: string
-  file_size: number
-  mime_type: string | null
-  created_at: string
-}
-
 export interface GroupWorkspaceFileRead {
   path: string
   name: string

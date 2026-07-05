@@ -1,19 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  ArrowDown,
-  ArrowUp,
-  Check,
   ChevronLeft,
   Download,
   File,
   Folder,
   FolderOpen,
-  GitBranch,
-  Minus,
   Pencil,
-  Plus,
   RefreshCw,
-  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -29,18 +22,11 @@ import {
 import { Input } from '@/components/ui/input'
 import {
   downloadGroupWorkspaceFile,
-  useCommitGroupWorkspaceGit,
   useDeleteGroupWorkspaceFile,
-  useGenerateGroupWorkspaceGitCommitMessage,
   useGroupWorkspaceFilePreview,
   useGroupWorkspaceFiles,
-  useGroupWorkspaceGitStatus,
   useGroupWorkspaceRoot,
-  usePullGroupWorkspaceGit,
-  usePushGroupWorkspaceGit,
   useRenameGroupWorkspaceFile,
-  useStageGroupWorkspaceGit,
-  useUnstageGroupWorkspaceGit,
   useUploadGroupWorkspaceFile,
 } from '@/hooks/useGroupFiles'
 import { isDesktopRuntime, revealInFileManager } from '@/lib/desktop'
@@ -49,12 +35,10 @@ import { encodeWorkspacePaths, WORKSPACE_PATHS_MIME } from '@/lib/workspaceDrag'
 import { joinWorkspaceAbsPath } from '@/lib/workspaceFileLink'
 import { useAuthStore } from '@/stores/authStore'
 import { useFileNavStore } from '@/stores/fileNavStore'
-import type { GroupWorkspaceFileRead, GroupWorkspaceGitFileStatus } from '@/types/api'
+import type { GroupWorkspaceFileRead } from '@/types/api'
 
-interface GroupWorkspaceFilesPanelProps {
+interface WorkspaceFilesTabProps {
   groupId: string | undefined
-  width?: number
-  className?: string
   onInsertPaths?: (paths: string[]) => void
 }
 
@@ -75,32 +59,7 @@ function displayError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-function gitStatusLabel(file: GroupWorkspaceGitFileStatus) {
-  if (file.status === '??') return 'untracked'
-  const labels: string[] = []
-  if (file.staged) labels.push(`staged ${file.status[0].trim() || '?'}`)
-  if (file.unstaged) labels.push(`worktree ${file.status[1].trim() || '?'}`)
-  return labels.join(', ') || file.status
-}
-
-function gitSummary(status: ReturnType<typeof useGroupWorkspaceGitStatus>['data'], changed: number) {
-  if (status?.available !== true) return 'Workspace Git'
-  const parts: string[] = []
-  if (status.state === 'conflict') parts.push('Conflicts')
-  if (status.state === 'detached') parts.push('Detached HEAD')
-  if (status.state === 'initial') parts.push('No commits yet')
-  if (status.ahead) parts.push(`${status.ahead} ahead`)
-  if (status.behind) parts.push(`${status.behind} behind`)
-  if (parts.length > 0) return parts.join(' · ')
-  return status.clean ? 'Clean workspace' : `${changed} changed`
-}
-
-export function GroupWorkspaceFilesPanel({
-  groupId,
-  width,
-  className,
-  onInsertPaths,
-}: GroupWorkspaceFilesPanelProps) {
+export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabProps) {
   const [currentPath, setCurrentPath] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<Set<string>>(
@@ -110,8 +69,6 @@ export function GroupWorkspaceFilesPanel({
   const [renaming, setRenaming] = useState<GroupWorkspaceFileRead | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [downloadError, setDownloadError] = useState<string | null>(null)
-  const [gitError, setGitError] = useState<string | null>(null)
-  const [commitMessage, setCommitMessage] = useState('')
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; file: GroupWorkspaceFileRead } | null>(
     null,
@@ -124,13 +81,6 @@ export function GroupWorkspaceFilesPanel({
   const upload = useUploadGroupWorkspaceFile(groupId)
   const rename = useRenameGroupWorkspaceFile(groupId)
   const del = useDeleteGroupWorkspaceFile(groupId)
-  const gitStatus = useGroupWorkspaceGitStatus(groupId)
-  const gitStage = useStageGroupWorkspaceGit(groupId)
-  const gitUnstage = useUnstageGroupWorkspaceGit(groupId)
-  const gitCommit = useCommitGroupWorkspaceGit(groupId)
-  const gitGenerateCommitMessage = useGenerateGroupWorkspaceGitCommitMessage(groupId)
-  const gitPull = usePullGroupWorkspaceGit(groupId)
-  const gitPush = usePushGroupWorkspaceGit(groupId)
   const navRequest = useFileNavStore((s) => s.request)
   const clearNav = useFileNavStore((s) => s.clear)
   const desktop = isDesktopRuntime()
@@ -139,15 +89,6 @@ export function GroupWorkspaceFilesPanel({
   const title = currentPath || 'Workspace root'
   const sortedFiles = files.data ?? []
   const selectedCount = selectedWorkspacePaths.size
-  const gitFiles = gitStatus.data?.files ?? []
-  const isGitBusy =
-    gitStage.isPending ||
-    gitUnstage.isPending ||
-    gitCommit.isPending ||
-    gitGenerateCommitMessage.isPending ||
-    gitPull.isPending ||
-    gitPush.isPending
-  const canUseGit = hasGroupId && gitStatus.data?.available === true && !isGitBusy
 
   const selectOnlyPath = (path: string) => {
     setSelectedWorkspacePaths(new Set([path]))
@@ -217,23 +158,6 @@ export function GroupWorkspaceFilesPanel({
   const insertSelectedPaths = () => {
     if (selectedWorkspacePaths.size === 0) return
     onInsertPaths?.(Array.from(selectedWorkspacePaths))
-  }
-
-  const runGit = (operation: Promise<unknown>, clearCommit = false) => {
-    setGitError(null)
-    void operation
-      .then(() => {
-        if (clearCommit) setCommitMessage('')
-      })
-      .catch((error: unknown) => setGitError(displayError(error)))
-  }
-
-  const generateCommitMessage = () => {
-    setGitError(null)
-    void gitGenerateCommitMessage
-      .mutateAsync()
-      .then((result) => setCommitMessage(result.message))
-      .catch((error: unknown) => setGitError(displayError(error)))
   }
 
   // Open a file when a chat link requests it (locate folder + preview).
@@ -357,19 +281,11 @@ export function GroupWorkspaceFilesPanel({
   }
 
   return (
-    <aside
-      className={cn(
-        'flex h-full shrink-0 flex-col border-l border-border bg-card',
-        width === undefined && 'w-80',
-        className,
-      )}
-      style={width === undefined ? undefined : { width }}
-    >
-      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">Workspace files</h2>
-          <p className="truncate text-[11px] text-muted-foreground" title={title}>{title}</p>
-        </div>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <p className="min-w-0 truncate text-[11px] text-muted-foreground" title={title}>
+          {title}
+        </p>
         <div className="flex shrink-0 items-center gap-1">
           <input
             ref={fileInputRef}
@@ -401,194 +317,6 @@ export function GroupWorkspaceFilesPanel({
           </Button>
         </div>
       </div>
-
-      <section className="shrink-0 border-b border-border px-3 py-2">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0">
-              <p className="truncate text-xs font-medium">
-                {gitStatus.data?.branch ?? 'Git'}
-              </p>
-              <p className="truncate text-[10px] text-muted-foreground">
-                {gitStatus.data?.available === true
-                  ? gitSummary(gitStatus.data, gitFiles.length)
-                  : 'Workspace Git'}
-              </p>
-            </div>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0"
-            onClick={() => void gitStatus.refetch()}
-            disabled={gitStatus.isFetching || !hasGroupId}
-            aria-label="Refresh Git status"
-            title="Refresh Git status"
-          >
-            <RefreshCw className={cn('h-3.5 w-3.5', gitStatus.isFetching && 'animate-spin')} />
-          </Button>
-        </div>
-
-        {gitStatus.isLoading && hasGroupId && (
-          <p className="text-xs text-muted-foreground">Loading Git status...</p>
-        )}
-        {gitStatus.error && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-            {displayError(gitStatus.error)}
-          </p>
-        )}
-        {gitStatus.data?.available === false && (
-          <p className="rounded-md border border-border bg-muted/50 p-2 text-xs text-muted-foreground">
-            {gitStatus.data.message ?? 'This workspace is not a Git repository.'}
-          </p>
-        )}
-        {gitStatus.data?.available === true && (
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-1">
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={() => runGit(gitStage.mutateAsync({ paths: [] }))}
-                disabled={!canUseGit || gitFiles.length === 0}
-                aria-label="Stage all changes"
-                title="Stage all changes"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={() => runGit(gitUnstage.mutateAsync({ paths: [] }))}
-                disabled={!canUseGit || !gitFiles.some((file) => file.staged)}
-                aria-label="Unstage all changes"
-                title="Unstage all changes"
-              >
-                <Minus className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={() => runGit(gitPull.mutateAsync({}))}
-                disabled={!canUseGit}
-                aria-label="Pull Git changes"
-                title="Pull Git changes"
-              >
-                <ArrowDown className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={() => runGit(gitPush.mutateAsync({}))}
-                disabled={!canUseGit}
-                aria-label="Push Git changes"
-                title="Push Git changes"
-              >
-                <ArrowUp className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-
-            {gitFiles.length > 0 && (
-              <div className="max-h-36 overflow-y-auto rounded-md border border-border">
-                {gitFiles.map((file) => (
-                  <div
-                    key={`${file.status}:${file.path}`}
-                    className="flex items-center gap-2 border-b border-border px-2 py-1.5 last:border-b-0"
-                  >
-                    <span className="w-6 shrink-0 font-mono text-[11px] text-muted-foreground">
-                      {file.status}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-xs" title={file.path}>
-                      {file.path}
-                    </span>
-                    <span className="sr-only">{gitStatusLabel(file)}</span>
-                    {file.unstaged && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 shrink-0"
-                        onClick={() => runGit(gitStage.mutateAsync({ paths: [file.path] }))}
-                        disabled={!canUseGit}
-                        aria-label={`Stage ${file.path}`}
-                        title={`Stage ${file.path}`}
-                      >
-                        <Plus className="h-3 w-3" />
-                      </Button>
-                    )}
-                    {file.staged && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 shrink-0"
-                        onClick={() => runGit(gitUnstage.mutateAsync({ paths: [file.path] }))}
-                        disabled={!canUseGit}
-                        aria-label={`Unstage ${file.path}`}
-                        title={`Unstage ${file.path}`}
-                      >
-                        <Minus className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <form
-              className="flex items-center gap-1"
-              onSubmit={(event) => {
-                event.preventDefault()
-                runGit(gitCommit.mutateAsync({ message: commitMessage.trim() }), true)
-              }}
-            >
-              <Input
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-                placeholder="Commit message"
-                className="h-8 min-w-0 text-xs"
-                disabled={!canUseGit}
-                aria-label="Commit message"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={generateCommitMessage}
-                disabled={!canUseGit}
-                aria-label="Generate commit message"
-                title="Generate commit message"
-              >
-                <Sparkles
-                  className={cn(
-                    'h-3.5 w-3.5',
-                    gitGenerateCommitMessage.isPending && 'animate-pulse',
-                  )}
-                />
-              </Button>
-              <Button
-                type="submit"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                disabled={!canUseGit || !commitMessage.trim()}
-                aria-label="Commit staged changes"
-                title="Commit staged changes"
-              >
-                <Check className="h-3.5 w-3.5" />
-              </Button>
-            </form>
-          </div>
-        )}
-      </section>
 
       {currentPath && (
         <button
@@ -632,11 +360,6 @@ export function GroupWorkspaceFilesPanel({
           {downloadError}
         </div>
       )}
-      {gitError && (
-        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-          {gitError}
-        </div>
-      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!hasGroupId && <p className="p-3 text-sm text-muted-foreground">Select a group to view workspace files.</p>}
@@ -672,7 +395,7 @@ export function GroupWorkspaceFilesPanel({
                     aria-pressed={isSelected}
                   >
                     {file.is_dir ? (
-                      <Folder className="h-4 w-4 shrink-0 text-blue-500" />
+                      <Folder className="h-4 w-4 shrink-0 text-primary" />
                     ) : (
                       <File className="h-4 w-4 shrink-0 text-muted-foreground" />
                     )}
@@ -849,6 +572,6 @@ export function GroupWorkspaceFilesPanel({
           </button>
         </div>
       )}
-    </aside>
+    </div>
   )
 }

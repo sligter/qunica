@@ -296,7 +296,6 @@ export function GroupSettingsDialog({
             <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
               {[
                 ['Members and agents', 'Add, mute, and remove group participants.', `/groups/${group.id}/members`],
-                ['Files', 'Upload and delete group workspace files.', `/groups/${group.id}/files`],
                 ['Notes', 'Create and edit shared group notes.', `/groups/${group.id}/notes`],
               ].map(([title, description, href]) => (
                 <div key={href} className="flex items-center justify-between gap-3">
@@ -324,7 +323,7 @@ export function GroupSettingsDialog({
                   size="sm"
                   onClick={onClearMessages}
                   disabled={clearMessages.isPending}
-                  className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 >
                   {clearMessages.isPending ? 'Clearing…' : 'Clear'}
                 </Button>
@@ -338,7 +337,7 @@ export function GroupSettingsDialog({
             variant="outline"
             onClick={onDelete}
             disabled={del.isPending || update.isPending || clearMessages.isPending}
-            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             {del.isPending ? 'Deleting…' : 'Delete group'}
           </Button>

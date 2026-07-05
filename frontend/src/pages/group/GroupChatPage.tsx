@@ -4,7 +4,7 @@ import { Files, NotebookPen, PanelRightClose, Settings, UsersRound } from 'lucid
 
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
 import { GroupSettingsDialog } from '@/components/chat/GroupSettingsDialog'
-import { GroupWorkspaceFilesPanel } from '@/components/chat/GroupWorkspaceFilesPanel'
+import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
@@ -95,7 +95,7 @@ export function GroupChatPage() {
   if (group.error || messagesQuery.error) {
     const err = group.error ?? messagesQuery.error
     return (
-      <div className="p-6 text-sm text-red-600">
+      <div className="p-6 text-sm text-destructive">
         Failed to load group: {String(err)}
       </div>
     )
@@ -113,7 +113,7 @@ export function GroupChatPage() {
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background px-6">
         <div className="flex min-w-0 items-baseline gap-3">
-          <h1 className="truncate text-base font-semibold tracking-tight">
+          <h1 className="font-serif truncate text-base font-semibold tracking-tight">
             {group.data?.name}
           </h1>
           <span className="text-xs text-muted-foreground">
@@ -171,7 +171,7 @@ export function GroupChatPage() {
           />
 
           {stream.error && (
-            <div className="border-t border-border bg-red-50 px-6 py-2 text-xs text-red-700">
+            <div className="border-t border-border bg-destructive/10 px-6 py-2 text-xs text-destructive">
               Stream error: {stream.error}
             </div>
           )}
@@ -197,7 +197,7 @@ export function GroupChatPage() {
               onResizeStart={(event) => workspaceFilesPane.startResize(event, -1)}
               onStep={workspaceFilesPane.resizeBy}
             />
-            <GroupWorkspaceFilesPanel
+            <GroupWorkspacePanel
               groupId={groupId}
               width={workspaceFilesPane.width}
               onInsertPaths={insertWorkspacePaths}

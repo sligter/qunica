@@ -5,7 +5,6 @@ import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
 import type {
-  GroupFileRead,
   GroupWorkspaceGitCommitMessageResponse,
   GroupWorkspaceGitCommitRequest,
   GroupWorkspaceGitPathsRequest,
@@ -24,42 +23,6 @@ export class WorkspaceUploadManyError extends Error {
     this.uploaded = uploaded
     Object.setPrototypeOf(this, WorkspaceUploadManyError.prototype)
   }
-}
-
-export function useGroupFiles(groupId: string | undefined) {
-  const token = useAuthStore((s) => s.token)
-  return useQuery({
-    queryKey: ['groups', groupId, 'files'],
-    queryFn: () => fetchJson<GroupFileRead[]>(`/groups/${groupId}/files`, { token }),
-    enabled: token !== null && !!groupId,
-  })
-}
-
-export function useUploadGroupFile(groupId: string) {
-  const token = useAuthStore((s) => s.token)
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (file: File) => {
-      const fd = new FormData()
-      fd.append('file', file)
-      return fetchFormData<GroupFileRead>(`/groups/${groupId}/files`, fd, { token })
-    },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'files'] })
-    },
-  })
-}
-
-export function useDeleteGroupFile(groupId: string) {
-  const token = useAuthStore((s) => s.token)
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (fileId: string) =>
-      fetchJson<void>(`/groups/${groupId}/files/${fileId}`, { token, method: 'DELETE' }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'files'] })
-    },
-  })
 }
 
 export function workspaceFilesQueryKey(groupId: string | undefined, path = '') {
