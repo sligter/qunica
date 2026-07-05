@@ -12,7 +12,7 @@ export function SkillsListColumn({ width }: SkillsListColumnProps) {
   return (
     <ListColumn
       title="Skills"
-      newTo="/settings/skills/new"
+      newTo="/skills/new"
       newLabel="Import skill"
       searchPlaceholder="Search skills"
       isLoading={skills.isLoading}
@@ -22,7 +22,7 @@ export function SkillsListColumn({ width }: SkillsListColumnProps) {
       width={width}
       items={(skills.data ?? []).map((s) => ({
         id: s.id,
-        to: `/settings/skills/${s.id}`,
+        to: `/skills/${s.id}`,
         name: s.name,
         summary: s.description || s.body_markdown.slice(0, 80),
         avatarClass: avatarColorClass(s.id),

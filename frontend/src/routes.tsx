@@ -4,8 +4,9 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { LegacyDetailRedirect } from '@/components/layout/LegacyDetailRedirect'
 import { RequireAuth } from '@/components/layout/RequireAuth'
 import { AgentsListColumn } from '@/components/layout/AgentsListColumn'
+import { EntityLayout } from '@/components/layout/EntityLayout'
 import { ProvidersListColumn } from '@/components/layout/ProvidersListColumn'
-import { SettingsEntityLayout, SettingsLayout } from '@/components/layout/SettingsLayout'
+import { SettingsLayout } from '@/components/layout/SettingsLayout'
 import { SkillsListColumn } from '@/components/layout/SkillsListColumn'
 import { WorkspacesListColumn } from '@/components/layout/WorkspacesListColumn'
 import { NotFoundPage } from '@/pages/NotFoundPage'
@@ -43,99 +44,109 @@ export const router = createBrowserRouter([
           { path: '/groups', element: <Navigate to="/" replace /> },
           { path: '/groups/:groupId/manage', element: <GroupManagePage /> },
           { path: '/groups/:groupId', element: <GroupChatPage /> },
+          // Top-level entity areas: the sidebar Library is their only entry.
           {
-            path: '/settings',
-            element: <SettingsLayout />,
+            path: '/agents',
+            element: (
+              <EntityLayout
+                title="Agents"
+                list={<AgentsListColumn width={ENTITY_LIST_WIDTH} />}
+              />
+            ),
             children: [
-              { index: true, element: <Navigate to="/settings/general" replace /> },
-              { path: 'general', element: <SystemSettingsPage /> },
-              {
-                path: 'agents',
-                element: (
-                  <SettingsEntityLayout
-                    list={<AgentsListColumn width={ENTITY_LIST_WIDTH} />}
-                  />
-                ),
-                children: [
-                  { index: true, element: <AgentsIndexPage /> },
-                  { path: 'new', element: <AgentCreatePage /> },
-                  { path: ':agentId', element: <AgentDetailPage /> },
-                ],
-              },
-              {
-                path: 'providers',
-                element: (
-                  <SettingsEntityLayout
-                    list={<ProvidersListColumn width={ENTITY_LIST_WIDTH} />}
-                  />
-                ),
-                children: [
-                  { index: true, element: <ProvidersIndexPage /> },
-                  { path: 'new', element: <ProviderCreatePage /> },
-                  { path: ':providerId', element: <ProviderDetailPage /> },
-                ],
-              },
-              {
-                path: 'skills',
-                element: (
-                  <SettingsEntityLayout
-                    list={<SkillsListColumn width={ENTITY_LIST_WIDTH} />}
-                  />
-                ),
-                children: [
-                  { index: true, element: <SkillsIndexPage /> },
-                  { path: 'new', element: <SkillCreatePage /> },
-                  { path: ':skillId', element: <SkillDetailPage /> },
-                ],
-              },
-              {
-                path: 'workspaces',
-                element: (
-                  <SettingsEntityLayout
-                    list={<WorkspacesListColumn width={ENTITY_LIST_WIDTH} />}
-                  />
-                ),
-                children: [
-                  { index: true, element: <WorkspacesIndexPage /> },
-                  { path: 'new', element: <WorkspaceCreatePage /> },
-                  { path: ':workspaceId', element: <WorkspaceDetailPage /> },
-                ],
-              },
+              { index: true, element: <AgentsIndexPage /> },
+              { path: 'new', element: <AgentCreatePage /> },
+              { path: ':agentId', element: <AgentDetailPage /> },
             ],
           },
-          // Legacy top-level routes redirect into the settings surface.
-          { path: '/agents', element: <Navigate to="/settings/agents" replace /> },
-          { path: '/agents/new', element: <Navigate to="/settings/agents/new" replace /> },
           {
-            path: '/agents/:id',
-            element: <LegacyDetailRedirect base="/settings/agents" />,
+            path: '/providers',
+            element: (
+              <EntityLayout
+                title="Providers"
+                list={<ProvidersListColumn width={ENTITY_LIST_WIDTH} />}
+              />
+            ),
+            children: [
+              { index: true, element: <ProvidersIndexPage /> },
+              { path: 'new', element: <ProviderCreatePage /> },
+              { path: ':providerId', element: <ProviderDetailPage /> },
+            ],
           },
-          { path: '/providers', element: <Navigate to="/settings/providers" replace /> },
           {
-            path: '/providers/new',
-            element: <Navigate to="/settings/providers/new" replace />,
-          },
-          {
-            path: '/providers/:id',
-            element: <LegacyDetailRedirect base="/settings/providers" />,
-          },
-          { path: '/skills', element: <Navigate to="/settings/skills" replace /> },
-          { path: '/skills/new', element: <Navigate to="/settings/skills/new" replace /> },
-          {
-            path: '/skills/:id',
-            element: <LegacyDetailRedirect base="/settings/skills" />,
+            path: '/skills',
+            element: (
+              <EntityLayout
+                title="Skills"
+                list={<SkillsListColumn width={ENTITY_LIST_WIDTH} />}
+              />
+            ),
+            children: [
+              { index: true, element: <SkillsIndexPage /> },
+              { path: 'new', element: <SkillCreatePage /> },
+              { path: ':skillId', element: <SkillDetailPage /> },
+            ],
           },
           {
             path: '/workspaces',
-            element: <Navigate to="/settings/workspaces" replace />,
+            element: (
+              <EntityLayout
+                title="Workspaces"
+                list={<WorkspacesListColumn width={ENTITY_LIST_WIDTH} />}
+              />
+            ),
+            children: [
+              { index: true, element: <WorkspacesIndexPage /> },
+              { path: 'new', element: <WorkspaceCreatePage /> },
+              { path: ':workspaceId', element: <WorkspaceDetailPage /> },
+            ],
+          },
+          // Settings keeps only global configuration.
+          {
+            path: '/settings',
+            element: <SettingsLayout />,
+            children: [{ index: true, element: <SystemSettingsPage /> }],
+          },
+          { path: '/settings/general', element: <Navigate to="/settings" replace /> },
+          // Legacy /settings/<area>* deep links redirect to the top-level areas.
+          { path: '/settings/agents', element: <Navigate to="/agents" replace /> },
+          {
+            path: '/settings/agents/new',
+            element: <Navigate to="/agents/new" replace />,
           },
           {
-            path: '/workspaces/new',
-            element: <Navigate to="/settings/workspaces/new" replace />,
+            path: '/settings/agents/:id',
+            element: <LegacyDetailRedirect base="/agents" />,
+          },
+          { path: '/settings/providers', element: <Navigate to="/providers" replace /> },
+          {
+            path: '/settings/providers/new',
+            element: <Navigate to="/providers/new" replace />,
           },
           {
-            path: '/workspaces/:id',
-            element: <LegacyDetailRedirect base="/settings/workspaces" />,
+            path: '/settings/providers/:id',
+            element: <LegacyDetailRedirect base="/providers" />,
+          },
+          { path: '/settings/skills', element: <Navigate to="/skills" replace /> },
+          {
+            path: '/settings/skills/new',
+            element: <Navigate to="/skills/new" replace />,
+          },
+          {
+            path: '/settings/skills/:id',
+            element: <LegacyDetailRedirect base="/skills" />,
+          },
+          {
+            path: '/settings/workspaces',
+            element: <Navigate to="/workspaces" replace />,
+          },
+          {
+            path: '/settings/workspaces/new',
+            element: <Navigate to="/workspaces/new" replace />,
+          },
+          {
+            path: '/settings/workspaces/:id',
+            element: <LegacyDetailRedirect base="/workspaces" />,
           },
         ],
       },

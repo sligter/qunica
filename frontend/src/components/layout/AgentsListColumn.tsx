@@ -12,7 +12,7 @@ export function AgentsListColumn({ width }: AgentsListColumnProps) {
   return (
     <ListColumn
       title="Agents"
-      newTo="/settings/agents/new"
+      newTo="/agents/new"
       newLabel="New agent"
       searchPlaceholder="Search agents"
       isLoading={agents.isLoading}
@@ -22,7 +22,7 @@ export function AgentsListColumn({ width }: AgentsListColumnProps) {
       width={width}
       items={(agents.data ?? []).map((a) => ({
         id: a.id,
-        to: `/settings/agents/${a.id}`,
+        to: `/agents/${a.id}`,
         name: a.name,
         summary:
           a.runtime_kind === 'acp'

@@ -10,7 +10,7 @@ export function AgentCreatePage() {
       title="New agent"
       subtitle="Define an agent's name, system prompt, and optional model parameters."
     >
-      <CreateAgentForm onCreated={(id) => void navigate(`/settings/agents/${id}`)} />
+      <CreateAgentForm onCreated={(id) => void navigate(`/agents/${id}`)} />
     </DetailShell>
   )
 }

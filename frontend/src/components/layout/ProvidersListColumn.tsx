@@ -26,7 +26,7 @@ export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
   return (
     <ListColumn
       title="Providers"
-      newTo="/settings/providers/new"
+      newTo="/providers/new"
       newLabel="New provider"
       searchPlaceholder="Search providers"
       isLoading={providers.isLoading}
@@ -36,7 +36,7 @@ export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
       width={width}
       items={(providers.data ?? []).map((p) => ({
         id: p.id,
-        to: `/settings/providers/${p.id}`,
+        to: `/providers/${p.id}`,
         name: p.name,
         summary: `${p.kind} · ${p.default_model}`,
         avatarClass: kindColor(p.kind),

@@ -33,10 +33,10 @@ interface LibraryItem {
 }
 
 const libraryItems: LibraryItem[] = [
-  { to: '/settings/agents', label: 'Agents', icon: Bot },
-  { to: '/settings/providers', label: 'Providers', icon: Plug },
-  { to: '/settings/skills', label: 'Skills', icon: Sparkles },
-  { to: '/settings/workspaces', label: 'Workspaces', icon: Folder },
+  { to: '/agents', label: 'Agents', icon: Bot },
+  { to: '/providers', label: 'Providers', icon: Plug },
+  { to: '/skills', label: 'Skills', icon: Sparkles },
+  { to: '/workspaces', label: 'Workspaces', icon: Folder },
 ]
 
 function readCollapsed(): boolean {
@@ -305,7 +305,7 @@ export function AppSidebar() {
           <Tooltip>
             <TooltipTrigger asChild>
               <NavLink
-                to="/settings/general"
+                to="/settings"
                 aria-label="Settings"
                 className={({ isActive }) =>
                   cn(
@@ -323,7 +323,7 @@ export function AppSidebar() {
           </Tooltip>
         ) : (
           <NavLink
-            to="/settings/general"
+            to="/settings"
             className={({ isActive }) =>
               cn(
                 'flex items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors',

@@ -20,7 +20,7 @@ export function WorkspacesListColumn({ width }: WorkspacesListColumnProps) {
   return (
     <ListColumn
       title="Workspace"
-      newTo="/settings/workspaces/new"
+      newTo="/workspaces/new"
       newLabel="New workspace"
       searchPlaceholder="Search workspaces"
       isLoading={workspaces.isLoading}
@@ -30,7 +30,7 @@ export function WorkspacesListColumn({ width }: WorkspacesListColumnProps) {
       width={width}
       items={(workspaces.data ?? []).map((w) => ({
         id: w.id,
-        to: `/settings/workspaces/${w.id}`,
+        to: `/workspaces/${w.id}`,
         name: w.name,
         summary: workspaceSummary(w),
         avatarClass: avatarColorClass(w.id),
