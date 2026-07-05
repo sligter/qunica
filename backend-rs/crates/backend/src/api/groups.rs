@@ -1177,6 +1177,8 @@ pub async fn generate_group_workspace_git_commit_message(
         api_key: provider_row.api_key,
         default_model: provider_row.default_model,
         reasoning_passback: provider_row.reasoning_passback != 0,
+        context_window_tokens: None,
+        context_output_reserve_ratio: None,
     };
     let provider = build_provider(&provider_config).map_err(|err| {
         ApiError::invalid_input(format!("commit message generation failed: {err}"))

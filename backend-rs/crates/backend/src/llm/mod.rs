@@ -34,6 +34,10 @@ pub struct ProviderConfig {
     pub api_key: String,
     pub default_model: String,
     pub reasoning_passback: bool,
+    /// Total context window size in tokens, if the provider declares one.
+    pub context_window_tokens: Option<i64>,
+    /// Fraction of the window reserved for model output (0.0..=1.0).
+    pub context_output_reserve_ratio: Option<f64>,
 }
 
 /// A streaming chat completion provider.

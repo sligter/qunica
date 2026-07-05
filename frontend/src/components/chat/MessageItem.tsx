@@ -5,6 +5,7 @@ import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { InterruptedMessageActions } from '@/components/chat/InterruptedMessageActions'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { MessageActions } from '@/components/chat/MessageActions'
+import { PersistedTurnDetails } from '@/components/chat/PersistedTurnDetails'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { cn } from '@/lib/utils'
@@ -106,6 +107,12 @@ export function MessageItem({
             />
           )}
         </div>
+        {!isUser && !showStreamingDot && (
+          <PersistedTurnDetails
+            reasoning={message.reasoning}
+            toolCalls={message.tool_calls}
+          />
+        )}
         <div
           className={cn(
             'min-w-0 rounded-lg',

@@ -22,6 +22,11 @@ pub struct NewMessage {
     pub sender_id: Option<String>,
     pub message_type: String,
     pub content: String,
+    /// Serialized structured turn data (reasoning segments, tool calls, context
+    /// usage). `None` for rows that carry no structured data (e.g. plain user
+    /// messages); the DB column is then `NULL` and readers fall back to the
+    /// plain `content` text.
+    pub content_json: Option<String>,
 }
 
 /// Coordinates writes to the chat/runtime tables.
@@ -65,8 +70,8 @@ impl SequenceAllocator {
         sqlx::query(
             "INSERT INTO messages \
              (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
-              status, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?)",
+              content_json, status, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?)",
         )
         .bind(&message.id)
         .bind(thread_id)
@@ -76,6 +81,7 @@ impl SequenceAllocator {
         .bind(&message.sender_id)
         .bind(&message.message_type)
         .bind(&message.content)
+        .bind(&message.content_json)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -114,8 +120,8 @@ impl SequenceAllocator {
         sqlx::query(
             "INSERT INTO messages \
              (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
-              status, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interrupted', ?)",
+              content_json, status, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'interrupted', ?)",
         )
         .bind(&message.id)
         .bind(thread_id)
@@ -125,6 +131,7 @@ impl SequenceAllocator {
         .bind(&message.sender_id)
         .bind(&message.message_type)
         .bind(&message.content)
+        .bind(&message.content_json)
         .bind(&now)
         .execute(&mut *tx)
         .await?;

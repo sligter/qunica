@@ -414,6 +414,15 @@ export interface SystemSettingsUpdate {
 
 export type SenderType = 'user' | 'agent' | 'system'
 
+/** One persisted tool call, mirrored from the backend `content_json` schema. */
+export interface MessageToolCall {
+  tool_call_id: string | null
+  tool_name: string | null
+  status: string | null
+  args_summary: string | null
+  result_summary: string | null
+}
+
 export interface Message {
   id: string
   group_id: string
@@ -425,6 +434,10 @@ export interface Message {
   status: string
   refs: Record<string, unknown> | null
   context_usage: ContextUsage | null
+  /** Persisted reasoning segments (from `content_json`), in order. */
+  reasoning?: string[] | null
+  /** Persisted tool calls (from `content_json`), in order. */
+  tool_calls?: MessageToolCall[] | null
   reply_to_message_id: string | null
   created_at: string
 }

@@ -115,6 +115,7 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
                     input_tokens: Some(input),
                     output_tokens: None,
                     total_tokens: None,
+                    ..ContextUsage::default()
                 }));
             }
         }
@@ -161,6 +162,7 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
                     input_tokens: None,
                     output_tokens: Some(output),
                     total_tokens: None,
+                    ..ContextUsage::default()
                 }));
             }
         }

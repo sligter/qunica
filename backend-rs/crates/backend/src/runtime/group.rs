@@ -46,6 +46,10 @@ use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 const MAX_TOOL_ROUNDS: usize = 24;
 use crate::runtime::sequence::{NewMessage, SequenceAllocator};
 
+/// Schema version for the structured `content_json` payload persisted on agent
+/// messages. Bump when the shape changes so readers can migrate old rows.
+const CONTENT_JSON_SCHEMA_VERSION: i64 = 1;
+
 /// A proactive agent replies with exactly this marker to stay silent.
 pub const SILENT_MARKER: &str = "<SILENT>";
 /// An agent prefixes its reply with this marker to pause for human input.
@@ -316,6 +320,7 @@ async fn run_inner(
         sender_id: Some(req.owner_id.clone()),
         message_type: "text".to_string(),
         content: req.content.clone(),
+        content_json: None,
     };
     let user_payload = json!({
         "message_id": user_message.id,
@@ -492,18 +497,13 @@ async fn run_resume_inner(
                 }
             }
             ChatDelta::Usage(usage) => {
-                if let Err(err) = ctx
-                    .emit(
-                        StreamEventKind::ContextUsage,
-                        json!({
-                            "agent_id": agent.agent_id,
-                            "input_tokens": usage.input_tokens,
-                            "output_tokens": usage.output_tokens,
-                            "total_tokens": usage.total_tokens,
-                        }),
-                    )
-                    .await
-                {
+                let usage = augment_context_usage(usage, &provider_cfg);
+                let usage_json = context_usage_to_json(&usage);
+                let payload = json!({
+                    "agent_id": agent.agent_id,
+                    "context_usage": usage_json,
+                });
+                if let Err(err) = ctx.emit(StreamEventKind::ContextUsage, payload).await {
                     return match err {
                         StepErr::Cancelled => {
                             append_resume_cancellation(ctx, req, &addition).await?;
@@ -612,6 +612,146 @@ enum AgentRunResult {
     Handoff { helper: Box<Candidate> },
 }
 
+/// One tool call recorded for persistence in `content_json`.
+#[derive(Clone)]
+struct RecordedToolCall {
+    tool_call_id: Option<String>,
+    tool_name: Option<String>,
+    status: Option<String>,
+    args_summary: Option<String>,
+    result_summary: Option<String>,
+}
+
+/// Structured data accumulated across one agent turn so reasoning blocks, tool
+/// cards, and the final context usage survive a restart (persisted in
+/// `content_json`). Transient stream events remain the live source of truth;
+/// this is the durable mirror.
+#[derive(Default)]
+struct TurnData {
+    reasoning: Vec<String>,
+    tool_calls: Vec<RecordedToolCall>,
+    context_usage: Option<Value>,
+}
+
+impl TurnData {
+    /// Append a reasoning delta to the current (last) reasoning segment,
+    /// starting a new segment when the previous content was interrupted by a
+    /// non-reasoning event.
+    fn push_reasoning(&mut self, text: &str, new_segment: bool) {
+        if new_segment || self.reasoning.is_empty() {
+            self.reasoning.push(text.to_string());
+        } else if let Some(last) = self.reasoning.last_mut() {
+            last.push_str(text);
+        }
+    }
+
+    fn record_tool_start(
+        &mut self,
+        tool_call_id: Option<String>,
+        tool_name: Option<String>,
+        status: Option<String>,
+        args_summary: Option<String>,
+    ) {
+        self.tool_calls.push(RecordedToolCall {
+            tool_call_id,
+            tool_name,
+            status,
+            args_summary,
+            result_summary: None,
+        });
+    }
+
+    /// Merge a tool result into a previously recorded start (matched by id), or
+    /// record a standalone result if no start was seen.
+    fn record_tool_result(
+        &mut self,
+        tool_call_id: Option<String>,
+        tool_name: Option<String>,
+        status: Option<String>,
+        result_summary: Option<String>,
+    ) {
+        if let Some(existing) = self.tool_calls.iter_mut().find(|call| {
+            tool_call_id.is_some() && call.tool_call_id == tool_call_id
+        }) {
+            if status.is_some() {
+                existing.status = status;
+            }
+            if tool_name.is_some() {
+                existing.tool_name = tool_name;
+            }
+            if result_summary.is_some() {
+                existing.result_summary = result_summary;
+            }
+            return;
+        }
+        self.tool_calls.push(RecordedToolCall {
+            tool_call_id,
+            tool_name,
+            status,
+            args_summary: None,
+            result_summary,
+        });
+    }
+
+    fn set_context_usage(&mut self, usage: Value) {
+        self.context_usage = Some(usage);
+    }
+
+    /// True when there is nothing structured worth persisting.
+    fn is_empty(&self) -> bool {
+        self.reasoning.iter().all(|segment| segment.is_empty())
+            && self.tool_calls.is_empty()
+            && self.context_usage.is_none()
+    }
+
+    /// Serialize to the versioned `content_json` schema, or `None` when empty so
+    /// plain-text messages keep a `NULL` column.
+    fn to_content_json(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let reasoning: Vec<&String> = self
+            .reasoning
+            .iter()
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        let tool_calls: Vec<Value> = self
+            .tool_calls
+            .iter()
+            .map(|call| {
+                json!({
+                    "tool_call_id": call.tool_call_id,
+                    "tool_name": call.tool_name,
+                    "status": call.status,
+                    "args_summary": call.args_summary,
+                    "result_summary": call.result_summary,
+                })
+            })
+            .collect();
+        let payload = json!({
+            "schema_version": CONTENT_JSON_SCHEMA_VERSION,
+            "reasoning": reasoning,
+            "tool_calls": tool_calls,
+            "context_usage": self.context_usage,
+        });
+        serde_json::to_string(&payload).ok()
+    }
+}
+
+/// Serialize a domain [`ContextUsage`] to the JSON shape the frontend
+/// `contextUsageSchema` expects (snake_case field names, nulls preserved).
+fn context_usage_to_json(usage: &ag_swarmer_domain::runtime::ContextUsage) -> Value {
+    json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "context_window_tokens": usage.context_window_tokens,
+        "output_reserve_tokens": usage.output_reserve_tokens,
+        "ratio": usage.ratio,
+        "source": usage.source,
+    })
+}
+
 async fn run_agent_turn(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
@@ -643,6 +783,7 @@ async fn run_agent_turn(
 
     let mut content = String::new();
     let checkpoint_interrupted = handoff_depth == 0;
+    let mut turn = TurnData::default();
 
     for _ in 0..MAX_TOOL_ROUNDS {
         let request = ChatRequest {
@@ -655,10 +796,14 @@ async fn run_agent_turn(
         let mut deltas = provider.stream(request).await.map_err(StepErr::Db)?;
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
+        // A reasoning delta starts a new segment when the previous delta was not
+        // reasoning (so token/tool interleaving splits reasoning blocks).
+        let mut last_was_reasoning = false;
 
         while let Some(delta) = deltas.recv().await {
             match delta {
                 ChatDelta::Token(text) => {
+                    last_was_reasoning = false;
                     match ctx
                         .emit(
                             StreamEventKind::Token,
@@ -675,6 +820,7 @@ async fn run_agent_turn(
                                 ctx,
                                 agent,
                                 &content,
+                                &turn,
                                 checkpoint_interrupted,
                             )
                             .await?;
@@ -684,6 +830,8 @@ async fn run_agent_turn(
                     }
                 }
                 ChatDelta::Reasoning(text) => {
+                    turn.push_reasoning(&text, !last_was_reasoning);
+                    last_was_reasoning = true;
                     if let Err(err) = ctx
                         .emit(
                             StreamEventKind::Reasoning,
@@ -696,6 +844,7 @@ async fn run_agent_turn(
                                 ctx,
                                 agent,
                                 &content,
+                                &turn,
                                 checkpoint_interrupted,
                             )
                             .await?;
@@ -704,26 +853,25 @@ async fn run_agent_turn(
                     }
                 }
                 ChatDelta::ToolCall(call) => {
+                    last_was_reasoning = false;
                     tool_calls.push(call);
                 }
                 ChatDelta::Usage(usage) => {
-                    if let Err(err) = ctx
-                        .emit(
-                            StreamEventKind::ContextUsage,
-                            json!({
-                                "agent_id": agent.agent_id,
-                                "input_tokens": usage.input_tokens,
-                                "output_tokens": usage.output_tokens,
-                                "total_tokens": usage.total_tokens,
-                            }),
-                        )
-                        .await
-                    {
+                    last_was_reasoning = false;
+                    let usage = augment_context_usage(usage, &provider_cfg);
+                    let usage_json = context_usage_to_json(&usage);
+                    turn.set_context_usage(usage_json.clone());
+                    let payload = json!({
+                        "agent_id": agent.agent_id,
+                        "context_usage": usage_json,
+                    });
+                    if let Err(err) = ctx.emit(StreamEventKind::ContextUsage, payload).await {
                         if matches!(err, StepErr::Cancelled) {
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
                                 &content,
+                                &turn,
                                 checkpoint_interrupted,
                             )
                             .await?;
@@ -741,6 +889,7 @@ async fn run_agent_turn(
                 agent,
                 group.proactive_mode,
                 content,
+                &turn,
                 checkpoint_interrupted,
             )
             .await;
@@ -755,6 +904,7 @@ async fn run_agent_turn(
                 handoff_depth,
                 call,
                 &content,
+                &mut turn,
             )
             .await;
         }
@@ -773,6 +923,7 @@ async fn run_agent_turn(
                 &call,
                 checkpoint_interrupted,
                 &content,
+                &mut turn,
             )
             .await?;
             messages.push(ChatMessage::tool_result(
@@ -806,6 +957,7 @@ async fn run_agent_turn(
         agent,
         group.proactive_mode,
         content,
+        &turn,
         checkpoint_interrupted,
     )
     .await
@@ -815,10 +967,11 @@ async fn maybe_persist_interrupted_agent(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     content: &str,
+    turn: &TurnData,
     checkpoint_interrupted: bool,
 ) -> Result<(), StepErr> {
     if checkpoint_interrupted {
-        persist_interrupted_agent(ctx, agent, content).await?;
+        persist_interrupted_agent(ctx, agent, content, turn).await?;
     }
     Ok(())
 }
@@ -868,12 +1021,16 @@ async fn run_acp_agent_turn(
     .map_err(|err| StepErr::Db(err.into()))?;
 
     let mut content = String::new();
+    let mut turn = TurnData::default();
+    let mut last_was_reasoning = false;
     while let Some(event) = run.next_event().await {
         match event.kind {
             AcpEventKind::Run => {
+                last_was_reasoning = false;
                 ctx.emit(StreamEventKind::AcpAgentRun, event.data).await?;
             }
             AcpEventKind::Token => {
+                last_was_reasoning = false;
                 let text = event.data.as_str().unwrap_or_default().to_string();
                 if !text.is_empty() {
                     ctx.emit(
@@ -887,6 +1044,8 @@ async fn run_acp_agent_turn(
             AcpEventKind::Reasoning => {
                 let text = event.data.as_str().unwrap_or_default().to_string();
                 if !text.is_empty() {
+                    turn.push_reasoning(&text, !last_was_reasoning);
+                    last_was_reasoning = true;
                     ctx.emit(
                         StreamEventKind::Reasoning,
                         json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
@@ -895,24 +1054,92 @@ async fn run_acp_agent_turn(
                 }
             }
             AcpEventKind::ToolCallStart => {
-                ctx.emit(StreamEventKind::ToolCallStart, event.data).await?;
+                last_was_reasoning = false;
+                // The ACP payload lacks the agent identity the LLM path injects;
+                // merge it in so tool cards render under this agent's timeline
+                // instead of a phantom "Agent" block (agent_id -> unknown-agent).
+                let payload = merge_agent_identity(event.data, agent);
+                turn.record_tool_start(
+                    payload.get("tool_call_id").and_then(json_str),
+                    payload.get("tool_name").and_then(json_str),
+                    payload.get("status").and_then(json_str),
+                    payload.get("args_summary").and_then(json_str),
+                );
+                ctx.emit(StreamEventKind::ToolCallStart, payload).await?;
             }
             AcpEventKind::ToolCallResult => {
-                ctx.emit(StreamEventKind::ToolCallResult, event.data)
-                    .await?;
+                last_was_reasoning = false;
+                let payload = merge_agent_identity(event.data, agent);
+                turn.record_tool_result(
+                    payload.get("tool_call_id").and_then(json_str),
+                    payload.get("tool_name").and_then(json_str),
+                    payload.get("status").and_then(json_str),
+                    payload.get("result_summary").and_then(json_str),
+                );
+                ctx.emit(StreamEventKind::ToolCallResult, payload).await?;
             }
             AcpEventKind::Usage => {
-                ctx.emit(
-                    StreamEventKind::ContextUsage,
-                    json!({ "agent_id": agent.agent_id, "usage": event.data }),
-                )
-                .await?;
+                last_was_reasoning = false;
+                let usage = acp_context_usage(&event.data);
+                let usage_json = context_usage_to_json(&usage);
+                turn.set_context_usage(usage_json.clone());
+                let payload = json!({
+                    "agent_id": agent.agent_id,
+                    "display_name": agent.display_name,
+                    "context_usage": usage_json,
+                });
+                ctx.emit(StreamEventKind::ContextUsage, payload).await?;
             }
         }
     }
     run.join().await.map_err(|err| StepErr::Db(err.into()))?;
 
-    finish_agent_content(ctx, agent, group.proactive_mode, content, true).await
+    finish_agent_content(ctx, agent, group.proactive_mode, content, &turn, true).await
+}
+
+/// Merge this agent's `agent_id`/`display_name` into an ACP tool-call payload so
+/// the frontend attributes the tool activity to the correct agent. Existing keys
+/// (if the upstream ever adds them) are not overwritten.
+fn merge_agent_identity(data: Value, agent: &Candidate) -> Value {
+    let mut data = data;
+    if let Value::Object(map) = &mut data {
+        map.entry("agent_id".to_string())
+            .or_insert_with(|| json!(agent.agent_id));
+        map.entry("display_name".to_string())
+            .or_insert_with(|| json!(agent.display_name));
+        data
+    } else {
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "data": data,
+        })
+    }
+}
+
+fn json_str(value: &Value) -> Option<String> {
+    value.as_str().map(str::to_string)
+}
+
+/// Map an ACP `usage_update` (`{used, size}`) to the standard [`ContextUsage`]
+/// shape the frontend understands: `used` becomes the total tokens and `size`
+/// becomes the context window, with a bounded ratio when both are present.
+fn acp_context_usage(data: &Value) -> ag_swarmer_domain::runtime::ContextUsage {
+    let used = data.get("used").and_then(Value::as_i64);
+    let size = data.get("size").and_then(Value::as_i64).filter(|v| *v > 0);
+    let ratio = match (used, size) {
+        (Some(used), Some(size)) => Some(((used as f64) / (size as f64)).clamp(0.0, 1.0)),
+        _ => None,
+    };
+    ag_swarmer_domain::runtime::ContextUsage {
+        input_tokens: used,
+        output_tokens: None,
+        total_tokens: used,
+        context_window_tokens: size,
+        output_reserve_tokens: None,
+        ratio,
+        source: ratio.map(|_| "provider".to_string()),
+    }
 }
 
 async fn execute_tool_call(
@@ -922,15 +1149,29 @@ async fn execute_tool_call(
     call: &ToolCall,
     checkpoint_interrupted: bool,
     content: &str,
+    turn: &mut TurnData,
 ) -> Result<ToolResult, StepErr> {
+    turn.record_tool_start(
+        Some(call.id.clone()),
+        Some(call.name.clone()),
+        Some("started".to_string()),
+        Some(summarize_value(&call.args)),
+    );
     if let Err(err) = emit_tool_call_start(ctx, agent, call).await {
         if matches!(err, StepErr::Cancelled) {
-            maybe_persist_interrupted_agent(ctx, agent, content, checkpoint_interrupted).await?;
+            maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
+                .await?;
         }
         return Err(err);
     }
 
     let result = executor.execute(&call.name, call.args.clone()).await;
+    turn.record_tool_result(
+        Some(call.id.clone()),
+        Some(call.name.clone()),
+        Some(tool_status_wire(result.status).to_string()),
+        Some(summarize_text(&result.output)),
+    );
     if let Err(err) = ctx
         .emit(
             StreamEventKind::ToolCallResult,
@@ -947,7 +1188,8 @@ async fn execute_tool_call(
         .await
     {
         if matches!(err, StepErr::Cancelled) {
-            maybe_persist_interrupted_agent(ctx, agent, content, checkpoint_interrupted).await?;
+            maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
+                .await?;
         }
         return Err(err);
     }
@@ -988,6 +1230,7 @@ async fn persist_interrupted_agent(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     content: &str,
+    turn: &TurnData,
 ) -> Result<(), StepErr> {
     let Some(content) = interrupted_visible_content(content) else {
         return Ok(());
@@ -998,6 +1241,7 @@ async fn persist_interrupted_agent(
         sender_id: Some(agent.agent_id.clone()),
         message_type: "text".to_string(),
         content,
+        content_json: turn.to_content_json(),
     };
     ctx.allocator
         .persist_interrupted_message(&ctx.thread_id, &ctx.group_id, &message)
@@ -1021,6 +1265,7 @@ fn interrupted_visible_content(content: &str) -> Option<String> {
     Some(content.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_agent_as_tool(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
@@ -1029,18 +1274,32 @@ async fn handle_agent_as_tool(
     handoff_depth: usize,
     call: ToolCall,
     content: &str,
+    turn: &mut TurnData,
 ) -> Result<AgentRunResult, StepErr> {
+    turn.record_tool_start(
+        Some(call.id.clone()),
+        Some(AGENT_AS_TOOL_NAME.to_string()),
+        Some("started".to_string()),
+        Some(summarize_value(&call.args)),
+    );
     emit_tool_call_start(ctx, agent, &call).await?;
 
     let parsed = match AgentAsToolCall::from_args(call.id.clone(), &call.args) {
         Ok(parsed) => parsed,
         Err(failure) => {
+            turn.record_tool_result(
+                Some(call.id.clone()),
+                Some(AGENT_AS_TOOL_NAME.to_string()),
+                Some(failure.status.to_string()),
+                Some(failure.message.clone()),
+            );
             emit_tool_call_failure(ctx, agent, &call.id, &failure).await?;
             return finish_agent_content(
                 ctx,
                 agent,
                 false,
                 content.to_string(),
+                turn,
                 handoff_depth == 0,
             )
             .await;
@@ -1065,12 +1324,19 @@ async fn handle_agent_as_tool(
     {
         Ok(dispatch) => dispatch,
         Err(failure) => {
+            turn.record_tool_result(
+                Some(parsed.tool_call_id.clone()),
+                Some(AGENT_AS_TOOL_NAME.to_string()),
+                Some(failure.status.to_string()),
+                Some(failure.message.clone()),
+            );
             emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
             return finish_agent_content(
                 ctx,
                 agent,
                 false,
                 content.to_string(),
+                turn,
                 handoff_depth == 0,
             )
             .await;
@@ -1087,24 +1353,41 @@ async fn handle_agent_as_tool(
         Ok(candidate) => candidate,
         Err(err) => {
             let failure = AgentAsToolFailure::unavailable(err.to_string());
+            turn.record_tool_result(
+                Some(parsed.tool_call_id.clone()),
+                Some(AGENT_AS_TOOL_NAME.to_string()),
+                Some(failure.status.to_string()),
+                Some(failure.message.clone()),
+            );
             emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
             return finish_agent_content(
                 ctx,
                 agent,
                 false,
                 content.to_string(),
+                turn,
                 handoff_depth == 0,
             )
             .await;
         }
     };
 
+    turn.record_tool_result(
+        Some(parsed.tool_call_id.clone()),
+        Some(AGENT_AS_TOOL_NAME.to_string()),
+        Some("completed".to_string()),
+        Some(format!(
+            "Dispatched to @{} through normal group routing.",
+            dispatch.helper.display_name
+        )),
+    );
     let agent_message = NewMessage {
         id: Uuid::new_v4().to_string(),
         sender_type: "agent".to_string(),
         sender_id: Some(agent.agent_id.clone()),
         message_type: "text".to_string(),
         content: dispatch.content.clone(),
+        content_json: turn.to_content_json(),
     };
     let message_payload = json!({
         "message_id": agent_message.id,
@@ -1154,6 +1437,7 @@ async fn finish_agent_content(
     agent: &Candidate,
     proactive: bool,
     content: String,
+    turn: &TurnData,
     checkpoint_interrupted: bool,
 ) -> Result<AgentRunResult, StepErr> {
     let trimmed = content.trim();
@@ -1183,12 +1467,14 @@ async fn finish_agent_content(
         return Ok(AgentRunResult::NoVisible);
     }
 
+    let content_json = turn.to_content_json();
     let agent_message = NewMessage {
         id: Uuid::new_v4().to_string(),
         sender_type: "agent".to_string(),
         sender_id: Some(agent.agent_id.clone()),
         message_type: "text".to_string(),
         content: visible.clone(),
+        content_json,
     };
     let message_payload = json!({
         "message_id": agent_message.id,
@@ -1206,7 +1492,8 @@ async fn finish_agent_content(
         .await
     {
         if matches!(err, StepErr::Cancelled) {
-            maybe_persist_interrupted_agent(ctx, agent, &visible, checkpoint_interrupted).await?;
+            maybe_persist_interrupted_agent(ctx, agent, &visible, turn, checkpoint_interrupted)
+                .await?;
         }
         return Err(err);
     }
@@ -1984,28 +2271,97 @@ fn object_schema(fields: &[(&str, &str)], required: &[&str]) -> Value {
     })
 }
 
+#[derive(sqlx::FromRow)]
+struct ProviderRow {
+    kind: String,
+    base_url: Option<String>,
+    api_key: String,
+    default_model: String,
+    reasoning_passback: i64,
+    context_window_tokens: Option<i64>,
+    context_output_reserve_ratio: Option<f64>,
+}
+
 async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Result<ProviderConfig> {
     let provider_id = agent
         .provider_id
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("agent has no llm provider configured"))?;
-    let row: Option<(String, Option<String>, String, String, i64)> = sqlx::query_as(
-        "SELECT kind, base_url, api_key, default_model, reasoning_passback \
+    let row: Option<ProviderRow> = sqlx::query_as(
+        "SELECT kind, base_url, api_key, default_model, reasoning_passback, \
+                context_window_tokens, context_output_reserve_ratio \
          FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
     .bind(provider_id)
     .bind(&agent.owner_id)
     .fetch_optional(pool)
     .await?;
-    let (kind, base_url, api_key, default_model, reasoning_passback) =
-        row.ok_or_else(|| anyhow::anyhow!("agent llm provider not found"))?;
+    let row = row.ok_or_else(|| anyhow::anyhow!("agent llm provider not found"))?;
+
+    // Agent-level overrides in model_config_json win over the provider defaults.
+    let (window_override, reserve_override) =
+        context_window_override(agent.model_config_json.as_deref());
+
     Ok(ProviderConfig {
-        kind,
-        base_url,
-        api_key,
-        default_model,
-        reasoning_passback: reasoning_passback != 0,
+        kind: row.kind,
+        base_url: row.base_url,
+        api_key: row.api_key,
+        default_model: row.default_model,
+        reasoning_passback: row.reasoning_passback != 0,
+        context_window_tokens: window_override.or(row.context_window_tokens),
+        context_output_reserve_ratio: reserve_override.or(row.context_output_reserve_ratio),
     })
+}
+
+/// Read an agent's context-window override from its `model_config_json`.
+///
+/// Accepts either `context_window_tokens` / `context_output_reserve_ratio` at the
+/// top level, mirroring the provider column names.
+fn context_window_override(model_config_json: Option<&str>) -> (Option<i64>, Option<f64>) {
+    let Some(value) =
+        model_config_json.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    else {
+        return (None, None);
+    };
+    let window = value
+        .get("context_window_tokens")
+        .and_then(Value::as_i64)
+        .filter(|v| *v > 0);
+    let reserve = value
+        .get("context_output_reserve_ratio")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite() && *v >= 0.0);
+    (window, reserve)
+}
+
+/// Compute a bounded context-usage `ratio` and its `source` from a raw usage
+/// report and the resolved provider window/reserve. Returns the usage augmented
+/// with `context_window_tokens`, `output_reserve_tokens`, `ratio`, and `source`.
+///
+/// When the window is unknown the ratio stays `None` and the source is `None`,
+/// so the frontend gracefully shows "unknown" rather than a wrong number.
+fn augment_context_usage(
+    usage: ag_swarmer_domain::runtime::ContextUsage,
+    provider: &ProviderConfig,
+) -> ag_swarmer_domain::runtime::ContextUsage {
+    let mut usage = usage;
+    let Some(window) = provider.context_window_tokens.filter(|v| *v > 0) else {
+        return usage;
+    };
+    let reserve_ratio = provider
+        .context_output_reserve_ratio
+        .filter(|v| v.is_finite() && *v >= 0.0 && *v < 1.0)
+        .unwrap_or(0.0);
+    let reserve_tokens = ((window as f64) * reserve_ratio).round() as i64;
+    let usable = (window - reserve_tokens).max(1);
+    let used = usage.total_tokens.or(usage.input_tokens).unwrap_or(0);
+    let ratio = ((used as f64) / (usable as f64)).clamp(0.0, 1.0);
+
+    usage.context_window_tokens = Some(window);
+    usage.output_reserve_tokens = Some(reserve_tokens);
+    usage.ratio = Some(ratio);
+    usage.source = Some("provider".to_string());
+    usage
 }
 
 async fn build_messages(

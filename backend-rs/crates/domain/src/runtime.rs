@@ -82,9 +82,17 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextUsage {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
+    #[serde(default)]
+    pub context_window_tokens: Option<i64>,
+    #[serde(default)]
+    pub output_reserve_tokens: Option<i64>,
+    #[serde(default)]
+    pub ratio: Option<f64>,
+    #[serde(default)]
+    pub source: Option<String>,
 }

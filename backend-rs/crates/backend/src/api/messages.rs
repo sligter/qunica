@@ -70,6 +70,8 @@ pub struct MessageResponse {
     status: String,
     refs: Option<Value>,
     context_usage: Option<Value>,
+    reasoning: Option<Value>,
+    tool_calls: Option<Value>,
     reply_to_message_id: Option<String>,
     created_at: String,
 }
@@ -124,7 +126,28 @@ struct MessageRow {
 
 impl From<MessageRow> for MessageResponse {
     fn from(row: MessageRow) -> Self {
-        let context_usage = context_usage_from_content_json(row.content_json.as_deref());
+        let parsed: Option<Value> = row
+            .content_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok());
+        let context_usage = parsed
+            .as_ref()
+            .and_then(|value| match value.get("context_usage") {
+                Some(Value::Object(_)) => value.get("context_usage").cloned(),
+                _ => None,
+            });
+        let reasoning = parsed
+            .as_ref()
+            .and_then(|value| match value.get("reasoning") {
+                Some(Value::Array(items)) if !items.is_empty() => value.get("reasoning").cloned(),
+                _ => None,
+            });
+        let tool_calls = parsed
+            .as_ref()
+            .and_then(|value| match value.get("tool_calls") {
+                Some(Value::Array(items)) if !items.is_empty() => value.get("tool_calls").cloned(),
+                _ => None,
+            });
         Self {
             id: row.id,
             group_id: row.group_id,
@@ -136,6 +159,8 @@ impl From<MessageRow> for MessageResponse {
             status: row.status,
             refs: None,
             context_usage,
+            reasoning,
+            tool_calls,
             reply_to_message_id: None,
             created_at: row.created_at,
         }
@@ -635,14 +660,6 @@ fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
         .parse::<i64>()
         .map_err(|_| ApiError::invalid_input("limit must be an integer"))?;
     Ok(limit.clamp(1, 100))
-}
-
-fn context_usage_from_content_json(raw: Option<&str>) -> Option<Value> {
-    let value: Value = serde_json::from_str(raw?).ok()?;
-    match value.get("context_usage") {
-        Some(Value::Object(_)) => value.get("context_usage").cloned(),
-        _ => None,
-    }
 }
 
 fn is_durable_response_event(kind: &StreamEventKind) -> bool {

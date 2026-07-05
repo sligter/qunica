@@ -122,6 +122,7 @@ fn parse(line: &str) -> Vec<ChatDelta> {
             input_tokens: usage["promptTokenCount"].as_i64(),
             output_tokens: usage["candidatesTokenCount"].as_i64(),
             total_tokens: usage["totalTokenCount"].as_i64(),
+            ..ContextUsage::default()
         }));
     }
 
