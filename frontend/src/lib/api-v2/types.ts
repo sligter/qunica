@@ -30,3 +30,21 @@ export interface ApiErrorEnvelope {
     details?: unknown
   }
 }
+
+export type AgentMentionPolicy = 'display_only' | 'bounded_schedule'
+
+export interface GroupSchedulerConfig {
+  scheduler_enabled: boolean
+  agent_mention_policy: AgentMentionPolicy
+  max_agent_steps: number | null
+  max_steps_per_agent: number
+  max_scheduler_hops: number
+  max_moderator_calls: number
+  max_consecutive_failures: number
+  max_total_failures: number
+  max_total_tokens: number
+  turn_timeout_seconds: number
+  moderator_enabled: boolean
+  moderator_provider_id: string | null
+  moderator_model: string | null
+}
