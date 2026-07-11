@@ -26,6 +26,10 @@ use crate::tools::{resolve_workspace_path, ToolError};
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
      free_speech, proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
+     scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
+     max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
+     max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
+     moderator_provider_id, moderator_model, \
      muted_agent_ids_json, admin_agent_ids_json, muted_member_ids_json, status, \
      created_at, updated_at";
 
@@ -75,6 +79,32 @@ pub struct CreateRequest {
     #[serde(default)]
     communication_mode: Option<String>,
     #[serde(default)]
+    scheduler_enabled: Option<bool>,
+    #[serde(default)]
+    agent_mention_policy: Option<String>,
+    #[serde(default)]
+    max_agent_steps: Option<i64>,
+    #[serde(default)]
+    max_steps_per_agent: Option<i64>,
+    #[serde(default)]
+    max_scheduler_hops: Option<i64>,
+    #[serde(default)]
+    max_moderator_calls: Option<i64>,
+    #[serde(default)]
+    max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    max_total_failures: Option<i64>,
+    #[serde(default)]
+    max_total_tokens: Option<i64>,
+    #[serde(default)]
+    turn_timeout_seconds: Option<i64>,
+    #[serde(default)]
+    moderator_enabled: Option<bool>,
+    #[serde(default)]
+    moderator_provider_id: Option<String>,
+    #[serde(default)]
+    moderator_model: Option<String>,
+    #[serde(default)]
     initial_agents: Option<Vec<String>>,
 }
 
@@ -104,6 +134,32 @@ pub struct UpdateRequest {
     agent_free_mention_max_dispatches: Option<i64>,
     #[serde(default)]
     communication_mode: Option<String>,
+    #[serde(default)]
+    scheduler_enabled: Option<bool>,
+    #[serde(default)]
+    agent_mention_policy: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    max_agent_steps: Option<Option<i64>>,
+    #[serde(default)]
+    max_steps_per_agent: Option<i64>,
+    #[serde(default)]
+    max_scheduler_hops: Option<i64>,
+    #[serde(default)]
+    max_moderator_calls: Option<i64>,
+    #[serde(default)]
+    max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    max_total_failures: Option<i64>,
+    #[serde(default)]
+    max_total_tokens: Option<i64>,
+    #[serde(default)]
+    turn_timeout_seconds: Option<i64>,
+    #[serde(default)]
+    moderator_enabled: Option<bool>,
+    #[serde(default, deserialize_with = "double_option")]
+    moderator_provider_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    moderator_model: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +259,19 @@ pub struct GroupResponse {
     allow_agent_free_mention: bool,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
+    scheduler_enabled: bool,
+    agent_mention_policy: String,
+    max_agent_steps: Option<i64>,
+    max_steps_per_agent: i64,
+    max_scheduler_hops: i64,
+    max_moderator_calls: i64,
+    max_consecutive_failures: i64,
+    max_total_failures: i64,
+    max_total_tokens: i64,
+    turn_timeout_seconds: i64,
+    moderator_enabled: bool,
+    moderator_provider_id: Option<String>,
+    moderator_model: Option<String>,
     muted_agent_ids: Option<Vec<String>>,
     admin_agent_ids: Option<Vec<String>>,
     muted_member_ids: Option<Vec<String>>,
@@ -311,12 +380,172 @@ struct GroupRow {
     allow_agent_free_mention: i64,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
+    scheduler_enabled: i64,
+    agent_mention_policy: String,
+    max_agent_steps: Option<i64>,
+    max_steps_per_agent: i64,
+    max_scheduler_hops: i64,
+    max_moderator_calls: i64,
+    max_consecutive_failures: i64,
+    max_total_failures: i64,
+    max_total_tokens: i64,
+    turn_timeout_seconds: i64,
+    moderator_enabled: i64,
+    moderator_provider_id: Option<String>,
+    moderator_model: Option<String>,
     muted_agent_ids_json: Option<String>,
     admin_agent_ids_json: Option<String>,
     muted_member_ids_json: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug)]
+struct SchedulerConfigFields {
+    scheduler_enabled: i64,
+    agent_mention_policy: String,
+    max_agent_steps: Option<i64>,
+    max_steps_per_agent: i64,
+    max_scheduler_hops: i64,
+    max_moderator_calls: i64,
+    max_consecutive_failures: i64,
+    max_total_failures: i64,
+    max_total_tokens: i64,
+    turn_timeout_seconds: i64,
+    moderator_enabled: i64,
+    moderator_provider_id: Option<String>,
+    moderator_model: Option<String>,
+}
+
+impl SchedulerConfigFields {
+    async fn for_create(
+        pool: &SqlitePool,
+        owner_id: &str,
+        body: &CreateRequest,
+    ) -> Result<Self, ApiError> {
+        Self {
+            scheduler_enabled: body.scheduler_enabled.unwrap_or(false) as i64,
+            agent_mention_policy: body
+                .agent_mention_policy
+                .as_deref()
+                .unwrap_or("display_only")
+                .to_string(),
+            max_agent_steps: body.max_agent_steps,
+            max_steps_per_agent: body.max_steps_per_agent.unwrap_or(3),
+            max_scheduler_hops: body.max_scheduler_hops.unwrap_or(5),
+            max_moderator_calls: body.max_moderator_calls.unwrap_or(4),
+            max_consecutive_failures: body.max_consecutive_failures.unwrap_or(3),
+            max_total_failures: body.max_total_failures.unwrap_or(6),
+            max_total_tokens: body.max_total_tokens.unwrap_or(120_000),
+            turn_timeout_seconds: body.turn_timeout_seconds.unwrap_or(300),
+            moderator_enabled: body.moderator_enabled.unwrap_or(false) as i64,
+            moderator_provider_id: body.moderator_provider_id.clone(),
+            moderator_model: body.moderator_model.clone(),
+        }
+        .validate(pool, owner_id)
+        .await
+    }
+
+    async fn for_update(
+        pool: &SqlitePool,
+        owner_id: &str,
+        body: &UpdateRequest,
+        existing: &GroupRow,
+    ) -> Result<Self, ApiError> {
+        Self {
+            scheduler_enabled: body
+                .scheduler_enabled
+                .map(i64::from)
+                .unwrap_or(existing.scheduler_enabled),
+            agent_mention_policy: body
+                .agent_mention_policy
+                .clone()
+                .unwrap_or_else(|| existing.agent_mention_policy.clone()),
+            max_agent_steps: body.max_agent_steps.unwrap_or(existing.max_agent_steps),
+            max_steps_per_agent: body
+                .max_steps_per_agent
+                .unwrap_or(existing.max_steps_per_agent),
+            max_scheduler_hops: body
+                .max_scheduler_hops
+                .unwrap_or(existing.max_scheduler_hops),
+            max_moderator_calls: body
+                .max_moderator_calls
+                .unwrap_or(existing.max_moderator_calls),
+            max_consecutive_failures: body
+                .max_consecutive_failures
+                .unwrap_or(existing.max_consecutive_failures),
+            max_total_failures: body
+                .max_total_failures
+                .unwrap_or(existing.max_total_failures),
+            max_total_tokens: body.max_total_tokens.unwrap_or(existing.max_total_tokens),
+            turn_timeout_seconds: body
+                .turn_timeout_seconds
+                .unwrap_or(existing.turn_timeout_seconds),
+            moderator_enabled: body
+                .moderator_enabled
+                .map(i64::from)
+                .unwrap_or(existing.moderator_enabled),
+            moderator_provider_id: body
+                .moderator_provider_id
+                .clone()
+                .unwrap_or_else(|| existing.moderator_provider_id.clone()),
+            moderator_model: body
+                .moderator_model
+                .clone()
+                .unwrap_or_else(|| existing.moderator_model.clone()),
+        }
+        .validate(pool, owner_id)
+        .await
+    }
+
+    async fn validate(mut self, pool: &SqlitePool, owner_id: &str) -> Result<Self, ApiError> {
+        self.agent_mention_policy = validate_agent_mention_policy(&self.agent_mention_policy)?;
+        if self.max_agent_steps.is_some_and(|value| value < 1) {
+            return Err(ApiError::invalid_input("max_agent_steps must be >= 1"));
+        }
+        validate_scheduler_minimum("max_steps_per_agent", self.max_steps_per_agent, 1)?;
+        validate_scheduler_minimum("max_scheduler_hops", self.max_scheduler_hops, 0)?;
+        validate_scheduler_minimum("max_moderator_calls", self.max_moderator_calls, 0)?;
+        validate_scheduler_minimum("max_consecutive_failures", self.max_consecutive_failures, 1)?;
+        validate_scheduler_minimum("max_total_failures", self.max_total_failures, 1)?;
+        validate_scheduler_minimum("max_total_tokens", self.max_total_tokens, 1)?;
+        if !(1..=3600).contains(&self.turn_timeout_seconds) {
+            return Err(ApiError::invalid_input(
+                "turn_timeout_seconds must be between 1 and 3600",
+            ));
+        }
+
+        self.moderator_provider_id = self
+            .moderator_provider_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        self.moderator_model = self
+            .moderator_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if self.moderator_enabled != 0 {
+            let provider_id = self.moderator_provider_id.as_deref().ok_or_else(|| {
+                ApiError::invalid_input(
+                    "moderator_provider_id is required when moderator is enabled",
+                )
+            })?;
+            if self.moderator_model.is_none() {
+                return Err(ApiError::invalid_input(
+                    "moderator_model is required when moderator is enabled",
+                ));
+            }
+            self.moderator_provider_id =
+                Some(validate_moderator_provider(pool, provider_id, owner_id).await?);
+        }
+
+        Ok(self)
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -413,6 +642,19 @@ impl From<GroupRow> for GroupResponse {
             allow_agent_free_mention: row.allow_agent_free_mention != 0,
             agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches,
             communication_mode: row.communication_mode,
+            scheduler_enabled: row.scheduler_enabled != 0,
+            agent_mention_policy: row.agent_mention_policy,
+            max_agent_steps: row.max_agent_steps,
+            max_steps_per_agent: row.max_steps_per_agent,
+            max_scheduler_hops: row.max_scheduler_hops,
+            max_moderator_calls: row.max_moderator_calls,
+            max_consecutive_failures: row.max_consecutive_failures,
+            max_total_failures: row.max_total_failures,
+            max_total_tokens: row.max_total_tokens,
+            turn_timeout_seconds: row.turn_timeout_seconds,
+            moderator_enabled: row.moderator_enabled != 0,
+            moderator_provider_id: row.moderator_provider_id,
+            moderator_model: row.moderator_model,
             muted_agent_ids: parse_json_list(row.muted_agent_ids_json.as_deref()),
             admin_agent_ids: parse_json_list(row.admin_agent_ids_json.as_deref()),
             muted_member_ids: parse_json_list(row.muted_member_ids_json.as_deref()),
@@ -519,6 +761,7 @@ pub async fn create(
     let agent_free_mention_max_dispatches =
         validate_agent_free_mention_max_dispatches(body.agent_free_mention_max_dispatches)?;
     let communication_mode = validate_communication_mode(body.communication_mode.as_deref())?;
+    let scheduler = SchedulerConfigFields::for_create(state.db.pool(), &owner_id, &body).await?;
     let initial_agents =
         validate_initial_agents(state.db.pool(), body.initial_agents.as_deref(), &owner_id).await?;
 
@@ -541,8 +784,13 @@ pub async fn create(
          (id, owner_id, workspace_id, name, description, announcement, free_speech, \
           proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
           allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
+          scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
+          max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
+          max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
+          moderator_provider_id, moderator_model, \
           status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                 ?, ?, ?, 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
@@ -557,6 +805,19 @@ pub async fn create(
     .bind(allow_agent_free_mention as i64)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
+    .bind(scheduler.scheduler_enabled)
+    .bind(&scheduler.agent_mention_policy)
+    .bind(scheduler.max_agent_steps)
+    .bind(scheduler.max_steps_per_agent)
+    .bind(scheduler.max_scheduler_hops)
+    .bind(scheduler.max_moderator_calls)
+    .bind(scheduler.max_consecutive_failures)
+    .bind(scheduler.max_total_failures)
+    .bind(scheduler.max_total_tokens)
+    .bind(scheduler.turn_timeout_seconds)
+    .bind(scheduler.moderator_enabled)
+    .bind(&scheduler.moderator_provider_id)
+    .bind(&scheduler.moderator_model)
     .bind(&now)
     .bind(&now)
     .execute(&mut *tx)
@@ -647,6 +908,8 @@ pub async fn update(
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let existing = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let scheduler =
+        SchedulerConfigFields::for_update(state.db.pool(), &owner_id, &body, &existing).await?;
 
     let name = match body.name {
         Some(ref raw) => validate_name(raw)?,
@@ -710,7 +973,11 @@ pub async fn update(
          name = ?, description = ?, announcement = ?, workspace_id = ?, free_speech = ?, \
          proactive_mode = ?, proactive_max_rounds = ?, proactive_reply_multiplier = ?, \
          allow_agent_free_mention = ?, agent_free_mention_max_dispatches = ?, \
-         communication_mode = ?, updated_at = ? \
+         communication_mode = ?, scheduler_enabled = ?, agent_mention_policy = ?, \
+         max_agent_steps = ?, max_steps_per_agent = ?, max_scheduler_hops = ?, \
+         max_moderator_calls = ?, max_consecutive_failures = ?, max_total_failures = ?, \
+         max_total_tokens = ?, turn_timeout_seconds = ?, moderator_enabled = ?, \
+         moderator_provider_id = ?, moderator_model = ?, updated_at = ? \
          WHERE id = ? AND owner_id = ?",
     )
     .bind(&name)
@@ -724,6 +991,19 @@ pub async fn update(
     .bind(allow_agent_free_mention)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
+    .bind(scheduler.scheduler_enabled)
+    .bind(&scheduler.agent_mention_policy)
+    .bind(scheduler.max_agent_steps)
+    .bind(scheduler.max_steps_per_agent)
+    .bind(scheduler.max_scheduler_hops)
+    .bind(scheduler.max_moderator_calls)
+    .bind(scheduler.max_consecutive_failures)
+    .bind(scheduler.max_total_failures)
+    .bind(scheduler.max_total_tokens)
+    .bind(scheduler.turn_timeout_seconds)
+    .bind(scheduler.moderator_enabled)
+    .bind(&scheduler.moderator_provider_id)
+    .bind(&scheduler.moderator_model)
     .bind(&now)
     .bind(&group_id)
     .bind(&owner_id)
@@ -3384,6 +3664,57 @@ fn validate_name(raw: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(name)
+}
+
+fn validate_agent_mention_policy(raw: &str) -> Result<String, ApiError> {
+    match raw.trim() {
+        "display_only" => Ok("display_only".to_string()),
+        "bounded_schedule" => Ok("bounded_schedule".to_string()),
+        _ => Err(ApiError::invalid_input(
+            "agent_mention_policy must be display_only or bounded_schedule",
+        )),
+    }
+}
+
+fn validate_scheduler_minimum(
+    field: &'static str,
+    value: i64,
+    minimum: i64,
+) -> Result<(), ApiError> {
+    if value < minimum {
+        return Err(ApiError::invalid_input(format!(
+            "{field} must be >= {minimum}"
+        )));
+    }
+    Ok(())
+}
+
+async fn validate_moderator_provider(
+    pool: &SqlitePool,
+    raw_id: &str,
+    owner_id: &str,
+) -> Result<String, ApiError> {
+    let id = validate_uuid(raw_id, "moderator_provider_id")?;
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT owner_id, status FROM llm_providers WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+
+    match row {
+        None => Err(ApiError::invalid_input(
+            "moderator_provider_id does not reference a provider",
+        )),
+        Some((_, status)) if status != "active" => Err(ApiError::invalid_input(
+            "moderator_provider_id is not active",
+        )),
+        Some((owner, _)) if owner != owner_id => Err(ApiError::permission_denied(
+            "provider belongs to another user",
+        )),
+        Some(_) => Ok(id),
+    }
 }
 
 fn validate_proactive_max_rounds(raw: Option<i64>) -> Result<i64, ApiError> {

@@ -3728,6 +3728,216 @@ async fn group_list_is_owner_scoped() {
 }
 
 #[tokio::test]
+async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
+    let app = app().await;
+    let token = register_and_login(&app, "scheduler-config@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let provider = create_llm_provider(&app, &token, "http://127.0.0.1:1").await;
+
+    let (status, group) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({"name": "Legacy defaults", "workspace_id": workspace}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(group["scheduler_enabled"], false);
+    assert_eq!(group["agent_mention_policy"], "display_only");
+    assert_eq!(group["max_agent_steps"], Value::Null);
+    assert_eq!(group["max_steps_per_agent"], 3);
+    assert_eq!(group["max_scheduler_hops"], 5);
+    assert_eq!(group["max_moderator_calls"], 4);
+    assert_eq!(group["max_consecutive_failures"], 3);
+    assert_eq!(group["max_total_failures"], 6);
+    assert_eq!(group["max_total_tokens"], 120_000);
+    assert_eq!(group["turn_timeout_seconds"], 300);
+    assert_eq!(group["moderator_enabled"], false);
+    assert_eq!(group["moderator_provider_id"], Value::Null);
+    assert_eq!(group["moderator_model"], Value::Null);
+    assert_eq!(group["free_speech"], false);
+    assert_eq!(group["proactive_mode"], false);
+    assert_eq!(group["allow_agent_free_mention"], true);
+
+    let group_id = group["id"].as_str().unwrap();
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({
+                "scheduler_enabled": true,
+                "agent_mention_policy": "bounded_schedule",
+                "max_agent_steps": 18,
+                "max_steps_per_agent": 4,
+                "max_scheduler_hops": 7,
+                "max_moderator_calls": 2,
+                "max_consecutive_failures": 4,
+                "max_total_failures": 8,
+                "max_total_tokens": 240_000,
+                "turn_timeout_seconds": 600,
+                "moderator_enabled": true,
+                "moderator_provider_id": provider,
+                "moderator_model": "test-model"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {updated:?}");
+    assert_eq!(updated["scheduler_enabled"], true);
+    assert_eq!(updated["agent_mention_policy"], "bounded_schedule");
+    assert_eq!(updated["max_agent_steps"], 18);
+    assert_eq!(updated["max_steps_per_agent"], 4);
+    assert_eq!(updated["max_scheduler_hops"], 7);
+    assert_eq!(updated["max_moderator_calls"], 2);
+    assert_eq!(updated["max_consecutive_failures"], 4);
+    assert_eq!(updated["max_total_failures"], 8);
+    assert_eq!(updated["max_total_tokens"], 240_000);
+    assert_eq!(updated["turn_timeout_seconds"], 600);
+    assert_eq!(updated["moderator_enabled"], true);
+    assert_eq!(updated["moderator_provider_id"], provider);
+    assert_eq!(updated["moderator_model"], "test-model");
+
+    let (status, fetched) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["max_agent_steps"], 18);
+    assert_eq!(fetched["max_total_tokens"], 240_000);
+    assert_eq!(fetched["moderator_provider_id"], provider);
+
+    let (status, reset) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({
+                "scheduler_enabled": false,
+                "agent_mention_policy": "display_only",
+                "max_agent_steps": Value::Null,
+                "moderator_enabled": false,
+                "moderator_provider_id": Value::Null,
+                "moderator_model": Value::Null
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {reset:?}");
+    assert_eq!(reset["max_agent_steps"], Value::Null);
+    assert_eq!(reset["moderator_provider_id"], Value::Null);
+    assert_eq!(reset["moderator_model"], Value::Null);
+}
+
+#[tokio::test]
+async fn group_scheduler_rejects_invalid_budget_and_moderator_provider() {
+    let (app, state) = app_with_state().await;
+    let owner_email = "scheduler-validation@example.com";
+    let token = register_and_login(&app, owner_email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let provider = create_llm_provider(&app, &token, "http://127.0.0.1:1").await;
+
+    let (status, group) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({"name": "Validated scheduler", "workspace_id": workspace}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group_id = group["id"].as_str().unwrap();
+
+    for invalid in [
+        json!({"max_agent_steps": 0}),
+        json!({"max_steps_per_agent": 0}),
+        json!({"max_scheduler_hops": -1}),
+        json!({"max_moderator_calls": -1}),
+        json!({"max_consecutive_failures": 0}),
+        json!({"max_total_failures": 0}),
+        json!({"max_total_tokens": 0}),
+        json!({"turn_timeout_seconds": 0}),
+        json!({"turn_timeout_seconds": 3601}),
+        json!({"agent_mention_policy": "unbounded"}),
+    ] {
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "PATCH",
+                &format!("/api/v2/groups/{group_id}"),
+                &token,
+                invalid,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+        assert_eq!(body["error"]["code"], "invalid_input");
+    }
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({"moderator_enabled": true, "moderator_model": "test-model"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+
+    let other_token = register_and_login(&app, "scheduler-other@example.com").await;
+    let other_provider = create_llm_provider(&app, &other_token, "http://127.0.0.1:1").await;
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({
+                "moderator_enabled": true,
+                "moderator_provider_id": other_provider,
+                "moderator_model": "test-model"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "permission_denied");
+
+    sqlx::query("UPDATE llm_providers SET status = 'deleted' WHERE id = ?")
+        .bind(&provider)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({
+                "moderator_enabled": true,
+                "moderator_provider_id": provider,
+                "moderator_model": "test-model"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
 async fn group_patch_updates_name_description_workspace_and_settings() {
     let app = app().await;
     let token = register_and_login(&app, "patch@example.com").await;
