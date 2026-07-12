@@ -13,7 +13,7 @@ use crate::runtime::sequence::persist_message_with_event_in_tx;
 use super::{
     model::{
         ActionKind, DispatchSnapshot, FinishDispatch, NewDispatch, NewTurn, SchedulerModelError,
-        SelectionReason, TurnSnapshot, TurnTrace,
+        SelectionReason, TurnReason, TurnSnapshot, TurnTrace,
     },
     state::{
         validate_dispatch_transition, validate_turn_transition, DispatchStatus,
@@ -80,6 +80,7 @@ impl SchedulerStore {
         reason: Option<&str>,
     ) -> Result<TurnSnapshot, SchedulerStoreError> {
         validate_turn_transition(expected, next)?;
+        let reason = reason.map(TurnReason::try_from).transpose()?;
         let now = now_rfc3339();
         let completed_at = is_terminal_turn(next).then_some(now.as_str());
         let started_at = (next == TurnStatus::Running).then_some(now.as_str());
@@ -95,7 +96,7 @@ impl SchedulerStore {
              WHERE id = ? AND status = ?",
         )
         .bind(next.as_str())
-        .bind(reason)
+        .bind(reason.map(TurnReason::as_str))
         .bind(started_at)
         .bind(started_at)
         .bind(completed_at)
@@ -411,7 +412,11 @@ impl TryFrom<TurnRow> for TurnSnapshot {
             consecutive_failures: row.consecutive_failures,
             total_failures: row.total_failures,
             total_tokens: row.total_tokens,
-            termination_reason: row.termination_reason,
+            termination_reason: row
+                .termination_reason
+                .as_deref()
+                .map(TurnReason::try_from)
+                .transpose()?,
             created_at: row.created_at,
             started_at: row.started_at,
             completed_at: row.completed_at,

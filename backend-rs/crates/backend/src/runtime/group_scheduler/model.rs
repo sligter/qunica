@@ -11,20 +11,24 @@ use super::state::{DispatchStatus, TurnStatus};
 #[serde(rename_all = "snake_case")]
 pub enum SelectionReason {
     UserMention,
-    StructuredAction,
-    AgentMention,
-    Deterministic,
+    AgentCall,
+    AgentHandoff,
+    AgentTextMention,
+    DeterministicOrder,
     Moderator,
+    ModeratorFallback,
 }
 
 impl SelectionReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UserMention => "user_mention",
-            Self::StructuredAction => "structured_action",
-            Self::AgentMention => "agent_mention",
-            Self::Deterministic => "deterministic",
+            Self::AgentCall => "agent_call",
+            Self::AgentHandoff => "agent_handoff",
+            Self::AgentTextMention => "agent_text_mention",
+            Self::DeterministicOrder => "deterministic_order",
             Self::Moderator => "moderator",
+            Self::ModeratorFallback => "moderator_fallback",
         }
     }
 }
@@ -35,13 +39,61 @@ impl TryFrom<&str> for SelectionReason {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
             "user_mention" => Ok(Self::UserMention),
-            "structured_action" => Ok(Self::StructuredAction),
-            "agent_mention" => Ok(Self::AgentMention),
-            "deterministic" => Ok(Self::Deterministic),
+            "agent_call" => Ok(Self::AgentCall),
+            "agent_handoff" => Ok(Self::AgentHandoff),
+            "agent_text_mention" => Ok(Self::AgentTextMention),
+            "deterministic_order" => Ok(Self::DeterministicOrder),
             "moderator" => Ok(Self::Moderator),
+            "moderator_fallback" => Ok(Self::ModeratorFallback),
             other => Err(SchedulerModelError::UnknownSelectionReason(
                 other.to_owned(),
             )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnReason {
+    WaitingForUser,
+    BudgetExhausted,
+    FailureBudgetExhausted,
+    UserCancelled,
+    Superseded,
+    ServerRestart,
+    PersistenceFailed,
+    Silence,
+}
+
+impl TurnReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WaitingForUser => "waiting_for_user",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::FailureBudgetExhausted => "failure_budget_exhausted",
+            Self::UserCancelled => "user_cancelled",
+            Self::Superseded => "superseded",
+            Self::ServerRestart => "server_restart",
+            Self::PersistenceFailed => "persistence_failed",
+            Self::Silence => "silence",
+        }
+    }
+}
+
+impl TryFrom<&str> for TurnReason {
+    type Error = SchedulerModelError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "waiting_for_user" => Ok(Self::WaitingForUser),
+            "budget_exhausted" => Ok(Self::BudgetExhausted),
+            "failure_budget_exhausted" => Ok(Self::FailureBudgetExhausted),
+            "user_cancelled" => Ok(Self::UserCancelled),
+            "superseded" => Ok(Self::Superseded),
+            "server_restart" => Ok(Self::ServerRestart),
+            "persistence_failed" => Ok(Self::PersistenceFailed),
+            "silence" => Ok(Self::Silence),
+            other => Err(SchedulerModelError::UnknownTurnReason(other.to_owned())),
         }
     }
 }
@@ -87,6 +139,8 @@ impl TryFrom<&str> for ActionKind {
 pub enum SchedulerModelError {
     #[error("unknown dispatch selection reason: {0}")]
     UnknownSelectionReason(String),
+    #[error("unknown turn termination reason: {0}")]
+    UnknownTurnReason(String),
     #[error("unknown scheduler action kind: {0}")]
     UnknownActionKind(String),
 }
@@ -144,7 +198,7 @@ pub struct TurnSnapshot {
     pub consecutive_failures: i64,
     pub total_failures: i64,
     pub total_tokens: i64,
-    pub termination_reason: Option<String>,
+    pub termination_reason: Option<TurnReason>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -181,18 +235,37 @@ pub struct TurnTrace {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionKind, SelectionReason};
+    use super::{ActionKind, SelectionReason, TurnReason};
 
     #[test]
-    fn dispatch_database_enums_round_trip_and_reject_unknown_values() {
-        for reason in [
-            SelectionReason::UserMention,
-            SelectionReason::StructuredAction,
-            SelectionReason::AgentMention,
-            SelectionReason::Deterministic,
-            SelectionReason::Moderator,
+    fn scheduler_model_database_enums_round_trip_and_reject_unknown_values() {
+        for (reason, persisted) in [
+            (SelectionReason::UserMention, "user_mention"),
+            (SelectionReason::AgentCall, "agent_call"),
+            (SelectionReason::AgentHandoff, "agent_handoff"),
+            (SelectionReason::AgentTextMention, "agent_text_mention"),
+            (SelectionReason::DeterministicOrder, "deterministic_order"),
+            (SelectionReason::Moderator, "moderator"),
+            (SelectionReason::ModeratorFallback, "moderator_fallback"),
         ] {
-            assert_eq!(SelectionReason::try_from(reason.as_str()).unwrap(), reason);
+            assert_eq!(reason.as_str(), persisted);
+            assert_eq!(SelectionReason::try_from(persisted).unwrap(), reason);
+        }
+        for (reason, persisted) in [
+            (TurnReason::WaitingForUser, "waiting_for_user"),
+            (TurnReason::BudgetExhausted, "budget_exhausted"),
+            (
+                TurnReason::FailureBudgetExhausted,
+                "failure_budget_exhausted",
+            ),
+            (TurnReason::UserCancelled, "user_cancelled"),
+            (TurnReason::Superseded, "superseded"),
+            (TurnReason::ServerRestart, "server_restart"),
+            (TurnReason::PersistenceFailed, "persistence_failed"),
+            (TurnReason::Silence, "silence"),
+        ] {
+            assert_eq!(reason.as_str(), persisted);
+            assert_eq!(TurnReason::try_from(persisted).unwrap(), reason);
         }
         for action in [
             ActionKind::Speak,
@@ -204,6 +277,11 @@ mod tests {
             assert_eq!(ActionKind::try_from(action.as_str()).unwrap(), action);
         }
         assert!(SelectionReason::try_from("fallback").is_err());
+        assert!(SelectionReason::try_from("structured_action").is_err());
+        assert!(SelectionReason::try_from("agent_mention").is_err());
+        assert!(SelectionReason::try_from("deterministic").is_err());
+        assert!(TurnReason::try_from("no_candidates").is_err());
+        assert!(TurnReason::try_from("new_user_message").is_err());
         assert!(ActionKind::try_from("message").is_err());
     }
 }

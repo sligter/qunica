@@ -4,7 +4,7 @@ pub mod store;
 
 pub use model::{
     ActionKind, DispatchOutput, DispatchSnapshot, FinishDispatch, NewDispatch, NewTurn,
-    SchedulerModelError, SelectionReason, TurnSnapshot, TurnTrace,
+    SchedulerModelError, SelectionReason, TurnReason, TurnSnapshot, TurnTrace,
 };
 pub use state::{
     validate_dispatch_transition, validate_turn_transition, DispatchStatus, SchedulerStateError,

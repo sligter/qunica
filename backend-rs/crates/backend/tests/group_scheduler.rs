@@ -5,7 +5,8 @@ use ag_swarmer_backend::{
     runtime::{
         group_scheduler::{
             ActionKind, DispatchOutput, DispatchStatus, FinishDispatch, NewDispatch, NewTurn,
-            SchedulerStore, SchedulerStoreError, SelectionReason, TurnStatus,
+            SchedulerModelError, SchedulerStore, SchedulerStoreError, SelectionReason, TurnReason,
+            TurnStatus,
         },
         sequence::NewMessage,
         StreamEvent, StreamEventKind,
@@ -105,7 +106,7 @@ impl Fixture {
             parent_dispatch_id: None,
             source_agent_id: None,
             target_agent_id: target_agent_id.to_owned(),
-            selection_reason: SelectionReason::Deterministic,
+            selection_reason: SelectionReason::DeterministicOrder,
             action_kind: ActionKind::Speak,
             hop: 0,
             input_message_id: None,
@@ -138,16 +139,17 @@ async fn store_enforces_one_active_turn_per_thread() {
         .transition_turn("turn-1", TurnStatus::Pending, TurnStatus::Running, None)
         .await
         .unwrap();
-    fixture
+    let completed = fixture
         .store
         .transition_turn(
             "turn-1",
             TurnStatus::Running,
             TurnStatus::Completed,
-            Some("no_candidates"),
+            Some("silence"),
         )
         .await
         .unwrap();
+    assert_eq!(completed.termination_reason, Some(TurnReason::Silence));
 
     let second = fixture
         .store
@@ -155,6 +157,41 @@ async fn store_enforces_one_active_turn_per_thread() {
         .await
         .unwrap();
     assert_eq!(second.id, "turn-2");
+}
+
+#[tokio::test]
+async fn store_rejects_unknown_turn_reason_without_changing_state() {
+    let fixture = Fixture::new().await;
+    fixture
+        .store
+        .create_turn(fixture.turn("turn-1"))
+        .await
+        .unwrap();
+    fixture
+        .store
+        .transition_turn("turn-1", TurnStatus::Pending, TurnStatus::Running, None)
+        .await
+        .unwrap();
+    let before = fixture.store.load_turn_trace("turn-1").await.unwrap();
+
+    let error = fixture
+        .store
+        .transition_turn(
+            "turn-1",
+            TurnStatus::Running,
+            TurnStatus::Completed,
+            Some("not_a_protocol_reason"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        SchedulerStoreError::Model(SchedulerModelError::UnknownTurnReason(ref value))
+            if value == "not_a_protocol_reason"
+    ));
+
+    let after = fixture.store.load_turn_trace("turn-1").await.unwrap();
+    assert_eq!(after, before);
 }
 
 #[tokio::test]
@@ -613,12 +650,13 @@ async fn store_superseding_turn_interrupts_active_dispatches() {
             "turn-1",
             TurnStatus::Running,
             TurnStatus::Superseded,
-            Some("new_user_message"),
+            Some("superseded"),
         )
         .await
         .unwrap();
     let trace = fixture.store.load_turn_trace("turn-1").await.unwrap();
     assert_eq!(trace.turn.status, TurnStatus::Superseded);
+    assert_eq!(trace.turn.termination_reason, Some(TurnReason::Superseded));
     assert_eq!(trace.dispatches[0].status, DispatchStatus::Interrupted);
     assert_eq!(trace.dispatches[1].status, DispatchStatus::Cancelled);
 }
