@@ -7,6 +7,7 @@
 
 pub mod agent_as_tool;
 pub mod group;
+pub mod group_scheduler;
 pub mod sequence;
 
 pub use group::{run_group_turn, RuntimeServices, TurnOutcome, TurnRequest};

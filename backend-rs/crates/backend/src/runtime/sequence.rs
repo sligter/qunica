@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -59,42 +59,9 @@ impl SequenceAllocator {
         event: &StreamEvent<Value>,
     ) -> anyhow::Result<i64> {
         let _guard = self.write_lock.lock().await;
-        let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
-
-        let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
-            .bind(thread_id)
-            .fetch_one(&mut *tx)
-            .await?;
-
-        sqlx::query(
-            "INSERT INTO messages \
-             (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
-              content_json, status, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?)",
-        )
-        .bind(&message.id)
-        .bind(thread_id)
-        .bind(group_id)
-        .bind(next_seq)
-        .bind(&message.sender_type)
-        .bind(&message.sender_id)
-        .bind(&message.message_type)
-        .bind(&message.content)
-        .bind(&message.content_json)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query("UPDATE threads SET next_seq = ?, updated_at = ? WHERE id = ?")
-            .bind(next_seq + 1)
-            .bind(&now)
-            .bind(thread_id)
-            .execute(&mut *tx)
-            .await?;
-
-        insert_stream_event(&mut tx, thread_id, event, &now).await?;
-
+        let next_seq =
+            persist_message_with_event_in_tx(&mut tx, thread_id, group_id, message, event).await?;
         tx.commit().await?;
         Ok(next_seq)
     }
@@ -249,16 +216,67 @@ impl SequenceAllocator {
         event: &StreamEvent<Value>,
     ) -> anyhow::Result<()> {
         let _guard = self.write_lock.lock().await;
-        let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
-        insert_stream_event(&mut tx, thread_id, event, &now).await?;
+        persist_event_in_tx(&mut tx, thread_id, event).await?;
         tx.commit().await?;
         Ok(())
     }
 }
 
+pub(crate) async fn persist_message_with_event_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: &str,
+    group_id: &str,
+    message: &NewMessage,
+    event: &StreamEvent<Value>,
+) -> anyhow::Result<i64> {
+    let now = now_rfc3339();
+    let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
+        .bind(thread_id)
+        .fetch_one(&mut **tx)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
+          content_json, status, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?)",
+    )
+    .bind(&message.id)
+    .bind(thread_id)
+    .bind(group_id)
+    .bind(next_seq)
+    .bind(&message.sender_type)
+    .bind(&message.sender_id)
+    .bind(&message.message_type)
+    .bind(&message.content)
+    .bind(&message.content_json)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query("UPDATE threads SET next_seq = ?, updated_at = ? WHERE id = ?")
+        .bind(next_seq + 1)
+        .bind(&now)
+        .bind(thread_id)
+        .execute(&mut **tx)
+        .await?;
+
+    insert_stream_event(tx, thread_id, event, &now).await?;
+    Ok(next_seq)
+}
+
+pub(crate) async fn persist_event_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: &str,
+    event: &StreamEvent<Value>,
+) -> anyhow::Result<()> {
+    let now = now_rfc3339();
+    insert_stream_event(tx, thread_id, event, &now).await
+}
+
 async fn insert_stream_event(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut Transaction<'_, Sqlite>,
     thread_id: &str,
     event: &StreamEvent<Value>,
     now: &str,
