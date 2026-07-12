@@ -6,6 +6,7 @@
 //! runtime.
 
 pub mod agent_as_tool;
+pub mod conversation_context;
 pub mod group;
 pub mod group_scheduler;
 pub mod sequence;

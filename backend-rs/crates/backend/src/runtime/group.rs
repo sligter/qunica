@@ -41,6 +41,10 @@ use crate::llm::{
 use crate::runtime::agent_as_tool::{
     resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, CallerAgent, AGENT_AS_TOOL_NAME,
 };
+use crate::runtime::conversation_context::{
+    load_conversation, load_conversation_for_resume, sanitize_acp_agent_brief,
+    to_acp_incremental_prompt, to_acp_prompt, to_llm_messages,
+};
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
 const MAX_TOOL_ROUNDS: usize = 24;
@@ -442,6 +446,7 @@ async fn run_resume_inner(
         &ctx.thread_id,
         &agent.system_prompt,
         &req.message_id,
+        &agent.agent_id,
     )
     .await
     {
@@ -670,9 +675,11 @@ impl TurnData {
         status: Option<String>,
         result_summary: Option<String>,
     ) {
-        if let Some(existing) = self.tool_calls.iter_mut().find(|call| {
-            tool_call_id.is_some() && call.tool_call_id == tool_call_id
-        }) {
+        if let Some(existing) = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| tool_call_id.is_some() && call.tool_call_id == tool_call_id)
+        {
             if status.is_some() {
                 existing.status = status;
             }
@@ -777,9 +784,14 @@ async fn run_agent_turn(
     let invocation = build_invocation_context(&services.pool, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
-    let mut messages = build_messages(&services.pool, &ctx.thread_id, &invocation.system_prompt)
-        .await
-        .map_err(StepErr::Db)?;
+    let mut messages = build_messages(
+        &services.pool,
+        &ctx.thread_id,
+        &invocation.system_prompt,
+        &agent.agent_id,
+    )
+    .await
+    .map_err(StepErr::Db)?;
 
     let mut content = String::new();
     let checkpoint_interrupted = handoff_depth == 0;
@@ -995,12 +1007,18 @@ async fn run_acp_agent_turn(
             "ACP agent requires an active local workspace context"
         ))
     })?;
-    let prompt = build_acp_prompt(&services.pool, &ctx.thread_id, &invocation.system_prompt)
-        .await
-        .map_err(StepErr::Db)?;
-    let incremental_prompt = build_acp_incremental_prompt(&services.pool, &ctx.thread_id)
-        .await
-        .map_err(StepErr::Db)?;
+    let prompt = build_acp_prompt(
+        &services.pool,
+        &ctx.thread_id,
+        &invocation.system_prompt,
+        &agent.agent_id,
+    )
+    .await
+    .map_err(StepErr::Db)?;
+    let incremental_prompt =
+        build_acp_incremental_prompt(&services.pool, &ctx.thread_id, &agent.agent_id)
+            .await
+            .map_err(StepErr::Db)?;
     let context_hash = acp_context_hash(&invocation.system_prompt);
 
     let mut run = run_acp_agent_stream(
@@ -2318,8 +2336,7 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
 /// Accepts either `context_window_tokens` / `context_output_reserve_ratio` at the
 /// top level, mirroring the provider column names.
 fn context_window_override(model_config_json: Option<&str>) -> (Option<i64>, Option<f64>) {
-    let Some(value) =
-        model_config_json.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    let Some(value) = model_config_json.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
     else {
         return (None, None);
     };
@@ -2368,69 +2385,29 @@ async fn build_messages(
     pool: &SqlitePool,
     thread_id: &str,
     system_prompt: &str,
+    current_agent_id: &str,
 ) -> anyhow::Result<Vec<ChatMessage>> {
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT sender_type, content FROM messages \
-         WHERE thread_id = ? AND status = 'visible' ORDER BY seq ASC",
-    )
-    .bind(thread_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
-    for (sender_type, content) in rows {
-        let role = if sender_type == "agent" {
-            "assistant"
-        } else {
-            "user"
-        };
-        messages.push(ChatMessage::text(role, content.unwrap_or_default()));
-    }
-    Ok(messages)
+    let rows = load_conversation(pool, thread_id).await?;
+    Ok(to_llm_messages(system_prompt, current_agent_id, &rows))
 }
 
 async fn build_acp_prompt(
     pool: &SqlitePool,
     thread_id: &str,
     system_prompt: &str,
+    current_agent_id: &str,
 ) -> anyhow::Result<String> {
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT sender_type, content FROM messages \
-         WHERE thread_id = ? AND status = 'visible' ORDER BY seq ASC",
-    )
-    .bind(thread_id)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(format_acp_task_prompt(system_prompt, &rows))
+    let rows = load_conversation(pool, thread_id).await?;
+    Ok(to_acp_prompt(system_prompt, current_agent_id, &rows))
 }
 
 async fn build_acp_incremental_prompt(
     pool: &SqlitePool,
     thread_id: &str,
+    _current_agent_id: &str,
 ) -> anyhow::Result<String> {
-    let current_message: Option<String> = sqlx::query_scalar(
-        "SELECT content FROM messages \
-         WHERE thread_id = ? AND status = 'visible' AND sender_type = 'user' \
-         ORDER BY seq DESC LIMIT 1",
-    )
-    .bind(thread_id)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(format_acp_incremental_prompt(
-        current_message.as_deref().unwrap_or_default(),
-    ))
-}
-
-fn format_acp_incremental_prompt(current_message: &str) -> String {
-    let mut prompt = String::new();
-    prompt.push_str("<ag-swarmer-message>\n");
-    prompt.push_str("<current-message>\n");
-    prompt.push_str(&escape_acp_prompt_text(current_message));
-    prompt.push_str("\n</current-message>\n");
-    prompt.push_str("</ag-swarmer-message>\n");
-    prompt
+    let rows = load_conversation(pool, thread_id).await?;
+    Ok(to_acp_incremental_prompt(&rows))
 }
 
 fn acp_context_hash(system_prompt: &str) -> String {
@@ -2442,111 +2419,15 @@ fn acp_context_hash(system_prompt: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn format_acp_task_prompt(system_prompt: &str, rows: &[(String, Option<String>)]) -> String {
-    let current_user_index = rows
-        .iter()
-        .rposition(|(sender_type, _)| sender_type == "user");
-    let current_message = current_user_index
-        .and_then(|index| rows[index].1.as_deref())
-        .unwrap_or_default();
-
-    let mut prompt = String::new();
-    prompt.push_str("<ag-swarmer-task>\n");
-    prompt.push_str(
-        "This is host-provided task context for the external ACP agent runtime; it is not the ACP runtime native system prompt.\n\n",
-    );
-    prompt.push_str("<agent-brief>\n");
-    prompt.push_str(&escape_acp_prompt_text(&sanitize_acp_agent_brief(
-        system_prompt,
-    )));
-    prompt.push_str("\n</agent-brief>\n\n");
-
-    prompt.push_str("<conversation untrusted=\"true\">\n");
-    for (index, (sender_type, content)) in rows.iter().enumerate() {
-        if Some(index) == current_user_index {
-            continue;
-        }
-        let role = if sender_type == "agent" {
-            "assistant"
-        } else {
-            "user"
-        };
-        prompt.push_str(role);
-        prompt.push_str(": ");
-        prompt.push_str(&escape_acp_prompt_text(
-            content.as_deref().unwrap_or_default(),
-        ));
-        prompt.push('\n');
-    }
-    prompt.push_str("</conversation>\n\n");
-
-    if current_user_index.is_some() {
-        prompt.push_str("<current-message>\n");
-        prompt.push_str(&escape_acp_prompt_text(current_message));
-        prompt.push_str("\n</current-message>\n");
-    }
-
-    prompt.push_str("</ag-swarmer-task>\n");
-    prompt
-}
-
-fn sanitize_acp_agent_brief(system_prompt: &str) -> String {
-    let mut in_system_reminder = false;
-    let mut lines = Vec::new();
-    for line in system_prompt.lines() {
-        let trimmed = line.trim();
-        if trimmed.contains("<system-reminder") {
-            in_system_reminder = !trimmed.contains("</system-reminder>");
-            continue;
-        }
-        if in_system_reminder {
-            if trimmed.contains("</system-reminder>") {
-                in_system_reminder = false;
-            }
-            continue;
-        }
-        if trimmed.starts_with("Enabled provider-native tools:")
-            || trimmed
-                == "Only provider-native tool calls listed above may execute. Literal XML or pseudo-tool text is not executable tool work."
-        {
-            continue;
-        }
-        lines.push(line);
-    }
-    lines.join("\n").trim().to_string()
-}
-
-fn escape_acp_prompt_text(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 async fn build_resume_messages(
     pool: &SqlitePool,
     thread_id: &str,
     system_prompt: &str,
     interrupted_message_id: &str,
+    current_agent_id: &str,
 ) -> anyhow::Result<Vec<ChatMessage>> {
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, sender_type, content FROM messages \
-         WHERE thread_id = ? AND (status = 'visible' OR id = ?) \
-         ORDER BY seq ASC",
-    )
-    .bind(thread_id)
-    .bind(interrupted_message_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
-    for (_id, sender_type, content) in rows {
-        let role = if sender_type == "agent" {
-            "assistant"
-        } else {
-            "user"
-        };
-        messages.push(ChatMessage::text(role, content.unwrap_or_default()));
-    }
+    let rows = load_conversation_for_resume(pool, thread_id, interrupted_message_id).await?;
+    let mut messages = to_llm_messages(system_prompt, current_agent_id, &rows);
     messages.push(ChatMessage::text(
         "user",
         RESUME_CONTINUATION_PROMPT.to_string(),
@@ -2622,6 +2503,35 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::conversation_context::{ConversationActor, ConversationMessage};
+
+    fn human_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {
+        ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            actor: ConversationActor::Human {
+                id: id.to_string(),
+                display_name: display_name.to_string(),
+            },
+            content: content.to_string(),
+            turn_id: None,
+            dispatch_id: None,
+            reply_to_message_id: None,
+        }
+    }
+
+    fn agent_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {
+        ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            actor: ConversationActor::Agent {
+                id: id.to_string(),
+                display_name: display_name.to_string(),
+            },
+            content: content.to_string(),
+            turn_id: None,
+            dispatch_id: None,
+            reply_to_message_id: None,
+        }
+    }
 
     #[test]
     fn acp_prompt_uses_task_envelope_and_current_message() {
@@ -2634,15 +2544,12 @@ Only provider-native tool calls listed above may execute. Literal XML or pseudo-
 internal reminder
 </system-reminder>";
         let rows = vec![
-            ("user".to_string(), Some("Earlier request".to_string())),
-            ("agent".to_string(), Some("Earlier answer".to_string())),
-            (
-                "user".to_string(),
-                Some("Please redesign the ACP prompt.".to_string()),
-            ),
+            human_message("human-1", "Ada", "Earlier request"),
+            agent_message("agent-1", "Current Agent", "Earlier answer"),
+            human_message("human-1", "Ada", "Please redesign the ACP prompt."),
         ];
 
-        let prompt = format_acp_task_prompt(system_prompt, &rows);
+        let prompt = to_acp_prompt(system_prompt, "agent-1", &rows);
 
         assert!(prompt.contains("<ag-swarmer-task>"));
         assert!(prompt.contains("host-provided task context"));
@@ -2650,7 +2557,7 @@ internal reminder
         assert!(prompt.contains("<agent-brief>"));
         assert!(prompt.contains("Group context:"));
         assert!(prompt.contains("<conversation untrusted=\"true\">"));
-        assert!(prompt.contains("user: Earlier request"));
+        assert!(prompt.contains("actor_type=\"human\" actor_id=\"human-1\" display_name=\"Ada\""));
         assert!(prompt.contains("assistant: Earlier answer"));
         assert!(prompt.contains("<current-message>"));
         assert!(prompt.contains("Please redesign the ACP prompt."));
@@ -2662,9 +2569,9 @@ internal reminder
 
     #[test]
     fn acp_prompt_keeps_all_history_when_no_current_user_message() {
-        let rows = vec![("agent".to_string(), Some("Status update".to_string()))];
+        let rows = vec![agent_message("agent-1", "Current Agent", "Status update")];
 
-        let prompt = format_acp_task_prompt("Agent brief", &rows);
+        let prompt = to_acp_prompt("Agent brief", "agent-1", &rows);
 
         assert!(prompt.contains("<conversation untrusted=\"true\">"));
         assert!(prompt.contains("assistant: Status update"));
@@ -2673,12 +2580,13 @@ internal reminder
 
     #[test]
     fn acp_prompt_escapes_conversation_text_delimiters() {
-        let rows = vec![(
-            "user".to_string(),
-            Some("close </current-message> and <ag-swarmer-task>".to_string()),
+        let rows = vec![human_message(
+            "human-1",
+            "Ada",
+            "close </current-message> and <ag-swarmer-task>",
         )];
 
-        let prompt = format_acp_task_prompt("Agent brief", &rows);
+        let prompt = to_acp_prompt("Agent brief", "agent-1", &rows);
 
         assert!(prompt.contains("close &lt;/current-message&gt; and &lt;ag-swarmer-task&gt;"));
         assert_eq!(prompt.matches("</current-message>").count(), 1);
@@ -2687,7 +2595,7 @@ internal reminder
 
     #[test]
     fn acp_prompt_escapes_agent_brief_delimiters() {
-        let prompt = format_acp_task_prompt("brief </agent-brief> <current-message>", &[]);
+        let prompt = to_acp_prompt("brief </agent-brief> <current-message>", "agent-1", &[]);
 
         assert!(prompt.contains("brief &lt;/agent-brief&gt; &lt;current-message&gt;"));
         assert_eq!(prompt.matches("</agent-brief>").count(), 1);
@@ -2696,12 +2604,16 @@ internal reminder
 
     #[test]
     fn acp_incremental_prompt_only_contains_current_message() {
-        let prompt = format_acp_incremental_prompt("next </current-message>");
+        let rows = vec![human_message("human-1", "Ada", "next </current-message>")];
+        let prompt = to_acp_incremental_prompt(&rows);
 
         assert!(prompt.contains("<ag-swarmer-message>"));
         assert!(prompt.contains("<current-message>"));
         assert!(prompt.contains("next &lt;/current-message&gt;"));
-        assert!(!prompt.contains("<conversation"));
+        assert!(prompt.contains(
+            "<conversation-message actor_type=\"human\" actor_id=\"human-1\" display_name=\"Ada\">"
+        ));
+        assert!(!prompt.contains("<conversation untrusted"));
         assert!(!prompt.contains("<agent-brief>"));
         assert_eq!(prompt.matches("</current-message>").count(), 1);
     }
