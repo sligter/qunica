@@ -2404,10 +2404,10 @@ async fn build_acp_prompt(
 async fn build_acp_incremental_prompt(
     pool: &SqlitePool,
     thread_id: &str,
-    _current_agent_id: &str,
+    current_agent_id: &str,
 ) -> anyhow::Result<String> {
     let rows = load_conversation(pool, thread_id).await?;
-    Ok(to_acp_incremental_prompt(&rows))
+    Ok(to_acp_incremental_prompt(current_agent_id, &rows))
 }
 
 fn acp_context_hash(system_prompt: &str) -> String {
@@ -2561,6 +2561,16 @@ internal reminder
         assert!(prompt.contains("assistant: Earlier answer"));
         assert!(prompt.contains("<current-message>"));
         assert!(prompt.contains("Please redesign the ACP prompt."));
+        let conversation_start = prompt.find("<conversation untrusted=\"true\">\n").unwrap();
+        let conversation_end = prompt.find("</conversation>\n\n").unwrap();
+        let conversation = &prompt[conversation_start..conversation_end];
+        let current_message_start = prompt.find("<current-message>\n").unwrap();
+        let current_message_end = prompt.find("</current-message>\n").unwrap();
+        let current_message = &prompt[current_message_start..current_message_end];
+        assert!(conversation.contains("Earlier request"));
+        assert!(conversation.contains("Earlier answer"));
+        assert!(!conversation.contains("Please redesign the ACP prompt."));
+        assert!(current_message.contains("Please redesign the ACP prompt."));
         assert!(!prompt.contains("<system-reminder>"));
         assert!(!prompt.contains("internal reminder"));
         assert!(!prompt.contains("Enabled provider-native tools"));
@@ -2576,6 +2586,34 @@ internal reminder
         assert!(prompt.contains("<conversation untrusted=\"true\">"));
         assert!(prompt.contains("assistant: Status update"));
         assert!(!prompt.contains("<current-message>"));
+    }
+
+    #[test]
+    fn acp_prompts_keep_trailing_peer_after_human_in_chronological_order() {
+        let rows = vec![
+            human_message("human-1", "Ada", "human request"),
+            agent_message("peer-1", "Reviewer <&\"'", "peer </conversation-message>"),
+        ];
+
+        let prompt = to_acp_prompt("Agent brief", "current-agent", &rows);
+        let incremental_prompt = to_acp_incremental_prompt("current-agent", &rows);
+        let human_envelope =
+            "<conversation-message actor_type=\"human\" actor_id=\"human-1\" display_name=\"Ada\">human request</conversation-message>";
+        let peer_envelope =
+            "<conversation-message actor_type=\"agent\" actor_id=\"peer-1\" display_name=\"Reviewer &lt;&amp;&quot;&apos;\">peer &lt;/conversation-message&gt;</conversation-message>";
+
+        assert!(prompt.contains(human_envelope));
+        assert!(prompt.contains(peer_envelope));
+        assert!(
+            prompt.find(human_envelope).unwrap() < prompt.find(peer_envelope).unwrap(),
+            "full ACP history must retain durable H -> P order"
+        );
+        assert!(
+            !prompt.contains("<current-message>"),
+            "a stale human row cannot be extracted after a peer reply"
+        );
+        assert!(incremental_prompt.contains(peer_envelope));
+        assert!(!incremental_prompt.contains("human request"));
     }
 
     #[test]
@@ -2605,7 +2643,7 @@ internal reminder
     #[test]
     fn acp_incremental_prompt_only_contains_current_message() {
         let rows = vec![human_message("human-1", "Ada", "next </current-message>")];
-        let prompt = to_acp_incremental_prompt(&rows);
+        let prompt = to_acp_incremental_prompt("agent-1", &rows);
 
         assert!(prompt.contains("<ag-swarmer-message>"));
         assert!(prompt.contains("<current-message>"));

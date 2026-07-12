@@ -147,9 +147,9 @@ pub fn to_acp_prompt(
     current_agent_id: &str,
     rows: &[ConversationMessage],
 ) -> String {
-    let current_human_index = rows
-        .iter()
-        .rposition(|row| matches!(row.actor, ConversationActor::Human { .. }));
+    let current_human_index = rows.last().and_then(|row| {
+        matches!(row.actor, ConversationActor::Human { .. }).then_some(rows.len() - 1)
+    });
 
     let mut prompt = String::new();
     prompt.push_str("<ag-swarmer-task>\n");
@@ -180,12 +180,12 @@ pub fn to_acp_prompt(
     prompt
 }
 
-/// Render the latest human message for an existing ACP session. The same
+/// Render the latest non-self message for an existing ACP session. The same
 /// identity-bearing envelope used by the full transcript is retained.
-pub fn to_acp_incremental_prompt(rows: &[ConversationMessage]) -> String {
+pub fn to_acp_incremental_prompt(current_agent_id: &str, rows: &[ConversationMessage]) -> String {
     let current_message = rows
         .iter()
-        .rfind(|row| matches!(row.actor, ConversationActor::Human { .. }))
+        .rfind(|row| !is_current_agent(row, current_agent_id))
         .map(render_untrusted_message)
         .unwrap_or_default();
 
@@ -194,12 +194,18 @@ pub fn to_acp_incremental_prompt(rows: &[ConversationMessage]) -> String {
     )
 }
 
+fn is_current_agent(row: &ConversationMessage, current_agent_id: &str) -> bool {
+    matches!(
+        &row.actor,
+        ConversationActor::Agent { id, .. } if id == current_agent_id
+    )
+}
+
 fn render_acp_history_message(row: &ConversationMessage, current_agent_id: &str) -> String {
-    match &row.actor {
-        ConversationActor::Agent { id, .. } if id == current_agent_id => {
-            format!("assistant: {}", escape_xml(&row.content))
-        }
-        _ => render_untrusted_message(row),
+    if is_current_agent(row, current_agent_id) {
+        format!("assistant: {}", escape_xml(&row.content))
+    } else {
+        render_untrusted_message(row)
     }
 }
 
