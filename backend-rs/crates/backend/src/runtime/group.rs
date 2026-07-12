@@ -45,6 +45,12 @@ use crate::runtime::conversation_context::{
     load_conversation, load_conversation_for_resume, sanitize_acp_agent_brief,
     to_acp_incremental_prompt, to_acp_prompt, to_llm_messages,
 };
+use crate::runtime::group_scheduler::{
+    budget::{BudgetLimits, TurnBudget},
+    next_decision, validate_topology, DispatchOutput, DispatchStatus, FinishDispatch, NewDispatch,
+    NewTurn, SchedulerCandidate, SchedulerDecision, SchedulerStore, TopologySnapshot, TurnReason,
+    TurnStatus,
+};
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
 const MAX_TOOL_ROUNDS: usize = 24;
@@ -159,6 +165,8 @@ pub async fn run_group_turn(
         allocator: services.allocator(),
         thread_id,
         group_id: req.group_id.clone(),
+        scheduled_dispatch: None,
+        scheduled_total_tokens: 0,
     };
 
     match run_inner(&services, &req, &mut ctx).await {
@@ -182,6 +190,8 @@ pub async fn run_thread_resume(
         allocator: services.allocator(),
         thread_id: req.thread_id.clone(),
         group_id: req.group_id.clone(),
+        scheduled_dispatch: None,
+        scheduled_total_tokens: 0,
     };
 
     match run_resume_inner(&services, &req, &mut ctx).await {
@@ -199,6 +209,14 @@ struct StreamCtx {
     allocator: SequenceAllocator,
     thread_id: String,
     group_id: String,
+    scheduled_dispatch: Option<ScheduledDispatch>,
+    scheduled_total_tokens: u64,
+}
+
+#[derive(Clone)]
+struct ScheduledDispatch {
+    store: SchedulerStore,
+    id: String,
 }
 
 impl StreamCtx {
@@ -235,6 +253,45 @@ impl StreamCtx {
             .map_err(StepErr::Db)?;
         let _ = self.tx.send(event).await;
         Ok(())
+    }
+
+    async fn emit_scheduled_agent_message(
+        &mut self,
+        payload: Value,
+        message: NewMessage,
+        next: DispatchStatus,
+    ) -> Result<(), StepErr> {
+        let dispatch = self
+            .scheduled_dispatch
+            .clone()
+            .ok_or_else(|| StepErr::Db(anyhow::anyhow!("scheduled dispatch is missing")))?;
+        let event = self.next_event(StreamEventKind::AgentMessage, payload);
+        dispatch
+            .store
+            .finish_dispatch(FinishDispatch {
+                dispatch_id: dispatch.id,
+                next,
+                artifact: None,
+                total_tokens: self.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                failure_code: None,
+                output: Some(DispatchOutput {
+                    thread_id: self.thread_id.clone(),
+                    group_id: self.group_id.clone(),
+                    message,
+                    event: event.clone(),
+                }),
+            })
+            .await
+            .map_err(|error| StepErr::Db(error.into()))?;
+        let _ = self.tx.send(event).await;
+        Ok(())
+    }
+
+    fn record_scheduled_usage(&mut self, usage: &Value) {
+        let Some(total_tokens) = usage.get("total_tokens").and_then(Value::as_u64) else {
+            return;
+        };
+        self.scheduled_total_tokens = self.scheduled_total_tokens.saturating_add(total_tokens);
     }
 
     /// Update an existing interrupted message and persist both final durable
@@ -338,6 +395,10 @@ async fn run_inner(
             .await
     );
 
+    if group.scheduler_enabled {
+        return run_scheduled_turn(services, req, ctx, &group, &user_message.id).await;
+    }
+
     // 2. Route the message to responders.
     let candidates = match load_candidates(&services.pool, &req.group_id, &group).await {
         Ok(candidates) => candidates,
@@ -397,6 +458,356 @@ async fn run_inner(
     }
     step!(ctx, ctx.emit_done().await);
     Ok(TurnOutcome::Completed)
+}
+
+async fn run_scheduled_turn(
+    services: &RuntimeServices,
+    req: &TurnRequest,
+    ctx: &mut StreamCtx,
+    group: &GroupRuntimeConfig,
+    trigger_message_id: &str,
+) -> Result<TurnOutcome, Cancelled> {
+    let candidates = match load_candidates(&services.pool, &req.group_id, group).await {
+        Ok(candidates) => candidates,
+        Err(error) => return ctx.fail(&error.to_string()).await,
+    };
+    let topology_snapshot = match snapshot_topology(group, &candidates) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return ctx.fail(&error.to_string()).await,
+    };
+    let active_agent_count = candidates.len();
+    let explicit_mentions = scan_mentions(&req.content, &candidates);
+    let user_mentioned_agent_ids = explicit_mentions
+        .iter()
+        .map(|index| candidates[*index].agent_id.clone())
+        .collect::<Vec<_>>();
+    let selected = select_agents(candidates, &req.content, group);
+    let store = SchedulerStore::new(services.pool.clone(), services.write_lock.clone());
+    let limits = BudgetLimits {
+        max_agent_steps: group
+            .max_agent_steps
+            .unwrap_or_else(|| (active_agent_count as u32).saturating_mul(3).clamp(8, 24)),
+        max_steps_per_agent: group.max_steps_per_agent,
+        max_hops: group.max_scheduler_hops,
+        max_moderator_calls: group.max_moderator_calls,
+        max_consecutive_failures: group.max_consecutive_failures,
+        max_total_failures: group.max_total_failures,
+        max_total_tokens: group.max_total_tokens,
+    };
+    let config_snapshot = json!({
+        "max_agent_steps": limits.max_agent_steps,
+        "max_steps_per_agent": limits.max_steps_per_agent,
+        "max_scheduler_hops": limits.max_hops,
+        "max_moderator_calls": limits.max_moderator_calls,
+        "max_consecutive_failures": limits.max_consecutive_failures,
+        "max_total_failures": limits.max_total_failures,
+        "max_total_tokens": limits.max_total_tokens,
+    });
+    let turn_id = Uuid::new_v4().to_string();
+    if let Err(error) = store
+        .create_turn(NewTurn {
+            id: turn_id.clone(),
+            thread_id: ctx.thread_id.clone(),
+            group_id: group.id.clone(),
+            trigger_message_id: Some(trigger_message_id.to_owned()),
+            scheduler_strategy: "deterministic".to_owned(),
+            config_snapshot,
+            topology_snapshot: match serde_json::to_value(topology_snapshot) {
+                Ok(value) => value,
+                Err(error) => return ctx.fail(&error.to_string()).await,
+            },
+        })
+        .await
+    {
+        return ctx.fail(&error.to_string()).await;
+    }
+    if let Err(error) = store
+        .transition_turn(&turn_id, TurnStatus::Pending, TurnStatus::Running, None)
+        .await
+    {
+        return ctx.fail(&error.to_string()).await;
+    }
+    let mut budget = TurnBudget::new(limits);
+    let mut remaining = selected
+        .into_iter()
+        .map(Some)
+        .collect::<Vec<Option<Candidate>>>();
+    let mut previous_speaker: Option<String> = None;
+    let mut had_visible = false;
+    loop {
+        let scheduler_candidates = remaining
+            .iter()
+            .flatten()
+            .map(|agent| SchedulerCandidate {
+                agent_id: agent.agent_id.clone(),
+                eligible: true,
+            })
+            .collect::<Vec<_>>();
+        let remaining_user_mentions = user_mentioned_agent_ids
+            .iter()
+            .filter(|agent_id| {
+                scheduler_candidates
+                    .iter()
+                    .any(|candidate| candidate.agent_id == agent_id.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let decision = next_decision(
+            &budget,
+            previous_speaker.as_deref(),
+            &remaining_user_mentions,
+            None,
+            &scheduler_candidates,
+            0,
+            false,
+        );
+        let SchedulerDecision::Dispatch(dispatch) = decision else {
+            let SchedulerDecision::Finish { status, reason } = decision else {
+                unreachable!("moderator is disabled for deterministic scheduler turns");
+            };
+            let (status, reason, outcome) = if had_visible && status == TurnStatus::Silence {
+                (TurnStatus::Completed, None, TurnOutcome::Completed)
+            } else {
+                (status, Some(reason), TurnOutcome::Silence)
+            };
+            if let Err(error) = store
+                .transition_turn(
+                    &turn_id,
+                    TurnStatus::Running,
+                    status,
+                    reason.map(TurnReason::as_str),
+                )
+                .await
+            {
+                return ctx.fail(&error.to_string()).await;
+            }
+            if matches!(outcome, TurnOutcome::Silence) {
+                step!(
+                    ctx,
+                    ctx.emit_durable_event(StreamEventKind::Silence, json!({}))
+                        .await
+                );
+            }
+            step!(ctx, ctx.emit_done().await);
+            return Ok(outcome);
+        };
+        let Some(agent) = remaining
+            .iter_mut()
+            .find(|agent| {
+                agent
+                    .as_ref()
+                    .is_some_and(|agent| agent.agent_id == dispatch.target_agent_id)
+            })
+            .and_then(Option::take)
+        else {
+            return ctx
+                .fail("scheduler selected a candidate that is no longer available")
+                .await;
+        };
+        let dispatch_id = Uuid::new_v4().to_string();
+        if let Err(error) = store
+            .queue_dispatch(NewDispatch {
+                id: dispatch_id.clone(),
+                turn_id: turn_id.clone(),
+                parent_dispatch_id: None,
+                source_agent_id: None,
+                target_agent_id: agent.agent_id.clone(),
+                selection_reason: dispatch.selection_reason,
+                action_kind: dispatch.action_kind,
+                hop: dispatch.hop as i64,
+                input_message_id: Some(trigger_message_id.to_owned()),
+            })
+            .await
+        {
+            return ctx.fail(&error.to_string()).await;
+        }
+        if let Err(error) = store.start_dispatch(&dispatch_id).await {
+            return ctx.fail(&error.to_string()).await;
+        }
+        budget.record_dispatch(&agent.agent_id);
+        ctx.scheduled_total_tokens = 0;
+        ctx.scheduled_dispatch = Some(ScheduledDispatch {
+            store: store.clone(),
+            id: dispatch_id.clone(),
+        });
+        let result = match run_agent_turn(services, ctx, &agent, group, 0).await {
+            Ok(result) => result,
+            Err(StepErr::Cancelled) => {
+                ctx.scheduled_dispatch = None;
+                budget.record_tokens(ctx.scheduled_total_tokens);
+                if let Err(error) = store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id,
+                        next: DispatchStatus::Interrupted,
+                        artifact: None,
+                        total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                        failure_code: Some("stream_cancelled".to_owned()),
+                        output: None,
+                    })
+                    .await
+                {
+                    return ctx.fail(&error.to_string()).await;
+                }
+                if let Err(error) = store
+                    .update_turn_budget(
+                        &turn_id,
+                        budget.agent_steps() as i64,
+                        budget.moderator_calls() as i64,
+                        budget.consecutive_failures() as i64,
+                        budget.total_failures() as i64,
+                        budget.total_tokens() as i64,
+                    )
+                    .await
+                {
+                    return ctx.fail(&error.to_string()).await;
+                }
+                if let Err(error) = store
+                    .transition_turn(
+                        &turn_id,
+                        TurnStatus::Running,
+                        TurnStatus::Cancelled,
+                        Some(TurnReason::UserCancelled.as_str()),
+                    )
+                    .await
+                {
+                    return ctx.fail(&error.to_string()).await;
+                }
+                return Ok(TurnOutcome::Cancelled);
+            }
+            Err(StepErr::Db(_error)) => {
+                ctx.scheduled_dispatch = None;
+                budget.record_tokens(ctx.scheduled_total_tokens);
+                budget.record_failure();
+                if let Err(error) = store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id,
+                        next: DispatchStatus::Failed,
+                        artifact: None,
+                        total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                        failure_code: Some("provider_failure".to_owned()),
+                        output: None,
+                    })
+                    .await
+                {
+                    return ctx.fail(&error.to_string()).await;
+                }
+                if let Err(error) = store
+                    .update_turn_budget(
+                        &turn_id,
+                        budget.agent_steps() as i64,
+                        budget.moderator_calls() as i64,
+                        budget.consecutive_failures() as i64,
+                        budget.total_failures() as i64,
+                        budget.total_tokens() as i64,
+                    )
+                    .await
+                {
+                    return ctx.fail(&error.to_string()).await;
+                }
+                continue;
+            }
+        };
+        ctx.scheduled_dispatch = None;
+        let next = match result {
+            AgentRunResult::NoVisible => Some(DispatchStatus::Silent),
+            AgentRunResult::WaitingForUser
+            | AgentRunResult::Visible
+            | AgentRunResult::Handoff { .. } => None,
+        };
+        if let Some(next) = next {
+            if let Err(error) = store
+                .finish_dispatch(FinishDispatch {
+                    dispatch_id,
+                    next,
+                    artifact: None,
+                    total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                    failure_code: None,
+                    output: None,
+                })
+                .await
+            {
+                return ctx.fail(&error.to_string()).await;
+            }
+        }
+        budget.record_completion(ctx.scheduled_total_tokens);
+        if let Err(error) = store
+            .update_turn_budget(
+                &turn_id,
+                budget.agent_steps() as i64,
+                budget.moderator_calls() as i64,
+                budget.consecutive_failures() as i64,
+                budget.total_failures() as i64,
+                budget.total_tokens() as i64,
+            )
+            .await
+        {
+            return ctx.fail(&error.to_string()).await;
+        }
+        previous_speaker = Some(agent.agent_id);
+        match result {
+            AgentRunResult::WaitingForUser => {
+                if let Err(error) = store
+                    .transition_turn(
+                        &turn_id,
+                        TurnStatus::Running,
+                        TurnStatus::WaitingForUser,
+                        Some(TurnReason::WaitingForUser.as_str()),
+                    )
+                    .await
+                {
+                    return ctx.fail(&error.to_string()).await;
+                }
+                step!(ctx, ctx.emit_done().await);
+                return Ok(TurnOutcome::WaitingForUser);
+            }
+            AgentRunResult::Visible | AgentRunResult::Handoff { .. } => had_visible = true,
+            AgentRunResult::NoVisible => {}
+        }
+    }
+}
+
+fn snapshot_topology(
+    group: &GroupRuntimeConfig,
+    candidates: &[Candidate],
+) -> anyhow::Result<TopologySnapshot> {
+    let all = || {
+        candidates
+            .iter()
+            .map(|candidate| candidate.agent_id.clone())
+            .collect()
+    };
+    let snapshot = match group.communication_mode.as_str() {
+        "mesh" => TopologySnapshot::Mesh { agents: all() },
+        "star" => {
+            let hub = candidates
+                .iter()
+                .find(|candidate| candidate.topology_role.as_deref() == Some("hub"))
+                .map(|candidate| candidate.agent_id.clone())
+                .ok_or_else(|| anyhow::anyhow!("star topology has no hub"))?;
+            let spokes = candidates
+                .iter()
+                .filter(|candidate| candidate.agent_id != hub)
+                .map(|candidate| candidate.agent_id.clone())
+                .collect();
+            TopologySnapshot::Star { hub, spokes }
+        }
+        "hierarchical" => TopologySnapshot::Hierarchical {
+            leaders: candidates
+                .iter()
+                .filter(|candidate| candidate.topology_role.as_deref() == Some("leader"))
+                .map(|candidate| candidate.agent_id.clone())
+                .collect(),
+            workers: candidates
+                .iter()
+                .filter(|candidate| candidate.topology_role.as_deref() == Some("worker"))
+                .map(|candidate| candidate.agent_id.clone())
+                .collect(),
+        },
+        "ring" => TopologySnapshot::Ring { ordered: all() },
+        _ => anyhow::bail!("unsupported group topology"),
+    };
+    validate_topology(&snapshot).map_err(|error| anyhow::anyhow!(error))?;
+    Ok(snapshot)
 }
 
 async fn run_resume_inner(
@@ -600,6 +1011,14 @@ struct GroupRuntimeConfig {
     proactive_reply_multiplier: i64,
     allow_agent_free_mention: bool,
     communication_mode: String,
+    scheduler_enabled: bool,
+    max_agent_steps: Option<u32>,
+    max_steps_per_agent: u32,
+    max_scheduler_hops: u32,
+    max_moderator_calls: u32,
+    max_consecutive_failures: u32,
+    max_total_failures: u32,
+    max_total_tokens: u64,
     muted_agent_ids: HashSet<String>,
 }
 
@@ -873,6 +1292,7 @@ async fn run_agent_turn(
                     let usage = augment_context_usage(usage, &provider_cfg);
                     let usage_json = context_usage_to_json(&usage);
                     turn.set_context_usage(usage_json.clone());
+                    ctx.record_scheduled_usage(&usage_json);
                     let payload = json!({
                         "agent_id": agent.agent_id,
                         "context_usage": usage_json,
@@ -1101,6 +1521,7 @@ async fn run_acp_agent_turn(
                 let usage = acp_context_usage(&event.data);
                 let usage_json = context_usage_to_json(&usage);
                 turn.set_context_usage(usage_json.clone());
+                ctx.record_scheduled_usage(&usage_json);
                 let payload = json!({
                     "agent_id": agent.agent_id,
                     "display_name": agent.display_name,
@@ -1415,12 +1836,17 @@ async fn handle_agent_as_tool(
         "content": dispatch.content,
         "dispatch": true,
     });
-    ctx.emit_message(
-        StreamEventKind::AgentMessage,
-        message_payload,
-        &agent_message,
-    )
-    .await?;
+    if ctx.scheduled_dispatch.is_some() {
+        ctx.emit_scheduled_agent_message(message_payload, agent_message, DispatchStatus::Completed)
+            .await?;
+    } else {
+        ctx.emit_message(
+            StreamEventKind::AgentMessage,
+            message_payload,
+            &agent_message,
+        )
+        .await?;
+    }
 
     ctx.emit(
         StreamEventKind::ToolCallResult,
@@ -1501,14 +1927,26 @@ async fn finish_agent_content(
         "display_name": agent.display_name,
         "content": visible.clone(),
     });
-    if let Err(err) = ctx
-        .emit_message(
+    let emit_result = if ctx.scheduled_dispatch.is_some() {
+        ctx.emit_scheduled_agent_message(
+            message_payload,
+            agent_message,
+            if is_waiting {
+                DispatchStatus::WaitingForUser
+            } else {
+                DispatchStatus::Completed
+            },
+        )
+        .await
+    } else {
+        ctx.emit_message(
             StreamEventKind::AgentMessage,
             message_payload,
             &agent_message,
         )
         .await
-    {
+    };
+    if let Err(err) = emit_result {
         if matches!(err, StepErr::Cancelled) {
             maybe_persist_interrupted_agent(ctx, agent, &visible, turn, checkpoint_interrupted)
                 .await?;
@@ -1593,6 +2031,14 @@ struct GroupRuntimeRow {
     proactive_reply_multiplier: i64,
     allow_agent_free_mention: i64,
     communication_mode: String,
+    scheduler_enabled: i64,
+    max_agent_steps: Option<i64>,
+    max_steps_per_agent: i64,
+    max_scheduler_hops: i64,
+    max_moderator_calls: i64,
+    max_consecutive_failures: i64,
+    max_total_failures: i64,
+    max_total_tokens: i64,
     muted_agent_ids_json: Option<String>,
 }
 
@@ -1603,7 +2049,7 @@ async fn load_group_runtime_config(
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, description, announcement, workspace_id, free_speech, \
                 proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
-                communication_mode, muted_agent_ids_json \
+                communication_mode, scheduler_enabled, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, muted_agent_ids_json \
          FROM groups WHERE id = ? AND status = 'active'",
     )
     .bind(group_id)
@@ -1622,6 +2068,14 @@ async fn load_group_runtime_config(
         proactive_reply_multiplier: row.proactive_reply_multiplier,
         allow_agent_free_mention: row.allow_agent_free_mention != 0,
         communication_mode: row.communication_mode,
+        scheduler_enabled: row.scheduler_enabled != 0,
+        max_agent_steps: row.max_agent_steps.map(|value| value as u32),
+        max_steps_per_agent: row.max_steps_per_agent as u32,
+        max_scheduler_hops: row.max_scheduler_hops as u32,
+        max_moderator_calls: row.max_moderator_calls as u32,
+        max_consecutive_failures: row.max_consecutive_failures as u32,
+        max_total_failures: row.max_total_failures as u32,
+        max_total_tokens: row.max_total_tokens as u64,
         muted_agent_ids: parse_string_set(row.muted_agent_ids_json.as_deref()),
     })
 }

@@ -328,6 +328,56 @@ impl SchedulerStore {
         Ok(result.rows_affected())
     }
 
+    pub async fn update_turn_budget(
+        &self,
+        turn_id: &str,
+        agent_steps: i64,
+        moderator_calls: i64,
+        consecutive_failures: i64,
+        total_failures: i64,
+        total_tokens: i64,
+    ) -> Result<TurnSnapshot, SchedulerStoreError> {
+        if [
+            agent_steps,
+            moderator_calls,
+            consecutive_failures,
+            total_failures,
+            total_tokens,
+        ]
+        .iter()
+        .any(|value| *value < 0)
+        {
+            return Err(SchedulerStoreError::InvalidInput(
+                "turn budget counters must be non-negative".to_owned(),
+            ));
+        }
+        let now = now_rfc3339();
+        let _guard = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE group_turns \
+             SET agent_steps = ?, moderator_calls = ?, consecutive_failures = ?, \
+                 total_failures = ?, total_tokens = ?, updated_at = ? \
+             WHERE id = ? AND status = ?",
+        )
+        .bind(agent_steps)
+        .bind(moderator_calls)
+        .bind(consecutive_failures)
+        .bind(total_failures)
+        .bind(total_tokens)
+        .bind(&now)
+        .bind(turn_id)
+        .bind(TurnStatus::Running.as_str())
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(turn_transition_conflict(&mut tx, turn_id, TurnStatus::Running).await?);
+        }
+        let snapshot = fetch_turn_in_tx(&mut tx, turn_id).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
+
     pub async fn load_turn_trace(&self, turn_id: &str) -> Result<TurnTrace, SchedulerStoreError> {
         let mut tx = self.pool.begin().await?;
         let turn = fetch_turn_in_tx(&mut tx, turn_id).await?;

@@ -7,6 +7,50 @@ use crate::runtime::sequence::NewMessage;
 
 use super::state::{DispatchStatus, TurnStatus};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchedulerAction {
+    Speak {
+        content: String,
+        mentioned_agent_ids: Vec<String>,
+    },
+    Call {
+        target_agent_id: String,
+        task: String,
+    },
+    Handoff {
+        target_agent_id: String,
+        task: String,
+    },
+    Wait {
+        request: Value,
+    },
+    Silent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerCandidate {
+    pub agent_id: String,
+    pub eligible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerDispatch {
+    pub target_agent_id: String,
+    pub selection_reason: SelectionReason,
+    pub action_kind: ActionKind,
+    pub hop: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchedulerDecision {
+    Dispatch(SchedulerDispatch),
+    RequestModerator,
+    Finish {
+        status: TurnStatus,
+        reason: TurnReason,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionReason {

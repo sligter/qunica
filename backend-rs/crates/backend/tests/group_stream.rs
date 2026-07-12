@@ -2387,6 +2387,263 @@ async fn group_stream_supports_gemini_provider_kind_without_network() {
 }
 
 #[tokio::test]
+async fn scheduler_disabled_preserves_legacy_fanout() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "scheduler-legacy@example.com").await;
+    let owner = owner_id(&state, "scheduler-legacy@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("first"), text_body("second")]).await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+    assert_eq!(kinds(&events).last().map(String::as_str), Some("done"));
+    let agent_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_turns WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(agent_messages, 2);
+    assert_eq!(turns, 0);
+}
+
+#[tokio::test]
+async fn scheduler_enabled_persists_turn_and_dispatch_lifecycle() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "scheduler-enabled@example.com").await;
+    let owner = owner_id(&state, "scheduler-enabled@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true, "max_agent_steps": 8}),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"scheduled\"}}]}\ndata: [DONE]\n",
+        )
+        .await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+    assert_eq!(kinds(&events).last().map(String::as_str), Some("done"));
+    let turn: (String, i64, String) = sqlx::query_as(
+        "SELECT status, agent_steps, config_snapshot_json FROM group_turns WHERE group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let dispatch: (String, String, String, String) = sqlx::query_as(
+        "SELECT d.status, d.selection_reason, d.id, d.output_message_id FROM agent_dispatches d JOIN group_turns t ON t.id = d.turn_id WHERE t.group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(turn.0, "completed");
+    assert_eq!(turn.1, 1);
+    let budget = serde_json::from_str::<Value>(&turn.2).unwrap();
+    assert_eq!(budget["max_agent_steps"], 8);
+    assert_eq!(budget["max_steps_per_agent"], 3);
+    assert_eq!(budget["max_scheduler_hops"], 5);
+    assert_eq!(budget["max_total_tokens"], 120_000);
+    assert_eq!(dispatch.0, "completed");
+    assert_eq!(dispatch.1, "deterministic_order");
+    let message_links: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT turn_id, dispatch_id FROM messages WHERE id = ?")
+            .bind(&dispatch.3)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let dispatch_turn_id: String =
+        sqlx::query_scalar("SELECT turn_id FROM agent_dispatches WHERE id = ?")
+            .bind(&dispatch.2)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(message_links.0.as_deref(), Some(dispatch_turn_id.as_str()));
+    assert_eq!(message_links.1.as_deref(), Some(dispatch.2.as_str()));
+}
+
+#[tokio::test]
+async fn scheduler_auto_step_budget_uses_active_roster_not_user_mentions() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "scheduler-auto-budget@example.com").await;
+    let owner = owner_id(&state, "scheduler-auto-budget@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("first")]).await,
+    )
+    .await;
+    for (name, joined_at) in [
+        ("Alice", "2024-01-01T00:00:00Z"),
+        ("Bob", "2024-01-02T00:00:00Z"),
+        ("Cara", "2024-01-03T00:00:00Z"),
+    ] {
+        seed_agent(&state, &owner, &group, &provider, name, joined_at).await;
+    }
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice hello"}),
+    )
+    .await;
+    let snapshot: String =
+        sqlx::query_scalar("SELECT config_snapshot_json FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&snapshot).unwrap()["max_agent_steps"],
+        9
+    );
+}
+
+#[tokio::test]
+async fn scheduler_token_budget_stops_before_the_next_dispatch() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "scheduler-token-budget@example.com").await;
+    let owner = owner_id(&state, "scheduler-token-budget@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "max_total_tokens": 1,
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\
+             data: [DONE]\n"
+                .to_owned(),
+            text_body("second"),
+        ])
+        .await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    let turn: (String, String, i64) = sqlx::query_as(
+        "SELECT status, termination_reason, total_tokens FROM group_turns WHERE group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let dispatch_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches d JOIN group_turns t ON t.id = d.turn_id WHERE t.group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        turn,
+        (
+            "budget_exhausted".to_owned(),
+            "budget_exhausted".to_owned(),
+            2
+        )
+    );
+    assert_eq!(dispatch_count, 1);
+}
+
+#[tokio::test]
 async fn group_stream_proactive_silent_turn_does_not_persist_agent_message() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "silent@example.com").await;
