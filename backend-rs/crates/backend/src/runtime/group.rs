@@ -22,7 +22,10 @@
 //! runtime keeps running to a replayable terminal state so reconnect can
 //! converge from the client's last event id.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::{collections::HashSet, path::PathBuf};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
@@ -39,17 +42,20 @@ use crate::llm::{
     ToolCall, ToolDefinition,
 };
 use crate::runtime::agent_as_tool::{
-    resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, CallerAgent, AGENT_AS_TOOL_NAME,
+    resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AgentAsToolMode, CallerAgent,
+    AGENT_AS_TOOL_NAME,
 };
 use crate::runtime::conversation_context::{
     load_conversation, load_conversation_for_resume, sanitize_acp_agent_brief,
     to_acp_incremental_prompt, to_acp_prompt, to_llm_messages,
 };
 use crate::runtime::group_scheduler::{
+    allows_agent_edge,
     budget::{BudgetLimits, TurnBudget},
-    next_decision, validate_topology, DispatchOutput, DispatchStatus, FinishDispatch, NewDispatch,
-    NewTurn, SchedulerCandidate, SchedulerDecision, SchedulerStore, TopologySnapshot, TurnReason,
-    TurnStatus,
+    mentions::{scan_visible_mentions, MentionTarget},
+    next_decision, validate_topology, ActionKind, DispatchOutput, DispatchStatus, FinishDispatch,
+    NewDispatch, NewTurn, SchedulerAction, SchedulerCandidate, SchedulerDecision, SchedulerStore,
+    SelectionReason, TopologySnapshot, TurnReason, TurnStatus,
 };
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
@@ -73,11 +79,21 @@ const RESUME_CONTINUATION_PROMPT: &str =
 pub struct RuntimeServices {
     pub pool: SqlitePool,
     pub write_lock: Arc<Mutex<()>>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl RuntimeServices {
     pub fn new(pool: SqlitePool, write_lock: Arc<Mutex<()>>) -> Self {
-        Self { pool, write_lock }
+        Self {
+            pool,
+            write_lock,
+            cancellation: None,
+        }
+    }
+
+    pub fn with_cancellation_flag(mut self, cancellation: Arc<AtomicBool>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
     }
 
     fn allocator(&self) -> SequenceAllocator {
@@ -125,6 +141,7 @@ enum StepErr {
     #[allow(dead_code)]
     Cancelled,
     Db(anyhow::Error),
+    SchedulerPersistence,
 }
 
 /// Run one group turn, pushing every [`StreamEvent`] through `tx`.
@@ -167,6 +184,9 @@ pub async fn run_group_turn(
         group_id: req.group_id.clone(),
         scheduled_dispatch: None,
         scheduled_total_tokens: 0,
+        scheduled_accounted_tokens: 0,
+        private_execution: false,
+        cancellation: services.cancellation.clone(),
     };
 
     match run_inner(&services, &req, &mut ctx).await {
@@ -192,6 +212,9 @@ pub async fn run_thread_resume(
         group_id: req.group_id.clone(),
         scheduled_dispatch: None,
         scheduled_total_tokens: 0,
+        scheduled_accounted_tokens: 0,
+        private_execution: false,
+        cancellation: services.cancellation.clone(),
     };
 
     match run_resume_inner(&services, &req, &mut ctx).await {
@@ -211,12 +234,17 @@ struct StreamCtx {
     group_id: String,
     scheduled_dispatch: Option<ScheduledDispatch>,
     scheduled_total_tokens: u64,
+    scheduled_accounted_tokens: u64,
+    private_execution: bool,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone)]
 struct ScheduledDispatch {
     store: SchedulerStore,
     id: String,
+    action_kind: ActionKind,
+    hop: u32,
 }
 
 impl StreamCtx {
@@ -229,11 +257,25 @@ impl StreamCtx {
     /// Emit an event and persist its stream cursor before delivery so reconnect
     /// replay can anchor on any id the client may have observed.
     async fn emit(&mut self, kind: StreamEventKind, payload: Value) -> Result<(), StepErr> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(StepErr::Cancelled);
+        }
+        if self.private_execution {
+            return Ok(());
+        }
         let event = self.next_event(kind, payload);
-        self.allocator
-            .persist_event(&self.thread_id, &event)
-            .await
-            .map_err(StepErr::Db)?;
+        let persist_result = self.allocator.persist_event(&self.thread_id, &event).await;
+        if let Err(error) = persist_result {
+            return Err(if self.scheduled_dispatch.is_some() {
+                StepErr::SchedulerPersistence
+            } else {
+                StepErr::Db(error)
+            });
+        }
         let _ = self.tx.send(event).await;
         Ok(())
     }
@@ -246,11 +288,21 @@ impl StreamCtx {
         payload: Value,
         message: &NewMessage,
     ) -> Result<(), StepErr> {
+        if self.private_execution {
+            return Ok(());
+        }
         let event = self.next_event(kind, payload);
-        self.allocator
+        let persist_result = self
+            .allocator
             .persist_message_with_event(&self.thread_id, &self.group_id, message, &event)
-            .await
-            .map_err(StepErr::Db)?;
+            .await;
+        if let Err(error) = persist_result {
+            return Err(if self.scheduled_dispatch.is_some() {
+                StepErr::SchedulerPersistence
+            } else {
+                StepErr::Db(error)
+            });
+        }
         let _ = self.tx.send(event).await;
         Ok(())
     }
@@ -264,7 +316,7 @@ impl StreamCtx {
         let dispatch = self
             .scheduled_dispatch
             .clone()
-            .ok_or_else(|| StepErr::Db(anyhow::anyhow!("scheduled dispatch is missing")))?;
+            .ok_or(StepErr::SchedulerPersistence)?;
         let event = self.next_event(StreamEventKind::AgentMessage, payload);
         dispatch
             .store
@@ -282,7 +334,7 @@ impl StreamCtx {
                 }),
             })
             .await
-            .map_err(|error| StepErr::Db(error.into()))?;
+            .map_err(|_| StepErr::SchedulerPersistence)?;
         let _ = self.tx.send(event).await;
         Ok(())
     }
@@ -326,10 +378,14 @@ impl StreamCtx {
         payload: Value,
     ) -> Result<(), StepErr> {
         let event = self.next_event(kind, payload);
-        self.allocator
-            .persist_event(&self.thread_id, &event)
-            .await
-            .map_err(StepErr::Db)?;
+        let persist_result = self.allocator.persist_event(&self.thread_id, &event).await;
+        if let Err(error) = persist_result {
+            return Err(if self.scheduled_dispatch.is_some() {
+                StepErr::SchedulerPersistence
+            } else {
+                StepErr::Db(error)
+            });
+        }
         let _ = self.tx.send(event).await;
         Ok(())
     }
@@ -360,6 +416,9 @@ macro_rules! step {
             Ok(value) => value,
             Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
             Err(StepErr::Db(err)) => return $ctx.fail(&err.to_string()).await,
+            Err(StepErr::SchedulerPersistence) => {
+                return $ctx.fail("scheduler persistence failed").await
+            }
         }
     };
 }
@@ -421,9 +480,16 @@ async fn run_inner(
     let mut waiting = false;
 
     for agent in &selected {
-        match step!(ctx, run_agent_turn(services, ctx, agent, &group, 0).await) {
+        match step!(
+            ctx,
+            run_agent_turn(services, ctx, agent, &group, 0, None, None).await
+        ) {
             AgentRunResult::NoVisible => {}
-            AgentRunResult::Visible => had_visible = true,
+            AgentRunResult::Visible { .. } => had_visible = true,
+            AgentRunResult::Private(_) => {}
+            AgentRunResult::BoundedHandoff { .. } => {
+                unreachable!("bounded handoff returned in a legacy turn")
+            }
             AgentRunResult::WaitingForUser => {
                 had_visible = true;
                 waiting = true;
@@ -431,11 +497,18 @@ async fn run_inner(
             }
             AgentRunResult::Handoff { helper } => {
                 had_visible = true;
-                match step!(ctx, run_agent_turn(services, ctx, &helper, &group, 1).await) {
+                match step!(
+                    ctx,
+                    run_agent_turn(services, ctx, &helper, &group, 1, None, None).await
+                ) {
                     AgentRunResult::WaitingForUser => waiting = true,
-                    AgentRunResult::Visible
+                    AgentRunResult::Visible { .. }
                     | AgentRunResult::NoVisible
-                    | AgentRunResult::Handoff { .. } => {}
+                    | AgentRunResult::Handoff { .. }
+                    | AgentRunResult::Private(_) => {}
+                    AgentRunResult::BoundedHandoff { .. } => {
+                        unreachable!("bounded handoff returned in a legacy turn")
+                    }
                 }
                 break;
             }
@@ -481,6 +554,10 @@ async fn run_scheduled_turn(
         .iter()
         .map(|index| candidates[*index].agent_id.clone())
         .collect::<Vec<_>>();
+    let mention_targets = candidates
+        .iter()
+        .map(|candidate| (candidate.agent_id.clone(), candidate.display_name.clone()))
+        .collect::<Vec<_>>();
     let selected = select_agents(candidates, &req.content, group);
     let store = SchedulerStore::new(services.pool.clone(), services.write_lock.clone());
     let limits = BudgetLimits {
@@ -512,7 +589,7 @@ async fn run_scheduled_turn(
             trigger_message_id: Some(trigger_message_id.to_owned()),
             scheduler_strategy: "deterministic".to_owned(),
             config_snapshot,
-            topology_snapshot: match serde_json::to_value(topology_snapshot) {
+            topology_snapshot: match serde_json::to_value(&topology_snapshot) {
                 Ok(value) => value,
                 Err(error) => return ctx.fail(&error.to_string()).await,
             },
@@ -527,22 +604,49 @@ async fn run_scheduled_turn(
     {
         return ctx.fail(&error.to_string()).await;
     }
-    let mut budget = TurnBudget::new(limits);
+    let mut scheduler_runtime = ScheduledTurnRuntime {
+        store: store.clone(),
+        turn_id: turn_id.clone(),
+        topology: topology_snapshot,
+        budget: TurnBudget::new(limits),
+        initial_round_claims: HashSet::new(),
+    };
     let mut remaining = selected
         .into_iter()
         .map(Some)
         .collect::<Vec<Option<Candidate>>>();
     let mut previous_speaker: Option<String> = None;
     let mut had_visible = false;
+    let mut pending_mentions = Vec::<PendingMention>::new();
     loop {
+        while pending_mentions.first().is_some_and(|pending| {
+            scheduler_runtime
+                .budget
+                .check_dispatch(&pending.target_agent_id, pending.hop)
+                .is_err()
+        }) {
+            pending_mentions.remove(0);
+        }
         let scheduler_candidates = remaining
             .iter()
             .flatten()
+            .filter(|agent| {
+                !scheduler_runtime
+                    .initial_round_claims
+                    .contains(&agent.agent_id)
+            })
             .map(|agent| SchedulerCandidate {
                 agent_id: agent.agent_id.clone(),
                 eligible: true,
             })
             .collect::<Vec<_>>();
+        let mention_action = pending_mentions
+            .first()
+            .map(|pending| SchedulerAction::Speak {
+                mentioned_agent_ids: vec![pending.target_agent_id.clone()],
+                content: String::new(),
+            });
+        let decision_hop = pending_mentions.first().map_or(0, |pending| pending.hop);
         let remaining_user_mentions = user_mentioned_agent_ids
             .iter()
             .filter(|agent_id| {
@@ -553,12 +657,12 @@ async fn run_scheduled_turn(
             .cloned()
             .collect::<Vec<_>>();
         let decision = next_decision(
-            &budget,
+            &scheduler_runtime.budget,
             previous_speaker.as_deref(),
             &remaining_user_mentions,
-            None,
+            mention_action.as_ref(),
             &scheduler_candidates,
-            0,
+            decision_hop,
             false,
         );
         let SchedulerDecision::Dispatch(dispatch) = decision else {
@@ -570,7 +674,7 @@ async fn run_scheduled_turn(
             } else {
                 (status, Some(reason), TurnOutcome::Silence)
             };
-            if let Err(error) = store
+            if let Err(_error) = store
                 .transition_turn(
                     &turn_id,
                     TurnStatus::Running,
@@ -579,89 +683,179 @@ async fn run_scheduled_turn(
                 )
                 .await
             {
-                return ctx.fail(&error.to_string()).await;
+                tracing::error!(turn_id, "failed to persist scheduled turn completion");
+                return fail_scheduled_persistence(ctx, &store, &turn_id).await;
             }
             if matches!(outcome, TurnOutcome::Silence) {
-                step!(
-                    ctx,
-                    ctx.emit_durable_event(StreamEventKind::Silence, json!({}))
-                        .await
-                );
+                match ctx
+                    .emit_durable_event(StreamEventKind::Silence, json!({}))
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                }
             }
-            step!(ctx, ctx.emit_done().await);
+            match ctx.emit_done().await {
+                Ok(()) => {}
+                Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+                Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                }
+            }
             return Ok(outcome);
         };
-        let Some(agent) = remaining
-            .iter_mut()
-            .find(|agent| {
-                agent
-                    .as_ref()
-                    .is_some_and(|agent| agent.agent_id == dispatch.target_agent_id)
-            })
-            .and_then(Option::take)
-        else {
-            return ctx
-                .fail("scheduler selected a candidate that is no longer available")
-                .await;
+        let pending = if dispatch.selection_reason == SelectionReason::AgentTextMention {
+            Some(pending_mentions.remove(0))
+        } else {
+            None
         };
+        let agent = if pending.is_some() {
+            match load_candidate_by_id(
+                &services.pool,
+                &req.group_id,
+                &dispatch.target_agent_id,
+                group,
+            )
+            .await
+            {
+                Ok(agent) if agent.owner_id == group.owner_id => {
+                    scheduler_runtime
+                        .initial_round_claims
+                        .insert(agent.agent_id.clone());
+                    if let Some(slot) = remaining.iter_mut().find(|candidate| {
+                        candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.agent_id == agent.agent_id)
+                    }) {
+                        slot.take();
+                    }
+                    agent
+                }
+                Ok(_) => continue,
+                Err(error) => match error.disposition() {
+                    CandidateLoadDisposition::Skip => continue,
+                    CandidateLoadDisposition::FailTurn => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                },
+            }
+        } else {
+            let Some(agent) = remaining
+                .iter_mut()
+                .find(|agent| {
+                    agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.agent_id == dispatch.target_agent_id)
+                })
+                .and_then(Option::take)
+            else {
+                return ctx
+                    .fail("scheduler selected a candidate that is no longer available")
+                    .await;
+            };
+            agent
+        };
+        if let Some(pending) = pending.as_ref() {
+            if !allows_agent_edge(
+                &scheduler_runtime.topology,
+                &pending.source_agent_id,
+                &agent.agent_id,
+            ) {
+                continue;
+            }
+        }
         let dispatch_id = Uuid::new_v4().to_string();
-        if let Err(error) = store
+        if let Err(_error) = store
             .queue_dispatch(NewDispatch {
                 id: dispatch_id.clone(),
                 turn_id: turn_id.clone(),
-                parent_dispatch_id: None,
-                source_agent_id: None,
+                parent_dispatch_id: pending
+                    .as_ref()
+                    .map(|pending| pending.parent_dispatch_id.clone()),
+                source_agent_id: pending
+                    .as_ref()
+                    .map(|pending| pending.source_agent_id.clone()),
                 target_agent_id: agent.agent_id.clone(),
                 selection_reason: dispatch.selection_reason,
                 action_kind: dispatch.action_kind,
                 hop: dispatch.hop as i64,
-                input_message_id: Some(trigger_message_id.to_owned()),
+                input_message_id: pending.is_none().then(|| trigger_message_id.to_owned()),
             })
             .await
         {
-            return ctx.fail(&error.to_string()).await;
+            tracing::error!(turn_id, "failed to queue scheduled dispatch");
+            return fail_scheduled_persistence(ctx, &store, &turn_id).await;
         }
-        if let Err(error) = store.start_dispatch(&dispatch_id).await {
-            return ctx.fail(&error.to_string()).await;
+        if let Err(_error) = store.start_dispatch(&dispatch_id).await {
+            tracing::error!(turn_id, "failed to start scheduled dispatch");
+            return fail_scheduled_persistence(ctx, &store, &turn_id).await;
         }
-        budget.record_dispatch(&agent.agent_id);
+        scheduler_runtime.budget.record_dispatch(&agent.agent_id);
         ctx.scheduled_total_tokens = 0;
+        ctx.scheduled_accounted_tokens = 0;
         ctx.scheduled_dispatch = Some(ScheduledDispatch {
             store: store.clone(),
             id: dispatch_id.clone(),
+            action_kind: dispatch.action_kind,
+            hop: dispatch.hop,
         });
-        let result = match run_agent_turn(services, ctx, &agent, group, 0).await {
+        let result = match run_agent_turn(
+            services,
+            ctx,
+            &agent,
+            group,
+            dispatch.hop as usize,
+            None,
+            Some(&mut scheduler_runtime),
+        )
+        .await
+        {
             Ok(result) => result,
             Err(StepErr::Cancelled) => {
                 ctx.scheduled_dispatch = None;
-                budget.record_tokens(ctx.scheduled_total_tokens);
-                if let Err(error) = store
-                    .finish_dispatch(FinishDispatch {
-                        dispatch_id,
-                        next: DispatchStatus::Interrupted,
-                        artifact: None,
-                        total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
-                        failure_code: Some("stream_cancelled".to_owned()),
-                        output: None,
-                    })
-                    .await
+                account_scheduled_tokens(ctx, &mut scheduler_runtime.budget);
+                let dispatch_running = match dispatch_is_running(&services.pool, &dispatch_id).await
                 {
-                    return ctx.fail(&error.to_string()).await;
+                    Ok(running) => running,
+                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                };
+                if dispatch_running {
+                    if let Err(_error) = store
+                        .finish_dispatch(FinishDispatch {
+                            dispatch_id,
+                            next: DispatchStatus::Interrupted,
+                            artifact: None,
+                            total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                            failure_code: Some("stream_cancelled".to_owned()),
+                            output: None,
+                        })
+                        .await
+                    {
+                        tracing::error!(turn_id, "failed to interrupt cancelled dispatch");
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
                 }
-                if let Err(error) = store
+                if let Err(_error) = store
                     .update_turn_budget(
                         &turn_id,
-                        budget.agent_steps() as i64,
-                        budget.moderator_calls() as i64,
-                        budget.consecutive_failures() as i64,
-                        budget.total_failures() as i64,
-                        budget.total_tokens() as i64,
+                        scheduler_runtime.budget.agent_steps() as i64,
+                        scheduler_runtime.budget.moderator_calls() as i64,
+                        scheduler_runtime.budget.consecutive_failures() as i64,
+                        scheduler_runtime.budget.total_failures() as i64,
+                        scheduler_runtime.budget.total_tokens() as i64,
                     )
                     .await
                 {
-                    return ctx.fail(&error.to_string()).await;
+                    tracing::error!(turn_id, "failed to persist cancelled turn budget");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
                 }
-                if let Err(error) = store
+                if let Err(_error) = store
                     .transition_turn(
                         &turn_id,
                         TurnStatus::Running,
@@ -670,52 +864,83 @@ async fn run_scheduled_turn(
                     )
                     .await
                 {
-                    return ctx.fail(&error.to_string()).await;
+                    tracing::error!(turn_id, "failed to persist cancelled turn status");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
                 }
                 return Ok(TurnOutcome::Cancelled);
             }
             Err(StepErr::Db(_error)) => {
                 ctx.scheduled_dispatch = None;
-                budget.record_tokens(ctx.scheduled_total_tokens);
-                budget.record_failure();
-                if let Err(error) = store
-                    .finish_dispatch(FinishDispatch {
-                        dispatch_id,
-                        next: DispatchStatus::Failed,
-                        artifact: None,
-                        total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
-                        failure_code: Some("provider_failure".to_owned()),
-                        output: None,
-                    })
-                    .await
+                account_scheduled_tokens(ctx, &mut scheduler_runtime.budget);
+                scheduler_runtime.budget.record_failure();
+                let dispatch_running = match dispatch_is_running(&services.pool, &dispatch_id).await
                 {
-                    return ctx.fail(&error.to_string()).await;
+                    Ok(running) => running,
+                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                };
+                if dispatch_running {
+                    if let Err(_error) = store
+                        .finish_dispatch(FinishDispatch {
+                            dispatch_id,
+                            next: DispatchStatus::Failed,
+                            artifact: None,
+                            total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                            failure_code: Some("provider_failure".to_owned()),
+                            output: None,
+                        })
+                        .await
+                    {
+                        tracing::error!(turn_id, "failed to persist failed dispatch");
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
                 }
-                if let Err(error) = store
+                if let Err(_error) = store
                     .update_turn_budget(
                         &turn_id,
-                        budget.agent_steps() as i64,
-                        budget.moderator_calls() as i64,
-                        budget.consecutive_failures() as i64,
-                        budget.total_failures() as i64,
-                        budget.total_tokens() as i64,
+                        scheduler_runtime.budget.agent_steps() as i64,
+                        scheduler_runtime.budget.moderator_calls() as i64,
+                        scheduler_runtime.budget.consecutive_failures() as i64,
+                        scheduler_runtime.budget.total_failures() as i64,
+                        scheduler_runtime.budget.total_tokens() as i64,
                     )
                     .await
                 {
-                    return ctx.fail(&error.to_string()).await;
+                    tracing::error!(turn_id, "failed to persist failure budget");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
                 }
                 continue;
             }
+            Err(StepErr::SchedulerPersistence) => {
+                ctx.scheduled_dispatch = None;
+                return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+            }
         };
         ctx.scheduled_dispatch = None;
-        let next = match result {
-            AgentRunResult::NoVisible => Some(DispatchStatus::Silent),
-            AgentRunResult::WaitingForUser
-            | AgentRunResult::Visible
-            | AgentRunResult::Handoff { .. } => None,
+        let mut parent_already_terminal = false;
+        let mut result = result;
+        while let AgentRunResult::BoundedHandoff { helper_result } = result {
+            parent_already_terminal = true;
+            result = *helper_result;
+        }
+        let next = if parent_already_terminal {
+            None
+        } else {
+            match result {
+                AgentRunResult::NoVisible => Some(DispatchStatus::Silent),
+                AgentRunResult::WaitingForUser
+                | AgentRunResult::Visible { .. }
+                | AgentRunResult::Handoff { .. } => None,
+                AgentRunResult::Private(_) => Some(DispatchStatus::Failed),
+                AgentRunResult::BoundedHandoff { .. } => {
+                    unreachable!("bounded handoff was flattened")
+                }
+            }
         };
         if let Some(next) = next {
-            if let Err(error) = store
+            if let Err(_error) = store
                 .finish_dispatch(FinishDispatch {
                     dispatch_id,
                     next,
@@ -726,27 +951,30 @@ async fn run_scheduled_turn(
                 })
                 .await
             {
-                return ctx.fail(&error.to_string()).await;
+                tracing::error!(turn_id, "failed to finish scheduled dispatch");
+                return fail_scheduled_persistence(ctx, &store, &turn_id).await;
             }
         }
-        budget.record_completion(ctx.scheduled_total_tokens);
-        if let Err(error) = store
+        if !parent_already_terminal {
+            complete_scheduled_usage(ctx, &mut scheduler_runtime.budget);
+        }
+        if let Err(_error) = store
             .update_turn_budget(
                 &turn_id,
-                budget.agent_steps() as i64,
-                budget.moderator_calls() as i64,
-                budget.consecutive_failures() as i64,
-                budget.total_failures() as i64,
-                budget.total_tokens() as i64,
+                scheduler_runtime.budget.agent_steps() as i64,
+                scheduler_runtime.budget.moderator_calls() as i64,
+                scheduler_runtime.budget.consecutive_failures() as i64,
+                scheduler_runtime.budget.total_failures() as i64,
+                scheduler_runtime.budget.total_tokens() as i64,
             )
             .await
         {
-            return ctx.fail(&error.to_string()).await;
+            tracing::error!(turn_id, "failed to persist scheduled turn budget");
+            return fail_scheduled_persistence(ctx, &store, &turn_id).await;
         }
-        previous_speaker = Some(agent.agent_id);
         match result {
             AgentRunResult::WaitingForUser => {
-                if let Err(error) = store
+                if let Err(_error) = store
                     .transition_turn(
                         &turn_id,
                         TurnStatus::Running,
@@ -755,15 +983,94 @@ async fn run_scheduled_turn(
                     )
                     .await
                 {
-                    return ctx.fail(&error.to_string()).await;
+                    tracing::error!(turn_id, "failed to persist waiting turn status");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
                 }
-                step!(ctx, ctx.emit_done().await);
+                match ctx.emit_done().await {
+                    Ok(()) => {}
+                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                }
                 return Ok(TurnOutcome::WaitingForUser);
             }
-            AgentRunResult::Visible | AgentRunResult::Handoff { .. } => had_visible = true,
-            AgentRunResult::NoVisible => {}
+            AgentRunResult::Visible {
+                agent_id,
+                content,
+                dispatch_id,
+                dispatch_hop,
+            } => {
+                had_visible = true;
+                previous_speaker = Some(agent_id.clone());
+                if group.agent_mention_policy == "bounded_schedule" {
+                    let targets = mention_targets
+                        .iter()
+                        .map(|(agent_id, display_name)| MentionTarget {
+                            agent_id,
+                            display_name,
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(parent_dispatch_id) = dispatch_id {
+                        for target_agent_id in scan_visible_mentions(&content, &targets) {
+                            if allows_agent_edge(
+                                &scheduler_runtime.topology,
+                                &agent_id,
+                                &target_agent_id,
+                            ) {
+                                pending_mentions.push(PendingMention {
+                                    parent_dispatch_id: parent_dispatch_id.clone(),
+                                    source_agent_id: agent_id.clone(),
+                                    target_agent_id,
+                                    hop: dispatch_hop.saturating_add(1),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            AgentRunResult::Handoff { .. } => had_visible = true,
+            AgentRunResult::NoVisible | AgentRunResult::Private(_) => {}
+            AgentRunResult::BoundedHandoff { .. } => {
+                unreachable!("bounded handoff was flattened")
+            }
         }
     }
+}
+
+async fn fail_scheduled_persistence(
+    ctx: &mut StreamCtx,
+    store: &SchedulerStore,
+    turn_id: &str,
+) -> Result<TurnOutcome, Cancelled> {
+    tracing::error!(turn_id, "scheduler persistence operation failed");
+    if store
+        .transition_turn(
+            turn_id,
+            TurnStatus::Running,
+            TurnStatus::Failed,
+            Some(TurnReason::PersistenceFailed.as_str()),
+        )
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            turn_id,
+            "failed to terminalize scheduler turn after persistence error"
+        );
+    }
+    if ctx
+        .allocator
+        .set_thread_status(&ctx.thread_id, "failed")
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            turn_id,
+            "failed to update thread after scheduler persistence error"
+        );
+    }
+    ctx.fail("scheduler persistence failed").await
 }
 
 fn snapshot_topology(
@@ -873,7 +1180,7 @@ async fn run_resume_inner(
     };
     let mut deltas = match provider.stream(request).await {
         Ok(deltas) => deltas,
-        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+        Err(_error) => return fail_resume(ctx, "provider execution failed").await,
     };
 
     let mut addition = String::new();
@@ -893,6 +1200,9 @@ async fn run_resume_inner(
                         return Ok(TurnOutcome::Cancelled);
                     }
                     Err(StepErr::Db(err)) => return fail_resume(ctx, &err.to_string()).await,
+                    Err(StepErr::SchedulerPersistence) => {
+                        return fail_resume(ctx, "scheduler persistence failed").await
+                    }
                 }
             }
             ChatDelta::Reasoning(text) => {
@@ -909,6 +1219,9 @@ async fn run_resume_inner(
                             Ok(TurnOutcome::Cancelled)
                         }
                         StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
+                        StepErr::SchedulerPersistence => {
+                            fail_resume(ctx, "scheduler persistence failed").await
+                        }
                     };
                 }
             }
@@ -926,6 +1239,9 @@ async fn run_resume_inner(
                             Ok(TurnOutcome::Cancelled)
                         }
                         StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
+                        StepErr::SchedulerPersistence => {
+                            fail_resume(ctx, "scheduler persistence failed").await
+                        }
                     };
                 }
             }
@@ -953,6 +1269,7 @@ async fn run_resume_inner(
                 Ok(TurnOutcome::Cancelled)
             }
             StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
+            StepErr::SchedulerPersistence => fail_resume(ctx, "scheduler persistence failed").await,
         },
     }
 }
@@ -981,6 +1298,7 @@ async fn append_resume_cancellation(
 }
 
 /// An active agent eligible to respond in the group.
+#[derive(Clone)]
 struct Candidate {
     agent_id: String,
     owner_id: String,
@@ -1012,6 +1330,7 @@ struct GroupRuntimeConfig {
     allow_agent_free_mention: bool,
     communication_mode: String,
     scheduler_enabled: bool,
+    agent_mention_policy: String,
     max_agent_steps: Option<u32>,
     max_steps_per_agent: u32,
     max_scheduler_hops: u32,
@@ -1031,9 +1350,54 @@ struct InvocationContext {
 
 enum AgentRunResult {
     NoVisible,
+    Visible {
+        agent_id: String,
+        content: String,
+        dispatch_id: Option<String>,
+        dispatch_hop: u32,
+    },
+    WaitingForUser,
+    Handoff {
+        helper: Box<Candidate>,
+    },
+    BoundedHandoff {
+        helper_result: Box<AgentRunResult>,
+    },
+    Private(AgentExecution),
+}
+
+struct AgentExecution {
+    final_content: String,
+    turn_data: TurnData,
+    outcome: AgentExecutionOutcome,
+}
+
+enum AgentAsToolOutcome {
+    Continue(String),
+    Terminal(AgentRunResult),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentExecutionOutcome {
+    NoVisible,
     Visible,
     WaitingForUser,
-    Handoff { helper: Box<Candidate> },
+    Failed,
+}
+
+struct ScheduledTurnRuntime {
+    store: SchedulerStore,
+    turn_id: String,
+    topology: TopologySnapshot,
+    budget: TurnBudget,
+    initial_round_claims: HashSet<String>,
+}
+
+struct PendingMention {
+    parent_dispatch_id: String,
+    source_agent_id: String,
+    target_agent_id: String,
+    hop: u32,
 }
 
 /// One tool call recorded for persistence in `content_json`.
@@ -1050,7 +1414,7 @@ struct RecordedToolCall {
 /// cards, and the final context usage survive a restart (persisted in
 /// `content_json`). Transient stream events remain the live source of truth;
 /// this is the durable mirror.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct TurnData {
     reasoning: Vec<String>,
     tool_calls: Vec<RecordedToolCall>,
@@ -1184,6 +1548,8 @@ async fn run_agent_turn(
     agent: &Candidate,
     group: &GroupRuntimeConfig,
     handoff_depth: usize,
+    delegated_input: Option<&str>,
+    mut scheduler: Option<&mut ScheduledTurnRuntime>,
 ) -> Result<AgentRunResult, StepErr> {
     ctx.emit(
         StreamEventKind::AgentStart,
@@ -1192,7 +1558,7 @@ async fn run_agent_turn(
     .await?;
 
     if agent.runtime_kind == "acp" {
-        return run_acp_agent_turn(services, ctx, agent, group).await;
+        return run_acp_agent_turn(services, ctx, agent, group, delegated_input).await;
     }
 
     let provider_cfg = resolve_provider(&services.pool, agent)
@@ -1211,6 +1577,9 @@ async fn run_agent_turn(
     )
     .await
     .map_err(StepErr::Db)?;
+    if let Some(input) = delegated_input {
+        messages.push(ChatMessage::text("user", input));
+    }
 
     let mut content = String::new();
     let checkpoint_interrupted = handoff_depth == 0;
@@ -1224,7 +1593,10 @@ async fn run_agent_turn(
             reasoning_passback: provider_cfg.reasoning_passback,
             tools: invocation.tools.clone(),
         };
-        let mut deltas = provider.stream(request).await.map_err(StepErr::Db)?;
+        let mut deltas = provider
+            .stream(request)
+            .await
+            .map_err(|_error| StepErr::Db(anyhow::anyhow!("provider execution failed")))?;
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
         // A reasoning delta starts a new segment when the previous delta was not
@@ -1258,6 +1630,9 @@ async fn run_agent_turn(
                             return Err(StepErr::Cancelled);
                         }
                         Err(err @ StepErr::Db(_)) => return Err(err),
+                        Err(StepErr::SchedulerPersistence) => {
+                            return Err(StepErr::SchedulerPersistence)
+                        }
                     }
                 }
                 ChatDelta::Reasoning(text) => {
@@ -1328,17 +1703,29 @@ async fn run_agent_turn(
         }
 
         if let Some(call) = agent_as_tool_call(&tool_calls) {
-            return handle_agent_as_tool(
+            let outcome = handle_agent_as_tool(
                 services,
                 ctx,
                 agent,
                 group,
                 handoff_depth,
-                call,
+                call.clone(),
                 &content,
                 &mut turn,
+                scheduler.as_deref_mut(),
             )
-            .await;
+            .await?;
+            match outcome {
+                AgentAsToolOutcome::Terminal(result) => return Ok(result),
+                AgentAsToolOutcome::Continue(result) => {
+                    messages.push(ChatMessage::assistant_tool_calls(
+                        round_content,
+                        vec![call.clone()],
+                    ));
+                    messages.push(ChatMessage::tool_result(call.id, call.name, result));
+                    continue;
+                }
+            }
         }
 
         messages.push(ChatMessage::assistant_tool_calls(
@@ -1370,6 +1757,29 @@ async fn run_agent_turn(
         }
 
         if let Some(input_request) = wait_for_user {
+            if ctx.private_execution {
+                return Ok(AgentRunResult::Private(AgentExecution {
+                    final_content: "Helper requested additional input.".to_string(),
+                    turn_data: turn,
+                    outcome: AgentExecutionOutcome::WaitingForUser,
+                }));
+            }
+            let dispatch = ctx
+                .scheduled_dispatch
+                .clone()
+                .ok_or(StepErr::SchedulerPersistence)?;
+            dispatch
+                .store
+                .finish_dispatch(FinishDispatch {
+                    dispatch_id: dispatch.id,
+                    next: DispatchStatus::WaitingForUser,
+                    artifact: None,
+                    total_tokens: token_count_i64(ctx.scheduled_total_tokens),
+                    failure_code: None,
+                    output: None,
+                })
+                .await
+                .map_err(|_| StepErr::SchedulerPersistence)?;
             ctx.emit_durable_event(
                 StreamEventKind::WaitingForUser,
                 json!({
@@ -1413,6 +1823,7 @@ async fn run_acp_agent_turn(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     group: &GroupRuntimeConfig,
+    delegated_input: Option<&str>,
 ) -> Result<AgentRunResult, StepErr> {
     let raw = agent
         .external_runtime_json
@@ -1435,10 +1846,14 @@ async fn run_acp_agent_turn(
     )
     .await
     .map_err(StepErr::Db)?;
-    let incremental_prompt =
+    let mut incremental_prompt =
         build_acp_incremental_prompt(&services.pool, &ctx.thread_id, &agent.agent_id)
             .await
             .map_err(StepErr::Db)?;
+    if let Some(input) = delegated_input {
+        incremental_prompt.push_str("\n\nDelegated task:\n");
+        incremental_prompt.push_str(input);
+    }
     let context_hash = acp_context_hash(&invocation.system_prompt);
 
     let mut run = run_acp_agent_stream(
@@ -1714,7 +2129,8 @@ async fn handle_agent_as_tool(
     call: ToolCall,
     content: &str,
     turn: &mut TurnData,
-) -> Result<AgentRunResult, StepErr> {
+    scheduler: Option<&mut ScheduledTurnRuntime>,
+) -> Result<AgentAsToolOutcome, StepErr> {
     turn.record_tool_start(
         Some(call.id.clone()),
         Some(AGENT_AS_TOOL_NAME.to_string()),
@@ -1741,7 +2157,8 @@ async fn handle_agent_as_tool(
                 turn,
                 handoff_depth == 0,
             )
-            .await;
+            .await
+            .map(AgentAsToolOutcome::Terminal);
         }
     };
     let caller = CallerAgent {
@@ -1757,12 +2174,16 @@ async fn handle_agent_as_tool(
         &caller,
         &parsed,
         handoff_depth,
+        group.scheduler_enabled,
         &group.muted_agent_ids,
     )
     .await
     {
         Ok(dispatch) => dispatch,
         Err(failure) => {
+            if group.scheduler_enabled && parsed.mode == AgentAsToolMode::Call {
+                return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+            }
             turn.record_tool_result(
                 Some(parsed.tool_call_id.clone()),
                 Some(AGENT_AS_TOOL_NAME.to_string()),
@@ -1778,7 +2199,8 @@ async fn handle_agent_as_tool(
                 turn,
                 handoff_depth == 0,
             )
-            .await;
+            .await
+            .map(AgentAsToolOutcome::Terminal);
         }
     };
     let helper_candidate = match load_candidate_by_id(
@@ -1790,8 +2212,16 @@ async fn handle_agent_as_tool(
     .await
     {
         Ok(candidate) => candidate,
-        Err(err) => {
-            let failure = AgentAsToolFailure::unavailable(err.to_string());
+        Err(error) => {
+            let failure = match error {
+                CandidateLoadError::Ineligible(message) => AgentAsToolFailure::unavailable(message),
+                CandidateLoadError::Persistence(_error) => {
+                    AgentAsToolFailure::failed("helper lookup failed")
+                }
+            };
+            if group.scheduler_enabled && parsed.mode == AgentAsToolMode::Call {
+                return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+            }
             turn.record_tool_result(
                 Some(parsed.tool_call_id.clone()),
                 Some(AGENT_AS_TOOL_NAME.to_string()),
@@ -1807,9 +2237,47 @@ async fn handle_agent_as_tool(
                 turn,
                 handoff_depth == 0,
             )
-            .await;
+            .await
+            .map(AgentAsToolOutcome::Terminal);
         }
     };
+
+    if group.scheduler_enabled {
+        let scheduler = scheduler.ok_or_else(|| {
+            StepErr::Db(anyhow::anyhow!(
+                "bounded AgentAsTool dispatch is missing scheduler state"
+            ))
+        })?;
+        return handle_bounded_agent_as_tool(
+            services,
+            ctx,
+            agent,
+            group,
+            handoff_depth,
+            parsed,
+            dispatch,
+            helper_candidate,
+            turn,
+            scheduler,
+        )
+        .await;
+    }
+
+    if parsed.mode == AgentAsToolMode::Call {
+        let failure = AgentAsToolFailure::unavailable(
+            "private AgentAsTool calls require the bounded group scheduler",
+        );
+        turn.record_tool_result(
+            Some(parsed.tool_call_id.clone()),
+            Some(AGENT_AS_TOOL_NAME.to_string()),
+            Some(failure.status.to_string()),
+            Some(failure.message.clone()),
+        );
+        emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+        return finish_agent_content(ctx, agent, false, content.to_string(), turn, true)
+            .await
+            .map(AgentAsToolOutcome::Terminal);
+    }
 
     turn.record_tool_result(
         Some(parsed.tool_call_id.clone()),
@@ -1864,9 +2332,479 @@ async fn handle_agent_as_tool(
     )
     .await?;
 
-    Ok(AgentRunResult::Handoff {
+    Ok(AgentAsToolOutcome::Terminal(AgentRunResult::Handoff {
         helper: Box::new(helper_candidate),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_bounded_agent_as_tool(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    group: &GroupRuntimeConfig,
+    hop: usize,
+    parsed: AgentAsToolCall,
+    dispatch: crate::runtime::agent_as_tool::AgentAsToolDispatch,
+    helper: Candidate,
+    turn: &mut TurnData,
+    scheduler: &mut ScheduledTurnRuntime,
+) -> Result<AgentAsToolOutcome, StepErr> {
+    let child_hop = hop.saturating_add(1) as u32;
+    if !allows_agent_edge(&scheduler.topology, &agent.agent_id, &helper.agent_id) {
+        let failure =
+            AgentAsToolFailure::unavailable("group topology does not allow this agent dispatch");
+        return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+    }
+    account_scheduled_tokens(ctx, &mut scheduler.budget);
+    if let Err(error) = scheduler.budget.check_dispatch(&helper.agent_id, child_hop) {
+        let failure = AgentAsToolFailure::unavailable(format!(
+            "scheduler dispatch budget rejected the helper: {error}"
+        ));
+        return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+    }
+    scheduler
+        .initial_round_claims
+        .insert(helper.agent_id.clone());
+
+    let parent = ctx.scheduled_dispatch.clone().ok_or_else(|| {
+        StepErr::Db(anyhow::anyhow!(
+            "bounded AgentAsTool caller dispatch is missing"
+        ))
+    })?;
+    let child_id = Uuid::new_v4().to_string();
+    let (selection_reason, action_kind) = match parsed.mode {
+        AgentAsToolMode::Call => (SelectionReason::AgentCall, ActionKind::Call),
+        AgentAsToolMode::Handoff => (SelectionReason::AgentHandoff, ActionKind::Handoff),
+    };
+    scheduler
+        .store
+        .queue_dispatch(NewDispatch {
+            id: child_id.clone(),
+            turn_id: scheduler.turn_id.clone(),
+            parent_dispatch_id: Some(parent.id.clone()),
+            source_agent_id: Some(agent.agent_id.clone()),
+            target_agent_id: helper.agent_id.clone(),
+            selection_reason,
+            action_kind,
+            hop: child_hop as i64,
+            input_message_id: None,
+        })
+        .await
+        .map_err(|_| StepErr::SchedulerPersistence)?;
+    scheduler
+        .store
+        .start_dispatch(&child_id)
+        .await
+        .map_err(|_| StepErr::SchedulerPersistence)?;
+    scheduler.budget.record_dispatch(&helper.agent_id);
+
+    let caller_tokens = ctx.scheduled_total_tokens;
+    let caller_accounted_tokens = ctx.scheduled_accounted_tokens;
+    let caller_private = ctx.private_execution;
+    let defer_private_call_parent = parsed.mode == AgentAsToolMode::Handoff
+        && caller_private
+        && parent.action_kind == ActionKind::Call;
+    if parsed.mode == AgentAsToolMode::Handoff && !defer_private_call_parent {
+        scheduler.budget.record_completion(0);
+        scheduler
+            .store
+            .finish_dispatch(FinishDispatch {
+                dispatch_id: parent.id.clone(),
+                next: DispatchStatus::Completed,
+                artifact: Some(json!({
+                    "mode": "handoff",
+                    "target_agent_id": helper.agent_id,
+                    "child_dispatch_id": child_id,
+                })),
+                total_tokens: token_count_i64(caller_tokens),
+                failure_code: None,
+                output: None,
+            })
+            .await
+            .map_err(|_| StepErr::SchedulerPersistence)?;
+    }
+    ctx.scheduled_dispatch = Some(ScheduledDispatch {
+        store: scheduler.store.clone(),
+        id: child_id.clone(),
+        action_kind,
+        hop: child_hop,
+    });
+    ctx.scheduled_total_tokens = 0;
+    ctx.scheduled_accounted_tokens = 0;
+    ctx.private_execution = caller_private || parsed.mode == AgentAsToolMode::Call;
+    let helper_result = Box::pin(run_agent_turn(
+        services,
+        ctx,
+        &helper,
+        group,
+        child_hop as usize,
+        Some(&dispatch.content),
+        Some(scheduler),
+    ))
+    .await;
+    let helper_tokens = ctx.scheduled_total_tokens;
+    let helper_accounted_tokens = ctx.scheduled_accounted_tokens;
+    ctx.scheduled_dispatch = Some(parent.clone());
+    ctx.scheduled_total_tokens = caller_tokens;
+    ctx.scheduled_accounted_tokens = caller_accounted_tokens;
+    ctx.private_execution = caller_private;
+
+    let helper_result = match helper_result {
+        Ok(result) => result,
+        Err(StepErr::Cancelled) => {
+            scheduler
+                .budget
+                .record_tokens(helper_tokens.saturating_sub(helper_accounted_tokens));
+            if dispatch_is_running(&services.pool, &child_id).await? {
+                let (next, artifact, failure_code) = if parsed.mode == AgentAsToolMode::Call {
+                    (
+                        DispatchStatus::Completed,
+                        Some(json!({
+                            "mode": "call",
+                            "final_content": "helper execution cancelled",
+                            "outcome": "cancelled",
+                        })),
+                        None,
+                    )
+                } else {
+                    (
+                        DispatchStatus::Interrupted,
+                        None,
+                        Some("stream_cancelled".to_owned()),
+                    )
+                };
+                scheduler
+                    .store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id: child_id,
+                        next,
+                        artifact,
+                        total_tokens: token_count_i64(helper_tokens),
+                        failure_code,
+                        output: None,
+                    })
+                    .await
+                    .map_err(|_| StepErr::SchedulerPersistence)?;
+            }
+            return Err(StepErr::Cancelled);
+        }
+        Err(StepErr::Db(_error)) => {
+            scheduler
+                .budget
+                .record_tokens(helper_tokens.saturating_sub(helper_accounted_tokens));
+            scheduler.budget.record_failure();
+            if dispatch_is_running(&services.pool, &child_id).await? {
+                scheduler
+                    .store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id: child_id,
+                        next: DispatchStatus::Failed,
+                        artifact: None,
+                        total_tokens: token_count_i64(helper_tokens),
+                        failure_code: Some("provider_failure".to_owned()),
+                        output: None,
+                    })
+                    .await
+                    .map_err(|_| StepErr::SchedulerPersistence)?;
+            }
+            let failure = AgentAsToolFailure::unavailable("helper execution failed");
+            if parsed.mode == AgentAsToolMode::Handoff {
+                turn.record_tool_result(
+                    Some(parsed.tool_call_id.clone()),
+                    Some(AGENT_AS_TOOL_NAME.to_string()),
+                    Some(failure.status.to_string()),
+                    Some(failure.message.clone()),
+                );
+                emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+                let failure_result = if defer_private_call_parent {
+                    AgentRunResult::Private(AgentExecution {
+                        final_content: failure.message,
+                        turn_data: turn.clone(),
+                        outcome: AgentExecutionOutcome::Failed,
+                    })
+                } else {
+                    AgentRunResult::NoVisible
+                };
+                return Ok(AgentAsToolOutcome::Terminal(if defer_private_call_parent {
+                    failure_result
+                } else {
+                    AgentRunResult::BoundedHandoff {
+                        helper_result: Box::new(failure_result),
+                    }
+                }));
+            }
+            return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+        }
+        Err(StepErr::SchedulerPersistence) => return Err(StepErr::SchedulerPersistence),
+    };
+    let (helper_result, helper_already_terminal) = flatten_bounded_handoff(helper_result);
+    if !helper_already_terminal {
+        let remaining_tokens = helper_tokens.saturating_sub(helper_accounted_tokens);
+        if matches!(
+            &helper_result,
+            AgentRunResult::Private(AgentExecution {
+                outcome: AgentExecutionOutcome::Failed,
+                ..
+            })
+        ) {
+            scheduler.budget.record_tokens(remaining_tokens);
+        } else {
+            scheduler.budget.record_completion(remaining_tokens);
+        }
+    }
+
+    match parsed.mode {
+        AgentAsToolMode::Call => {
+            let AgentRunResult::Private(execution) = helper_result else {
+                return Err(StepErr::Db(anyhow::anyhow!(
+                    "private helper returned a visible execution result"
+                )));
+            };
+            let result = bounded_helper_result(&execution.final_content);
+            let failed = execution.outcome == AgentExecutionOutcome::Failed;
+            let waiting = execution.outcome == AgentExecutionOutcome::WaitingForUser;
+            if !helper_already_terminal {
+                scheduler
+                    .store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id: child_id,
+                        next: if failed {
+                            DispatchStatus::Failed
+                        } else {
+                            DispatchStatus::Completed
+                        },
+                        artifact: Some(private_execution_artifact(
+                            "call",
+                            &execution,
+                            helper_tokens,
+                        )),
+                        total_tokens: token_count_i64(helper_tokens),
+                        failure_code: if failed {
+                            Some("helper_execution_failed".to_owned())
+                        } else if waiting {
+                            Some("helper_input_required".to_owned())
+                        } else {
+                            None
+                        },
+                        output: None,
+                    })
+                    .await
+                    .map_err(|_| StepErr::SchedulerPersistence)?;
+            }
+            if failed {
+                let failure = AgentAsToolFailure::unavailable("helper execution failed");
+                turn.record_tool_result(
+                    Some(parsed.tool_call_id.clone()),
+                    Some(AGENT_AS_TOOL_NAME.to_string()),
+                    Some(failure.status.to_string()),
+                    Some(failure.message.clone()),
+                );
+                emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+                return Ok(AgentAsToolOutcome::Continue(format!(
+                    "status: {}\n{}",
+                    failure.status, failure.message
+                )));
+            }
+            if waiting {
+                let failure = AgentAsToolFailure::unavailable(
+                    "helper requested additional input and could not complete privately",
+                );
+                turn.record_tool_result(
+                    Some(parsed.tool_call_id.clone()),
+                    Some(AGENT_AS_TOOL_NAME.to_string()),
+                    Some(failure.status.to_string()),
+                    Some(failure.message.clone()),
+                );
+                emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+                return Ok(AgentAsToolOutcome::Continue(format!(
+                    "status: {}\n{}",
+                    failure.status, failure.message
+                )));
+            }
+            turn.record_tool_result(
+                Some(parsed.tool_call_id.clone()),
+                Some(AGENT_AS_TOOL_NAME.to_string()),
+                Some("completed".to_string()),
+                Some(summarize_text(&result)),
+            );
+            emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &result).await?;
+            Ok(AgentAsToolOutcome::Continue(result))
+        }
+        AgentAsToolMode::Handoff => {
+            if let AgentRunResult::Private(execution) = helper_result {
+                if !helper_already_terminal {
+                    scheduler
+                        .store
+                        .finish_dispatch(FinishDispatch {
+                            dispatch_id: child_id,
+                            next: DispatchStatus::Completed,
+                            artifact: Some(private_execution_artifact(
+                                "handoff",
+                                &execution,
+                                helper_tokens,
+                            )),
+                            total_tokens: token_count_i64(helper_tokens),
+                            failure_code: None,
+                            output: None,
+                        })
+                        .await
+                        .map_err(|_| StepErr::SchedulerPersistence)?;
+                }
+                return Ok(AgentAsToolOutcome::Terminal(if defer_private_call_parent {
+                    AgentRunResult::Private(execution)
+                } else {
+                    AgentRunResult::BoundedHandoff {
+                        helper_result: Box::new(AgentRunResult::Private(execution)),
+                    }
+                }));
+            }
+            if !helper_already_terminal
+                && matches!(helper_result, AgentRunResult::NoVisible)
+                && dispatch_is_running(&services.pool, &child_id).await?
+            {
+                scheduler
+                    .store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id: child_id,
+                        next: DispatchStatus::Silent,
+                        artifact: None,
+                        total_tokens: token_count_i64(helper_tokens),
+                        failure_code: None,
+                        output: None,
+                    })
+                    .await
+                    .map_err(|_| StepErr::SchedulerPersistence)?;
+            }
+            let summary = format!("Handed off to @{}.", dispatch.helper.display_name);
+            turn.record_tool_result(
+                Some(parsed.tool_call_id.clone()),
+                Some(AGENT_AS_TOOL_NAME.to_string()),
+                Some("completed".to_string()),
+                Some(summary.clone()),
+            );
+            emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &summary).await?;
+            Ok(AgentAsToolOutcome::Terminal(
+                AgentRunResult::BoundedHandoff {
+                    helper_result: Box::new(helper_result),
+                },
+            ))
+        }
+    }
+}
+
+async fn bounded_agent_as_tool_failure(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    parsed: AgentAsToolCall,
+    turn: &mut TurnData,
+    failure: AgentAsToolFailure,
+) -> Result<AgentAsToolOutcome, StepErr> {
+    turn.record_tool_result(
+        Some(parsed.tool_call_id.clone()),
+        Some(AGENT_AS_TOOL_NAME.to_string()),
+        Some(failure.status.to_string()),
+        Some(failure.message.clone()),
+    );
+    emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+    Ok(AgentAsToolOutcome::Continue(format!(
+        "status: {}\n{}",
+        failure.status, failure.message
+    )))
+}
+
+async fn emit_agent_as_tool_result(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    tool_call_id: &str,
+    summary: &str,
+) -> Result<(), StepErr> {
+    ctx.emit(
+        StreamEventKind::ToolCallResult,
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "tool_call_id": tool_call_id,
+            "tool_name": AGENT_AS_TOOL_NAME,
+            "status": "completed",
+            "result_summary": summarize_text(summary),
+        }),
+    )
+    .await
+}
+
+fn bounded_helper_result(content: &str) -> String {
+    const LIMIT: usize = 8_000;
+    let mut chars = content.chars();
+    let result = chars.by_ref().take(LIMIT).collect::<String>();
+    if chars.next().is_some() {
+        format!("{result}\n\n[helper result truncated]")
+    } else {
+        result
+    }
+}
+
+fn token_count_i64(tokens: u64) -> i64 {
+    tokens.min(i64::MAX as u64) as i64
+}
+
+fn account_scheduled_tokens(ctx: &mut StreamCtx, budget: &mut TurnBudget) {
+    let unaccounted = ctx
+        .scheduled_total_tokens
+        .saturating_sub(ctx.scheduled_accounted_tokens);
+    budget.record_tokens(unaccounted);
+    ctx.scheduled_accounted_tokens = ctx.scheduled_total_tokens;
+}
+
+fn complete_scheduled_usage(ctx: &mut StreamCtx, budget: &mut TurnBudget) {
+    let unaccounted = ctx
+        .scheduled_total_tokens
+        .saturating_sub(ctx.scheduled_accounted_tokens);
+    budget.record_completion(unaccounted);
+    ctx.scheduled_accounted_tokens = ctx.scheduled_total_tokens;
+}
+
+fn private_execution_artifact(mode: &str, execution: &AgentExecution, total_tokens: u64) -> Value {
+    json!({
+        "mode": mode,
+        "final_content": execution.final_content,
+        "outcome": execution.outcome.as_str(),
+        "usage": {
+            "total_tokens": total_tokens,
+        },
+        "tool_call_count": execution.turn_data.tool_calls.len(),
     })
+}
+
+fn flatten_bounded_handoff(mut result: AgentRunResult) -> (AgentRunResult, bool) {
+    let mut parent_already_terminal = false;
+    while let AgentRunResult::BoundedHandoff { helper_result } = result {
+        parent_already_terminal = true;
+        result = *helper_result;
+    }
+    (result, parent_already_terminal)
+}
+
+async fn dispatch_is_running(pool: &SqlitePool, dispatch_id: &str) -> Result<bool, StepErr> {
+    let status =
+        sqlx::query_scalar::<_, String>("SELECT status FROM agent_dispatches WHERE id = ?")
+            .bind(dispatch_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| StepErr::SchedulerPersistence)?
+            .ok_or(StepErr::SchedulerPersistence)?;
+    Ok(status == DispatchStatus::Running.as_str())
+}
+
+impl AgentExecutionOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NoVisible => "no_visible",
+            Self::Visible => "visible",
+            Self::WaitingForUser => "waiting_for_user",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 fn agent_as_tool_call(tool_calls: &[ToolCall]) -> Option<ToolCall> {
@@ -1887,6 +2825,13 @@ async fn finish_agent_content(
     let trimmed = content.trim();
 
     if proactive && trimmed == SILENT_MARKER {
+        if ctx.private_execution {
+            return Ok(AgentRunResult::Private(AgentExecution {
+                final_content: String::new(),
+                turn_data: turn.clone(),
+                outcome: AgentExecutionOutcome::NoVisible,
+            }));
+        }
         ctx.emit_durable_event(
             StreamEventKind::AgentSilent,
             json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
@@ -1908,7 +2853,26 @@ async fn finish_agent_content(
     };
 
     if visible.trim().is_empty() {
+        if ctx.private_execution {
+            return Ok(AgentRunResult::Private(AgentExecution {
+                final_content: String::new(),
+                turn_data: turn.clone(),
+                outcome: AgentExecutionOutcome::NoVisible,
+            }));
+        }
         return Ok(AgentRunResult::NoVisible);
+    }
+
+    if ctx.private_execution {
+        return Ok(AgentRunResult::Private(AgentExecution {
+            final_content: visible,
+            turn_data: turn.clone(),
+            outcome: if is_waiting {
+                AgentExecutionOutcome::WaitingForUser
+            } else {
+                AgentExecutionOutcome::Visible
+            },
+        }));
     }
 
     let content_json = turn.to_content_json();
@@ -1962,7 +2926,18 @@ async fn finish_agent_content(
         .await?;
         Ok(AgentRunResult::WaitingForUser)
     } else {
-        Ok(AgentRunResult::Visible)
+        Ok(AgentRunResult::Visible {
+            agent_id: agent.agent_id.clone(),
+            content: visible,
+            dispatch_id: ctx
+                .scheduled_dispatch
+                .as_ref()
+                .map(|dispatch| dispatch.id.clone()),
+            dispatch_hop: ctx
+                .scheduled_dispatch
+                .as_ref()
+                .map_or(0, |dispatch| dispatch.hop),
+        })
     }
 }
 
@@ -2032,6 +3007,7 @@ struct GroupRuntimeRow {
     allow_agent_free_mention: i64,
     communication_mode: String,
     scheduler_enabled: i64,
+    agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
     max_scheduler_hops: i64,
@@ -2049,7 +3025,7 @@ async fn load_group_runtime_config(
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, description, announcement, workspace_id, free_speech, \
                 proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
-                communication_mode, scheduler_enabled, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, muted_agent_ids_json \
+                communication_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, muted_agent_ids_json \
          FROM groups WHERE id = ? AND status = 'active'",
     )
     .bind(group_id)
@@ -2069,6 +3045,7 @@ async fn load_group_runtime_config(
         allow_agent_free_mention: row.allow_agent_free_mention != 0,
         communication_mode: row.communication_mode,
         scheduler_enabled: row.scheduler_enabled != 0,
+        agent_mention_policy: row.agent_mention_policy,
         max_agent_steps: row.max_agent_steps.map(|value| value as u32),
         max_steps_per_agent: row.max_steps_per_agent as u32,
         max_scheduler_hops: row.max_scheduler_hops as u32,
@@ -2166,9 +3143,11 @@ async fn load_candidate_by_id(
     group_id: &str,
     agent_id: &str,
     group: &GroupRuntimeConfig,
-) -> anyhow::Result<Candidate> {
+) -> Result<Candidate, CandidateLoadError> {
     if group.muted_agent_ids.contains(agent_id) {
-        anyhow::bail!("assistant agent is muted in this group");
+        return Err(CandidateLoadError::Ineligible(
+            "assistant agent is muted in this group",
+        ));
     }
     let row: Option<CandidateRow> = sqlx::query_as(
         "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
@@ -2185,9 +3164,32 @@ async fn load_candidate_by_id(
     .bind(group_id)
     .bind(agent_id)
     .fetch_optional(pool)
-    .await?;
+    .await
+    .map_err(CandidateLoadError::Persistence)?;
     row.map(candidate_from_row)
-        .ok_or_else(|| anyhow::anyhow!("assistant agent is no longer active in this group"))
+        .ok_or(CandidateLoadError::Ineligible(
+            "assistant agent is no longer active in this group",
+        ))
+}
+
+enum CandidateLoadError {
+    Ineligible(&'static str),
+    Persistence(sqlx::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateLoadDisposition {
+    Skip,
+    FailTurn,
+}
+
+impl CandidateLoadError {
+    fn disposition(&self) -> CandidateLoadDisposition {
+        match self {
+            Self::Ineligible(_) => CandidateLoadDisposition::Skip,
+            Self::Persistence(_) => CandidateLoadDisposition::FailTurn,
+        }
+    }
 }
 
 fn candidate_from_row(row: CandidateRow) -> Candidate {
@@ -2712,6 +3714,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                     ("assistant", "string"),
                     ("task", "string"),
                     ("instructions", "string"),
+                    ("mode", "string"),
                 ],
                 &["assistant", "task"],
             ),
@@ -2958,6 +3961,18 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::runtime::conversation_context::{ConversationActor, ConversationMessage};
+
+    #[test]
+    fn candidate_reload_errors_skip_only_expected_ineligible_state() {
+        let inactive = CandidateLoadError::Ineligible("inactive");
+        let persistence = CandidateLoadError::Persistence(sqlx::Error::RowNotFound);
+
+        assert_eq!(inactive.disposition(), CandidateLoadDisposition::Skip);
+        assert_eq!(
+            persistence.disposition(),
+            CandidateLoadDisposition::FailTurn
+        );
+    }
 
     fn human_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {
         ConversationMessage {

@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod mentions;
 pub mod model;
 pub mod state;
 pub mod store;

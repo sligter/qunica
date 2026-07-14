@@ -6,7 +6,13 @@
 //! a local fake HTTP server that replays canned provider-specific SSE; no live
 //! external API is contacted.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use ag_swarmer_backend::{
     api::{router_with_state_for_tests, AppState},
@@ -23,7 +29,7 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tower::ServiceExt;
 
 #[cfg(windows)]
@@ -400,6 +406,44 @@ async fn seed_agent_with_tool_config(
     agent_id
 }
 
+async fn seed_nested_call_handoff_agents(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    provider_id: &str,
+) -> (String, String, String) {
+    let leaf = seed_agent(
+        state,
+        owner_id,
+        group_id,
+        provider_id,
+        "Leaf",
+        "2024-01-03T00:00:00Z",
+    )
+    .await;
+    let helper = seed_agent_with_tool_config(
+        state,
+        owner_id,
+        group_id,
+        provider_id,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": leaf, "enabled": true}]}),
+    )
+    .await;
+    let caller = seed_agent_with_tool_config(
+        state,
+        owner_id,
+        group_id,
+        provider_id,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+    (caller, helper, leaf)
+}
+
 async fn seed_thread(state: &AppState, group_id: &str, status: &str) -> String {
     let thread_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
@@ -540,6 +584,71 @@ async fn fake_provider_sequence(bodies: Vec<String>) -> String {
     format!("http://{addr}")
 }
 
+async fn fake_provider_status_sequence(responses: Vec<(StatusCode, String)>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
+    let app = Router::new().fallback(move || {
+        let queue = Arc::clone(&queue);
+        async move {
+            let (status, body) = {
+                let mut queue = queue.lock().await;
+                queue
+                    .pop_front()
+                    .unwrap_or((StatusCode::OK, "data: [DONE]\n".to_string()))
+            };
+            (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn fake_nested_cancellable_provider() -> (String, Arc<Notify>, Arc<Notify>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let request_index = Arc::new(AtomicUsize::new(0));
+    let leaf_started = Arc::new(Notify::new());
+    let release_leaf = Arc::new(Notify::new());
+    let app = Router::new().fallback({
+        let request_index = Arc::clone(&request_index);
+        let leaf_started = Arc::clone(&leaf_started);
+        let release_leaf = Arc::clone(&release_leaf);
+        move || {
+            let request_index = Arc::clone(&request_index);
+            let leaf_started = Arc::clone(&leaf_started);
+            let release_leaf = Arc::clone(&release_leaf);
+            async move {
+                let index = request_index.fetch_add(1, Ordering::AcqRel);
+                let body = match index {
+                    0 => tool_body(vec![(
+                        "private_call",
+                        "AgentAsTool",
+                        json!({"assistant": "Helper", "task": "research", "mode": "call"}),
+                    )]),
+                    1 => tool_body(vec![(
+                        "nested_handoff",
+                        "AgentAsTool",
+                        json!({"assistant": "Leaf", "task": "finish"}),
+                    )]),
+                    _ => {
+                        leaf_started.notify_one();
+                        release_leaf.notified().await;
+                        text_body("late leaf token")
+                    }
+                };
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), leaf_started, release_leaf)
+}
+
 fn text_body(text: &str) -> String {
     format!(
         "data: {}\ndata: [DONE]\n",
@@ -566,6 +675,24 @@ fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
         "data: {}\ndata: [DONE]\n",
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
+}
+
+fn tool_body_with_usage(calls: Vec<(&str, &str, Value)>, total_tokens: i64) -> String {
+    let mut body = tool_body(calls);
+    let done = "data: [DONE]\n";
+    body.truncate(body.len() - done.len());
+    body.push_str(&format!(
+        "data: {}\n{done}",
+        json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": total_tokens,
+                "completion_tokens": 0,
+                "total_tokens": total_tokens,
+            }
+        })
+    ));
+    body
 }
 
 fn kinds(events: &[Value]) -> Vec<String> {
@@ -2641,6 +2768,1557 @@ async fn scheduler_token_budget_stops_before_the_next_dispatch() {
         )
     );
     assert_eq!(dispatch_count, 1);
+}
+
+#[tokio::test]
+#[allow(clippy::type_complexity)]
+async fn bounded_mentions_routes_visible_agent_prose_with_child_dispatch_metadata() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-mentions@example.com").await;
+    let owner = owner_id(&state, "bounded-mentions@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            text_body("Visible request for @Bob. `@Nobody`"),
+            text_body("Bob completed the request"),
+        ])
+        .await,
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice start"}),
+    )
+    .await;
+
+    let dispatches: Vec<(String, Option<String>, Option<String>, String, i64)> = sqlx::query_as(
+        "SELECT id, parent_dispatch_id, source_agent_id, selection_reason, hop \
+         FROM agent_dispatches ORDER BY hop, created_at",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[1].1.as_deref(), Some(dispatches[0].0.as_str()));
+    assert_eq!(dispatches[1].2.as_deref(), Some(alice.as_str()));
+    assert_eq!(dispatches[1].3, "agent_text_mention");
+    assert_eq!(dispatches[1].4, 1);
+
+    let senders: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT sender_id FROM messages WHERE sender_type = 'agent' ORDER BY seq",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(senders, vec![Some(alice), Some(bob)]);
+}
+
+#[tokio::test]
+async fn bounded_mentions_display_only_ignores_agent_output_even_with_legacy_flag() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-display-only@example.com").await;
+    let owner = owner_id(&state, "bounded-display-only@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "display_only",
+            "allow_agent_free_mention": true,
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("Please ask @Bob")]).await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice start"}),
+    )
+    .await;
+
+    let dispatch_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches d JOIN group_turns t ON t.id = d.turn_id \
+         WHERE t.group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatch_count, 1);
+}
+
+#[tokio::test]
+async fn bounded_mentions_topology_rejects_disallowed_agent_edge() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-topology@example.com").await;
+    let owner = owner_id(&state, "bounded-topology@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("Ask @Bob")]).await,
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let hub = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Hub",
+        "2024-01-03T00:00:00Z",
+    )
+    .await;
+    sqlx::query("UPDATE groups SET communication_mode = 'star' WHERE id = ?")
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE group_agents SET topology_role = 'spoke' WHERE agent_id IN (?, ?)")
+        .bind(&alice)
+        .bind(&bob)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE group_agents SET topology_role = 'hub' WHERE agent_id = ?")
+        .bind(&hub)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice start"}),
+    )
+    .await;
+
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatch_count, 1);
+}
+
+#[tokio::test]
+async fn bounded_mentions_dispatch_budget_exhaustion_stops_child_queueing() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-budget@example.com").await;
+    let owner = owner_id(&state, "bounded-budget@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+            "max_agent_steps": 1,
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("Ask @Bob")]).await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice start"}),
+    )
+    .await;
+
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let turn: (String, String) =
+        sqlx::query_as("SELECT status, termination_reason FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(dispatch_count, 1);
+    assert_eq!(
+        turn,
+        ("budget_exhausted".to_owned(), "budget_exhausted".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn bounded_handoff_silent_helper_terminalizes_parent_child_and_turn_once() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-handoff-silent@example.com").await;
+    let owner = owner_id(&state, "bounded-handoff-silent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"scheduler_enabled": true, "proactive_mode": true}),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "handoff",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "take over"}),
+            )]),
+            text_body("<SILENT>"),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller delegate"}),
+    )
+    .await;
+
+    let statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM agent_dispatches ORDER BY hop, created_at")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    let turn: (String, Option<String>) =
+        sqlx::query_as("SELECT status, termination_reason FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let agent_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(statuses, vec!["completed", "silent"]);
+    assert_eq!(turn, ("silence".to_owned(), Some("silence".to_owned())));
+    assert_eq!(agent_messages, 0);
+    assert!(events.iter().any(|event| event["kind"] == "done"));
+}
+
+#[tokio::test]
+async fn bounded_handoff_failed_helper_leaves_no_running_dispatch_or_turn() {
+    const SENTINEL: &str = "SECRET_API_KEY_SENTINEL";
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-handoff-failed@example.com").await;
+    let owner = owner_id(&state, "bounded-handoff-failed@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "max_consecutive_failures": 1,
+        }),
+    )
+    .await;
+    let provider_url = fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "handoff",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "take over"}),
+            )]),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider failed".to_string(),
+        ),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &format!("{provider_url}/{SENTINEL}")).await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller delegate"}),
+    )
+    .await;
+
+    let statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM agent_dispatches ORDER BY hop, created_at")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let running: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches WHERE status IN ('queued', 'running')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let persisted_payloads: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT payload_json FROM stream_events UNION ALL SELECT content_json FROM messages \
+         UNION ALL SELECT artifact_json FROM agent_dispatches",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    let event_json = serde_json::to_string(&events).unwrap();
+    assert_eq!(statuses, vec!["completed", "failed"]);
+    assert_eq!(turn_status, "failure_budget_exhausted");
+    assert_eq!(running, 0);
+    assert!(events.iter().any(|event| event["kind"] == "done"));
+    assert!(!events.iter().any(|event| event["kind"] == "agent_message"));
+    assert!(!event_json.contains(SENTINEL));
+    assert!(event_json.contains("helper execution failed"));
+    assert!(persisted_payloads
+        .iter()
+        .flatten()
+        .all(|payload| !payload.contains(SENTINEL)));
+}
+
+#[tokio::test]
+async fn bounded_public_nested_handoff_silent_terminalizes_each_dispatch_once() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "public-nested-silent@example.com").await;
+    let owner = owner_id(&state, "public-nested-silent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"scheduler_enabled": true, "proactive_mode": true}),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "handoff_one",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "continue"}),
+            )]),
+            tool_body(vec![(
+                "handoff_two",
+                "AgentAsTool",
+                json!({"assistant": "Leaf", "task": "finish"}),
+            )]),
+            text_body("<SILENT>"),
+        ])
+        .await,
+    )
+    .await;
+    seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    assert_public_nested_handoff_state(
+        &state,
+        &group,
+        &["completed", "completed", "silent"],
+        "silence",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bounded_public_nested_handoff_failure_preserves_failure_budget() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "public-nested-failure@example.com").await;
+    let owner = owner_id(&state, "public-nested-failure@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"scheduler_enabled": true, "max_consecutive_failures": 1}),
+    )
+    .await;
+    let provider_url = fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "handoff_one",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "continue"}),
+            )]),
+        ),
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "handoff_two",
+                "AgentAsTool",
+                json!({"assistant": "Leaf", "task": "finish"}),
+            )]),
+        ),
+        (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    assert_public_nested_handoff_state(
+        &state,
+        &group,
+        &["completed", "completed", "failed"],
+        "failure_budget_exhausted",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bounded_handoff_visible_helper_mentions_use_actual_helper_hop() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "handoff-mention-hop@example.com").await;
+    let owner = owner_id(&state, "handoff-mention-hop@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+            "max_scheduler_hops": 1,
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "handoff",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "continue"}),
+            )]),
+            text_body("Please ask @Leaf"),
+            text_body("must not run"),
+        ])
+        .await,
+    )
+    .await;
+    seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    let hops: Vec<i64> =
+        sqlx::query_scalar("SELECT hop FROM agent_dispatches ORDER BY hop, created_at")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(hops, vec![0, 1]);
+}
+
+#[tokio::test]
+async fn bounded_call_prequeue_resolution_failure_returns_tool_result_and_continues() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "call-prequeue-failure@example.com").await;
+    let owner = owner_id(&state, "call-prequeue-failure@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "missing_call",
+                "AgentAsTool",
+                json!({"assistant": "Missing", "task": "research", "mode": "call"}),
+            )]),
+            text_body("caller continued safely"),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let caller = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let caller_message: String = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE sender_id = ? AND sender_type = 'agent'",
+    )
+    .bind(&caller)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(dispatch_count, 1);
+    assert_eq!(caller_message, "caller continued safely");
+    assert!(results
+        .iter()
+        .any(|result| result["status"] == "unavailable"));
+}
+
+async fn assert_public_nested_handoff_state(
+    state: &AppState,
+    group_id: &str,
+    expected_statuses: &[&str],
+    expected_turn_status: &str,
+) {
+    let statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM agent_dispatches ORDER BY hop, created_at")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(group_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let active: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches WHERE status IN ('queued', 'running')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        statuses,
+        expected_statuses
+            .iter()
+            .map(|status| (*status).to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(turn_status, expected_turn_status);
+    assert_eq!(active, 0);
+}
+
+#[tokio::test]
+async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "nested-call-handoff@example.com").await;
+    let owner = owner_id(&state, "nested-call-handoff@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "private_call",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "research", "mode": "call"}),
+            )]),
+            tool_body(vec![(
+                "nested_handoff",
+                "AgentAsTool",
+                json!({"assistant": "Leaf", "task": "finish research"}),
+            )]),
+            text_body("private leaf result"),
+            text_body("caller used private result"),
+        ])
+        .await,
+    )
+    .await;
+    let (caller, _, _) = seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    assert_nested_private_handoff_state(
+        &state,
+        &group,
+        &caller,
+        &["completed", "completed", "completed"],
+        "private leaf result",
+        "completed",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bounded_nested_call_handoff_silent_result_stays_private_and_terminal() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "nested-call-silent@example.com").await;
+    let owner = owner_id(&state, "nested-call-silent@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"scheduler_enabled": true, "proactive_mode": true}),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "private_call",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "research", "mode": "call"}),
+            )]),
+            tool_body(vec![(
+                "nested_handoff",
+                "AgentAsTool",
+                json!({"assistant": "Leaf", "task": "finish research"}),
+            )]),
+            text_body("<SILENT>"),
+            text_body("caller handled silence"),
+        ])
+        .await,
+    )
+    .await;
+    let (caller, _, _) = seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    assert_nested_private_handoff_state(
+        &state,
+        &group,
+        &caller,
+        &["completed", "completed", "completed"],
+        "",
+        "completed",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bounded_nested_call_handoff_failure_stays_private_and_leaves_no_active_rows() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "nested-call-failure@example.com").await;
+    let owner = owner_id(&state, "nested-call-failure@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider_url = fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "private_call",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "research", "mode": "call"}),
+            )]),
+        ),
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "nested_handoff",
+                "AgentAsTool",
+                json!({"assistant": "Leaf", "task": "finish research"}),
+            )]),
+        ),
+        (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
+        (StatusCode::OK, text_body("caller handled failure")),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let (caller, _, _) = seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    assert_nested_private_handoff_state(
+        &state,
+        &group,
+        &caller,
+        &["completed", "failed", "failed"],
+        "helper execution failed",
+        "unavailable",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "nested-call-cancel@example.com").await;
+    let owner = owner_id(&state, "nested-call-cancel@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let (provider_url, leaf_started, release_leaf) = fake_nested_cancellable_provider().await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_cancellation_flag(Arc::clone(&cancellation));
+    let request = TurnRequest {
+        group_id: group.clone(),
+        owner_id: owner,
+        thread_id: None,
+        content: "@Caller start".to_string(),
+    };
+    let (tx, mut rx) = mpsc::channel(128);
+    let handle = tokio::spawn(run_group_turn(services, request, tx));
+
+    leaf_started.notified().await;
+    cancellation.store(true, Ordering::Release);
+    release_leaf.notify_one();
+    while rx.recv().await.is_some() {}
+    let outcome = handle.await.unwrap();
+
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT action_kind, status, artifact_json FROM agent_dispatches ORDER BY hop, created_at",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let active: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches WHERE status IN ('queued', 'running')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(outcome, TurnOutcome::Cancelled);
+    assert_eq!(rows[0].1, "interrupted");
+    assert_eq!(rows[1].0, "call");
+    assert_eq!(rows[1].1, "completed");
+    assert_eq!(rows[2].1, "interrupted");
+    let call_artifact: Value = serde_json::from_str(rows[1].2.as_deref().unwrap()).unwrap();
+    assert_eq!(call_artifact["mode"], "call");
+    assert_eq!(call_artifact["outcome"], "cancelled");
+    assert_eq!(turn_status, "cancelled");
+    assert_eq!(active, 0);
+}
+
+#[tokio::test]
+async fn bounded_nested_call_accounts_caller_tokens_before_child_dispatch() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "nested-call-token-budget@example.com").await;
+    let owner = owner_id(&state, "nested-call-token-budget@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"scheduler_enabled": true, "max_total_tokens": 2}),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body_with_usage(
+                vec![(
+                    "private_call",
+                    "AgentAsTool",
+                    json!({"assistant": "Helper", "task": "research", "mode": "call"}),
+                )],
+                2,
+            ),
+            text_body("caller stopped delegation"),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller start"}),
+    )
+    .await;
+
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let turn: (String, i64) =
+        sqlx::query_as("SELECT status, total_tokens FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(dispatch_count, 1);
+    assert_eq!(turn, ("budget_exhausted".to_owned(), 2));
+}
+
+async fn assert_nested_private_handoff_state(
+    state: &AppState,
+    group_id: &str,
+    caller_id: &str,
+    expected_statuses: &[&str],
+    expected_call_content: &str,
+    expected_tool_status: &str,
+) {
+    let statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM agent_dispatches ORDER BY hop, created_at")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    let active_dispatches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches WHERE status IN ('queued', 'running')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let call_artifact: String =
+        sqlx::query_scalar("SELECT artifact_json FROM agent_dispatches WHERE action_kind = 'call'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let caller_content_json: String = sqlx::query_scalar(
+        "SELECT content_json FROM messages WHERE group_id = ? AND sender_id = ? AND sender_type = 'agent'",
+    )
+    .bind(group_id)
+    .bind(caller_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let call_artifact: Value = serde_json::from_str(&call_artifact).unwrap();
+    let caller_content_json: Value = serde_json::from_str(&caller_content_json).unwrap();
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(group_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let visible_senders: Vec<String> = sqlx::query_scalar(
+        "SELECT sender_id FROM messages WHERE group_id = ? AND sender_type = 'agent' ORDER BY seq",
+    )
+    .bind(group_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        statuses,
+        expected_statuses
+            .iter()
+            .map(|status| (*status).to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(active_dispatches, 0);
+    assert_eq!(turn_status, "completed");
+    assert_eq!(visible_senders, vec![caller_id.to_string()]);
+    assert_eq!(call_artifact["mode"], "call");
+    assert_eq!(call_artifact["final_content"], expected_call_content);
+    assert!(caller_content_json["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|call| call["tool_name"] == "AgentAsTool" && call["status"] == expected_tool_status));
+}
+
+#[tokio::test]
+async fn bounded_private_call_artifact_excludes_reasoning_and_tool_io() {
+    const REASONING_SENTINEL: &str = "PRIVATE_REASONING_SENTINEL";
+    const TOOL_SENTINEL: &str = "PRIVATE_TOOL_IO_SENTINEL";
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "private-artifact@example.com").await;
+    let owner = owner_id(&state, "private-artifact@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("private.txt"), TOOL_SENTINEL).unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let helper_round = format!(
+        "data: {}\ndata: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"reasoning_content": REASONING_SENTINEL}}]}),
+        json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "private_read",
+            "function": {"name": "Read", "arguments": "{\"file_path\":\"private.txt\"}"}
+        }]}, "finish_reason": "tool_calls"}]})
+    );
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "private_call",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "inspect", "mode": "call"}),
+            )]),
+            helper_round,
+            text_body("private final content"),
+            text_body("caller final content"),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller inspect privately"}),
+    )
+    .await;
+
+    let artifact: String =
+        sqlx::query_scalar("SELECT artifact_json FROM agent_dispatches WHERE action_kind = 'call'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let artifact_json: Value = serde_json::from_str(&artifact).unwrap();
+    assert_eq!(artifact_json["mode"], "call");
+    assert_eq!(artifact_json["final_content"], "private final content");
+    assert_eq!(artifact_json["outcome"], "visible");
+    assert!(artifact_json.get("usage").is_some());
+    assert!(artifact_json.get("tool_call_count").is_some());
+    assert!(!artifact.contains(REASONING_SENTINEL));
+    assert!(!artifact.contains(TOOL_SENTINEL));
+    assert!(artifact_json.get("reasoning").is_none());
+    assert!(artifact_json.get("tool_calls").is_none());
+}
+
+#[tokio::test]
+async fn bounded_public_tool_wait_terminalizes_dispatch_before_turn_pause() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "public-tool-wait@example.com").await;
+    let owner = owner_id(&state, "public-tool-wait@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![tool_body(vec![(
+            "ask",
+            "AskUser",
+            json!({"question": "Proceed?", "required": true}),
+        )])])
+        .await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Waiter",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"ask_user": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Waiter ask"}),
+    )
+    .await;
+    let dispatch_status: String = sqlx::query_scalar("SELECT status FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let turn_status: String = sqlx::query_scalar("SELECT status FROM group_turns")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatch_status, "waiting_for_user");
+    assert_eq!(turn_status, "waiting_for_user");
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "waiting_for_user"));
+}
+
+#[tokio::test]
+async fn bounded_handoff_helper_wait_leaves_parent_complete_and_child_waiting() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "handoff-tool-wait@example.com").await;
+    let owner = owner_id(&state, "handoff-tool-wait@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "handoff",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "ask"}),
+            )]),
+            tool_body(vec![(
+                "ask",
+                "AskUser",
+                json!({"question": "Proceed?", "required": true}),
+            )]),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        json!({"tools": {"ask_user": {"enabled": true}}}),
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller hand off"}),
+    )
+    .await;
+    let statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM agent_dispatches ORDER BY hop")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    let turn_status: String = sqlx::query_scalar("SELECT status FROM group_turns")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(statuses, vec!["completed", "waiting_for_user"]);
+    assert_eq!(turn_status, "waiting_for_user");
+}
+
+#[tokio::test]
+async fn bounded_private_call_wait_returns_unavailable_and_continues() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "private-tool-wait@example.com").await;
+    let owner = owner_id(&state, "private-tool-wait@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "call",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "ask", "mode": "call"}),
+            )]),
+            tool_body(vec![(
+                "ask",
+                "AskUser",
+                json!({"question": "Proceed?", "required": true}),
+            )]),
+            text_body("caller continued"),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        json!({"tools": {"ask_user": {"enabled": true}}}),
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Caller ask privately"}),
+    )
+    .await;
+    let row: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT status, artifact_json, failure_code FROM agent_dispatches WHERE action_kind = 'call'",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let turn_status: String = sqlx::query_scalar("SELECT status FROM group_turns")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let artifact: Value = serde_json::from_str(&row.1).unwrap();
+    assert_eq!(row.0, "completed");
+    assert_eq!(row.2.as_deref(), Some("helper_input_required"));
+    assert_eq!(artifact["outcome"], "waiting_for_user");
+    assert_eq!(turn_status, "completed");
+    assert!(!events
+        .iter()
+        .any(|event| event["kind"] == "waiting_for_user"));
+    assert!(payloads_of_kind(&events, StreamEventKind::ToolCallResult)
+        .iter()
+        .any(|result| result["status"] == "unavailable"));
+}
+
+#[tokio::test]
+async fn bounded_mentions_preempt_initial_round_slot_in_three_agent_free_speech() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "mention-round-claim@example.com").await;
+    let owner = owner_id(&state, "mention-round-claim@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            text_body("@Bob take this"),
+            text_body("Bob handled it"),
+            text_body("Cara final"),
+        ])
+        .await,
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let cara = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Cara",
+        "2024-01-03T00:00:00Z",
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "team update"}),
+    )
+    .await;
+    let senders: Vec<String> = sqlx::query_scalar(
+        "SELECT sender_id FROM messages WHERE sender_type = 'agent' ORDER BY seq",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(senders, vec![alice, bob, cara]);
+}
+
+#[tokio::test]
+async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_slot() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "handoff-speaker-order@example.com").await;
+    let owner = owner_id(&state, "handoff-speaker-order@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "handoff",
+                "AgentAsTool",
+                json!({"assistant": "Helper", "task": "take over"}),
+            )]),
+            text_body("@Caller please resume"),
+            text_body("Caller resumed"),
+        ])
+        .await,
+    )
+    .await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Helper",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let caller = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "team update"}),
+    )
+    .await;
+    let senders: Vec<String> = sqlx::query_scalar(
+        "SELECT sender_id FROM messages WHERE sender_type = 'agent' ORDER BY seq",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(senders, vec![helper, caller]);
+    assert_eq!(dispatch_count, 3);
+}
+
+#[tokio::test]
+async fn bounded_tool_output_mentions_do_not_schedule_without_visible_prose_mention() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "tool-output-mention@example.com").await;
+    let owner = owner_id(&state, "tool-output-mention@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "route this to @Bob").unwrap();
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+        }),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![("read", "Read", json!({"file_path": "note.txt"}))]),
+            text_body("I read the file."),
+        ])
+        .await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Reader inspect"}),
+    )
+    .await;
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatch_count, 1);
+    assert!(payloads_of_kind(&events, StreamEventKind::ToolCallResult)
+        .iter()
+        .any(|result| result.to_string().contains("@Bob")));
 }
 
 #[tokio::test]

@@ -391,6 +391,180 @@ async fn message_rows(state: &AppState) -> Vec<(String, Option<String>, Option<S
     .unwrap()
 }
 
+async fn enable_scheduler(state: &AppState, group_id: &str) {
+    sqlx::query(
+        "UPDATE groups SET scheduler_enabled = 1, agent_mention_policy = 'bounded_schedule' \
+         WHERE id = ?",
+    )
+    .bind(group_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[allow(clippy::type_complexity)]
+async fn bounded_agent_as_tool_call_is_private_and_returns_to_caller() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-bounded-call@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+    enable_scheduler(&state, &group).await;
+
+    let helper_id = uuid::Uuid::new_v4().to_string();
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_private",
+            "AgentAsTool",
+            json!({"assistant": helper_id, "task": "inspect privately", "mode": "call"}),
+        )]),
+        text_body("private findings"),
+        text_body("caller final answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent_with_id(
+        &state,
+        &helper_id,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller investigate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
+    assert!(payloads_of_kind(&events, StreamEventKind::AgentMessage)
+        .iter()
+        .all(|payload| payload["agent_id"] != helper));
+
+    let dispatches: Vec<(
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT parent_dispatch_id, source_agent_id, action_kind, status, artifact_json, \
+                    output_message_id FROM agent_dispatches ORDER BY hop, created_at",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(dispatches[1].2, "call");
+    assert_eq!(dispatches[1].3, "completed");
+    assert!(dispatches[1]
+        .4
+        .as_deref()
+        .unwrap()
+        .contains("private findings"));
+    assert_eq!(dispatches[1].5, None);
+}
+
+#[tokio::test]
+#[allow(clippy::type_complexity)]
+async fn bounded_agent_as_tool_omitted_mode_handoffs_without_caller_message() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-bounded-handoff@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+    enable_scheduler(&state, &group).await;
+
+    let helper_id = uuid::Uuid::new_v4().to_string();
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_handoff",
+            "AgentAsTool",
+            json!({"assistant": helper_id, "task": "take over"}),
+        )]),
+        text_body("helper visible answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent_with_id(
+        &state,
+        &helper_id,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, _) = run_turn(&state, &group, &owner, "@Caller delegate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(helper.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("helper visible answer"));
+    assert!(rows
+        .iter()
+        .all(|row| row.1.as_deref() != Some(caller.as_str())));
+
+    let dispatches: Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT id, parent_dispatch_id, source_agent_id, action_kind, status, output_message_id \
+             FROM agent_dispatches ORDER BY hop, created_at",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[1].1.as_deref(), Some(dispatches[0].0.as_str()));
+    assert_eq!(dispatches[1].2.as_deref(), Some(caller.as_str()));
+    assert_eq!(dispatches[1].3, "handoff");
+    assert_eq!(dispatches[1].4, "completed");
+    assert!(dispatches[1].5.is_some());
+}
+
 #[tokio::test]
 async fn agent_as_tool_requires_bound_active_group_member() {
     let (app, state) = router_with_state_for_tests().await;
