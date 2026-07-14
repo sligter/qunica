@@ -328,6 +328,48 @@ impl SchedulerStore {
         Ok(result.rows_affected())
     }
 
+    pub async fn recover_incomplete_turns(&self) -> Result<(), SchedulerStoreError> {
+        validate_dispatch_transition(DispatchStatus::Queued, DispatchStatus::Cancelled)?;
+        validate_dispatch_transition(DispatchStatus::Running, DispatchStatus::Interrupted)?;
+        validate_turn_transition(TurnStatus::Pending, TurnStatus::Failed)?;
+        validate_turn_transition(TurnStatus::Running, TurnStatus::Failed)?;
+        validate_turn_transition(TurnStatus::WaitingForUser, TurnStatus::Failed)?;
+
+        let now = now_rfc3339();
+        let _guard = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "UPDATE agent_dispatches \
+             SET status = CASE \
+                     WHEN status = 'running' THEN 'interrupted' \
+                     ELSE 'cancelled' \
+                 END, \
+                 completed_at = COALESCE(completed_at, ?), updated_at = ? \
+             WHERE status IN ('queued', 'running')",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE group_turns \
+             SET status = ?, termination_reason = ?, \
+                 completed_at = COALESCE(completed_at, ?), updated_at = ? \
+             WHERE status IN ('pending', 'running', 'waiting_for_user')",
+        )
+        .bind(TurnStatus::Failed.as_str())
+        .bind(TurnReason::ServerRestart.as_str())
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn update_turn_budget(
         &self,
         turn_id: &str,
