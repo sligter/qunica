@@ -1,6 +1,7 @@
 pub mod budget;
 pub mod mentions;
 pub mod model;
+pub mod moderator;
 pub mod state;
 pub mod store;
 pub mod topology;
@@ -10,6 +11,10 @@ pub use model::{
     SchedulerAction, SchedulerCandidate, SchedulerDecision, SchedulerDispatch, SchedulerModelError,
     SelectionReason, TurnReason, TurnSnapshot, TurnTrace,
 };
+pub use moderator::{
+    select_with_moderator, ModeratorAttempt, ModeratorCandidate, ModeratorConfig, ModeratorFailure,
+    ModeratorMessage, ModeratorRequest, ModeratorSelection,
+};
 pub use state::{
     validate_dispatch_transition, validate_turn_transition, DispatchStatus, SchedulerStateError,
     TurnStatus,
@@ -17,7 +22,7 @@ pub use state::{
 pub use store::{SchedulerStore, SchedulerStoreError};
 pub use topology::{allows_agent_edge, validate_topology, TopologyError, TopologySnapshot};
 
-use budget::{BudgetRejection, TurnBudget};
+pub use budget::{BudgetLimits, BudgetRejection, TurnBudget};
 
 pub fn next_decision(
     budget: &TurnBudget,
@@ -91,33 +96,70 @@ pub fn next_decision(
             }
         }
     }
-    if let Some(target) = deterministic_candidates
+    if !moderator_enabled {
+        if let Some(target) = deterministic_candidates
+            .iter()
+            .find(|candidate| {
+                candidate.eligible && Some(candidate.agent_id.as_str()) != previous_speaker
+            })
+            .and_then(|candidate| {
+                budget
+                    .check_dispatch(&candidate.agent_id, hop)
+                    .ok()
+                    .map(|_| candidate.agent_id.clone())
+            })
+        {
+            return SchedulerDecision::Dispatch(SchedulerDispatch {
+                target_agent_id: target,
+                selection_reason: SelectionReason::DeterministicOrder,
+                action_kind: ActionKind::Speak,
+                hop,
+            });
+        }
+        return SchedulerDecision::Finish {
+            status: terminal_status(budget),
+            reason: terminal_reason(budget),
+        };
+    }
+
+    let legal_candidates: Vec<&SchedulerCandidate> = deterministic_candidates
         .iter()
-        .find(|candidate| {
+        .filter(|candidate| {
             candidate.eligible && Some(candidate.agent_id.as_str()) != previous_speaker
         })
-        .and_then(|candidate| {
-            budget
-                .check_dispatch(&candidate.agent_id, hop)
-                .ok()
-                .map(|_| candidate.agent_id.clone())
-        })
-    {
+        .filter(|candidate| budget.check_dispatch(&candidate.agent_id, hop).is_ok())
+        .collect();
+    if moderator_enabled && legal_candidates.len() >= 2 {
+        return match budget.check_moderator() {
+            Ok(()) => SchedulerDecision::RequestModerator,
+            Err(BudgetRejection::ModeratorCalls) => {
+                SchedulerDecision::Dispatch(SchedulerDispatch {
+                    target_agent_id: legal_candidates[0].agent_id.clone(),
+                    selection_reason: SelectionReason::ModeratorFallback,
+                    action_kind: ActionKind::Speak,
+                    hop,
+                })
+            }
+            Err(BudgetRejection::Tokens) => SchedulerDecision::Finish {
+                status: TurnStatus::BudgetExhausted,
+                reason: TurnReason::BudgetExhausted,
+            },
+            Err(BudgetRejection::Failures) => SchedulerDecision::Finish {
+                status: TurnStatus::FailureBudgetExhausted,
+                reason: TurnReason::FailureBudgetExhausted,
+            },
+            Err(_) => {
+                unreachable!("moderator checks only reject moderator, token, or failure budgets")
+            }
+        };
+    }
+    if let Some(target) = legal_candidates.first() {
         return SchedulerDecision::Dispatch(SchedulerDispatch {
-            target_agent_id: target,
+            target_agent_id: target.agent_id.clone(),
             selection_reason: SelectionReason::DeterministicOrder,
             action_kind: ActionKind::Speak,
             hop,
         });
-    }
-    if moderator_enabled
-        && deterministic_candidates
-            .iter()
-            .filter(|candidate| candidate.eligible)
-            .count()
-            > 1
-    {
-        return SchedulerDecision::RequestModerator;
     }
     SchedulerDecision::Finish {
         status: terminal_status(budget),
@@ -232,6 +274,62 @@ mod tests {
                 status: super::TurnStatus::FailureBudgetExhausted,
                 reason: super::TurnReason::FailureBudgetExhausted,
             }
+        ));
+    }
+
+    #[test]
+    fn disabled_scheduler_keeps_the_first_deterministic_candidate_semantics() {
+        let mut budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
+        for _ in 0..budget.limits().max_steps_per_agent {
+            budget.record_dispatch("a");
+        }
+        let candidates = vec![
+            SchedulerCandidate {
+                agent_id: "a".into(),
+                eligible: true,
+            },
+            SchedulerCandidate {
+                agent_id: "b".into(),
+                eligible: true,
+            },
+        ];
+
+        assert!(matches!(
+            next_decision(&budget, None, &[], None, &candidates, 0, false),
+            SchedulerDecision::Finish {
+                status: super::TurnStatus::Silence,
+                reason: super::TurnReason::Silence,
+            }
+        ));
+    }
+
+    #[test]
+    fn moderator_call_budget_uses_the_stable_first_candidate_as_fallback() {
+        let budget = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 8,
+            max_steps_per_agent: 3,
+            max_hops: 5,
+            max_moderator_calls: 0,
+            max_consecutive_failures: 3,
+            max_total_failures: 6,
+            max_total_tokens: 120_000,
+        });
+        let candidates = vec![
+            SchedulerCandidate {
+                agent_id: "a".into(),
+                eligible: true,
+            },
+            SchedulerCandidate {
+                agent_id: "b".into(),
+                eligible: true,
+            },
+        ];
+
+        assert!(matches!(
+            next_decision(&budget, None, &[], None, &candidates, 0, true),
+            SchedulerDecision::Dispatch(ref dispatch)
+                if dispatch.target_agent_id == "a"
+                    && dispatch.selection_reason == SelectionReason::ModeratorFallback
         ));
     }
 }

@@ -5,9 +5,10 @@ use ag_swarmer_backend::{
     runtime::{
         group_scheduler::{
             mentions::{scan_visible_mentions, MentionTarget},
-            ActionKind, DispatchOutput, DispatchStatus, FinishDispatch, NewDispatch, NewTurn,
-            SchedulerModelError, SchedulerStore, SchedulerStoreError, SelectionReason, TurnReason,
-            TurnStatus,
+            next_decision, ActionKind, BudgetLimits, DispatchOutput, DispatchStatus,
+            FinishDispatch, NewDispatch, NewTurn, SchedulerCandidate, SchedulerDecision,
+            SchedulerModelError, SchedulerStore, SchedulerStoreError, SelectionReason, TurnBudget,
+            TurnReason, TurnStatus,
         },
         sequence::NewMessage,
         StreamEvent, StreamEventKind,
@@ -19,6 +20,37 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const NOW: &str = "2026-07-11T00:00:00Z";
+
+#[test]
+fn moderator_decision_requires_two_legal_candidates() {
+    let budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
+    let one_candidate = [SchedulerCandidate {
+        agent_id: "a".to_owned(),
+        eligible: true,
+    }];
+    assert!(matches!(
+        next_decision(&budget, None, &[], None, &one_candidate, 0, true),
+        SchedulerDecision::Dispatch(ref dispatch)
+            if dispatch.target_agent_id == "a"
+                && dispatch.selection_reason == SelectionReason::DeterministicOrder
+    ));
+
+    let candidates = [
+        SchedulerCandidate {
+            agent_id: "a".to_owned(),
+            eligible: true,
+        },
+        SchedulerCandidate {
+            agent_id: "b".to_owned(),
+            eligible: true,
+        },
+    ];
+
+    assert!(matches!(
+        next_decision(&budget, None, &[], None, &candidates, 0, true),
+        SchedulerDecision::RequestModerator
+    ));
+}
 
 #[test]
 fn visible_mentions_are_markdown_aware_ordered_and_deduplicated() {

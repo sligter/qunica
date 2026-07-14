@@ -187,7 +187,7 @@ impl LlmProvider for AnthropicProvider {
         if let Some(system) = system {
             body["system"] = Value::String(system);
         }
-        if !request.tools.is_empty() {
+        if request.include_empty_tools || !request.tools.is_empty() {
             body["tools"] = Value::Array(
                 request
                     .tools

@@ -74,6 +74,7 @@ fn request() -> ChatRequest {
         messages: vec![ChatMessage::text("user", "hi")],
         temperature: Some(0.0),
         reasoning_passback: false,
+        include_empty_tools: false,
         tools: Vec::new(),
     }
 }
@@ -97,6 +98,7 @@ fn continuation_request() -> ChatRequest {
         ],
         temperature: Some(0.0),
         reasoning_passback: false,
+        include_empty_tools: false,
         tools: Vec::new(),
     }
 }
@@ -128,6 +130,7 @@ fn parallel_continuation_request() -> ChatRequest {
         ],
         temperature: Some(0.0),
         reasoning_passback: false,
+        include_empty_tools: false,
         tools: Vec::new(),
     }
 }
@@ -152,6 +155,7 @@ fn gemini_thought_signature_request() -> ChatRequest {
         ],
         temperature: Some(0.0),
         reasoning_passback: false,
+        include_empty_tools: false,
         tools: Vec::new(),
     }
 }

@@ -98,6 +98,21 @@ impl TurnBudget {
         Ok(())
     }
 
+    pub fn check_moderator(&self) -> Result<(), BudgetRejection> {
+        if self.moderator_calls >= self.limits.max_moderator_calls {
+            return Err(BudgetRejection::ModeratorCalls);
+        }
+        if self.total_tokens >= self.limits.max_total_tokens {
+            return Err(BudgetRejection::Tokens);
+        }
+        if self.consecutive_failures >= self.limits.max_consecutive_failures
+            || self.total_failures >= self.limits.max_total_failures
+        {
+            return Err(BudgetRejection::Failures);
+        }
+        Ok(())
+    }
+
     pub fn record_dispatch(&mut self, target_agent_id: &str) {
         self.agent_steps += 1;
         *self
@@ -182,6 +197,51 @@ mod tests {
         assert_eq!(
             budget.record_moderator_usage(1),
             Err(BudgetRejection::ModeratorCalls)
+        );
+    }
+
+    #[test]
+    fn moderator_check_rejects_call_token_and_failure_limits_without_mutating() {
+        let call_limited = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 8,
+            max_steps_per_agent: 3,
+            max_hops: 5,
+            max_moderator_calls: 0,
+            max_consecutive_failures: 3,
+            max_total_failures: 6,
+            max_total_tokens: 120_000,
+        });
+        assert_eq!(
+            call_limited.check_moderator(),
+            Err(BudgetRejection::ModeratorCalls)
+        );
+
+        let token_limited = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 8,
+            max_steps_per_agent: 3,
+            max_hops: 5,
+            max_moderator_calls: 4,
+            max_consecutive_failures: 3,
+            max_total_failures: 6,
+            max_total_tokens: 0,
+        });
+        assert_eq!(
+            token_limited.check_moderator(),
+            Err(BudgetRejection::Tokens)
+        );
+
+        let failure_limited = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 8,
+            max_steps_per_agent: 3,
+            max_hops: 5,
+            max_moderator_calls: 4,
+            max_consecutive_failures: 0,
+            max_total_failures: 6,
+            max_total_tokens: 120_000,
+        });
+        assert_eq!(
+            failure_limited.check_moderator(),
+            Err(BudgetRejection::Failures)
         );
     }
 }

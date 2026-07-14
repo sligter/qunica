@@ -12,6 +12,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use ag_swarmer_backend::{
@@ -337,6 +338,22 @@ async fn seed_provider_kind(
     id
 }
 
+async fn update_provider_base_url(state: &AppState, provider_id: &str, base_url: &str) {
+    sqlx::query("UPDATE llm_providers SET base_url = ? WHERE id = ?")
+        .bind(base_url)
+        .bind(provider_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+}
+
+async fn unreachable_local_url() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
 /// Seed an active agent bound to the group. `joined_at` controls fan-out order.
 async fn seed_agent(
     state: &AppState,
@@ -562,6 +579,76 @@ async fn recording_fake_provider(body: &'static str) -> (String, Arc<Mutex<Vec<V
     (format!("http://{addr}"), requests)
 }
 
+async fn recording_fake_provider_sequence(bodies: Vec<String>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let queue = Arc::new(Mutex::new(VecDeque::from(bodies)));
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        move |request: Request<Body>| {
+            let requests = Arc::clone(&requests);
+            let queue = Arc::clone(&queue);
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                requests
+                    .lock()
+                    .await
+                    .push(serde_json::from_slice(&bytes).unwrap());
+                let body = queue
+                    .lock()
+                    .await
+                    .pop_front()
+                    .unwrap_or_else(|| "data: [DONE]\n".to_owned());
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), requests)
+}
+
+async fn controlled_recording_fake_provider(
+    body: String,
+) -> (String, Arc<Mutex<Vec<Value>>>, Arc<Notify>, Arc<Notify>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        move |request: Request<Body>| {
+            let body = body.clone();
+            let requests = Arc::clone(&requests);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                requests
+                    .lock()
+                    .await
+                    .push(serde_json::from_slice(&bytes).unwrap());
+                started.notify_one();
+                release.notified().await;
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), requests, started, release)
+}
+
 async fn fake_provider_sequence(bodies: Vec<String>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -656,6 +743,22 @@ fn text_body(text: &str) -> String {
     )
 }
 
+fn moderator_body(agent_id: &str, total_tokens: i64) -> String {
+    let selection = json!({"agent_id": agent_id}).to_string();
+    format!(
+        "data: {}\ndata: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": selection}}]}),
+        json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": total_tokens,
+                "completion_tokens": 0,
+                "total_tokens": total_tokens,
+            }
+        })
+    )
+}
+
 fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
     let tool_calls: Vec<Value> = calls
         .into_iter()
@@ -724,6 +827,19 @@ async fn message_count(state: &AppState, group_id: &str) -> i64 {
         .fetch_one(state.db.pool())
         .await
         .unwrap()
+}
+
+async fn only_dispatch(state: &AppState, group_id: &str) -> (String, String) {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT d.target_agent_id, d.selection_reason FROM agent_dispatches d \
+         JOIN group_turns t ON t.id = d.turn_id WHERE t.group_id = ?",
+    )
+    .bind(group_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    rows.into_iter().next().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -2567,6 +2683,772 @@ async fn scheduler_disabled_preserves_legacy_fanout() {
         .unwrap();
     assert_eq!(agent_messages, 2);
     assert_eq!(turns, 0);
+}
+
+#[tokio::test]
+async fn moderator_selection_persists_reason_and_usage() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-selection@example.com").await;
+    let owner = owner_id(&state, "moderator-selection@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body(
+            "<WAITING_FOR_USER> selected agent response",
+        )])
+        .await,
+    )
+    .await;
+    let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "explicit-moderator-model",
+        }),
+    )
+    .await;
+    let _alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let (moderator_url, captured) =
+        recording_fake_provider_sequence(vec![moderator_body(&bob, 11)]).await;
+    update_provider_base_url(&state, &moderator_provider, &moderator_url).await;
+
+    let objective = "\u{1F680}".repeat(2_001);
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": objective}),
+    )
+    .await;
+
+    let requests = captured.lock().await;
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request["model"], "explicit-moderator-model");
+    assert_eq!(request["temperature"], 0.0);
+    assert_eq!(request["tools"], json!([]));
+    let input: Value =
+        serde_json::from_str(request["messages"][1]["content"].as_str().unwrap()).unwrap();
+    let mut input_fields = input
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    input_fields.sort();
+    assert_eq!(
+        input_fields,
+        vec![
+            "candidates",
+            "objective",
+            "recent_messages",
+            "remaining_steps"
+        ]
+    );
+    assert_eq!(input["objective"].as_str().unwrap().chars().count(), 2_000);
+    assert_eq!(input["recent_messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        input["recent_messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        1_000
+    );
+    assert!(input["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|candidate| {
+            let mut fields = candidate
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            fields.sort();
+            fields == ["agent_id", "display_name", "reason"]
+        }));
+    drop(requests);
+
+    let dispatch: (String, String) = sqlx::query_as(
+        "SELECT target_agent_id, selection_reason FROM agent_dispatches WHERE turn_id = \
+         (SELECT id FROM group_turns WHERE group_id = ?)",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let turn: (String, i64, i64, String) = sqlx::query_as(
+        "SELECT status, moderator_calls, total_tokens, config_snapshot_json \
+         FROM group_turns WHERE group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatch, (bob.clone(), "moderator".to_owned()));
+    assert_eq!(
+        (turn.0.as_str(), turn.1, turn.2),
+        ("waiting_for_user", 1, 11)
+    );
+    let snapshot: Value = serde_json::from_str(&turn.3).unwrap();
+    assert_eq!(snapshot["moderator_enabled"], true);
+    assert_eq!(snapshot["max_moderator_calls"], 4);
+    assert!(snapshot.get("moderator_provider_id").is_none());
+    assert!(snapshot.get("moderator_model").is_none());
+    assert!(events.iter().any(|event| {
+        event["kind"] == "agent_message"
+            && event["payload"]["agent_id"] == bob
+            && event["payload"]["content"] == "selected agent response"
+    }));
+}
+
+#[tokio::test]
+async fn moderator_sole_legal_candidate_skips_provider_request() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-sole-candidate@example.com").await;
+    let owner = owner_id(&state, "moderator-sole-candidate@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let (moderator_url, moderator_requests) =
+        recording_fake_provider_sequence(vec![moderator_body("unused", 1)]).await;
+    let moderator_provider = seed_provider(&state, &owner, &moderator_url).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model",
+        }),
+    )
+    .await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("<WAITING_FOR_USER> Alice only")]).await,
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group}/agents/{bob}/mute"),
+            &token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "one legal responder"}),
+    )
+    .await;
+
+    assert!(moderator_requests.lock().await.is_empty());
+    assert_eq!(
+        only_dispatch(&state, &group).await,
+        (alice, "deterministic_order".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn moderator_invalid_response_uses_first_legal_candidate() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-invalid-response@example.com").await;
+    let owner = owner_id(&state, "moderator-invalid-response@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let (moderator_url, moderator_requests) =
+        recording_fake_provider_sequence(vec![moderator_body("not-in-the-roster", 0)]).await;
+    let moderator_provider = seed_provider(&state, &owner, &moderator_url).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model",
+        }),
+    )
+    .await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("<WAITING_FOR_USER> fallback response")]).await,
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "choose safely"}),
+    )
+    .await;
+
+    assert_eq!(moderator_requests.lock().await.len(), 1);
+    assert_eq!(
+        only_dispatch(&state, &group).await,
+        (alice, "moderator_fallback".to_owned())
+    );
+    let turn: (i64, i64) =
+        sqlx::query_as("SELECT moderator_calls, total_tokens FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(turn, (1, 0));
+}
+
+#[tokio::test]
+async fn moderator_timeout_uses_first_legal_candidate_as_fallback() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-timeout@example.com").await;
+    let owner = owner_id(&state, "moderator-timeout@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("<WAITING_FOR_USER> timeout fallback")]).await,
+    )
+    .await;
+    let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model",
+            "turn_timeout_seconds": 1,
+        }),
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let (moderator_url, _, started, release) =
+        controlled_recording_fake_provider(moderator_body(&bob, 0)).await;
+    update_provider_base_url(&state, &moderator_provider, &moderator_url).await;
+    let app_for_stream = app.clone();
+    let stream_uri = format!("/api/v2/groups/{group}/messages/stream");
+    let stream_token = token.clone();
+    let moderator_started = started.notified();
+    let stream = tokio::spawn(async move {
+        stream_events(
+            &app_for_stream,
+            &stream_uri,
+            &stream_token,
+            json!({"content": "wait for moderator timeout"}),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), moderator_started)
+        .await
+        .expect("moderator request should be pending before its deadline");
+    let _ = tokio::time::timeout(Duration::from_secs(3), stream)
+        .await
+        .expect("scheduled turn should fall back after moderator timeout")
+        .unwrap();
+    release.notify_waiters();
+
+    assert_eq!(
+        only_dispatch(&state, &group).await,
+        (alice, "moderator_fallback".to_owned())
+    );
+    let moderator_calls: i64 =
+        sqlx::query_scalar("SELECT moderator_calls FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(moderator_calls, 1);
+}
+
+#[tokio::test]
+async fn moderator_missing_or_unreachable_provider_uses_fallback_without_artifacts() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-fallbacks@example.com").await;
+    let owner = owner_id(&state, "moderator-fallbacks@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            text_body("<WAITING_FOR_USER> missing configuration fallback"),
+            text_body("<WAITING_FOR_USER> unreachable provider fallback"),
+        ])
+        .await,
+    )
+    .await;
+
+    let missing_group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true}),
+    )
+    .await;
+    let missing_alice = seed_agent(
+        &state,
+        &owner,
+        &missing_group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &missing_group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    // The API rejects an enabled moderator without configuration; seed that invalid persisted state directly.
+    sqlx::query(
+        "UPDATE groups SET moderator_enabled = 1, moderator_provider_id = NULL, moderator_model = NULL WHERE id = ?",
+    )
+    .bind(&missing_group)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let missing_events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{missing_group}/messages/stream"),
+        &token,
+        json!({"content": "missing configuration"}),
+    )
+    .await;
+    assert_eq!(
+        only_dispatch(&state, &missing_group).await,
+        (missing_alice, "moderator_fallback".to_owned())
+    );
+    let missing_calls: i64 =
+        sqlx::query_scalar("SELECT moderator_calls FROM group_turns WHERE group_id = ?")
+            .bind(&missing_group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(missing_calls, 0);
+
+    let unreachable_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let unreachable_group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": unreachable_provider,
+            "moderator_model": "moderator-model",
+        }),
+    )
+    .await;
+    let unreachable_alice = seed_agent(
+        &state,
+        &owner,
+        &unreachable_group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &unreachable_group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let unreachable_events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{unreachable_group}/messages/stream"),
+        &token,
+        json!({"content": "unreachable provider"}),
+    )
+    .await;
+    assert_eq!(
+        only_dispatch(&state, &unreachable_group).await,
+        (unreachable_alice, "moderator_fallback".to_owned())
+    );
+
+    for (group_id, events) in [
+        (&missing_group, &missing_events),
+        (&unreachable_group, &unreachable_events),
+    ] {
+        let moderator_messages: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'moderator'",
+        )
+        .bind(group_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(moderator_messages, 0);
+        assert!(events.iter().all(|event| event["kind"] != "moderator"));
+    }
+}
+
+#[tokio::test]
+async fn moderator_revalidates_candidate_before_dispatch_and_falls_back() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-revalidate@example.com").await;
+    let owner = owner_id(&state, "moderator-revalidate@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model",
+        }),
+    )
+    .await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("<WAITING_FOR_USER> revalidated fallback")]).await,
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let (moderator_url, moderator_requests, started, release) =
+        controlled_recording_fake_provider(moderator_body(&bob, 0)).await;
+    update_provider_base_url(&state, &moderator_provider, &moderator_url).await;
+    let app_for_stream = app.clone();
+    let stream_uri = format!("/api/v2/groups/{group}/messages/stream");
+    let stream_token = token.clone();
+    let moderator_started = started.notified();
+    let stream = tokio::spawn(async move {
+        stream_events(
+            &app_for_stream,
+            &stream_uri,
+            &stream_token,
+            json!({"content": "revalidate selection"}),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), moderator_started)
+        .await
+        .expect("moderator request should be pending before the candidate changes");
+    sqlx::query("UPDATE group_agents SET status = 'inactive' WHERE group_id = ? AND agent_id = ?")
+        .bind(&group)
+        .bind(&bob)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    {
+        let mut requests = moderator_requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        let request = requests.pop().unwrap();
+        assert_eq!(request["model"], "moderator-model");
+    }
+    release.notify_one();
+    let _ = tokio::time::timeout(Duration::from_secs(2), stream)
+        .await
+        .expect("scheduled turn should finish after the moderator response")
+        .unwrap();
+
+    assert_eq!(
+        only_dispatch(&state, &group).await,
+        (alice, "moderator_fallback".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-cancel@example.com").await;
+    let owner = owner_id(&state, "moderator-cancel@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model",
+        }),
+    )
+    .await;
+    let agent_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let (moderator_url, _, started, release) =
+        controlled_recording_fake_provider(moderator_body(&bob, 0)).await;
+    update_provider_base_url(&state, &moderator_provider, &moderator_url).await;
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_cancellation_flag(Arc::clone(&cancellation));
+    let request = TurnRequest {
+        group_id: group.clone(),
+        owner_id: owner,
+        thread_id: None,
+        content: "cancel while moderator is selecting".to_owned(),
+    };
+    let (tx, _rx) = mpsc::channel(128);
+    let moderator_started = started.notified();
+    let turn = tokio::spawn(run_group_turn(services, request, tx));
+
+    tokio::time::timeout(Duration::from_secs(1), moderator_started)
+        .await
+        .expect("moderator request should be pending before cancellation");
+    cancellation.store(true, Ordering::Release);
+    let outcome = tokio::time::timeout(Duration::from_secs(1), turn)
+        .await
+        .expect("moderator cancellation should not wait for the provider")
+        .unwrap();
+    release.notify_waiters();
+
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let dispatches: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches WHERE turn_id = (SELECT id FROM group_turns WHERE group_id = ?)")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(outcome, TurnOutcome::Cancelled);
+    assert_eq!(turn_status, "cancelled");
+    assert_eq!(dispatches, 0);
+}
+
+#[tokio::test]
+async fn moderator_call_budget_uses_revalidated_fallback_without_a_second_request() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "moderator-call-budget@example.com").await;
+    let owner = owner_id(&state, "moderator-call-budget@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            text_body("first moderator-selected response"),
+            text_body("<WAITING_FOR_USER> fallback response"),
+        ])
+        .await,
+    )
+    .await;
+    let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model",
+            "max_moderator_calls": 1,
+        }),
+    )
+    .await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Charlie",
+        "2024-01-03T00:00:00Z",
+    )
+    .await;
+    let (moderator_url, moderator_requests) =
+        recording_fake_provider_sequence(vec![moderator_body(&bob, 0)]).await;
+    update_provider_base_url(&state, &moderator_provider, &moderator_url).await;
+
+    let _ = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "make two choices"}),
+    )
+    .await;
+
+    assert_eq!(moderator_requests.lock().await.len(), 1);
+    let dispatches: Vec<(String, String)> = sqlx::query_as(
+        "SELECT target_agent_id, selection_reason FROM agent_dispatches WHERE turn_id = \
+         (SELECT id FROM group_turns WHERE group_id = ?)",
+    )
+    .bind(&group)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatches.len(), 2);
+    assert!(dispatches
+        .iter()
+        .any(|dispatch| dispatch == &(bob.clone(), "moderator".to_owned())));
+    assert!(dispatches
+        .iter()
+        .any(|dispatch| dispatch == &(alice.clone(), "moderator_fallback".to_owned())));
+    let moderator_calls: i64 =
+        sqlx::query_scalar("SELECT moderator_calls FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(moderator_calls, 1);
 }
 
 #[tokio::test]

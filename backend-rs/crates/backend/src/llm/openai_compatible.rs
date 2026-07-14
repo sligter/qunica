@@ -153,7 +153,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             "stream": true,
             "stream_options": { "include_usage": true },
         });
-        if !request.tools.is_empty() {
+        if request.include_empty_tools || !request.tools.is_empty() {
             body["tools"] = Value::Array(
                 request
                     .tools

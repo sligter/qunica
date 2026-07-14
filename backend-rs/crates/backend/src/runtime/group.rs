@@ -26,7 +26,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use serde_json::{json, Value};
@@ -53,9 +53,11 @@ use crate::runtime::group_scheduler::{
     allows_agent_edge,
     budget::{BudgetLimits, TurnBudget},
     mentions::{scan_visible_mentions, MentionTarget},
-    next_decision, validate_topology, ActionKind, DispatchOutput, DispatchStatus, FinishDispatch,
-    NewDispatch, NewTurn, SchedulerAction, SchedulerCandidate, SchedulerDecision, SchedulerStore,
-    SelectionReason, TopologySnapshot, TurnReason, TurnStatus,
+    next_decision, select_with_moderator, validate_topology, ActionKind, DispatchOutput,
+    DispatchStatus, FinishDispatch, ModeratorAttempt, ModeratorCandidate, ModeratorConfig,
+    ModeratorMessage, ModeratorRequest, NewDispatch, NewTurn, SchedulerAction, SchedulerCandidate,
+    SchedulerDecision, SchedulerDispatch, SchedulerStore, SelectionReason, TopologySnapshot,
+    TurnReason, TurnStatus,
 };
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
@@ -579,6 +581,7 @@ async fn run_scheduled_turn(
         "max_consecutive_failures": limits.max_consecutive_failures,
         "max_total_failures": limits.max_total_failures,
         "max_total_tokens": limits.max_total_tokens,
+        "moderator_enabled": group.moderator_enabled,
     });
     let turn_id = Uuid::new_v4().to_string();
     if let Err(error) = store
@@ -610,6 +613,10 @@ async fn run_scheduled_turn(
         topology: topology_snapshot,
         budget: TurnBudget::new(limits),
         initial_round_claims: HashSet::new(),
+        recent_visible_messages: vec![ModeratorMessage {
+            role: "user".to_owned(),
+            content: req.content.clone(),
+        }],
     };
     let mut remaining = selected
         .into_iter()
@@ -663,11 +670,157 @@ async fn run_scheduled_turn(
             mention_action.as_ref(),
             &scheduler_candidates,
             decision_hop,
-            false,
+            group.moderator_enabled,
         );
+        let mut preselected_agent = None;
+        let mut moderator_consumes_pending = false;
+        let requires_moderator_resolution =
+            matches!(&decision, SchedulerDecision::RequestModerator)
+                || matches!(
+                    &decision,
+                    SchedulerDecision::Dispatch(dispatch)
+                        if dispatch.selection_reason == SelectionReason::ModeratorFallback
+                );
+        let decision = if requires_moderator_resolution {
+            if cancellation_requested(ctx) {
+                return cancel_scheduled_turn(ctx, &store, &turn_id).await;
+            }
+            let may_call_moderator = matches!(&decision, SchedulerDecision::RequestModerator);
+            let pending_source_agent_id = pending_mentions
+                .first()
+                .map(|pending| pending.source_agent_id.as_str());
+            let moderator_candidates = current_moderator_candidates(
+                &remaining,
+                &scheduler_runtime,
+                previous_speaker.as_deref(),
+                decision_hop,
+                pending_source_agent_id,
+            );
+            let consumes_pending = pending_source_agent_id.is_some();
+            if moderator_candidates.is_empty() {
+                if consumes_pending {
+                    pending_mentions.remove(0);
+                }
+                continue;
+            }
+
+            let mut selected_agent_id = None;
+            if may_call_moderator && moderator_candidates.len() >= 2 {
+                if let (Some(provider_id), Some(model)) = (
+                    group.moderator_provider_id.as_deref(),
+                    group.moderator_model.as_deref(),
+                ) {
+                    let attempt = match select_moderator_until_cancelled(
+                        ctx,
+                        &services.pool,
+                        ModeratorConfig {
+                            owner_id: group.owner_id.clone(),
+                            provider_id: provider_id.to_owned(),
+                            model: model.to_owned(),
+                            timeout: Duration::from_secs(group.turn_timeout_seconds),
+                        },
+                        ModeratorRequest {
+                            objective: req.content.clone(),
+                            recent_messages: scheduler_runtime.recent_visible_messages.clone(),
+                            candidates: moderator_candidates.clone(),
+                            remaining_steps: limits
+                                .max_agent_steps
+                                .saturating_sub(scheduler_runtime.budget.agent_steps()),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(attempt) => attempt,
+                        Err(Cancelled) => {
+                            return cancel_scheduled_turn(ctx, &store, &turn_id).await;
+                        }
+                    };
+                    if attempt.provider_called {
+                        let budget_rejected = scheduler_runtime
+                            .budget
+                            .record_moderator_usage(attempt.total_tokens)
+                            .is_err();
+                        if let Err(_error) = store
+                            .update_turn_budget(
+                                &turn_id,
+                                scheduler_runtime.budget.agent_steps() as i64,
+                                scheduler_runtime.budget.moderator_calls() as i64,
+                                scheduler_runtime.budget.consecutive_failures() as i64,
+                                scheduler_runtime.budget.total_failures() as i64,
+                                scheduler_runtime.budget.total_tokens() as i64,
+                            )
+                            .await
+                        {
+                            tracing::error!(turn_id, "failed to persist moderator budget");
+                            return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                        }
+                        if cancellation_requested(ctx) {
+                            return cancel_scheduled_turn(ctx, &store, &turn_id).await;
+                        }
+                        if budget_rejected {
+                            continue;
+                        }
+                    }
+                    if cancellation_requested(ctx) {
+                        return cancel_scheduled_turn(ctx, &store, &turn_id).await;
+                    }
+                    selected_agent_id = attempt.result.ok().map(|selection| selection.agent_id);
+                }
+            }
+
+            let ordered_candidate_ids = ordered_moderator_candidate_ids(
+                &moderator_candidates,
+                selected_agent_id.as_deref(),
+            );
+            let selected = match take_revalidated_moderator_candidate(
+                &services.pool,
+                &req.group_id,
+                group,
+                &mut remaining,
+                &ordered_candidate_ids,
+                ModeratorRoute {
+                    scheduler_runtime: &scheduler_runtime,
+                    hop: decision_hop,
+                    source_agent_id: pending_source_agent_id,
+                },
+            )
+            .await
+            {
+                Ok(Some(agent)) => agent,
+                Ok(None) => {
+                    if consumes_pending {
+                        pending_mentions.remove(0);
+                    }
+                    continue;
+                }
+                Err(_) => return fail_scheduled_persistence(ctx, &store, &turn_id).await,
+            };
+            let selection_reason = if !may_call_moderator {
+                SelectionReason::ModeratorFallback
+            } else {
+                match selected_agent_id.as_deref() {
+                    Some(selected_agent_id) if selected.agent_id == selected_agent_id => {
+                        SelectionReason::Moderator
+                    }
+                    _ if moderator_candidates.len() == 1 => SelectionReason::DeterministicOrder,
+                    _ => SelectionReason::ModeratorFallback,
+                }
+            };
+            moderator_consumes_pending = consumes_pending;
+            let target_agent_id = selected.agent_id.clone();
+            preselected_agent = Some(selected);
+            SchedulerDecision::Dispatch(SchedulerDispatch {
+                target_agent_id,
+                selection_reason,
+                action_kind: ActionKind::Speak,
+                hop: decision_hop,
+            })
+        } else {
+            decision
+        };
         let SchedulerDecision::Dispatch(dispatch) = decision else {
             let SchedulerDecision::Finish { status, reason } = decision else {
-                unreachable!("moderator is disabled for deterministic scheduler turns");
+                unreachable!("moderator decisions are resolved before dispatching");
             };
             let (status, reason, outcome) = if had_visible && status == TurnStatus::Silence {
                 (TurnStatus::Completed, None, TurnOutcome::Completed)
@@ -707,12 +860,16 @@ async fn run_scheduled_turn(
             }
             return Ok(outcome);
         };
-        let pending = if dispatch.selection_reason == SelectionReason::AgentTextMention {
+        let pending = if dispatch.selection_reason == SelectionReason::AgentTextMention
+            || moderator_consumes_pending
+        {
             Some(pending_mentions.remove(0))
         } else {
             None
         };
-        let agent = if pending.is_some() {
+        let agent = if let Some(agent) = preselected_agent {
+            agent
+        } else if pending.is_some() {
             match load_candidate_by_id(
                 &services.pool,
                 &req.group_id,
@@ -1003,6 +1160,11 @@ async fn run_scheduled_turn(
             } => {
                 had_visible = true;
                 previous_speaker = Some(agent_id.clone());
+                record_moderator_visible_message(
+                    &mut scheduler_runtime.recent_visible_messages,
+                    "assistant",
+                    &content,
+                );
                 if group.agent_mention_policy == "bounded_schedule" {
                     let targets = mention_targets
                         .iter()
@@ -1036,6 +1198,206 @@ async fn run_scheduled_turn(
             }
         }
     }
+}
+
+fn current_moderator_candidates(
+    remaining: &[Option<Candidate>],
+    scheduler_runtime: &ScheduledTurnRuntime,
+    previous_speaker: Option<&str>,
+    hop: u32,
+    source_agent_id: Option<&str>,
+) -> Vec<ModeratorCandidate> {
+    remaining
+        .iter()
+        .flatten()
+        .filter(|candidate| {
+            !scheduler_runtime
+                .initial_round_claims
+                .contains(&candidate.agent_id)
+        })
+        .filter(|candidate| Some(candidate.agent_id.as_str()) != previous_speaker)
+        .filter(|candidate| {
+            scheduler_runtime
+                .budget
+                .check_dispatch(&candidate.agent_id, hop)
+                .is_ok()
+        })
+        .filter(|candidate| {
+            source_agent_id.is_none_or(|source_agent_id| {
+                allows_agent_edge(
+                    &scheduler_runtime.topology,
+                    source_agent_id,
+                    &candidate.agent_id,
+                )
+            })
+        })
+        .map(|candidate| ModeratorCandidate {
+            agent_id: candidate.agent_id.clone(),
+            display_name: candidate.display_name.clone(),
+            reason: "eligible".to_owned(),
+        })
+        .collect()
+}
+
+fn ordered_moderator_candidate_ids(
+    candidates: &[ModeratorCandidate],
+    preferred_agent_id: Option<&str>,
+) -> Vec<String> {
+    preferred_agent_id
+        .filter(|preferred_agent_id| {
+            candidates
+                .iter()
+                .any(|candidate| candidate.agent_id == *preferred_agent_id)
+        })
+        .map(str::to_owned)
+        .into_iter()
+        .chain(
+            candidates
+                .iter()
+                .filter(|candidate| Some(candidate.agent_id.as_str()) != preferred_agent_id)
+                .map(|candidate| candidate.agent_id.clone()),
+        )
+        .collect()
+}
+
+struct ModeratorRoute<'a> {
+    scheduler_runtime: &'a ScheduledTurnRuntime,
+    hop: u32,
+    source_agent_id: Option<&'a str>,
+}
+
+async fn take_revalidated_moderator_candidate(
+    pool: &SqlitePool,
+    group_id: &str,
+    group: &GroupRuntimeConfig,
+    remaining: &mut [Option<Candidate>],
+    ordered_candidate_ids: &[String],
+    route: ModeratorRoute<'_>,
+) -> Result<Option<Candidate>, CandidateLoadError> {
+    for agent_id in ordered_candidate_ids {
+        if route
+            .scheduler_runtime
+            .budget
+            .check_dispatch(agent_id, route.hop)
+            .is_err()
+            || route.source_agent_id.is_some_and(|source_agent_id| {
+                !allows_agent_edge(&route.scheduler_runtime.topology, source_agent_id, agent_id)
+            })
+        {
+            continue;
+        }
+        let Some(index) = remaining.iter().position(|candidate| {
+            candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.agent_id == *agent_id)
+        }) else {
+            continue;
+        };
+
+        if is_agent_currently_muted(pool, group_id, agent_id).await? {
+            remaining[index].take();
+            continue;
+        }
+        match load_candidate_by_id(pool, group_id, agent_id, group).await {
+            Ok(candidate) if candidate.owner_id == group.owner_id => {
+                remaining[index].take();
+                return Ok(Some(candidate));
+            }
+            Ok(_) | Err(CandidateLoadError::Ineligible(_)) => {
+                remaining[index].take();
+            }
+            Err(error @ CandidateLoadError::Persistence(_)) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+async fn is_agent_currently_muted(
+    pool: &SqlitePool,
+    group_id: &str,
+    agent_id: &str,
+) -> Result<bool, CandidateLoadError> {
+    let muted_agent_ids_json: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT muted_agent_ids_json FROM groups WHERE id = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(CandidateLoadError::Persistence)?;
+    let Some(muted_agent_ids_json) = muted_agent_ids_json else {
+        return Ok(true);
+    };
+    Ok(parse_string_set(muted_agent_ids_json.as_deref()).contains(agent_id))
+}
+
+fn record_moderator_visible_message(
+    recent_visible_messages: &mut Vec<ModeratorMessage>,
+    role: &str,
+    content: &str,
+) {
+    const MAX_RECENT_VISIBLE_MESSAGES: usize = 4;
+
+    recent_visible_messages.push(ModeratorMessage {
+        role: role.to_owned(),
+        content: content.to_owned(),
+    });
+    let excess = recent_visible_messages
+        .len()
+        .saturating_sub(MAX_RECENT_VISIBLE_MESSAGES);
+    if excess > 0 {
+        recent_visible_messages.drain(..excess);
+    }
+}
+
+async fn select_moderator_until_cancelled(
+    ctx: &StreamCtx,
+    pool: &SqlitePool,
+    config: ModeratorConfig,
+    request: ModeratorRequest,
+) -> Result<ModeratorAttempt, Cancelled> {
+    let Some(cancellation) = ctx.cancellation.clone() else {
+        return Ok(select_with_moderator(pool, &config, request).await);
+    };
+    if cancellation.load(Ordering::Acquire) {
+        return Err(Cancelled);
+    }
+
+    tokio::select! {
+        attempt = select_with_moderator(pool, &config, request) => Ok(attempt),
+        () = wait_for_cancellation(cancellation) => Err(Cancelled),
+    }
+}
+
+async fn wait_for_cancellation(cancellation: Arc<AtomicBool>) {
+    while !cancellation.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn cancellation_requested(ctx: &StreamCtx) -> bool {
+    ctx.cancellation
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Acquire))
+}
+
+async fn cancel_scheduled_turn(
+    ctx: &mut StreamCtx,
+    store: &SchedulerStore,
+    turn_id: &str,
+) -> Result<TurnOutcome, Cancelled> {
+    if let Err(_error) = store
+        .transition_turn(
+            turn_id,
+            TurnStatus::Running,
+            TurnStatus::Cancelled,
+            Some(TurnReason::UserCancelled.as_str()),
+        )
+        .await
+    {
+        tracing::error!(turn_id, "failed to persist cancelled moderator turn status");
+        return fail_scheduled_persistence(ctx, store, turn_id).await;
+    }
+    Ok(TurnOutcome::Cancelled)
 }
 
 async fn fail_scheduled_persistence(
@@ -1176,6 +1538,7 @@ async fn run_resume_inner(
         messages,
         temperature: None,
         reasoning_passback: provider_cfg.reasoning_passback,
+        include_empty_tools: false,
         tools: Vec::new(),
     };
     let mut deltas = match provider.stream(request).await {
@@ -1338,6 +1701,10 @@ struct GroupRuntimeConfig {
     max_consecutive_failures: u32,
     max_total_failures: u32,
     max_total_tokens: u64,
+    turn_timeout_seconds: u64,
+    moderator_enabled: bool,
+    moderator_provider_id: Option<String>,
+    moderator_model: Option<String>,
     muted_agent_ids: HashSet<String>,
 }
 
@@ -1391,6 +1758,7 @@ struct ScheduledTurnRuntime {
     topology: TopologySnapshot,
     budget: TurnBudget,
     initial_round_claims: HashSet<String>,
+    recent_visible_messages: Vec<ModeratorMessage>,
 }
 
 struct PendingMention {
@@ -1591,6 +1959,7 @@ async fn run_agent_turn(
             messages: messages.clone(),
             temperature: None,
             reasoning_passback: provider_cfg.reasoning_passback,
+            include_empty_tools: false,
             tools: invocation.tools.clone(),
         };
         let mut deltas = provider
@@ -3015,6 +3384,10 @@ struct GroupRuntimeRow {
     max_consecutive_failures: i64,
     max_total_failures: i64,
     max_total_tokens: i64,
+    turn_timeout_seconds: i64,
+    moderator_enabled: i64,
+    moderator_provider_id: Option<String>,
+    moderator_model: Option<String>,
     muted_agent_ids_json: Option<String>,
 }
 
@@ -3025,7 +3398,7 @@ async fn load_group_runtime_config(
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, description, announcement, workspace_id, free_speech, \
                 proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
-                communication_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, muted_agent_ids_json \
+                communication_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
          FROM groups WHERE id = ? AND status = 'active'",
     )
     .bind(group_id)
@@ -3053,6 +3426,10 @@ async fn load_group_runtime_config(
         max_consecutive_failures: row.max_consecutive_failures as u32,
         max_total_failures: row.max_total_failures as u32,
         max_total_tokens: row.max_total_tokens as u64,
+        turn_timeout_seconds: row.turn_timeout_seconds.max(1) as u64,
+        moderator_enabled: row.moderator_enabled != 0,
+        moderator_provider_id: row.moderator_provider_id,
+        moderator_model: row.moderator_model,
         muted_agent_ids: parse_string_set(row.muted_agent_ids_json.as_deref()),
     })
 }

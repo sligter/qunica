@@ -1472,6 +1472,7 @@ pub async fn generate_group_workspace_git_commit_message(
         messages: commit_message_prompt(&diff),
         temperature: Some(0.2),
         reasoning_passback: provider_config.reasoning_passback,
+        include_empty_tools: false,
         tools: Vec::new(),
     };
     let mut deltas = provider.stream(request).await.map_err(|err| {
