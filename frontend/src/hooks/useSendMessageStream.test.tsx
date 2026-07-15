@@ -56,7 +56,7 @@ describe('useSendMessageStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
-  it('posts scheduler cancellation before aborting the local stream', async () => {
+  it('queues pre-turn cancellation, posts once when the turn arrives, then aborts', async () => {
     let resolveCancel!: (value: unknown) => void
     mocks.fetchJson.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -77,6 +77,18 @@ describe('useSendMessageStream scheduler events', () => {
       kind: 'user_message',
       payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
     })
+
+    let cancelPromise!: Promise<void>
+    act(() => {
+      cancelPromise = hook.result.current.cancel()
+    })
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    expect(stream.abort).not.toHaveBeenCalled()
+
+    act(() => hook.result.current.send('blocked while cancelling'))
+    expect(mocks.streams).toHaveLength(1)
+    expect(hook.result.current.error).toBe('Cancellation is in progress')
+
     emit(stream.handlers, {
       stream_id: 'stream-1',
       seq: 2,
@@ -84,15 +96,26 @@ describe('useSendMessageStream scheduler events', () => {
       kind: 'turn_started',
       payload: { turn_id: 'turn-1', budget },
     })
-
-    let cancelPromise!: Promise<void>
-    act(() => {
-      cancelPromise = hook.result.current.cancel()
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 3,
+      event_id: 'event-3',
+      kind: 'speaker_selected',
+      payload: {
+        turn_id: 'turn-1',
+        dispatch_id: 'dispatch-1',
+        source_agent_id: null,
+        target_agent_id: 'agent-1',
+        reason: 'deterministic_order',
+        action_kind: 'speak',
+        hop: 0,
+      },
     })
     expect(mocks.fetchJson).toHaveBeenCalledWith('/groups/group-1/turns/turn-1/cancel', {
       method: 'POST',
       token: 'token-1',
     })
+    expect(mocks.fetchJson).toHaveBeenCalledTimes(1)
     expect(stream.abort).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -107,6 +130,93 @@ describe('useSendMessageStream scheduler events', () => {
       scheduler_status: 'cancelled',
       terminal_reason: 'user_cancelled',
     })
+  })
+
+  it('promotes scheduler waiting_for_user before done and invalidates its trace', () => {
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => hook.result.current.send('hello'))
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 3,
+      event_id: 'event-3',
+      kind: 'waiting_for_user',
+      payload: { agent_id: 'agent-1', message: 'Need approval' },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 4,
+      event_id: 'event-4',
+      kind: 'done',
+      payload: { turn_id: 'turn-1' },
+    })
+
+    const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    expect(run).toMatchObject({
+      status: 'completed',
+      scheduler_status: 'waiting_for_user',
+      terminal_reason: 'waiting_for_user',
+    })
+    expect(run.criticalSummaries).toEqual([
+      expect.objectContaining({ kind: 'waiting_for_user' }),
+    ])
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'group-1', 'turns', 'turn-1'],
+    })
+  })
+
+  it('cancels a stream as legacy once a legacy execution event identifies it', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => hook.result.current.send('hello'))
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+    let cancelPromise!: Promise<void>
+    act(() => {
+      cancelPromise = hook.result.current.cancel()
+    })
+    expect(stream.abort).not.toHaveBeenCalled()
+
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'agent_start',
+      payload: { agent_id: 'agent-1', display_name: 'Agent One' },
+    })
+    await act(async () => cancelPromise)
+
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    expect(stream.abort).toHaveBeenCalledTimes(1)
+    expect(
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].status,
+    ).toBe('cancelled')
   })
 
   it('rejects late bubbles and messages after supersede and invalidates the terminal trace', () => {

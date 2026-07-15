@@ -101,6 +101,7 @@ export function useResumeStream(
   const endResume = useMessageStore((s) => s.endResume)
   const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
   const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
+  const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
   const qc = useQueryClient()
@@ -187,13 +188,21 @@ export function useResumeStream(
               finish()
               return
             }
+            case 'waiting_for_user': {
+              const turnId = markStreamRunWaitingForUser(groupId, streamId)
+              if (turnId) {
+                void qc.invalidateQueries({
+                  queryKey: ['groups', groupId, 'turns', turnId],
+                })
+              }
+              return
+            }
             case 'user_message':
             case 'agent_start':
             case 'reasoning':
             case 'tool_call_start':
             case 'tool_call_result':
             case 'agent_silent':
-            case 'waiting_for_user':
             case 'context_usage':
             case 'acp_agent_run':
             case 'silence':
@@ -224,6 +233,7 @@ export function useResumeStream(
     isStreaming,
     messageId,
     markStreamRunDone,
+    markStreamRunWaitingForUser,
     qc,
     replaceMessage,
     startResume,

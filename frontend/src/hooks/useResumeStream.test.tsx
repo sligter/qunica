@@ -208,4 +208,49 @@ describe('useResumeStream scheduler events', () => {
 
     expect(useMessageStore.getState().byGroup['group-1'][0].content).toBe('partial')
   })
+
+  it('keeps waiting_for_user status when resume ends with scheduler done', () => {
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'waiting_for_user',
+      payload: { message: 'Need more information' },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 3,
+      event_id: 'event-3',
+      kind: 'done',
+      payload: { turn_id: 'turn-1' },
+    })
+
+    const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    expect(run).toMatchObject({
+      status: 'completed',
+      scheduler_status: 'waiting_for_user',
+      terminal_reason: 'waiting_for_user',
+    })
+    expect(run.criticalSummaries).toEqual([
+      expect.objectContaining({ kind: 'waiting_for_user' }),
+    ])
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'group-1', 'turns', 'turn-1'],
+    })
+  })
 })

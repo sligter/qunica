@@ -249,6 +249,7 @@ interface MessageState {
     update: SchedulerStreamUpdate,
   ) => boolean
   acceptsStreamEvent: (groupId: string, streamId: string) => boolean
+  markStreamRunWaitingForUser: (groupId: string, streamId: string) => string | null
   markStreamRunDone: (groupId: string, streamId: string) => void
   markStreamRunError: (groupId: string, streamId: string, message: string) => void
   markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
@@ -442,6 +443,17 @@ function appendOrFoldSchedulerSummary(
       message: `Scheduler selected ${count} speakers`,
     }
     return next
+  }
+  if (
+    last?.kind === summary.kind &&
+    (summary.kind === 'cancelled' ||
+      summary.kind === 'superseded' ||
+      summary.kind === 'budget_exhausted' ||
+      summary.kind === 'waiting_for_user' ||
+      summary.kind === 'silence' ||
+      summary.kind === 'failed')
+  ) {
+    return summaries
   }
   return appendCriticalSummary(summaries, summary)
 }
@@ -1225,10 +1237,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (existing?.turn_id && existing.turn_id !== turnId) {
       return false
     }
+    const equivalentTerminalUpdate =
+      update.kind === 'turn_completed' &&
+      existing?.scheduler_status === update.payload.status &&
+      existing.terminal_reason === update.payload.reason
     if (
       existing &&
       !schedulerStatusAcceptsEvents(existing.scheduler_status) &&
-      update.kind !== 'done'
+      update.kind !== 'done' &&
+      !equivalentTerminalUpdate
     ) {
       return false
     }
@@ -1262,6 +1279,41 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   acceptsStreamEvent: (groupId, streamId) => {
     const run = get().streamRunsByGroup[groupId]?.[streamId]
     return !run || schedulerStatusAcceptsEvents(run.scheduler_status)
+  },
+
+  markStreamRunWaitingForUser: (groupId, streamId) => {
+    const groupRuns = get().streamRunsByGroup[groupId] ?? {}
+    const run = groupRuns[streamId]
+    if (!run?.turn_id || !schedulerStatusAcceptsEvents(run.scheduler_status)) {
+      return null
+    }
+    const timestamp = nowIso()
+    const summary: SchedulerCriticalSummary = {
+      id: `waiting-for-user:${run.turn_id}`,
+      kind: 'waiting_for_user',
+      message: 'Turn is waiting for user input',
+      count: 1,
+      created_at: timestamp,
+    }
+    set((s) => ({
+      streamRunsByGroup: {
+        ...s.streamRunsByGroup,
+        [groupId]: {
+          ...(s.streamRunsByGroup[groupId] ?? {}),
+          [streamId]: {
+            ...run,
+            scheduler_status: 'waiting_for_user',
+            terminal_reason: 'waiting_for_user',
+            criticalSummaries: appendOrFoldSchedulerSummary(
+              run.criticalSummaries,
+              summary,
+            ),
+            updated_at: timestamp,
+          },
+        },
+      },
+    }))
+    return run.turn_id
   },
 
   markStreamRunDone: (groupId, streamId) =>
@@ -1345,6 +1397,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       for (const streamId of ids) {
         const run = nextRuns[streamId]
         if (!run) continue
+        if (run.turn_id && !schedulerStatusAcceptsEvents(run.scheduler_status)) continue
         const event: StreamNoticeEvent = {
           id: `cancelled:${streamId}:${timestamp}`,
           type: 'warning',

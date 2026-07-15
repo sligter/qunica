@@ -244,4 +244,97 @@ describe('messageStore scheduler state', () => {
       useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].criticalSummaries,
     ).toHaveLength(20)
   })
+
+  it('preserves an existing scheduler terminal status during local cancellation', () => {
+    const store = useMessageStore.getState()
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.applySchedulerEvent(
+      'group-1',
+      'stream-1',
+      update('turn_started', {
+        turn_id: 'turn-1',
+        budget: {
+          max_agent_steps: 8,
+          max_steps_per_agent: 3,
+          max_hops: 4,
+          max_moderator_calls: 2,
+          max_consecutive_failures: 2,
+          max_total_failures: 4,
+          max_total_tokens: 1000,
+        },
+      }, 1),
+    )
+    store.applySchedulerEvent(
+      'group-1',
+      'stream-1',
+      update('turn_superseded', {
+        turn_id: 'turn-1',
+        status: 'superseded',
+        reason: 'superseded',
+        budget: {
+          agent_steps: 1,
+          moderator_calls: 0,
+          consecutive_failures: 0,
+          total_failures: 0,
+          total_tokens: 10,
+        },
+      }, 2),
+    )
+
+    store.markStreamRunCancelled('group-1', ['stream-1'])
+
+    const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    expect(run.scheduler_status).toBe('superseded')
+    expect(run.terminal_reason).toBe('superseded')
+    expect(run.criticalSummaries.map((summary) => summary.kind)).toEqual(['superseded'])
+  })
+
+  it('records waiting once when a later terminal update repeats the same state', () => {
+    const store = useMessageStore.getState()
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.applySchedulerEvent(
+      'group-1',
+      'stream-1',
+      update('turn_started', {
+        turn_id: 'turn-1',
+        budget: {
+          max_agent_steps: 8,
+          max_steps_per_agent: 3,
+          max_hops: 4,
+          max_moderator_calls: 2,
+          max_consecutive_failures: 2,
+          max_total_failures: 4,
+          max_total_tokens: 1000,
+        },
+      }, 1),
+    )
+
+    expect(store.markStreamRunWaitingForUser('group-1', 'stream-1')).toBe('turn-1')
+    expect(store.markStreamRunWaitingForUser('group-1', 'stream-1')).toBeNull()
+    expect(
+      store.applySchedulerEvent(
+        'group-1',
+        'stream-1',
+        update('turn_completed', {
+          turn_id: 'turn-1',
+          status: 'waiting_for_user',
+          reason: 'waiting_for_user',
+          budget: {
+            agent_steps: 1,
+            moderator_calls: 0,
+            consecutive_failures: 0,
+            total_failures: 0,
+            total_tokens: 10,
+          },
+        }, 2),
+      ),
+    ).toBe(true)
+
+    const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    expect(run.scheduler_status).toBe('waiting_for_user')
+    expect(run.terminal_reason).toBe('waiting_for_user')
+    expect(run.criticalSummaries.map((summary) => summary.kind)).toEqual([
+      'waiting_for_user',
+    ])
+  })
 })
