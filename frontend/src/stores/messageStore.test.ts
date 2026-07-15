@@ -443,4 +443,55 @@ describe('messageStore scheduler state', () => {
       expect.objectContaining({ id: 'tool-2', status: 'started' }),
     ])
   })
+
+  it('detaches only the requested active stream and keeps unrelated runs', () => {
+    const store = useMessageStore.getState()
+    store.setHistory('group-1', [message('canonical-message')])
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.startStreamRun('group-1', 'stream-2', message('message-2'))
+    store.startStreamRun('group-1', 'stream-completed', message('message-completed'))
+    store.markStreamRunDone('group-1', 'stream-completed')
+    store.patchInFlight('group-1', 'agent-1', 'abandoned', 'stream-1')
+    store.patchInFlight('group-1', 'agent-2', 'keep', 'stream-2')
+    store.setActiveAgent('group-1', {
+      agent_id: 'agent-1',
+      display_name: 'Agent One',
+      index: 0,
+      total: 2,
+      stream_id: 'stream-1',
+    })
+    store.setActiveAgent('group-1', {
+      agent_id: 'agent-2',
+      display_name: 'Agent Two',
+      index: 1,
+      total: 2,
+      stream_id: 'stream-2',
+    })
+
+    store.detachStreamRun('group-1', 'stream-1')
+    store.detachStreamRun('group-1', 'stream-completed')
+
+    const state = useMessageStore.getState()
+    expect(state.byGroup['group-1'].map((item) => item.id)).toEqual([
+      'canonical-message',
+    ])
+    expect(Object.keys(state.streamRunsByGroup['group-1']).sort()).toEqual([
+      'stream-2',
+      'stream-completed',
+    ])
+    expect(state.streamRunIdByUserMessageIdByGroup['group-1']).toEqual({
+      'message-2': 'stream-2',
+      'message-completed': 'stream-completed',
+    })
+    expect(state.streamRunOrderByGroup['group-1']).toEqual([
+      'stream-2',
+      'stream-completed',
+    ])
+    expect(state.inFlightByGroup['group-1']).toEqual({
+      'stream-2:agent-2': expect.objectContaining({ content: 'keep' }),
+    })
+    expect(state.activeAgentsByGroup['group-1']).toEqual({
+      'stream-2:agent-2': expect.objectContaining({ agent_id: 'agent-2' }),
+    })
+  })
 })

@@ -254,6 +254,7 @@ interface MessageState {
     streamId: string,
     userMessageId: string,
   ) => void
+  detachStreamRun: (groupId: string, streamId: string) => void
   reconcileSchedulerTurn: (groupId: string, trace: GroupTurnTraceResponse) => void
   acceptsStreamEvent: (groupId: string, streamId: string) => boolean
   markStreamRunWaitingForUser: (groupId: string, streamId: string) => string | null
@@ -1349,6 +1350,50 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         streamRunIdByUserMessageIdByGroup: {
           ...s.streamRunIdByUserMessageIdByGroup,
           [groupId]: { ...groupRunIdsByMessage, [userMessageId]: streamId },
+        },
+      }
+    }),
+
+  detachStreamRun: (groupId, streamId) =>
+    set((s) => {
+      const streamPrefix = `${streamId}:`
+      const groupInFlight = s.inFlightByGroup[groupId] ?? {}
+      const nextInFlight = Object.fromEntries(
+        Object.entries(groupInFlight).filter(([key]) => !key.startsWith(streamPrefix)),
+      )
+      const groupActive = s.activeAgentsByGroup[groupId] ?? {}
+      const nextActive = Object.fromEntries(
+        Object.entries(groupActive).filter(([key]) => !key.startsWith(streamPrefix)),
+      )
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const run = groupRuns[streamId]
+      if (!run || run.status !== 'active') {
+        return {
+          inFlightByGroup: { ...s.inFlightByGroup, [groupId]: nextInFlight },
+          activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: nextActive },
+        }
+      }
+
+      const nextRuns = { ...groupRuns }
+      delete nextRuns[streamId]
+      const groupRunIdsByMessage =
+        s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
+      const nextRunIdsByMessage = Object.fromEntries(
+        Object.entries(groupRunIdsByMessage).filter(([, runId]) => runId !== streamId),
+      )
+      return {
+        inFlightByGroup: { ...s.inFlightByGroup, [groupId]: nextInFlight },
+        activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: nextActive },
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: nextRuns },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: nextRunIdsByMessage,
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: (s.streamRunOrderByGroup[groupId] ?? []).filter(
+            (runId) => runId !== streamId,
+          ),
         },
       }
     }),

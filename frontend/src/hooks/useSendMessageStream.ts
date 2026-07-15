@@ -285,6 +285,7 @@ export function useSendMessageStream(
   const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
   const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
+  const detachStreamRun = useMessageStore((s) => s.detachStreamRun)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunError = useMessageStore((s) => s.markStreamRunError)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
@@ -305,6 +306,7 @@ export function useSendMessageStream(
   }, [])
 
   useEffect(() => {
+    const abandonedGroupId = groupId
     const streams = streamsRef.current
     const streamIds = streamIdsRef.current
     const erroredStreamIds = erroredStreamIdsRef.current
@@ -312,13 +314,21 @@ export function useSendMessageStream(
     const streamProtocols = streamProtocolByRequestRef.current
     const schedulerTurns = schedulerTurnByRequestRef.current
     return () => {
+      const hadAbandonedStreams = streams.size > 0
       const pendingCancellation = pendingCancellationRef.current
       if (pendingCancellation) {
         pendingCancellation.resolve()
         pendingCancellationRef.current = null
       }
-      for (const ctrl of streams.values()) {
+      for (const [requestId, ctrl] of streams) {
         ctrl.abort()
+        const streamId = streamIds.get(requestId)
+        if (abandonedGroupId && streamId) {
+          detachStreamRun(abandonedGroupId, streamId)
+        }
+      }
+      if (abandonedGroupId && hadAbandonedStreams) {
+        clearToolActivity(abandonedGroupId)
       }
       streams.clear()
       streamIds.clear()
@@ -326,8 +336,9 @@ export function useSendMessageStream(
       agentNames.clear()
       streamProtocols.clear()
       schedulerTurns.clear()
+      setActiveStreamCount(0)
     }
-  }, [])
+  }, [clearToolActivity, detachStreamRun, groupId])
 
   const invalidate = useCallback(() => {
     if (!groupId) return

@@ -7,6 +7,7 @@ import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import type { ApiV2SseHandlers } from '@/lib/api-v2/sse'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
+import type { Message } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
   streams: [] as Array<{ handlers: ApiV2SseHandlers; abort: ReturnType<typeof vi.fn> }>,
@@ -75,6 +76,26 @@ function traceResponse(
   }
 }
 
+function persistedMessage(id: string, groupId = 'group-1'): Message {
+  return {
+    id,
+    group_id: groupId,
+    thread_id: `${groupId}-thread`,
+    sender_type: 'user',
+    sender_id: 'user-1',
+    message_type: 'text',
+    content: id,
+    status: 'visible',
+    refs: null,
+    context_usage: null,
+    turn_id: null,
+    dispatch_id: null,
+    reply_to_message_id: null,
+    turn_summary: null,
+    created_at: '2026-07-15T00:00:00Z',
+  }
+}
+
 function wrapper(queryClient: QueryClient) {
   return function TestWrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -83,6 +104,55 @@ function wrapper(queryClient: QueryClient) {
 
 function emit(handlers: ApiV2SseHandlers, event: unknown) {
   act(() => handlers.onEvent(event as never))
+}
+
+function emitActiveSchedulerStream(
+  handlers: ApiV2SseHandlers,
+  streamId: string,
+  messageId: string,
+  agentId: string,
+) {
+  emit(handlers, {
+    stream_id: streamId,
+    seq: 1,
+    event_id: `${streamId}-event-1`,
+    kind: 'user_message',
+    payload: { message_id: messageId, thread_id: 'thread-1', content: messageId },
+  })
+  emit(handlers, {
+    stream_id: streamId,
+    seq: 2,
+    event_id: `${streamId}-event-2`,
+    kind: 'turn_started',
+    payload: { turn_id: `${streamId}-turn`, budget },
+  })
+  emit(handlers, {
+    stream_id: streamId,
+    seq: 3,
+    event_id: `${streamId}-event-3`,
+    kind: 'agent_start',
+    payload: { agent_id: agentId, display_name: agentId },
+  })
+  emit(handlers, {
+    stream_id: streamId,
+    seq: 4,
+    event_id: `${streamId}-event-4`,
+    kind: 'token',
+    payload: { agent_id: agentId, delta: 'working' },
+  })
+  emit(handlers, {
+    stream_id: streamId,
+    seq: 5,
+    event_id: `${streamId}-event-5`,
+    kind: 'tool_call_start',
+    payload: {
+      agent_id: agentId,
+      display_name: agentId,
+      tool_call_id: `${streamId}-tool`,
+      tool_name: 'lookup',
+      status: 'started',
+    },
+  })
 }
 
 describe('useSendMessageStream scheduler events', () => {
@@ -287,6 +357,89 @@ describe('useSendMessageStream scheduler events', () => {
       scheduler_status: 'completed',
       terminal_reason: null,
     })
+  })
+
+  it('detaches two abandoned local streams on unmount without server cancellation', () => {
+    useMessageStore.getState().setHistory('group-1', [persistedMessage('persisted')])
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => {
+      hook.result.current.send('first')
+      hook.result.current.send('second')
+    })
+    const [first, second] = mocks.streams
+    emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
+    emitActiveSchedulerStream(second.handlers, 'stream-2', 'message-2', 'agent-2')
+
+    hook.unmount()
+
+    const state = useMessageStore.getState()
+    expect(first.abort).toHaveBeenCalledTimes(1)
+    expect(second.abort).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    expect(state.byGroup['group-1'].map((message) => message.id)).toEqual([
+      'persisted',
+      'message-1',
+      'message-2',
+    ])
+    expect(state.streamRunsByGroup['group-1']).toEqual({})
+    expect(state.streamRunIdByUserMessageIdByGroup['group-1']).toEqual({})
+    expect(state.streamRunOrderByGroup['group-1']).toEqual([])
+    expect(state.inFlightByGroup['group-1']).toEqual({})
+    expect(state.activeAgentsByGroup['group-1']).toEqual({})
+    expect(state.toolActivityByGroup['group-1']).toEqual([])
+  })
+
+  it('uses the old group id when a route change cleans up active streams', () => {
+    const store = useMessageStore.getState()
+    store.setHistory('group-1', [persistedMessage('group-1-history')])
+    store.setHistory('group-2', [persistedMessage('group-2-history', 'group-2')])
+    store.startStreamRun(
+      'group-2',
+      'group-2-stream',
+      persistedMessage('group-2-trigger', 'group-2'),
+    )
+    store.patchInFlight('group-2', 'group-2-agent', 'keep', 'group-2-stream')
+    store.pushToolActivity('group-2', {
+      id: 'group-2-tool',
+      agent_id: 'group-2-agent',
+      display_name: 'Group Two Agent',
+      tool_name: 'lookup',
+      status: 'started',
+    })
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      ({ groupId }) => useSendMessageStream(groupId, true),
+      {
+        initialProps: { groupId: 'group-1' },
+        wrapper: wrapper(queryClient),
+      },
+    )
+    act(() => hook.result.current.send('first'))
+    const first = mocks.streams[0]
+    emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
+
+    hook.rerender({ groupId: 'group-2' })
+
+    const state = useMessageStore.getState()
+    expect(first.abort).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    expect(state.byGroup['group-1'].map((message) => message.id)).toEqual([
+      'group-1-history',
+      'message-1',
+    ])
+    expect(state.streamRunsByGroup['group-1']).toEqual({})
+    expect(state.inFlightByGroup['group-1']).toEqual({})
+    expect(state.toolActivityByGroup['group-1']).toEqual([])
+    expect(state.streamRunsByGroup['group-2']['group-2-stream']).toBeDefined()
+    expect(state.inFlightByGroup['group-2']['group-2-stream:group-2-agent']).toMatchObject({
+      content: 'keep',
+    })
+    expect(state.toolActivityByGroup['group-2']).toEqual([
+      expect.objectContaining({ id: 'group-2-tool' }),
+    ])
   })
 
   it('rejects late bubbles and messages after supersede and invalidates the terminal trace', () => {
