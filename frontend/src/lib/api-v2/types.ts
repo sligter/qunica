@@ -1,4 +1,4 @@
-export type StreamEventKind =
+export type LegacyStreamEventKind =
   | 'user_message'
   | 'agent_start'
   | 'token'
@@ -15,7 +15,22 @@ export type StreamEventKind =
   | 'error'
   | 'done'
 
-export interface StreamEvent<TPayload = unknown, TKind extends string = StreamEventKind> {
+export type SchedulerStreamEventKind =
+  | 'turn_started'
+  | 'speaker_selected'
+  | 'dispatch_failed'
+  | 'moderator_fallback'
+  | 'turn_cancelled'
+  | 'turn_superseded'
+  | 'turn_budget_exhausted'
+  | 'turn_completed'
+
+export type StreamEventKind = LegacyStreamEventKind | SchedulerStreamEventKind
+
+export interface StreamEvent<
+  TPayload = unknown,
+  TKind extends StreamEventKind = LegacyStreamEventKind,
+> {
   stream_id: string
   seq: number
   event_id: string
@@ -110,6 +125,10 @@ export interface GroupTurnBudgetLimits {
   max_consecutive_failures: number
   max_total_failures: number
   max_total_tokens: number
+}
+
+export interface GroupTurnTerminalBudget extends GroupTurnBudgetUsage {
+  limits?: GroupTurnBudgetLimits
 }
 
 export interface GroupTurnSummary {
@@ -207,37 +226,45 @@ export interface ModeratorFallbackPayload {
   reason: 'moderator_fallback'
 }
 
-export interface TurnTerminalPayload {
+export interface TurnTerminalPayload<
+  TStatus extends GroupTurnStatus = GroupTurnStatus,
+  TReason extends GroupTurnTerminationReason | null = GroupTurnTerminationReason | null,
+> {
   turn_id: string
-  status: GroupTurnStatus
-  reason: GroupTurnTerminationReason | null
-  budget: GroupTurnBudgetUsage
+  status: TStatus
+  reason: TReason
+  budget: GroupTurnTerminalBudget
 }
 
 export interface SchedulerDonePayload {
   turn_id: string
 }
 
-export type SchedulerStreamEventKind =
-  | 'turn_started'
-  | 'speaker_selected'
-  | 'dispatch_failed'
-  | 'moderator_fallback'
-  | 'turn_cancelled'
-  | 'turn_superseded'
-  | 'turn_budget_exhausted'
-  | 'turn_completed'
-  | 'done'
+type SchedulerEvent<K extends SchedulerStreamEventKind | 'done', TPayload> = StreamEvent<
+  TPayload,
+  K
+>
 
-type SchedulerEvent<K extends SchedulerStreamEventKind, TPayload> = StreamEvent<TPayload, K>
+type TurnCancelledPayload = TurnTerminalPayload<'cancelled', 'user_cancelled'>
+type TurnSupersededPayload = TurnTerminalPayload<'superseded', 'superseded'>
+type TurnBudgetExhaustedPayload =
+  | TurnTerminalPayload<'budget_exhausted', 'budget_exhausted'>
+  | TurnTerminalPayload<'failure_budget_exhausted', 'failure_budget_exhausted'>
+type TurnCompletedPayload =
+  | TurnTerminalPayload<'waiting_for_user', 'waiting_for_user'>
+  | TurnTerminalPayload<'completed', null>
+  | TurnTerminalPayload<'silence', 'silence'>
+  | TurnTerminalPayload<'failed', 'persistence_failed'>
+  | TurnTerminalPayload<'budget_exhausted', 'budget_exhausted'>
+  | TurnTerminalPayload<'failure_budget_exhausted', 'failure_budget_exhausted'>
 
 export type SchedulerStreamUpdate =
   | SchedulerEvent<'turn_started', TurnStartedPayload>
   | SchedulerEvent<'speaker_selected', SpeakerSelectedPayload>
   | SchedulerEvent<'dispatch_failed', DispatchFailedPayload>
   | SchedulerEvent<'moderator_fallback', ModeratorFallbackPayload>
-  | SchedulerEvent<'turn_cancelled', TurnTerminalPayload>
-  | SchedulerEvent<'turn_superseded', TurnTerminalPayload>
-  | SchedulerEvent<'turn_budget_exhausted', TurnTerminalPayload>
-  | SchedulerEvent<'turn_completed', TurnTerminalPayload>
+  | SchedulerEvent<'turn_cancelled', TurnCancelledPayload>
+  | SchedulerEvent<'turn_superseded', TurnSupersededPayload>
+  | SchedulerEvent<'turn_budget_exhausted', TurnBudgetExhaustedPayload>
+  | SchedulerEvent<'turn_completed', TurnCompletedPayload>
   | SchedulerEvent<'done', SchedulerDonePayload>

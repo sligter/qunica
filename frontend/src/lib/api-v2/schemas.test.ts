@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { parseGroupTurnTrace, parseSchedulerStreamEvent } from './schemas'
-import type { StreamEvent } from './types'
+import type { StreamEvent, StreamEventKind } from './types'
 import type { Message } from '@/types/api'
 
 const budgetUsage = {
@@ -22,7 +22,10 @@ const budgetLimits = {
   max_total_tokens: 120000,
 }
 
-function schedulerEvent(kind: string, payload: unknown): StreamEvent<unknown, string> {
+function schedulerEvent(
+  kind: StreamEventKind,
+  payload: unknown,
+): StreamEvent<unknown, StreamEventKind> {
   return {
     stream_id: 'stream-1',
     seq: 1,
@@ -155,19 +158,29 @@ describe('parseSchedulerStreamEvent', () => {
     ],
     [
       'turn_completed',
-      { turn_id: 'turn-1', status: 'completed', reason: null, budget: budgetUsage },
+      {
+        turn_id: 'turn-1',
+        status: 'completed',
+        reason: null,
+        budget: { ...budgetUsage, limits: budgetLimits },
+      },
     ],
     ['done', { turn_id: 'turn-1' }],
-  ] satisfies ReadonlyArray<readonly [string, unknown]>)(
+  ] satisfies ReadonlyArray<readonly [StreamEventKind, unknown]>)(
     'parses the %s scheduler payload',
     (kind, payload) => {
       expect(parseSchedulerStreamEvent(schedulerEvent(kind, payload))?.kind).toBe(kind)
     },
   )
 
-  it('returns null for legacy events and empty legacy done payloads', () => {
+  it('returns null silently for legacy events and empty legacy done payloads', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
     expect(parseSchedulerStreamEvent(schedulerEvent('token', { text: 'legacy' }))).toBeNull()
     expect(parseSchedulerStreamEvent(schedulerEvent('done', {}))).toBeNull()
+    expect(warning).not.toHaveBeenCalled()
+
+    warning.mockRestore()
   })
 
   it('rejects malformed scheduler status, reason, and action codes safely', () => {
@@ -200,6 +213,44 @@ describe('parseSchedulerStreamEvent', () => {
 
     warning.mockRestore()
   })
+
+  it.each([
+    [
+      'turn_cancelled',
+      { turn_id: 'turn-1', status: 'completed', reason: 'user_cancelled', budget: budgetUsage },
+    ],
+    [
+      'turn_superseded',
+      { turn_id: 'turn-1', status: 'superseded', reason: 'user_cancelled', budget: budgetUsage },
+    ],
+    [
+      'turn_budget_exhausted',
+      {
+        turn_id: 'turn-1',
+        status: 'budget_exhausted',
+        reason: 'failure_budget_exhausted',
+        budget: budgetUsage,
+      },
+    ],
+    [
+      'turn_completed',
+      { turn_id: 'turn-1', status: 'completed', reason: 'silence', budget: budgetUsage },
+    ],
+    [
+      'turn_completed',
+      { turn_id: 'turn-1', status: 'cancelled', reason: 'user_cancelled', budget: budgetUsage },
+    ],
+  ] satisfies ReadonlyArray<readonly [StreamEventKind, unknown]>)(
+    'rejects invalid %s terminal status and reason combinations',
+    (kind, payload) => {
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      expect(parseSchedulerStreamEvent(schedulerEvent(kind, payload))).toBeNull()
+      expect(warning).toHaveBeenCalledOnce()
+
+      warning.mockRestore()
+    },
+  )
 })
 
 describe('parseGroupTurnTrace', () => {
@@ -215,15 +266,19 @@ describe('parseGroupTurnTrace', () => {
     expect(trace.cost_estimation_status).toBe('unavailable')
   })
 
-  it('rejects reasoning and other non-public artifact fields', () => {
+  it.each([
+    ['empty artifacts', {}],
+    ['final content', { final_content: 'private' }],
+    ['tool input and output', { tool_io: { input: 'private', output: 'private' } }],
+    ['reasoning', { reasoning: 'private' }],
+    ['usage', { usage: { total_tokens: 42 } }],
+    ['unknown fields', { unexpected: 'private' }],
+  ] satisfies ReadonlyArray<readonly [string, unknown]>)('rejects %s from public artifacts', (
+    _label,
+    artifact,
+  ) => {
     expect(() =>
-      parseGroupTurnTrace(
-        traceFixture({
-          mode: 'handoff',
-          target_agent_id: 'agent-2',
-          reasoning: 'private',
-        }),
-      ),
+      parseGroupTurnTrace(traceFixture(artifact)),
     ).toThrow()
   })
 })

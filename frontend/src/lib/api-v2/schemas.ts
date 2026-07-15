@@ -3,8 +3,10 @@ import { z } from 'zod'
 import type {
   GroupSchedulerConfig,
   GroupTurnTraceResponse,
+  SchedulerStreamEventKind,
   SchedulerStreamUpdate,
   StreamEvent,
+  StreamEventKind,
 } from './types'
 
 export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.object({
@@ -92,6 +94,10 @@ const groupTurnBudgetLimitsSchema = z
   })
   .strict()
 
+const groupTurnTerminalBudgetSchema = groupTurnBudgetUsageSchema
+  .extend({ limits: groupTurnBudgetLimitsSchema.optional() })
+  .strict()
+
 const schedulerEventBaseSchema = z
   .object({
     stream_id: z.string(),
@@ -100,14 +106,93 @@ const schedulerEventBaseSchema = z
   })
   .strict()
 
-const turnTerminalPayloadSchema = z
+const turnCancelledPayloadSchema = z
   .object({
     turn_id: z.string(),
-    status: groupTurnStatusSchema,
-    reason: groupTurnTerminationReasonSchema.nullable(),
-    budget: groupTurnBudgetUsageSchema,
+    status: z.literal('cancelled'),
+    reason: z.literal('user_cancelled'),
+    budget: groupTurnTerminalBudgetSchema,
   })
   .strict()
+
+const turnSupersededPayloadSchema = z
+  .object({
+    turn_id: z.string(),
+    status: z.literal('superseded'),
+    reason: z.literal('superseded'),
+    budget: groupTurnTerminalBudgetSchema,
+  })
+  .strict()
+
+const turnBudgetExhaustedPayloadSchema = z.union([
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('budget_exhausted'),
+      reason: z.literal('budget_exhausted'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('failure_budget_exhausted'),
+      reason: z.literal('failure_budget_exhausted'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+])
+
+const turnCompletedPayloadSchema = z.union([
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('waiting_for_user'),
+      reason: z.literal('waiting_for_user'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('completed'),
+      reason: z.null(),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('silence'),
+      reason: z.literal('silence'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('failed'),
+      reason: z.literal('persistence_failed'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('budget_exhausted'),
+      reason: z.literal('budget_exhausted'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      turn_id: z.string(),
+      status: z.literal('failure_budget_exhausted'),
+      reason: z.literal('failure_budget_exhausted'),
+      budget: groupTurnTerminalBudgetSchema,
+    })
+    .strict(),
+])
 
 const schedulerEventSchema: z.ZodType<SchedulerStreamUpdate> = z.discriminatedUnion('kind', [
   schedulerEventBaseSchema.extend({
@@ -158,19 +243,19 @@ const schedulerEventSchema: z.ZodType<SchedulerStreamUpdate> = z.discriminatedUn
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('turn_cancelled'),
-    payload: turnTerminalPayloadSchema,
+    payload: turnCancelledPayloadSchema,
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('turn_superseded'),
-    payload: turnTerminalPayloadSchema,
+    payload: turnSupersededPayloadSchema,
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('turn_budget_exhausted'),
-    payload: turnTerminalPayloadSchema,
+    payload: turnBudgetExhaustedPayloadSchema,
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('turn_completed'),
-    payload: turnTerminalPayloadSchema,
+    payload: turnCompletedPayloadSchema,
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('done'),
@@ -187,6 +272,7 @@ const publicTurnArtifactSchema = z
     failure_code: z.string().optional(),
   })
   .strict()
+  .refine((artifact) => Object.keys(artifact).length > 0, 'public artifact must not be empty')
 
 const groupTurnSummarySchema = z
   .object({
@@ -251,9 +337,42 @@ const groupTurnTraceSchema: z.ZodType<GroupTurnTraceResponse> = z
   })
   .strict()
 
+type SchedulerParseEventKind = SchedulerStreamEventKind | 'done'
+
+const schedulerStreamEventKinds = new Set<StreamEventKind>([
+  'turn_started',
+  'speaker_selected',
+  'dispatch_failed',
+  'moderator_fallback',
+  'turn_cancelled',
+  'turn_superseded',
+  'turn_budget_exhausted',
+  'turn_completed',
+  'done',
+])
+
+function isSchedulerParseEventKind(kind: StreamEventKind): kind is SchedulerParseEventKind {
+  return schedulerStreamEventKinds.has(kind)
+}
+
+function isLegacyDonePayload(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  )
+}
+
 export function parseSchedulerStreamEvent(
-  event: StreamEvent<unknown, string>,
+  event: StreamEvent<unknown, StreamEventKind>,
 ): SchedulerStreamUpdate | null {
+  if (!isSchedulerParseEventKind(event.kind)) {
+    return null
+  }
+  if (event.kind === 'done' && isLegacyDonePayload(event.payload)) {
+    return null
+  }
   const parsed = schedulerEventSchema.safeParse(event)
   if (!parsed.success) {
     console.warn('Ignoring malformed scheduler stream event', parsed.error.issues)
