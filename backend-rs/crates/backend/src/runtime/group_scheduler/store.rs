@@ -67,6 +67,25 @@ impl SchedulerStore {
             return Err(error.into());
         }
 
+        if let Some(trigger_message_id) = input.trigger_message_id.as_deref() {
+            let linked = sqlx::query(
+                "UPDATE messages \
+                 SET turn_id = ? \
+                 WHERE id = ? AND thread_id = ? AND group_id = ?",
+            )
+            .bind(&input.id)
+            .bind(trigger_message_id)
+            .bind(&input.thread_id)
+            .bind(&input.group_id)
+            .execute(&mut *tx)
+            .await?;
+            if linked.rows_affected() != 1 {
+                return Err(SchedulerStoreError::InvalidInput(
+                    "turn trigger message does not belong to its thread and group".to_owned(),
+                ));
+            }
+        }
+
         let snapshot = fetch_turn_in_tx(&mut tx, &input.id).await?;
         tx.commit().await?;
         Ok(snapshot)
@@ -79,56 +98,76 @@ impl SchedulerStore {
         next: TurnStatus,
         reason: Option<&str>,
     ) -> Result<TurnSnapshot, SchedulerStoreError> {
-        validate_turn_transition(expected, next)?;
         let reason = reason.map(TurnReason::try_from).transpose()?;
         let now = now_rfc3339();
-        let completed_at = is_terminal_turn(next).then_some(now.as_str());
-        let started_at = (next == TurnStatus::Running).then_some(now.as_str());
         let _guard = self.write_lock.lock().await;
         let mut tx = self.pool.begin().await?;
+        let snapshot =
+            transition_turn_in_tx(&mut tx, turn_id, expected, next, reason, &now).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
 
-        let result = sqlx::query(
-            "UPDATE group_turns \
-             SET status = ?, termination_reason = ?, \
-                 started_at = CASE WHEN ? IS NULL THEN started_at ELSE COALESCE(started_at, ?) END, \
-                 completed_at = CASE WHEN ? IS NULL THEN completed_at ELSE ? END, \
-                 updated_at = ? \
-             WHERE id = ? AND status = ?",
-        )
-        .bind(next.as_str())
-        .bind(reason.map(TurnReason::as_str))
-        .bind(started_at)
-        .bind(started_at)
-        .bind(completed_at)
-        .bind(completed_at)
-        .bind(&now)
-        .bind(turn_id)
-        .bind(expected.as_str())
-        .execute(&mut *tx)
-        .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(turn_transition_conflict(&mut tx, turn_id, expected).await?);
-        }
-
-        if matches!(next, TurnStatus::Cancelled | TurnStatus::Superseded) {
-            sqlx::query(
-                "UPDATE agent_dispatches \
-                 SET status = CASE \
-                         WHEN status = 'queued' THEN 'cancelled' \
-                         ELSE 'interrupted' \
-                     END, \
-                     completed_at = ?, updated_at = ? \
-                 WHERE turn_id = ? AND status IN ('queued', 'running')",
+    /// Idempotently mark one active turn as user-cancelled. The persistent
+    /// state changes before the caller signals its in-memory cancellation
+    /// token, preventing further dispatch output from committing.
+    pub async fn cancel_turn(&self, turn_id: &str) -> Result<TurnSnapshot, SchedulerStoreError> {
+        let now = now_rfc3339();
+        let _guard = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+        let current = fetch_turn_in_tx(&mut tx, turn_id).await?;
+        let snapshot = if is_terminal_turn(current.status) {
+            current
+        } else {
+            transition_turn_in_tx(
+                &mut tx,
+                turn_id,
+                current.status,
+                TurnStatus::Cancelled,
+                Some(TurnReason::UserCancelled),
+                &now,
             )
-            .bind(&now)
-            .bind(&now)
-            .bind(turn_id)
-            .execute(&mut *tx)
-            .await?;
-        }
+            .await?
+        };
+        tx.commit().await?;
+        Ok(snapshot)
+    }
 
-        let snapshot = fetch_turn_in_tx(&mut tx, turn_id).await?;
+    /// Supersede the one durable active turn for a thread, if one exists.
+    ///
+    /// This is intentionally separate from registry signalling: callers must
+    /// persist the superseded state first, then signal the matching token.
+    pub async fn supersede_active_turn_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<TurnSnapshot>, SchedulerStoreError> {
+        let now = now_rfc3339();
+        let _guard = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+        let turn_id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM group_turns \
+             WHERE thread_id = ? AND status IN ('pending', 'running', 'waiting_for_user') \
+             ORDER BY created_at, rowid LIMIT 1",
+        )
+        .bind(thread_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let snapshot = if let Some(turn_id) = turn_id {
+            let current = fetch_turn_in_tx(&mut tx, &turn_id).await?;
+            Some(
+                transition_turn_in_tx(
+                    &mut tx,
+                    &turn_id,
+                    current.status,
+                    TurnStatus::Superseded,
+                    Some(TurnReason::Superseded),
+                    &now,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         tx.commit().await?;
         Ok(snapshot)
     }
@@ -286,8 +325,19 @@ impl SchedulerStore {
             )
             .await?;
 
-            sqlx::query("UPDATE messages SET turn_id = ?, dispatch_id = ? WHERE id = ?")
+            sqlx::query(
+                "UPDATE messages \
+                 SET turn_id = ?, dispatch_id = ?, \
+                     reply_to_message_id = ( \
+                         SELECT COALESCE(dispatch.input_message_id, parent.output_message_id) \
+                         FROM agent_dispatches dispatch \
+                         LEFT JOIN agent_dispatches parent ON parent.id = dispatch.parent_dispatch_id \
+                         WHERE dispatch.id = ? \
+                     ) \
+                 WHERE id = ?",
+            )
                 .bind(&turn_id)
+                .bind(&input.dispatch_id)
                 .bind(&input.dispatch_id)
                 .bind(&output.message.id)
                 .execute(&mut *tx)
@@ -606,6 +656,60 @@ async fn fetch_dispatch_in_tx(
             id: dispatch_id.to_owned(),
         })?;
     row.try_into()
+}
+
+async fn transition_turn_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    turn_id: &str,
+    expected: TurnStatus,
+    next: TurnStatus,
+    reason: Option<TurnReason>,
+    now: &str,
+) -> Result<TurnSnapshot, SchedulerStoreError> {
+    validate_turn_transition(expected, next)?;
+    let completed_at = is_terminal_turn(next).then_some(now);
+    let started_at = (next == TurnStatus::Running).then_some(now);
+    let result = sqlx::query(
+        "UPDATE group_turns \
+         SET status = ?, termination_reason = ?, \
+             started_at = CASE WHEN ? IS NULL THEN started_at ELSE COALESCE(started_at, ?) END, \
+             completed_at = CASE WHEN ? IS NULL THEN completed_at ELSE ? END, \
+             updated_at = ? \
+         WHERE id = ? AND status = ?",
+    )
+    .bind(next.as_str())
+    .bind(reason.map(TurnReason::as_str))
+    .bind(started_at)
+    .bind(started_at)
+    .bind(completed_at)
+    .bind(completed_at)
+    .bind(now)
+    .bind(turn_id)
+    .bind(expected.as_str())
+    .execute(&mut **tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(turn_transition_conflict(tx, turn_id, expected).await?);
+    }
+
+    if matches!(next, TurnStatus::Cancelled | TurnStatus::Superseded) {
+        sqlx::query(
+            "UPDATE agent_dispatches \
+             SET status = CASE \
+                     WHEN status = 'queued' THEN 'cancelled' \
+                     ELSE 'interrupted' \
+                 END, \
+                 completed_at = COALESCE(completed_at, ?), updated_at = ? \
+             WHERE turn_id = ? AND status IN ('queued', 'running')",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(turn_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    fetch_turn_in_tx(tx, turn_id).await
 }
 
 async fn turn_transition_conflict(

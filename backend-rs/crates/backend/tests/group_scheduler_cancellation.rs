@@ -50,14 +50,15 @@ async fn cancellation_wakes_all_waiters() {
 }
 
 #[tokio::test]
-async fn registry_does_not_cancel_or_remove_a_replacement_turn() {
+async fn registry_keeps_exact_turn_tokens_during_runtime_overlap() {
     let registry = ActiveTurnRegistry::new();
     let first = registry.register("thread-1", "turn-1").await;
     let replacement = registry.register("thread-1", "turn-2").await;
 
-    assert!(!registry.cancel("thread-1", "turn-1").await);
+    assert!(registry.cancel("thread-1", "turn-1").await);
+    assert!(first.cancellation.is_cancelled());
     assert!(!replacement.cancellation.is_cancelled());
-    assert!(!registry.remove(&first).await);
+    assert!(registry.remove(&first).await);
 
     assert!(registry.cancel("thread-1", "turn-2").await);
     assert!(replacement.cancellation.is_cancelled());

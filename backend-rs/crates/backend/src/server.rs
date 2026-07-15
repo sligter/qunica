@@ -7,7 +7,7 @@ use crate::{
     api::{self, AppState, AuthSettings},
     config::AppConfig,
     db::Db,
-    runtime::group_scheduler::SchedulerStore,
+    runtime::group_scheduler::{ActiveTurnRegistry, SchedulerStore},
 };
 
 /// Runtime options for embedding or launching the backend HTTP service.
@@ -61,6 +61,7 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
             access_token_expire_minutes: config.access_token_expire_minutes,
         },
         write_lock,
+        active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: config.skill_storage_root(),
     })
 }

@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod cancellation;
 pub mod mentions;
 pub mod model;
 pub mod moderator;
@@ -23,6 +24,7 @@ pub use store::{SchedulerStore, SchedulerStoreError};
 pub use topology::{allows_agent_edge, validate_topology, TopologyError, TopologySnapshot};
 
 pub use budget::{BudgetLimits, BudgetRejection, TurnBudget};
+pub use cancellation::{ActiveTurn, ActiveTurnRegistry, TurnCancellation};
 
 pub fn next_decision(
     budget: &TurnBudget,

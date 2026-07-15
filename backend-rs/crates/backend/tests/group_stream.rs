@@ -3325,7 +3325,7 @@ async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
         thread_id: None,
         content: "cancel while moderator is selecting".to_owned(),
     };
-    let (tx, _rx) = mpsc::channel(128);
+    let (tx, mut rx) = mpsc::channel(128);
     let moderator_started = started.notified();
     let turn = tokio::spawn(run_group_turn(services, request, tx));
 
@@ -3339,8 +3339,8 @@ async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
         .unwrap();
     release.notify_waiters();
 
-    let turn_status: String =
-        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+    let turn_row: (String, String) =
+        sqlx::query_as("SELECT id, status FROM group_turns WHERE group_id = ?")
             .bind(&group)
             .fetch_one(state.db.pool())
             .await
@@ -3352,8 +3352,19 @@ async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
             .await
             .unwrap();
     assert_eq!(outcome, TurnOutcome::Cancelled);
-    assert_eq!(turn_status, "cancelled");
+    assert_eq!(turn_row.1, "cancelled");
     assert_eq!(dispatches, 0);
+    let mut emitted = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        emitted.push(event);
+    }
+    assert_eq!(
+        emitted[emitted.len() - 2].kind,
+        StreamEventKind::TurnCancelled
+    );
+    assert_eq!(emitted.last().unwrap().kind, StreamEventKind::Done);
+    assert_eq!(emitted[emitted.len() - 2].payload["turn_id"], turn_row.0);
+    assert_eq!(emitted.last().unwrap().payload["turn_id"], turn_row.0);
 }
 
 #[tokio::test]
@@ -3490,7 +3501,11 @@ async fn scheduler_enabled_persists_turn_and_dispatch_lifecycle() {
         json!({"content": "hello"}),
     )
     .await;
-    assert_eq!(kinds(&events).last().map(String::as_str), Some("done"));
+    let event_kinds = kinds(&events);
+    assert_eq!(
+        &event_kinds[event_kinds.len() - 2..],
+        ["turn_completed", "done"]
+    );
     let turn: (String, i64, String) = sqlx::query_as(
         "SELECT status, agent_steps, config_snapshot_json FROM group_turns WHERE group_id = ?",
     )
@@ -3528,6 +3543,14 @@ async fn scheduler_enabled_persists_turn_and_dispatch_lifecycle() {
             .unwrap();
     assert_eq!(message_links.0.as_deref(), Some(dispatch_turn_id.as_str()));
     assert_eq!(message_links.1.as_deref(), Some(dispatch.2.as_str()));
+    assert_eq!(
+        events[events.len() - 2]["payload"]["turn_id"],
+        dispatch_turn_id
+    );
+    assert_eq!(
+        events.last().unwrap()["payload"]["turn_id"],
+        dispatch_turn_id
+    );
 }
 
 #[tokio::test]

@@ -87,7 +87,7 @@ impl ActiveTurn {
 /// Tracks the currently active scheduler turn for each thread.
 #[derive(Clone, Debug, Default)]
 pub struct ActiveTurnRegistry {
-    active_turns: Arc<Mutex<HashMap<String, ActiveTurn>>>,
+    active_turns: Arc<Mutex<HashMap<String, HashMap<String, ActiveTurn>>>>,
 }
 
 impl ActiveTurnRegistry {
@@ -95,7 +95,11 @@ impl ActiveTurnRegistry {
         Self::default()
     }
 
-    /// Register a turn as active and return the handle used by that turn.
+    /// Register a turn and return the exact handle used by that runtime task.
+    ///
+    /// Durable state still enforces one active turn per thread. Keeping tokens
+    /// keyed by both thread and turn prevents a late registration from
+    /// replacing a newer turn during the short create/register race window.
     pub async fn register(
         &self,
         thread_id: impl Into<String>,
@@ -105,7 +109,9 @@ impl ActiveTurnRegistry {
         self.active_turns
             .lock()
             .await
-            .insert(active_turn.thread_id.clone(), active_turn.clone());
+            .entry(active_turn.thread_id.clone())
+            .or_default()
+            .insert(active_turn.turn_id.clone(), active_turn.clone());
         active_turn
     }
 
@@ -119,7 +125,7 @@ impl ActiveTurnRegistry {
             .lock()
             .await
             .get(thread_id)
-            .filter(|active_turn| active_turn.turn_id == turn_id)
+            .and_then(|turns| turns.get(turn_id))
             .map(|active_turn| active_turn.cancellation.clone());
 
         let Some(cancellation) = cancellation else {
@@ -129,19 +135,22 @@ impl ActiveTurnRegistry {
         true
     }
 
-    /// Remove a completed turn only if it is still the current registration.
-    ///
-    /// The registration identity check prevents delayed cleanup from removing
-    /// a replacement turn for the same thread.
+    /// Remove only the exact registration owned by the completed runtime task.
     pub async fn remove(&self, active_turn: &ActiveTurn) -> bool {
         let mut active_turns = self.active_turns.lock().await;
-        let is_current = active_turns
-            .get(&active_turn.thread_id)
+        let Some(turns) = active_turns.get_mut(&active_turn.thread_id) else {
+            return false;
+        };
+        let is_exact = turns
+            .get(&active_turn.turn_id)
             .is_some_and(|current| current.is_same_registration(active_turn));
-        if !is_current {
+        if !is_exact {
             return false;
         }
-        active_turns.remove(&active_turn.thread_id);
+        turns.remove(&active_turn.turn_id);
+        if turns.is_empty() {
+            active_turns.remove(&active_turn.thread_id);
+        }
         true
     }
 }

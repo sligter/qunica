@@ -221,6 +221,24 @@ impl SequenceAllocator {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Persist an ordered event group atomically. Scheduler terminal markers
+    /// use this so replay can never observe a terminal event without its
+    /// transport-level `done` event.
+    pub async fn persist_events(
+        &self,
+        thread_id: &str,
+        events: &[StreamEvent<Value>],
+    ) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        for event in events {
+            insert_stream_event(&mut tx, thread_id, event, &now).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 pub(crate) async fn persist_message_with_event_in_tx(

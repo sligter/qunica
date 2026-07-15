@@ -26,7 +26,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{collections::HashSet, future::Future, path::PathBuf, time::Duration};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use serde_json::{json, Value};
@@ -53,11 +53,11 @@ use crate::runtime::group_scheduler::{
     allows_agent_edge,
     budget::{BudgetLimits, TurnBudget},
     mentions::{scan_visible_mentions, MentionTarget},
-    next_decision, select_with_moderator, validate_topology, ActionKind, DispatchOutput,
-    DispatchStatus, FinishDispatch, ModeratorAttempt, ModeratorCandidate, ModeratorConfig,
-    ModeratorMessage, ModeratorRequest, NewDispatch, NewTurn, SchedulerAction, SchedulerCandidate,
-    SchedulerDecision, SchedulerDispatch, SchedulerStore, SelectionReason, TopologySnapshot,
-    TurnReason, TurnStatus,
+    next_decision, select_with_moderator, validate_topology, ActionKind, ActiveTurn,
+    ActiveTurnRegistry, DispatchOutput, DispatchStatus, FinishDispatch, ModeratorAttempt,
+    ModeratorCandidate, ModeratorConfig, ModeratorMessage, ModeratorRequest, NewDispatch, NewTurn,
+    SchedulerAction, SchedulerCandidate, SchedulerDecision, SchedulerDispatch, SchedulerStore,
+    SelectionReason, TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
 };
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
@@ -81,6 +81,9 @@ const RESUME_CONTINUATION_PROMPT: &str =
 pub struct RuntimeServices {
     pub pool: SqlitePool,
     pub write_lock: Arc<Mutex<()>>,
+    active_turns: ActiveTurnRegistry,
+    // Retained for direct runtime tests that exercise the pre-registry
+    // cancellation hook. HTTP cancellation uses `active_turns` instead.
     cancellation: Option<Arc<AtomicBool>>,
 }
 
@@ -89,8 +92,14 @@ impl RuntimeServices {
         Self {
             pool,
             write_lock,
+            active_turns: ActiveTurnRegistry::new(),
             cancellation: None,
         }
+    }
+
+    pub fn with_active_turn_registry(mut self, active_turns: ActiveTurnRegistry) -> Self {
+        self.active_turns = active_turns;
+        self
     }
 
     pub fn with_cancellation_flag(mut self, cancellation: Arc<AtomicBool>) -> Self {
@@ -188,13 +197,19 @@ pub async fn run_group_turn(
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
         private_execution: false,
+        turn_cancellation: None,
+        active_turn: None,
         cancellation: services.cancellation.clone(),
     };
 
-    match run_inner(&services, &req, &mut ctx).await {
+    let outcome = match run_inner(&services, &req, &mut ctx).await {
         Ok(outcome) => outcome,
         Err(Cancelled) => TurnOutcome::Cancelled,
+    };
+    if let Some(active_turn) = ctx.active_turn.take() {
+        services.active_turns.remove(&active_turn).await;
     }
+    outcome
 }
 
 /// Resume an interrupted agent message, appending newly streamed tokens to the
@@ -216,6 +231,8 @@ pub async fn run_thread_resume(
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
         private_execution: false,
+        turn_cancellation: None,
+        active_turn: None,
         cancellation: services.cancellation.clone(),
     };
 
@@ -238,6 +255,8 @@ struct StreamCtx {
     scheduled_total_tokens: u64,
     scheduled_accounted_tokens: u64,
     private_execution: bool,
+    turn_cancellation: Option<TurnCancellation>,
+    active_turn: Option<ActiveTurn>,
     cancellation: Option<Arc<AtomicBool>>,
 }
 
@@ -259,11 +278,7 @@ impl StreamCtx {
     /// Emit an event and persist its stream cursor before delivery so reconnect
     /// replay can anchor on any id the client may have observed.
     async fn emit(&mut self, kind: StreamEventKind, payload: Value) -> Result<(), StepErr> {
-        if self
-            .cancellation
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
-        {
+        if cancellation_requested(self) {
             return Err(StepErr::Cancelled);
         }
         if self.private_execution {
@@ -389,6 +404,33 @@ impl StreamCtx {
             });
         }
         let _ = self.tx.send(event).await;
+        Ok(())
+    }
+
+    /// Persist and emit a scheduler terminal marker together with its transport
+    /// terminator. Both payloads carry the turn id for replay correlation.
+    async fn emit_scheduler_terminal(
+        &mut self,
+        kind: StreamEventKind,
+        payload: Value,
+        turn_id: &str,
+    ) -> Result<(), StepErr> {
+        let terminal_event = self.next_event(kind, payload);
+        let done_event = self.next_event(
+            StreamEventKind::Done,
+            json!({
+                "turn_id": turn_id,
+            }),
+        );
+        self.allocator
+            .persist_events(
+                &self.thread_id,
+                &[terminal_event.clone(), done_event.clone()],
+            )
+            .await
+            .map_err(|_| StepErr::SchedulerPersistence)?;
+        let _ = self.tx.send(terminal_event).await;
+        let _ = self.tx.send(done_event).await;
         Ok(())
     }
 
@@ -583,6 +625,16 @@ async fn run_scheduled_turn(
         "max_total_tokens": limits.max_total_tokens,
         "moderator_enabled": group.moderator_enabled,
     });
+    let superseded_turn = match store.supersede_active_turn_for_thread(&ctx.thread_id).await {
+        Ok(turn) => turn,
+        Err(error) => return ctx.fail(&error.to_string()).await,
+    };
+    if let Some(superseded_turn) = superseded_turn {
+        services
+            .active_turns
+            .cancel(&ctx.thread_id, &superseded_turn.id)
+            .await;
+    }
     let turn_id = Uuid::new_v4().to_string();
     if let Err(error) = store
         .create_turn(NewTurn {
@@ -601,11 +653,36 @@ async fn run_scheduled_turn(
     {
         return ctx.fail(&error.to_string()).await;
     }
+    let active_turn = services
+        .active_turns
+        .register(ctx.thread_id.clone(), turn_id.clone())
+        .await;
+    ctx.turn_cancellation = Some(active_turn.cancellation.clone());
+    ctx.active_turn = Some(active_turn);
     if let Err(error) = store
         .transition_turn(&turn_id, TurnStatus::Pending, TurnStatus::Running, None)
         .await
     {
-        return ctx.fail(&error.to_string()).await;
+        let persistently_cancelled = match store.load_turn_trace(&turn_id).await {
+            Ok(trace) => matches!(
+                trace.turn.status,
+                TurnStatus::Cancelled | TurnStatus::Superseded
+            ),
+            Err(_) => false,
+        };
+        if cancellation_requested(ctx) || persistently_cancelled {
+            return cancel_scheduled_turn(ctx, &store, &turn_id).await;
+        }
+        tracing::error!(turn_id, error = %error, "failed to start scheduled turn");
+        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+    }
+    if let Err(error) = emit_turn_started(ctx, &turn_id, &limits).await {
+        return match error {
+            StepErr::Cancelled => cancel_scheduled_turn(ctx, &store, &turn_id).await,
+            StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                fail_scheduled_persistence(ctx, &store, &turn_id).await
+            }
+        };
     }
     let mut scheduler_runtime = ScheduledTurnRuntime {
         store: store.clone(),
@@ -841,7 +918,12 @@ async fn run_scheduled_turn(
             }
             if matches!(outcome, TurnOutcome::Silence) {
                 match ctx
-                    .emit_durable_event(StreamEventKind::Silence, json!({}))
+                    .emit_durable_event(
+                        StreamEventKind::Silence,
+                        json!({
+                            "turn_id": turn_id,
+                        }),
+                    )
                     .await
                 {
                     Ok(()) => {}
@@ -851,12 +933,15 @@ async fn run_scheduled_turn(
                     }
                 }
             }
-            match ctx.emit_done().await {
-                Ok(()) => {}
-                Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
-                Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
-                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-                }
+            if let Err(error) =
+                emit_turn_terminal(ctx, &turn_id, status, reason, &scheduler_runtime.budget).await
+            {
+                return match error {
+                    StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
+                    StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                        fail_scheduled_persistence(ctx, &store, &turn_id).await
+                    }
+                };
             }
             return Ok(outcome);
         };
@@ -950,6 +1035,50 @@ async fn run_scheduled_turn(
             tracing::error!(turn_id, "failed to start scheduled dispatch");
             return fail_scheduled_persistence(ctx, &store, &turn_id).await;
         }
+        if let Err(error) = emit_speaker_selected(
+            ctx,
+            SpeakerSelection {
+                turn_id: &turn_id,
+                dispatch_id: &dispatch_id,
+                source_agent_id: pending
+                    .as_ref()
+                    .map(|pending| pending.source_agent_id.as_str()),
+                target_agent_id: &agent.agent_id,
+                selection_reason: dispatch.selection_reason,
+                action_kind: dispatch.action_kind,
+                hop: dispatch.hop,
+            },
+        )
+        .await
+        {
+            return match error {
+                StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
+                StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                    fail_scheduled_persistence(ctx, &store, &turn_id).await
+                }
+            };
+        }
+        if dispatch.selection_reason == SelectionReason::ModeratorFallback {
+            if let Err(error) = ctx
+                .emit_durable_event(
+                    StreamEventKind::ModeratorFallback,
+                    json!({
+                        "turn_id": turn_id,
+                        "dispatch_id": dispatch_id,
+                        "target_agent_id": agent.agent_id,
+                        "reason": SelectionReason::ModeratorFallback.as_str(),
+                    }),
+                )
+                .await
+            {
+                return match error {
+                    StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
+                    StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                        fail_scheduled_persistence(ctx, &store, &turn_id).await
+                    }
+                };
+            }
+        }
         scheduler_runtime.budget.record_dispatch(&agent.agent_id);
         ctx.scheduled_total_tokens = 0;
         ctx.scheduled_accounted_tokens = 0;
@@ -973,63 +1102,32 @@ async fn run_scheduled_turn(
             Ok(result) => result,
             Err(StepErr::Cancelled) => {
                 ctx.scheduled_dispatch = None;
-                account_scheduled_tokens(ctx, &mut scheduler_runtime.budget);
-                let dispatch_running = match dispatch_is_running(&services.pool, &dispatch_id).await
-                {
-                    Ok(running) => running,
-                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
-                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
-                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-                    }
-                };
-                if dispatch_running {
-                    if let Err(_error) = store
-                        .finish_dispatch(FinishDispatch {
-                            dispatch_id,
-                            next: DispatchStatus::Interrupted,
-                            artifact: None,
-                            total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
-                            failure_code: Some("stream_cancelled".to_owned()),
-                            output: None,
-                        })
-                        .await
-                    {
-                        tracing::error!(turn_id, "failed to interrupt cancelled dispatch");
-                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-                    }
-                }
-                if let Err(_error) = store
-                    .update_turn_budget(
-                        &turn_id,
-                        scheduler_runtime.budget.agent_steps() as i64,
-                        scheduler_runtime.budget.moderator_calls() as i64,
-                        scheduler_runtime.budget.consecutive_failures() as i64,
-                        scheduler_runtime.budget.total_failures() as i64,
-                        scheduler_runtime.budget.total_tokens() as i64,
-                    )
-                    .await
-                {
-                    tracing::error!(turn_id, "failed to persist cancelled turn budget");
-                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-                }
-                if let Err(_error) = store
-                    .transition_turn(
-                        &turn_id,
-                        TurnStatus::Running,
-                        TurnStatus::Cancelled,
-                        Some(TurnReason::UserCancelled.as_str()),
-                    )
-                    .await
-                {
-                    tracing::error!(turn_id, "failed to persist cancelled turn status");
-                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-                }
-                return Ok(TurnOutcome::Cancelled);
+                return cancel_scheduled_turn(ctx, &store, &turn_id).await;
             }
             Err(StepErr::Db(_error)) => {
                 ctx.scheduled_dispatch = None;
                 account_scheduled_tokens(ctx, &mut scheduler_runtime.budget);
                 scheduler_runtime.budget.record_failure();
+                if let Err(error) = ctx
+                    .emit_durable_event(
+                        StreamEventKind::DispatchFailed,
+                        json!({
+                            "turn_id": turn_id,
+                            "dispatch_id": dispatch_id,
+                            "target_agent_id": agent.agent_id,
+                            "action_kind": dispatch.action_kind.as_str(),
+                            "reason": "persistence_failed",
+                        }),
+                    )
+                    .await
+                {
+                    return match error {
+                        StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
+                        StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                            fail_scheduled_persistence(ctx, &store, &turn_id).await
+                        }
+                    };
+                }
                 let dispatch_running = match dispatch_is_running(&services.pool, &dispatch_id).await
                 {
                     Ok(running) => running,
@@ -1143,7 +1241,15 @@ async fn run_scheduled_turn(
                     tracing::error!(turn_id, "failed to persist waiting turn status");
                     return fail_scheduled_persistence(ctx, &store, &turn_id).await;
                 }
-                match ctx.emit_done().await {
+                match ctx
+                    .emit_durable_event(
+                        StreamEventKind::Done,
+                        json!({
+                            "turn_id": turn_id,
+                        }),
+                    )
+                    .await
+                {
                     Ok(()) => {}
                     Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
                     Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
@@ -1349,22 +1455,119 @@ fn record_moderator_visible_message(
     }
 }
 
+async fn emit_turn_started(
+    ctx: &mut StreamCtx,
+    turn_id: &str,
+    limits: &BudgetLimits,
+) -> Result<(), StepErr> {
+    ctx.emit_durable_event(
+        StreamEventKind::TurnStarted,
+        json!({
+            "turn_id": turn_id,
+            "budget": budget_limits_payload(limits),
+        }),
+    )
+    .await
+}
+
+struct SpeakerSelection<'a> {
+    turn_id: &'a str,
+    dispatch_id: &'a str,
+    source_agent_id: Option<&'a str>,
+    target_agent_id: &'a str,
+    selection_reason: SelectionReason,
+    action_kind: ActionKind,
+    hop: u32,
+}
+
+async fn emit_speaker_selected(
+    ctx: &mut StreamCtx,
+    selection: SpeakerSelection<'_>,
+) -> Result<(), StepErr> {
+    ctx.emit_durable_event(
+        StreamEventKind::SpeakerSelected,
+        json!({
+            "turn_id": selection.turn_id,
+            "dispatch_id": selection.dispatch_id,
+            "source_agent_id": selection.source_agent_id,
+            "target_agent_id": selection.target_agent_id,
+            "reason": selection.selection_reason.as_str(),
+            "action_kind": selection.action_kind.as_str(),
+            "hop": selection.hop,
+        }),
+    )
+    .await
+}
+
+async fn emit_turn_terminal(
+    ctx: &mut StreamCtx,
+    turn_id: &str,
+    status: TurnStatus,
+    reason: Option<TurnReason>,
+    budget: &TurnBudget,
+) -> Result<(), StepErr> {
+    let kind = match status {
+        TurnStatus::BudgetExhausted | TurnStatus::FailureBudgetExhausted => {
+            StreamEventKind::TurnBudgetExhausted
+        }
+        TurnStatus::Cancelled => StreamEventKind::TurnCancelled,
+        TurnStatus::Superseded => StreamEventKind::TurnSuperseded,
+        TurnStatus::Pending | TurnStatus::Running => {
+            return Err(StepErr::SchedulerPersistence);
+        }
+        TurnStatus::WaitingForUser
+        | TurnStatus::Completed
+        | TurnStatus::Silence
+        | TurnStatus::Failed => StreamEventKind::TurnCompleted,
+    };
+    ctx.emit_scheduler_terminal(
+        kind,
+        json!({
+            "turn_id": turn_id,
+            "status": status.as_str(),
+            "reason": reason.map(TurnReason::as_str),
+            "budget": turn_budget_payload(budget),
+        }),
+        turn_id,
+    )
+    .await
+}
+
+fn budget_limits_payload(limits: &BudgetLimits) -> Value {
+    json!({
+        "max_agent_steps": limits.max_agent_steps,
+        "max_steps_per_agent": limits.max_steps_per_agent,
+        "max_hops": limits.max_hops,
+        "max_moderator_calls": limits.max_moderator_calls,
+        "max_consecutive_failures": limits.max_consecutive_failures,
+        "max_total_failures": limits.max_total_failures,
+        "max_total_tokens": limits.max_total_tokens,
+    })
+}
+
+fn turn_budget_payload(budget: &TurnBudget) -> Value {
+    json!({
+        "agent_steps": budget.agent_steps(),
+        "moderator_calls": budget.moderator_calls(),
+        "consecutive_failures": budget.consecutive_failures(),
+        "total_failures": budget.total_failures(),
+        "total_tokens": budget.total_tokens(),
+        "limits": budget_limits_payload(&budget.limits()),
+    })
+}
+
 async fn select_moderator_until_cancelled(
     ctx: &StreamCtx,
     pool: &SqlitePool,
     config: ModeratorConfig,
     request: ModeratorRequest,
 ) -> Result<ModeratorAttempt, Cancelled> {
-    let Some(cancellation) = ctx.cancellation.clone() else {
-        return Ok(select_with_moderator(pool, &config, request).await);
-    };
-    if cancellation.load(Ordering::Acquire) {
+    if cancellation_requested(ctx) {
         return Err(Cancelled);
     }
-
     tokio::select! {
         attempt = select_with_moderator(pool, &config, request) => Ok(attempt),
-        () = wait_for_cancellation(cancellation) => Err(Cancelled),
+        () = wait_for_any_cancellation(ctx) => Err(Cancelled),
     }
 }
 
@@ -1374,10 +1577,50 @@ async fn wait_for_cancellation(cancellation: Arc<AtomicBool>) {
     }
 }
 
+/// Await provider and tool work while allowing an explicit scheduler stop to
+/// preempt the in-flight future. The legacy flag path remains for direct
+/// runtime tests; production scheduler turns use `TurnCancellation::cancelled`.
+async fn await_with_cancellation<T>(
+    ctx: &StreamCtx,
+    future: impl Future<Output = T>,
+) -> Result<T, StepErr> {
+    if cancellation_requested(ctx) {
+        return Err(StepErr::Cancelled);
+    }
+    if ctx.turn_cancellation.is_some() || ctx.cancellation.is_some() {
+        return tokio::select! {
+            output = future => Ok(output),
+            () = wait_for_any_cancellation(ctx) => Err(StepErr::Cancelled),
+        };
+    }
+    Ok(future.await)
+}
+
+async fn wait_for_any_cancellation(ctx: &StreamCtx) {
+    if cancellation_requested(ctx) {
+        return;
+    }
+    match (ctx.turn_cancellation.clone(), ctx.cancellation.clone()) {
+        (Some(turn), Some(legacy)) => {
+            tokio::select! {
+                () = turn.cancelled() => {}
+                () = wait_for_cancellation(legacy) => {}
+            }
+        }
+        (Some(turn), None) => turn.cancelled().await,
+        (None, Some(legacy)) => wait_for_cancellation(legacy).await,
+        (None, None) => std::future::pending::<()>().await,
+    }
+}
+
 fn cancellation_requested(ctx: &StreamCtx) -> bool {
-    ctx.cancellation
+    ctx.turn_cancellation
         .as_ref()
-        .is_some_and(|flag| flag.load(Ordering::Acquire))
+        .is_some_and(TurnCancellation::is_cancelled)
+        || ctx
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
 }
 
 async fn cancel_scheduled_turn(
@@ -1385,19 +1628,63 @@ async fn cancel_scheduled_turn(
     store: &SchedulerStore,
     turn_id: &str,
 ) -> Result<TurnOutcome, Cancelled> {
-    if let Err(_error) = store
-        .transition_turn(
+    ctx.scheduled_dispatch = None;
+    let turn = match store.cancel_turn(turn_id).await {
+        Ok(turn) => turn,
+        Err(_error) => {
+            tracing::error!(turn_id, "failed to persist cancelled scheduler turn status");
+            return fail_scheduled_persistence(ctx, store, turn_id).await;
+        }
+    };
+    let kind = match turn.status {
+        TurnStatus::Cancelled => StreamEventKind::TurnCancelled,
+        TurnStatus::Superseded => StreamEventKind::TurnSuperseded,
+        _ if is_terminal_scheduler_turn(turn.status) => StreamEventKind::TurnCompleted,
+        _ => {
+            tracing::error!(
+                turn_id,
+                status = turn.status.as_str(),
+                "scheduler cancellation left a non-terminal turn"
+            );
+            return fail_scheduled_persistence(ctx, store, turn_id).await;
+        }
+    };
+    if ctx
+        .emit_scheduler_terminal(
+            kind,
+            json!({
+                "turn_id": turn.id,
+                "status": turn.status.as_str(),
+                "reason": turn.termination_reason.map(TurnReason::as_str),
+                "budget": {
+                    "agent_steps": turn.agent_steps,
+                    "moderator_calls": turn.moderator_calls,
+                    "consecutive_failures": turn.consecutive_failures,
+                    "total_failures": turn.total_failures,
+                    "total_tokens": turn.total_tokens,
+                },
+            }),
             turn_id,
-            TurnStatus::Running,
-            TurnStatus::Cancelled,
-            Some(TurnReason::UserCancelled.as_str()),
         )
         .await
+        .is_err()
     {
-        tracing::error!(turn_id, "failed to persist cancelled moderator turn status");
         return fail_scheduled_persistence(ctx, store, turn_id).await;
     }
     Ok(TurnOutcome::Cancelled)
+}
+
+fn is_terminal_scheduler_turn(status: TurnStatus) -> bool {
+    matches!(
+        status,
+        TurnStatus::Completed
+            | TurnStatus::Silence
+            | TurnStatus::BudgetExhausted
+            | TurnStatus::FailureBudgetExhausted
+            | TurnStatus::Cancelled
+            | TurnStatus::Superseded
+            | TurnStatus::Failed
+    )
 }
 
 async fn fail_scheduled_persistence(
@@ -1406,20 +1693,31 @@ async fn fail_scheduled_persistence(
     turn_id: &str,
 ) -> Result<TurnOutcome, Cancelled> {
     tracing::error!(turn_id, "scheduler persistence operation failed");
-    if store
-        .transition_turn(
-            turn_id,
-            TurnStatus::Running,
-            TurnStatus::Failed,
-            Some(TurnReason::PersistenceFailed.as_str()),
-        )
-        .await
-        .is_err()
-    {
-        tracing::error!(
-            turn_id,
-            "failed to terminalize scheduler turn after persistence error"
-        );
+    match store.load_turn_trace(turn_id).await {
+        Ok(trace) if !is_terminal_scheduler_turn(trace.turn.status) => {
+            if store
+                .transition_turn(
+                    turn_id,
+                    trace.turn.status,
+                    TurnStatus::Failed,
+                    Some(TurnReason::PersistenceFailed.as_str()),
+                )
+                .await
+                .is_err()
+            {
+                tracing::error!(
+                    turn_id,
+                    "failed to terminalize scheduler turn after persistence error"
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(_) => {
+            tracing::error!(
+                turn_id,
+                "failed to load scheduler turn after persistence error"
+            );
+        }
     }
     if ctx
         .allocator
@@ -1962,9 +2260,8 @@ async fn run_agent_turn(
             include_empty_tools: false,
             tools: invocation.tools.clone(),
         };
-        let mut deltas = provider
-            .stream(request)
-            .await
+        let mut deltas = await_with_cancellation(ctx, provider.stream(request))
+            .await?
             .map_err(|_error| StepErr::Db(anyhow::anyhow!("provider execution failed")))?;
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
@@ -1972,7 +2269,7 @@ async fn run_agent_turn(
         // reasoning (so token/tool interleaving splits reasoning blocks).
         let mut last_was_reasoning = false;
 
-        while let Some(delta) = deltas.recv().await {
+        while let Some(delta) = await_with_cancellation(ctx, deltas.recv()).await? {
             match delta {
                 ChatDelta::Token(text) => {
                     last_was_reasoning = false;
@@ -2181,7 +2478,11 @@ async fn maybe_persist_interrupted_agent(
     turn: &TurnData,
     checkpoint_interrupted: bool,
 ) -> Result<(), StepErr> {
-    if checkpoint_interrupted {
+    // Scheduler dispatch output must pass through `SchedulerStore::finish_dispatch`,
+    // which rechecks that its parent turn is still running. Writing an
+    // interrupted row directly here would let a cancelled/superseded turn
+    // append visible content after its persistent terminal transition.
+    if checkpoint_interrupted && ctx.scheduled_dispatch.is_none() {
         persist_interrupted_agent(ctx, agent, content, turn).await?;
     }
     Ok(())
@@ -2225,27 +2526,37 @@ async fn run_acp_agent_turn(
     }
     let context_hash = acp_context_hash(&invocation.system_prompt);
 
-    let mut run = run_acp_agent_stream(
-        services.pool.clone(),
-        AcpRunRequest {
-            owner_id: agent.owner_id.clone(),
-            group_id: Some(ctx.group_id.clone()),
-            agent_id: agent.agent_id.clone(),
-            thread_id: Some(ctx.thread_id.clone()),
-            config,
-            cwd,
-            prompt,
-            incremental_prompt: Some(incremental_prompt),
-            context_hash: Some(context_hash),
-        },
+    let mut run = await_with_cancellation(
+        ctx,
+        run_acp_agent_stream(
+            services.pool.clone(),
+            AcpRunRequest {
+                owner_id: agent.owner_id.clone(),
+                group_id: Some(ctx.group_id.clone()),
+                agent_id: agent.agent_id.clone(),
+                thread_id: Some(ctx.thread_id.clone()),
+                config,
+                cwd,
+                prompt,
+                incremental_prompt: Some(incremental_prompt),
+                context_hash: Some(context_hash),
+            },
+        ),
     )
-    .await
+    .await?
     .map_err(|err| StepErr::Db(err.into()))?;
 
     let mut content = String::new();
     let mut turn = TurnData::default();
     let mut last_was_reasoning = false;
-    while let Some(event) = run.next_event().await {
+    while let Some(event) = match await_with_cancellation(ctx, run.next_event()).await {
+        Ok(event) => event,
+        Err(StepErr::Cancelled) => {
+            run.control().cancel();
+            return Err(StepErr::Cancelled);
+        }
+        Err(error) => return Err(error),
+    } {
         match event.kind {
             AcpEventKind::Run => {
                 last_was_reasoning = false;
@@ -2315,7 +2626,15 @@ async fn run_acp_agent_turn(
             }
         }
     }
-    run.join().await.map_err(|err| StepErr::Db(err.into()))?;
+    let run_control = run.control();
+    match await_with_cancellation(ctx, run.join()).await {
+        Ok(result) => result.map_err(|err| StepErr::Db(err.into()))?,
+        Err(StepErr::Cancelled) => {
+            run_control.cancel();
+            return Err(StepErr::Cancelled);
+        }
+        Err(error) => return Err(error),
+    }
 
     finish_agent_content(ctx, agent, group.proactive_mode, content, &turn, true).await
 }
@@ -2388,7 +2707,8 @@ async fn execute_tool_call(
         return Err(err);
     }
 
-    let result = executor.execute(&call.name, call.args.clone()).await;
+    let result =
+        await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await?;
     turn.record_tool_result(
         Some(call.id.clone()),
         Some(call.name.clone()),
