@@ -56,7 +56,10 @@ function buildAgentMessage(
     status: 'visible',
     refs: null,
     context_usage: null,
+    turn_id: null,
+    dispatch_id: null,
     reply_to_message_id: event.stream_id,
+    turn_summary: null,
     created_at: nowIso(),
   }
 }
