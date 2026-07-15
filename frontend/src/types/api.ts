@@ -4,7 +4,7 @@
  * contracts until a Rust schema generation flow is introduced.
  */
 
-import type { GroupSchedulerConfig } from '@/lib/api-v2/types'
+import type { GroupSchedulerConfig, GroupTurnSummary } from '@/lib/api-v2/types'
 
 export interface UserRead {
   id: string
@@ -447,7 +447,10 @@ export interface Message {
   reasoning?: string[] | null
   /** Persisted tool calls (from `content_json`), in order. */
   tool_calls?: MessageToolCall[] | null
+  turn_id?: string | null
+  dispatch_id?: string | null
   reply_to_message_id: string | null
+  turn_summary?: Pick<GroupTurnSummary, 'status' | 'termination_reason'> | null
   created_at: string
 }
 

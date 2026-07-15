@@ -15,11 +15,11 @@ export type StreamEventKind =
   | 'error'
   | 'done'
 
-export interface StreamEvent<TPayload = unknown> {
+export interface StreamEvent<TPayload = unknown, TKind extends string = StreamEventKind> {
   stream_id: string
   seq: number
   event_id: string
-  kind: StreamEventKind
+  kind: TKind
   payload: TPayload
 }
 
@@ -48,3 +48,196 @@ export interface GroupSchedulerConfig {
   moderator_provider_id: string | null
   moderator_model: string | null
 }
+
+export type GroupTurnStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_for_user'
+  | 'completed'
+  | 'silence'
+  | 'budget_exhausted'
+  | 'failure_budget_exhausted'
+  | 'cancelled'
+  | 'superseded'
+  | 'failed'
+
+export type AgentDispatchStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'silent'
+  | 'waiting_for_user'
+  | 'interrupted'
+  | 'cancelled'
+  | 'failed'
+
+export type SchedulerActionKind = 'speak' | 'call' | 'handoff' | 'wait' | 'silent'
+
+export type SchedulerSelectionReason =
+  | 'user_mention'
+  | 'agent_call'
+  | 'agent_handoff'
+  | 'agent_text_mention'
+  | 'deterministic_order'
+  | 'moderator'
+  | 'moderator_fallback'
+
+export type GroupTurnTerminationReason =
+  | 'waiting_for_user'
+  | 'budget_exhausted'
+  | 'failure_budget_exhausted'
+  | 'user_cancelled'
+  | 'superseded'
+  | 'server_restart'
+  | 'persistence_failed'
+  | 'silence'
+
+export type SchedulerDispatchFailureReason = 'persistence_failed'
+
+export interface GroupTurnBudgetUsage {
+  agent_steps: number
+  moderator_calls: number
+  consecutive_failures: number
+  total_failures: number
+  total_tokens: number
+}
+
+export interface GroupTurnBudgetLimits {
+  max_agent_steps: number
+  max_steps_per_agent: number
+  max_hops: number
+  max_moderator_calls: number
+  max_consecutive_failures: number
+  max_total_failures: number
+  max_total_tokens: number
+}
+
+export interface GroupTurnSummary {
+  id: string
+  thread_id: string
+  group_id: string
+  trigger_message_id: string | null
+  status: GroupTurnStatus
+  scheduler_strategy: string
+  config_snapshot: unknown
+  topology_snapshot: unknown
+  agent_steps: number
+  moderator_calls: number
+  consecutive_failures: number
+  total_failures: number
+  total_tokens: number
+  termination_reason: GroupTurnTerminationReason | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  updated_at: string
+}
+
+export interface PublicTurnArtifact {
+  mode?: 'call' | 'handoff'
+  target_agent_id?: string
+  child_dispatch_id?: string
+  outcome?: string
+  failure_code?: string
+}
+
+export interface AgentDispatchTrace {
+  id: string
+  turn_id: string
+  parent_dispatch_id: string | null
+  source_agent_id: string | null
+  target_agent_id: string
+  selection_reason: SchedulerSelectionReason
+  action_kind: SchedulerActionKind
+  hop: number
+  status: AgentDispatchStatus
+  input_message_id: string | null
+  output_message_id: string | null
+  artifact: PublicTurnArtifact | null
+  total_tokens: number
+  failure_code: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  updated_at: string
+}
+
+export interface EstimatedCost {
+  amount: string
+  currency: string
+}
+
+export type CostEstimationStatus = 'unavailable'
+
+export interface GroupTurnTraceResponse {
+  turn: GroupTurnSummary
+  budget: GroupTurnBudgetUsage
+  dispatches: AgentDispatchTrace[]
+  estimated_cost: EstimatedCost | null
+  cost_estimation_status: CostEstimationStatus
+}
+
+export interface TurnStartedPayload {
+  turn_id: string
+  budget: GroupTurnBudgetLimits
+}
+
+export interface SpeakerSelectedPayload {
+  turn_id: string
+  dispatch_id: string
+  source_agent_id: string | null
+  target_agent_id: string
+  reason: SchedulerSelectionReason
+  action_kind: SchedulerActionKind
+  hop: number
+}
+
+export interface DispatchFailedPayload {
+  turn_id: string
+  dispatch_id: string
+  target_agent_id: string
+  action_kind: SchedulerActionKind
+  reason: SchedulerDispatchFailureReason
+}
+
+export interface ModeratorFallbackPayload {
+  turn_id: string
+  dispatch_id: string
+  target_agent_id: string
+  reason: 'moderator_fallback'
+}
+
+export interface TurnTerminalPayload {
+  turn_id: string
+  status: GroupTurnStatus
+  reason: GroupTurnTerminationReason | null
+  budget: GroupTurnBudgetUsage
+}
+
+export interface SchedulerDonePayload {
+  turn_id: string
+}
+
+export type SchedulerStreamEventKind =
+  | 'turn_started'
+  | 'speaker_selected'
+  | 'dispatch_failed'
+  | 'moderator_fallback'
+  | 'turn_cancelled'
+  | 'turn_superseded'
+  | 'turn_budget_exhausted'
+  | 'turn_completed'
+  | 'done'
+
+type SchedulerEvent<K extends SchedulerStreamEventKind, TPayload> = StreamEvent<TPayload, K>
+
+export type SchedulerStreamUpdate =
+  | SchedulerEvent<'turn_started', TurnStartedPayload>
+  | SchedulerEvent<'speaker_selected', SpeakerSelectedPayload>
+  | SchedulerEvent<'dispatch_failed', DispatchFailedPayload>
+  | SchedulerEvent<'moderator_fallback', ModeratorFallbackPayload>
+  | SchedulerEvent<'turn_cancelled', TurnTerminalPayload>
+  | SchedulerEvent<'turn_superseded', TurnTerminalPayload>
+  | SchedulerEvent<'turn_budget_exhausted', TurnTerminalPayload>
+  | SchedulerEvent<'turn_completed', TurnTerminalPayload>
+  | SchedulerEvent<'done', SchedulerDonePayload>
