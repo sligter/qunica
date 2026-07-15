@@ -1504,11 +1504,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
-      const ids = streamIds && streamIds.length > 0
-        ? streamIds
-        : Object.values(groupRuns)
-            .filter((run) => run.status === 'active')
-            .map((run) => run.id)
+      const ids = streamIds ??
+        Object.values(groupRuns)
+          .filter((run) => run.status === 'active')
+          .map((run) => run.id)
       if (ids.length === 0) return {}
       const timestamp = nowIso()
       const nextRuns = { ...groupRuns }

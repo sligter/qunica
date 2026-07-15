@@ -414,7 +414,9 @@ export function useSendMessageStream(
     refreshActiveCount()
 
     if (groupId) {
-      markStreamRunCancelled(groupId, legacyStreamIds)
+      if (legacyStreamIds.length > 0) {
+        markStreamRunCancelled(groupId, legacyStreamIds)
+      }
       if (streamIds.length > 0) {
         for (const streamId of streamIds) {
           clearStreamInFlight(groupId, streamId)
