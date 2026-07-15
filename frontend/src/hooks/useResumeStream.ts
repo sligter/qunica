@@ -12,7 +12,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
 import { fetchJson } from '@/lib/api-v2/client'
-import { parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
+import { parseGroupTurnTrace, parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
 import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
@@ -105,6 +105,7 @@ export function useResumeStream(
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
+  const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
   const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
@@ -263,21 +264,31 @@ export function useResumeStream(
         : null)
     if (groupId && turnId && token) {
       try {
-        await fetchJson(`/groups/${groupId}/turns/${turnId}/cancel`, {
-          method: 'POST',
-          token,
-        })
+        const trace = parseGroupTurnTrace(
+          await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
+            method: 'POST',
+            token,
+          }),
+        )
+        reconcileSchedulerTurn(groupId, trace)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
         return
       }
     }
     ctrlRef.current?.abort()
-    if (groupId && streamId) {
+    if (groupId && streamId && !turnId) {
       markStreamRunCancelled(groupId, [streamId])
     }
     finish()
-  }, [finish, groupId, markStreamRunCancelled, messageId, token])
+  }, [
+    finish,
+    groupId,
+    markStreamRunCancelled,
+    messageId,
+    reconcileSchedulerTurn,
+    token,
+  ])
 
   return { resume, cancel, isStreaming, error }
 }

@@ -12,7 +12,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
 import { fetchJson } from '@/lib/api-v2/client'
-import { parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
+import { parseGroupTurnTrace, parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
 import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
@@ -244,32 +244,19 @@ function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
   }
 }
 
-type StreamProtocol = 'unknown' | 'scheduler' | 'legacy'
+type StreamProtocol = 'scheduler' | 'legacy'
 
 interface PendingCancellation {
   requestIds: Set<string>
   completing: boolean
-  timeoutId: number
   promise: Promise<void>
   resolve: () => void
 }
 
-const LEGACY_CANCEL_DISCOVERY_TIMEOUT_MS = 5_000
-
-function isSchedulerWireKind(kind: string): boolean {
-  return (
-    kind === 'turn_started' ||
-    kind === 'speaker_selected' ||
-    kind === 'dispatch_failed' ||
-    kind === 'moderator_fallback' ||
-    kind === 'turn_cancelled' ||
-    kind === 'turn_superseded' ||
-    kind === 'turn_budget_exhausted' ||
-    kind === 'turn_completed'
-  )
-}
-
-export function useSendMessageStream(groupId: string | undefined) {
+export function useSendMessageStream(
+  groupId: string | undefined,
+  schedulerEnabled: boolean,
+) {
   const token = useAuthStore((s) => s.token)
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const appendMessage = useMessageStore((s) => s.appendMessage)
@@ -297,6 +284,7 @@ export function useSendMessageStream(groupId: string | undefined) {
   const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
   const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
+  const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunError = useMessageStore((s) => s.markStreamRunError)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
@@ -326,7 +314,6 @@ export function useSendMessageStream(groupId: string | undefined) {
     return () => {
       const pendingCancellation = pendingCancellationRef.current
       if (pendingCancellation) {
-        window.clearTimeout(pendingCancellation.timeoutId)
         pendingCancellation.resolve()
         pendingCancellationRef.current = null
       }
@@ -364,13 +351,12 @@ export function useSendMessageStream(groupId: string | undefined) {
       streamsRef.current.has(id),
     )
     for (const id of activeRequestIds) {
-      const protocol = streamProtocolByRequestRef.current.get(id) ?? 'unknown'
-      if (protocol === 'unknown') return
+      const protocol = streamProtocolByRequestRef.current.get(id)
+      if (!protocol) return
       if (protocol === 'scheduler' && !schedulerTurnByRequestRef.current.has(id)) return
     }
 
     pending.completing = true
-    window.clearTimeout(pending.timeoutId)
     const schedulerRequestIds = activeRequestIds.filter(
       (id) => streamProtocolByRequestRef.current.get(id) === 'scheduler',
     )
@@ -389,14 +375,17 @@ export function useSendMessageStream(groupId: string | undefined) {
 
     try {
       if (groupId && token) {
-        await Promise.all(
+        const traces = await Promise.all(
           Array.from(turnIds, (turnId) =>
-            fetchJson(`/groups/${groupId}/turns/${turnId}/cancel`, {
+            fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
               method: 'POST',
               token,
-            }),
+            }).then(parseGroupTurnTrace),
           ),
         )
+        for (const trace of traces) {
+          reconcileSchedulerTurn(groupId, trace)
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -407,6 +396,10 @@ export function useSendMessageStream(groupId: string | undefined) {
     if (pendingCancellationRef.current !== pending) return
 
     const streamIds = activeRequestIds
+      .map((id) => streamIdsRef.current.get(id))
+      .filter((streamId): streamId is string => Boolean(streamId))
+    const legacyStreamIds = activeRequestIds
+      .filter((id) => streamProtocolByRequestRef.current.get(id) === 'legacy')
       .map((id) => streamIdsRef.current.get(id))
       .filter((streamId): streamId is string => Boolean(streamId))
     for (const id of activeRequestIds) {
@@ -421,7 +414,7 @@ export function useSendMessageStream(groupId: string | undefined) {
     refreshActiveCount()
 
     if (groupId) {
-      markStreamRunCancelled(groupId, streamIds)
+      markStreamRunCancelled(groupId, legacyStreamIds)
       if (streamIds.length > 0) {
         for (const streamId of streamIds) {
           clearStreamInFlight(groupId, streamId)
@@ -442,6 +435,7 @@ export function useSendMessageStream(groupId: string | undefined) {
     groupId,
     invalidate,
     markStreamRunCancelled,
+    reconcileSchedulerTurn,
     refreshActiveCount,
     token,
   ])
@@ -488,7 +482,10 @@ export function useSendMessageStream(groupId: string | undefined) {
         return
       }
       const id = requestId()
-      streamProtocolByRequestRef.current.set(id, 'unknown')
+      streamProtocolByRequestRef.current.set(
+        id,
+        schedulerEnabled ? 'scheduler' : 'legacy',
+      )
       setError(null)
       clearWarnings(groupId)
       clearToolActivity(groupId)
@@ -518,14 +515,6 @@ export function useSendMessageStream(groupId: string | undefined) {
                 window.setTimeout(() => clearToolActivity(groupId), 4_000)
               }
               return
-            }
-            if (
-              !isSchedulerWireKind(event.kind) &&
-              event.kind !== 'user_message' &&
-              streamProtocolByRequestRef.current.get(id) !== 'scheduler'
-            ) {
-              streamProtocolByRequestRef.current.set(id, 'legacy')
-              void completePendingCancellation()
             }
             if (!acceptsStreamEvent(groupId, streamId)) return
             const agentDisplayName = (agentId: string | undefined, fallback?: string) => {
@@ -795,6 +784,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       pushWarning,
       qc,
       refreshActiveCount,
+      schedulerEnabled,
       setActiveAgent,
       setStreamAgentContextUsage,
       startStreamRun,
@@ -815,20 +805,9 @@ export function useSendMessageStream(groupId: string | undefined) {
     const pending: PendingCancellation = {
       requestIds: new Set(streamsRef.current.keys()),
       completing: false,
-      timeoutId: 0,
       promise,
       resolve,
     }
-    pending.timeoutId = window.setTimeout(() => {
-      if (pendingCancellationRef.current !== pending || pending.completing) return
-      for (const id of pending.requestIds) {
-        if (!streamsRef.current.has(id)) continue
-        if ((streamProtocolByRequestRef.current.get(id) ?? 'unknown') === 'unknown') {
-          streamProtocolByRequestRef.current.set(id, 'legacy')
-        }
-      }
-      void completePendingCancellation()
-    }, LEGACY_CANCEL_DISCOVERY_TIMEOUT_MS)
     pendingCancellationRef.current = pending
     void completePendingCancellation()
     return promise

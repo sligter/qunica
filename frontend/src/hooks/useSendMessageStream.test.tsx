@@ -37,6 +37,44 @@ const budget = {
   max_total_tokens: 1000,
 }
 
+function traceResponse(
+  status: 'cancelled' | 'completed' = 'cancelled',
+  terminationReason: 'user_cancelled' | null = 'user_cancelled',
+) {
+  return {
+    turn: {
+      id: 'turn-1',
+      thread_id: 'thread-1',
+      group_id: 'group-1',
+      trigger_message_id: 'message-1',
+      status,
+      scheduler_strategy: 'deterministic',
+      config_snapshot: {},
+      topology_snapshot: {},
+      agent_steps: 1,
+      moderator_calls: 0,
+      consecutive_failures: 0,
+      total_failures: 0,
+      total_tokens: 10,
+      termination_reason: terminationReason,
+      created_at: '2026-07-15T00:00:00Z',
+      started_at: '2026-07-15T00:00:01Z',
+      completed_at: '2026-07-15T00:00:02Z',
+      updated_at: '2026-07-15T00:00:02Z',
+    },
+    budget: {
+      agent_steps: 1,
+      moderator_calls: 0,
+      consecutive_failures: 0,
+      total_failures: 0,
+      total_tokens: 10,
+    },
+    dispatches: [],
+    estimated_cost: null,
+    cost_estimation_status: 'unavailable',
+  }
+}
+
 function wrapper(queryClient: QueryClient) {
   return function TestWrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -49,14 +87,16 @@ function emit(handlers: ApiV2SseHandlers, event: unknown) {
 
 describe('useSendMessageStream scheduler events', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     mocks.streams.length = 0
     mocks.fetchJson.mockReset()
-    mocks.fetchJson.mockResolvedValue({})
+    mocks.fetchJson.mockResolvedValue(traceResponse())
     useMessageStore.setState(initialMessages, true)
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
   it('queues pre-turn cancellation, posts once when the turn arrives, then aborts', async () => {
+    vi.useFakeTimers()
     let resolveCancel!: (value: unknown) => void
     mocks.fetchJson.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -64,7 +104,7 @@ describe('useSendMessageStream scheduler events', () => {
       }),
     )
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1'), {
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
 
@@ -82,6 +122,10 @@ describe('useSendMessageStream scheduler events', () => {
     act(() => {
       cancelPromise = hook.result.current.cancel()
     })
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    expect(stream.abort).not.toHaveBeenCalled()
+
+    await act(async () => vi.advanceTimersByTimeAsync(6_000))
     expect(mocks.fetchJson).not.toHaveBeenCalled()
     expect(stream.abort).not.toHaveBeenCalled()
 
@@ -119,7 +163,7 @@ describe('useSendMessageStream scheduler events', () => {
     expect(stream.abort).not.toHaveBeenCalled()
 
     await act(async () => {
-      resolveCancel({})
+      resolveCancel(traceResponse())
       await cancelPromise
     })
     expect(stream.abort).toHaveBeenCalledTimes(1)
@@ -135,7 +179,7 @@ describe('useSendMessageStream scheduler events', () => {
   it('promotes scheduler waiting_for_user before done and invalidates its trace', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    const hook = renderHook(() => useSendMessageStream('group-1'), {
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
     act(() => hook.result.current.send('hello'))
@@ -183,9 +227,9 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
-  it('cancels a stream as legacy once a legacy execution event identifies it', async () => {
+  it('aborts immediately when the caller explicitly selects legacy mode', async () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1'), {
+    const hook = renderHook(() => useSendMessageStream('group-1', false), {
       wrapper: wrapper(queryClient),
     })
     act(() => hook.result.current.send('hello'))
@@ -201,15 +245,6 @@ describe('useSendMessageStream scheduler events', () => {
     act(() => {
       cancelPromise = hook.result.current.cancel()
     })
-    expect(stream.abort).not.toHaveBeenCalled()
-
-    emit(stream.handlers, {
-      stream_id: 'stream-1',
-      seq: 2,
-      event_id: 'event-2',
-      kind: 'agent_start',
-      payload: { agent_id: 'agent-1', display_name: 'Agent One' },
-    })
     await act(async () => cancelPromise)
 
     expect(mocks.fetchJson).not.toHaveBeenCalled()
@@ -219,10 +254,45 @@ describe('useSendMessageStream scheduler events', () => {
     ).toBe('cancelled')
   })
 
+  it('reconciles an idempotent completed cancel response before aborting', async () => {
+    mocks.fetchJson.mockResolvedValueOnce(traceResponse('completed', null))
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => hook.result.current.send('hello'))
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+
+    await act(async () => hook.result.current.cancel())
+
+    expect(stream.abort).toHaveBeenCalledTimes(1)
+    expect(
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'],
+    ).toMatchObject({
+      status: 'completed',
+      scheduler_status: 'completed',
+      terminal_reason: null,
+    })
+  })
+
   it('rejects late bubbles and messages after supersede and invalidates the terminal trace', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    const hook = renderHook(() => useSendMessageStream('group-1'), {
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
     act(() => hook.result.current.send('hello'))
@@ -287,7 +357,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('normalizes live call and budget events without storing dispatch details', () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1'), {
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
     act(() => hook.result.current.send('hello'))

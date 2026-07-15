@@ -38,6 +38,44 @@ const budget = {
   max_total_tokens: 1000,
 }
 
+function traceResponse(
+  status: 'cancelled' | 'completed' = 'cancelled',
+  terminationReason: 'user_cancelled' | null = 'user_cancelled',
+) {
+  return {
+    turn: {
+      id: 'turn-1',
+      thread_id: 'thread-1',
+      group_id: 'group-1',
+      trigger_message_id: 'trigger-1',
+      status,
+      scheduler_strategy: 'deterministic',
+      config_snapshot: {},
+      topology_snapshot: {},
+      agent_steps: 1,
+      moderator_calls: 0,
+      consecutive_failures: 0,
+      total_failures: 0,
+      total_tokens: 10,
+      termination_reason: terminationReason,
+      created_at: '2026-07-15T00:00:00Z',
+      started_at: '2026-07-15T00:00:01Z',
+      completed_at: '2026-07-15T00:00:02Z',
+      updated_at: '2026-07-15T00:00:02Z',
+    },
+    budget: {
+      agent_steps: 1,
+      moderator_calls: 0,
+      consecutive_failures: 0,
+      total_failures: 0,
+      total_tokens: 10,
+    },
+    dispatches: [],
+    estimated_cost: null,
+    cost_estimation_status: 'unavailable',
+  }
+}
+
 const interruptedMessage: Message = {
   id: 'message-1',
   group_id: 'group-1',
@@ -88,7 +126,7 @@ describe('useResumeStream scheduler events', () => {
   beforeEach(() => {
     mocks.streams.length = 0
     mocks.fetchJson.mockReset()
-    mocks.fetchJson.mockResolvedValue({})
+    mocks.fetchJson.mockResolvedValue(traceResponse())
     useMessageStore.setState(initialMessages, true)
     useMessageStore.getState().setHistory('group-1', [interruptedMessage])
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
@@ -320,5 +358,45 @@ describe('useResumeStream scheduler events', () => {
       'trigger-1',
       'message-1',
     ])
+  })
+
+  it('reconciles waiting_for_user to the parsed cancel response before aborting', async () => {
+    useMessageStore.getState().setHistory('group-1', [triggerMessage, interruptedMessage])
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-resumed',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-resumed',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'waiting_for_user',
+      payload: { message: 'Need more information' },
+    })
+
+    await act(async () => hook.result.current.cancel())
+
+    expect(mocks.fetchJson).toHaveBeenCalledWith('/groups/group-1/turns/turn-1/cancel', {
+      method: 'POST',
+      token: 'token-1',
+    })
+    expect(stream.abort).toHaveBeenCalledTimes(1)
+    expect(
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-resumed'],
+    ).toMatchObject({
+      status: 'cancelled',
+      scheduler_status: 'cancelled',
+      terminal_reason: 'user_cancelled',
+    })
   })
 })

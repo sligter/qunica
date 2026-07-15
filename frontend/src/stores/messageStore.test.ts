@@ -336,5 +336,79 @@ describe('messageStore scheduler state', () => {
     expect(run.criticalSummaries.map((summary) => summary.kind)).toEqual([
       'waiting_for_user',
     ])
+
+    expect(
+      store.applySchedulerEvent(
+        'group-1',
+        'stream-1',
+        update('turn_cancelled', {
+          turn_id: 'turn-1',
+          status: 'cancelled',
+          reason: 'user_cancelled',
+          budget: {
+            agent_steps: 1,
+            moderator_calls: 0,
+            consecutive_failures: 0,
+            total_failures: 0,
+            total_tokens: 10,
+          },
+        }, 3),
+      ),
+    ).toBe(true)
+    expect(
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'],
+    ).toMatchObject({
+      scheduler_status: 'cancelled',
+      terminal_reason: 'user_cancelled',
+    })
+  })
+
+  it('preserves another active stream while canonical history is reconciled', () => {
+    const store = useMessageStore.getState()
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.startStreamRun('group-1', 'stream-2', message('message-2'))
+    store.patchInFlight('group-1', 'agent-1', 'finished', 'stream-1')
+    store.patchInFlight('group-1', 'agent-2', 'still running', 'stream-2')
+    store.setActiveAgent('group-1', {
+      agent_id: 'agent-1',
+      display_name: 'Agent One',
+      index: 0,
+      total: 2,
+      stream_id: 'stream-1',
+    })
+    store.setActiveAgent('group-1', {
+      agent_id: 'agent-2',
+      display_name: 'Agent Two',
+      index: 1,
+      total: 2,
+      stream_id: 'stream-2',
+    })
+    store.pushWarning('group-1', 'Keep this warning')
+    store.pushToolActivity('group-1', {
+      id: 'tool-2',
+      agent_id: 'agent-2',
+      display_name: 'Agent Two',
+      tool_name: 'lookup',
+      status: 'started',
+    })
+    store.clearStreamInFlight('group-1', 'stream-1')
+    store.clearActiveAgent('group-1', undefined, 'stream-1')
+
+    store.setHistory('group-1', [message('canonical-message')])
+
+    const state = useMessageStore.getState()
+    expect(state.byGroup['group-1'].map((item) => item.id)).toEqual([
+      'canonical-message',
+    ])
+    expect(state.inFlightByGroup['group-1']).toEqual({
+      'stream-2:agent-2': expect.objectContaining({ content: 'still running' }),
+    })
+    expect(state.activeAgentsByGroup['group-1']).toEqual({
+      'stream-2:agent-2': expect.objectContaining({ agent_id: 'agent-2' }),
+    })
+    expect(state.warningsByGroup['group-1']).toEqual(['Keep this warning'])
+    expect(state.toolActivityByGroup['group-1']).toEqual([
+      expect.objectContaining({ id: 'tool-2', status: 'started' }),
+    ])
   })
 })

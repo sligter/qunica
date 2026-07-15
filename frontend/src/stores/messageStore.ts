@@ -13,6 +13,7 @@ import { create } from 'zustand'
 
 import type { HumanInputRequest } from '@/lib/humanInput'
 import type {
+  GroupTurnTraceResponse,
   GroupTurnStatus,
   GroupTurnTerminationReason,
   SchedulerStreamUpdate,
@@ -253,6 +254,7 @@ interface MessageState {
     streamId: string,
     userMessageId: string,
   ) => void
+  reconcileSchedulerTurn: (groupId: string, trace: GroupTurnTraceResponse) => void
   acceptsStreamEvent: (groupId: string, streamId: string) => boolean
   markStreamRunWaitingForUser: (groupId: string, streamId: string) => string | null
   markStreamRunDone: (groupId: string, streamId: string) => void
@@ -488,7 +490,53 @@ function schedulerTurnId(update: SchedulerStreamUpdate): string {
 }
 
 function schedulerStatusAcceptsEvents(status: GroupTurnStatus | null): boolean {
-  return status === null || status === 'pending' || status === 'running'
+  return (
+    status === null ||
+    status === 'pending' ||
+    status === 'running' ||
+    status === 'waiting_for_user'
+  )
+}
+
+function streamStatusFromSchedulerStatus(status: GroupTurnStatus): StreamRunStatus {
+  if (status === 'cancelled') return 'cancelled'
+  if (status === 'failed') return 'error'
+  if (status === 'pending' || status === 'running' || status === 'waiting_for_user') {
+    return 'active'
+  }
+  return 'completed'
+}
+
+function reconciledTurnSummary(
+  turnId: string,
+  status: GroupTurnStatus,
+  timestamp: string,
+): SchedulerCriticalSummary | null {
+  const base = { id: `reconciled:${turnId}:${status}`, count: 1, created_at: timestamp }
+  switch (status) {
+    case 'waiting_for_user':
+      return { ...base, kind: 'waiting_for_user', message: 'Turn is waiting for user input' }
+    case 'cancelled':
+      return { ...base, kind: 'cancelled', message: 'Turn cancelled' }
+    case 'superseded':
+      return { ...base, kind: 'superseded', message: 'Turn superseded by a newer message' }
+    case 'budget_exhausted':
+      return { ...base, kind: 'budget_exhausted', message: 'Turn reached its budget limit' }
+    case 'failure_budget_exhausted':
+      return {
+        ...base,
+        kind: 'budget_exhausted',
+        message: 'Turn stopped after repeated failures',
+      }
+    case 'silence':
+      return { ...base, kind: 'silence', message: 'Turn completed without a visible reply' }
+    case 'failed':
+      return { ...base, kind: 'failed', message: 'Turn failed' }
+    case 'pending':
+    case 'running':
+    case 'completed':
+      return null
+  }
 }
 
 function upsertTimelineEvent(
@@ -605,10 +653,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   setHistory: (groupId, messages) =>
     set((s) => ({
       byGroup: { ...s.byGroup, [groupId]: messages },
-      inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
-      activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
-      warningsByGroup: { ...s.warningsByGroup, [groupId]: [] },
-      toolActivityByGroup: { ...s.toolActivityByGroup, [groupId]: [] },
     })),
 
   prependHistory: (groupId, messages) =>
@@ -1309,6 +1353,41 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     }),
 
+  reconcileSchedulerTurn: (groupId, trace) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const matchingRuns = Object.values(groupRuns).filter(
+        (run) => run.turn_id === trace.turn.id,
+      )
+      if (matchingRuns.length === 0) return {}
+      const timestamp = nowIso()
+      const summary = reconciledTurnSummary(
+        trace.turn.id,
+        trace.turn.status,
+        timestamp,
+      )
+      const nextRuns = { ...groupRuns }
+      for (const run of matchingRuns) {
+        nextRuns[run.id] = {
+          ...run,
+          status: streamStatusFromSchedulerStatus(trace.turn.status),
+          scheduler_status: trace.turn.status,
+          terminal_reason: trace.turn.termination_reason,
+          criticalSummaries: appendOrFoldSchedulerSummary(
+            run.criticalSummaries,
+            summary,
+          ),
+          updated_at: timestamp,
+        }
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: nextRuns,
+        },
+      }
+    }),
+
   acceptsStreamEvent: (groupId, streamId) => {
     const run = get().streamRunsByGroup[groupId]?.[streamId]
     return !run || schedulerStatusAcceptsEvents(run.scheduler_status)
@@ -1318,6 +1397,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const groupRuns = get().streamRunsByGroup[groupId] ?? {}
     const run = groupRuns[streamId]
     if (!run?.turn_id || !schedulerStatusAcceptsEvents(run.scheduler_status)) {
+      return null
+    }
+    if (
+      run.scheduler_status === 'waiting_for_user' &&
+      run.terminal_reason === 'waiting_for_user'
+    ) {
       return null
     }
     const timestamp = nowIso()
