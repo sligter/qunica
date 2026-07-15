@@ -14,6 +14,10 @@ class ResizeObserverMock {
 }
 
 vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+Element.prototype.hasPointerCapture = () => false
+Element.prototype.setPointerCapture = () => {}
+Element.prototype.releasePointerCapture = () => {}
+Element.prototype.scrollIntoView = () => {}
 
 const mocks = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
@@ -37,8 +41,25 @@ const mocks = vi.hoisted(() => ({
       status: 'active',
       created_at: '2026-01-01T00:00:00Z',
     },
+    {
+      id: 'provider-2',
+      name: 'Secondary provider',
+      kind: 'openai-compatible',
+      base_url: null,
+      api_key_masked: '***',
+      default_model: 'gpt-secondary',
+      context_window_tokens: null,
+      context_output_reserve_ratio: null,
+      description: null,
+      reasoning_passback: false,
+      status: 'active',
+      created_at: '2026-01-01T00:00:00Z',
+    },
   ],
-  models: [{ id: 'gpt-test', name: 'GPT test' }],
+  modelsByProvider: {
+    'provider-1': [{ id: 'gpt-test', name: 'GPT test' }],
+    'provider-2': [{ id: 'gpt-secondary', name: 'GPT secondary' }],
+  } as Record<string, Array<{ id: string; name: string }>>,
 }))
 
 vi.mock('@/hooks/useGroups', () => ({
@@ -47,7 +68,10 @@ vi.mock('@/hooks/useGroups', () => ({
 
 vi.mock('@/hooks/useProviders', () => ({
   useProviders: () => ({ data: mocks.providers, isLoading: false }),
-  useProviderModels: () => ({ data: mocks.models, isLoading: false }),
+  useProviderModels: (providerId: string | undefined) => ({
+    data: providerId ? mocks.modelsByProvider[providerId] ?? [] : [],
+    isLoading: false,
+  }),
 }))
 
 const group: GroupRead = {
@@ -101,7 +125,10 @@ describe('GroupSchedulerSettingsSection', () => {
     mocks.updateState.isPending = false
     mocks.updateState.error = null
     mocks.updateState.mutateAsync = mocks.mutateAsync
-    mocks.mutateAsync.mockResolvedValue(group)
+    mocks.mutateAsync.mockImplementation(async (payload: Partial<GroupRead>) => ({
+      ...group,
+      ...payload,
+    }))
   })
 
   it('renders null max_agent_steps as the Auto mode and submits null', async () => {
@@ -109,7 +136,7 @@ describe('GroupSchedulerSettingsSection', () => {
     renderSection()
 
     expect(screen.getByRole('combobox', { name: 'Maximum agent steps mode' })).toHaveTextContent(
-      'Auto (3x agents, min 8, max 24)',
+      'Auto (3× agents, min 8, max 24)',
     )
 
     await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
@@ -160,6 +187,46 @@ describe('GroupSchedulerSettingsSection', () => {
     expect(await screen.findByText('Choose an active provider for the moderator')).toBeVisible()
     expect(await screen.findByText('Choose a model for the moderator')).toBeVisible()
     expect(mocks.mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('clears a previous-provider model and requires a valid replacement before save', async () => {
+    const user = userEvent.setup()
+    renderSection({
+      ...group,
+      scheduler_enabled: true,
+      moderator_enabled: true,
+      moderator_provider_id: 'provider-1',
+      moderator_model: 'gpt-test',
+    })
+
+    expect(screen.getByRole('combobox', { name: 'Moderator model' })).toHaveTextContent(
+      'GPT test',
+    )
+    await user.click(screen.getByRole('combobox', { name: 'Moderator provider' }))
+    await user.click(
+      await screen.findByRole('option', { name: 'Secondary provider - gpt-secondary' }),
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Moderator model' })).toHaveTextContent(
+      'No model',
+    )
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Choose a model for the moderator')).toBeVisible()
+    expect(mocks.mutateAsync).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('combobox', { name: 'Moderator model' }))
+    expect(screen.queryByRole('option', { name: 'GPT test' })).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('option', { name: 'GPT secondary' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          moderator_provider_id: 'provider-2',
+          moderator_model: 'gpt-secondary',
+        }),
+      )
+    })
   })
 
   it('does not mutate when numeric input is outside backend bounds', async () => {

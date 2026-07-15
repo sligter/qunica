@@ -221,6 +221,14 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
     form.setValue(field, value, { shouldDirty: true, shouldValidate: true })
   }
 
+  const onProviderChange = (value: string) => {
+    const providerId = value === NO_SELECTION ? null : value
+    if (providerId === selectedProviderId) return
+
+    updateValue('moderator_provider_id', providerId)
+    updateValue('moderator_model', null)
+  }
+
   return (
     <SettingsSection
       title="Bounded scheduler"
@@ -274,9 +282,10 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
 
         <SettingsRow
           label="Maximum agent steps"
-          description="Auto derives 3 times the active agents, with a minimum of 8 and maximum of 24."
+          description="Auto derives 3× the active agents, with a minimum of 8 and maximum of 24."
+          stacked
         >
-          <div className="flex items-center gap-2">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,18rem)_5rem]">
             <Select
               value={maxAgentStepsMode}
               onValueChange={(value) => {
@@ -286,11 +295,11 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               }}
               disabled={schedulerControlsDisabled}
             >
-              <SelectTrigger className="w-72" aria-label="Maximum agent steps mode">
+              <SelectTrigger className="w-full" aria-label="Maximum agent steps mode">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="auto">Auto (3x agents, min 8, max 24)</SelectItem>
+                <SelectItem value="auto">Auto (3× agents, min 8, max 24)</SelectItem>
                 <SelectItem value="custom">Custom</SelectItem>
               </SelectContent>
             </Select>
@@ -300,7 +309,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
                 type="number"
                 min={1}
                 step={1}
-                className="w-20"
+                className="w-full sm:w-20"
                 disabled={schedulerControlsDisabled || maxAgentStepsMode !== 'custom'}
                 {...form.register('max_agent_steps_custom', numericRegistration())}
               />
@@ -428,16 +437,14 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           />
         </SettingsRow>
 
-        <SettingsRow label="Moderator provider">
+        <SettingsRow label="Moderator provider" stacked>
           <div className="space-y-1">
             <Select
               value={selectedProviderId ?? NO_SELECTION}
-              onValueChange={(value) =>
-                updateValue('moderator_provider_id', value === NO_SELECTION ? null : value)
-              }
+              onValueChange={onProviderChange}
               disabled={moderatorControlsDisabled || providers.isLoading}
             >
-              <SelectTrigger className="w-64" aria-label="Moderator provider">
+              <SelectTrigger className="w-full max-w-md" aria-label="Moderator provider">
                 <SelectValue placeholder={providers.isLoading ? 'Loading providers...' : 'Choose provider'} />
               </SelectTrigger>
               <SelectContent>
@@ -457,7 +464,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Moderator model">
+        <SettingsRow label="Moderator model" stacked>
           <div className="space-y-1">
             <Select
               value={selectedModel ?? NO_SELECTION}
@@ -466,7 +473,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               }
               disabled={moderatorControlsDisabled || !selectedProviderId || models.isLoading}
             >
-              <SelectTrigger className="w-64" aria-label="Moderator model">
+              <SelectTrigger className="w-full max-w-md" aria-label="Moderator model">
                 <SelectValue placeholder={models.isLoading ? 'Loading models...' : 'Choose model'} />
               </SelectTrigger>
               <SelectContent>
