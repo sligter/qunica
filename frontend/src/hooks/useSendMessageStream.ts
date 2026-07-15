@@ -11,8 +11,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
+import { fetchJson } from '@/lib/api-v2/client'
+import { parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
-import type { StreamEvent } from '@/lib/api-v2/types'
+import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
@@ -205,6 +207,7 @@ function buildAgentMessage(
   groupId: string,
   event: StreamEvent,
   payload: AgentMessagePayload,
+  turnId: string | null,
 ): Message {
   return {
     id: payload.message_id,
@@ -217,11 +220,27 @@ function buildAgentMessage(
     status: 'visible',
     refs: null,
     context_usage: normalizeContextUsage(payload.context_usage),
-    turn_id: null,
+    turn_id: turnId,
     dispatch_id: null,
     reply_to_message_id: event.stream_id,
     turn_summary: null,
     created_at: nowIso(),
+  }
+}
+
+function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
+  switch (update.kind) {
+    case 'turn_cancelled':
+    case 'turn_superseded':
+    case 'turn_budget_exhausted':
+    case 'turn_completed':
+      return true
+    case 'turn_started':
+    case 'speaker_selected':
+    case 'dispatch_failed':
+    case 'moderator_fallback':
+    case 'done':
+      return false
   }
 }
 
@@ -250,6 +269,8 @@ export function useSendMessageStream(groupId: string | undefined) {
   const upsertStreamTool = useMessageStore((s) => s.upsertStreamTool)
   const upsertStreamExternalRun = useMessageStore((s) => s.upsertStreamExternalRun)
   const appendStreamNotice = useMessageStore((s) => s.appendStreamNotice)
+  const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
+  const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunError = useMessageStore((s) => s.markStreamRunError)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
@@ -287,6 +308,14 @@ export function useSendMessageStream(groupId: string | undefined) {
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
   }, [groupId, qc])
+
+  const invalidateTurn = useCallback(
+    (turnId: string) => {
+      if (!groupId) return
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'turns', turnId] })
+    },
+    [groupId, qc],
+  )
 
   const finishStream = useCallback(
     (id: string, streamId?: string | null) => {
@@ -329,6 +358,22 @@ export function useSendMessageStream(groupId: string | undefined) {
           onEvent: (event) => {
             const streamId = event.stream_id
             streamIdsRef.current.set(id, streamId)
+            const schedulerUpdate = parseSchedulerStreamEvent(event)
+            if (schedulerUpdate) {
+              if (!applySchedulerEvent(groupId, streamId, schedulerUpdate)) return
+              if (isTerminalSchedulerUpdate(schedulerUpdate)) {
+                invalidateTurn(schedulerUpdate.payload.turn_id)
+              }
+              if (schedulerUpdate.kind === 'done') {
+                if (!erroredStreamIdsRef.current.has(streamId)) {
+                  markStreamRunDone(groupId, streamId)
+                }
+                finishStream(id, streamId)
+                window.setTimeout(() => clearToolActivity(groupId), 4_000)
+              }
+              return
+            }
+            if (!acceptsStreamEvent(groupId, streamId)) return
             const agentDisplayName = (agentId: string | undefined, fallback?: string) => {
               if (fallback) return fallback
               if (agentId) {
@@ -403,7 +448,9 @@ export function useSendMessageStream(groupId: string | undefined) {
               case 'agent_message': {
                 const parsed = agentMessagePayloadSchema.safeParse(event.payload)
                 if (!parsed.success) return
-                const msg = buildAgentMessage(groupId, event, parsed.data)
+                const turnId = useMessageStore.getState().streamRunsByGroup[groupId]?.[streamId]
+                  ?.turn_id ?? null
+                const msg = buildAgentMessage(groupId, event, parsed.data, turnId)
                 finalizeStreamDraft(
                   groupId,
                   streamId,
@@ -564,6 +611,8 @@ export function useSendMessageStream(groupId: string | undefined) {
     },
     [
       addStreamAgentStart,
+      acceptsStreamEvent,
+      applySchedulerEvent,
       appendMessage,
       appendStreamNotice,
       clearActiveAgent,
@@ -578,6 +627,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       finalizeStreamDraft,
       finishStream,
       groupId,
+      invalidateTurn,
       markStreamRunDone,
       markStreamRunError,
       patchInFlight,
@@ -596,8 +646,31 @@ export function useSendMessageStream(groupId: string | undefined) {
     ],
   )
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback(async () => {
     const streamIds = Array.from(new Set(streamIdsRef.current.values()))
+    if (groupId && token) {
+      const turns = new Set(
+        streamIds
+          .map(
+            (streamId) =>
+              useMessageStore.getState().streamRunsByGroup[groupId]?.[streamId]?.turn_id,
+          )
+          .filter((turnId): turnId is string => Boolean(turnId)),
+      )
+      try {
+        await Promise.all(
+          Array.from(turns, (turnId) =>
+            fetchJson(`/groups/${groupId}/turns/${turnId}/cancel`, {
+              method: 'POST',
+              token,
+            }),
+          ),
+        )
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        return
+      }
+    }
     for (const ctrl of streamsRef.current.values()) {
       ctrl.abort()
     }
@@ -617,7 +690,14 @@ export function useSendMessageStream(groupId: string | undefined) {
       }
     }
     window.setTimeout(invalidate, 700)
-  }, [clearInFlight, clearStreamInFlight, groupId, invalidate, markStreamRunCancelled])
+  }, [
+    clearInFlight,
+    clearStreamInFlight,
+    groupId,
+    invalidate,
+    markStreamRunCancelled,
+    token,
+  ])
 
   return { send, cancel, isStreaming: activeStreamCount > 0, activeStreamCount, error }
 }

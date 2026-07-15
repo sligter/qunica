@@ -12,6 +12,11 @@
 import { create } from 'zustand'
 
 import type { HumanInputRequest } from '@/lib/humanInput'
+import type {
+  GroupTurnStatus,
+  GroupTurnTerminationReason,
+  SchedulerStreamUpdate,
+} from '@/lib/api-v2/types'
 import type { ContextUsage, Message } from '@/types/api'
 
 export interface StreamingBubble {
@@ -53,6 +58,29 @@ export interface ToolActivity {
 }
 
 export type StreamRunStatus = 'active' | 'completed' | 'error' | 'cancelled'
+
+export type SchedulerCriticalSummaryKind =
+  | 'deterministic_selection'
+  | 'call'
+  | 'handoff'
+  | 'dispatch_failed'
+  | 'moderator_fallback'
+  | 'cancelled'
+  | 'superseded'
+  | 'budget_exhausted'
+  | 'waiting_for_user'
+  | 'silence'
+  | 'failed'
+
+export interface SchedulerCriticalSummary {
+  id: string
+  kind: SchedulerCriticalSummaryKind
+  message: string
+  count: number
+  source_agent_id?: string | null
+  target_agent_id?: string
+  created_at: string
+}
 
 interface StreamTimelineEventBase {
   id: string
@@ -144,6 +172,10 @@ export interface StreamRun {
   group_id: string
   user_message_id: string
   status: StreamRunStatus
+  turn_id: string | null
+  scheduler_status: GroupTurnStatus | null
+  terminal_reason: GroupTurnTerminationReason | null
+  criticalSummaries: SchedulerCriticalSummary[]
   created_at: string
   updated_at: string
   events: StreamTimelineEvent[]
@@ -211,6 +243,12 @@ interface MessageState {
     streamId: string,
     event: Omit<StreamNoticeEvent, 'id' | 'stream_id' | 'created_at'>,
   ) => void
+  applySchedulerEvent: (
+    groupId: string,
+    streamId: string,
+    update: SchedulerStreamUpdate,
+  ) => boolean
+  acceptsStreamEvent: (groupId: string, streamId: string) => boolean
   markStreamRunDone: (groupId: string, streamId: string) => void
   markStreamRunError: (groupId: string, streamId: string, message: string) => void
   markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
@@ -221,6 +259,7 @@ interface MessageState {
 }
 
 const MAX_COMPLETED_STREAM_RUNS_PER_GROUP = 12
+const MAX_CRITICAL_SUMMARIES_PER_RUN = 20
 
 function inFlightKey(agentId: string, streamId: string | null | undefined): string {
   return `${streamId ?? 'default'}:${agentId}`
@@ -228,6 +267,211 @@ function inFlightKey(agentId: string, streamId: string | null | undefined): stri
 
 function nowIso(): string {
   return new Date().toISOString()
+}
+
+function emptyStreamRun(groupId: string, streamId: string, timestamp: string): StreamRun {
+  return {
+    id: streamId,
+    group_id: groupId,
+    user_message_id: streamId,
+    status: 'active',
+    turn_id: null,
+    scheduler_status: null,
+    terminal_reason: null,
+    criticalSummaries: [],
+    created_at: timestamp,
+    updated_at: timestamp,
+    events: [],
+  }
+}
+
+function appendCriticalSummary(
+  summaries: SchedulerCriticalSummary[],
+  summary: SchedulerCriticalSummary,
+): SchedulerCriticalSummary[] {
+  const next = [...summaries, summary]
+  return next.slice(-MAX_CRITICAL_SUMMARIES_PER_RUN)
+}
+
+function schedulerSummary(
+  update: SchedulerStreamUpdate,
+  timestamp: string,
+): SchedulerCriticalSummary | null {
+  switch (update.kind) {
+    case 'speaker_selected': {
+      const { action_kind: actionKind, source_agent_id: sourceId, target_agent_id: targetId } =
+        update.payload
+      if (actionKind === 'call') {
+        return {
+          id: update.event_id,
+          kind: 'call',
+          message: `Agent call routed to ${targetId}`,
+          count: 1,
+          source_agent_id: sourceId,
+          target_agent_id: targetId,
+          created_at: timestamp,
+        }
+      }
+      if (actionKind === 'handoff') {
+        return {
+          id: update.event_id,
+          kind: 'handoff',
+          message: `Handoff routed to ${targetId}`,
+          count: 1,
+          source_agent_id: sourceId,
+          target_agent_id: targetId,
+          created_at: timestamp,
+        }
+      }
+      if (update.payload.reason === 'moderator_fallback') return null
+      return {
+        id: update.event_id,
+        kind: 'deterministic_selection',
+        message: 'Scheduler selected 1 speaker',
+        count: 1,
+        created_at: timestamp,
+      }
+    }
+    case 'dispatch_failed':
+      return {
+        id: update.event_id,
+        kind: 'dispatch_failed',
+        message: `Dispatch to ${update.payload.target_agent_id} failed`,
+        count: 1,
+        target_agent_id: update.payload.target_agent_id,
+        created_at: timestamp,
+      }
+    case 'moderator_fallback':
+      return {
+        id: update.event_id,
+        kind: 'moderator_fallback',
+        message: `Moderator fallback selected ${update.payload.target_agent_id}`,
+        count: 1,
+        target_agent_id: update.payload.target_agent_id,
+        created_at: timestamp,
+      }
+    case 'turn_cancelled':
+      return {
+        id: update.event_id,
+        kind: 'cancelled',
+        message: 'Turn cancelled',
+        count: 1,
+        created_at: timestamp,
+      }
+    case 'turn_superseded':
+      return {
+        id: update.event_id,
+        kind: 'superseded',
+        message: 'Turn superseded by a newer message',
+        count: 1,
+        created_at: timestamp,
+      }
+    case 'turn_budget_exhausted':
+      return {
+        id: update.event_id,
+        kind: 'budget_exhausted',
+        message:
+          update.payload.status === 'failure_budget_exhausted'
+            ? 'Turn stopped after repeated failures'
+            : 'Turn reached its budget limit',
+        count: 1,
+        created_at: timestamp,
+      }
+    case 'turn_completed': {
+      switch (update.payload.status) {
+        case 'waiting_for_user':
+          return {
+            id: update.event_id,
+            kind: 'waiting_for_user',
+            message: 'Turn is waiting for user input',
+            count: 1,
+            created_at: timestamp,
+          }
+        case 'silence':
+          return {
+            id: update.event_id,
+            kind: 'silence',
+            message: 'Turn completed without a visible reply',
+            count: 1,
+            created_at: timestamp,
+          }
+        case 'failed':
+          return {
+            id: update.event_id,
+            kind: 'failed',
+            message: 'Turn failed while persisting scheduler state',
+            count: 1,
+            created_at: timestamp,
+          }
+        case 'budget_exhausted':
+        case 'failure_budget_exhausted':
+          return {
+            id: update.event_id,
+            kind: 'budget_exhausted',
+            message:
+              update.payload.status === 'failure_budget_exhausted'
+                ? 'Turn stopped after repeated failures'
+                : 'Turn reached its budget limit',
+            count: 1,
+            created_at: timestamp,
+          }
+        case 'completed':
+          return null
+      }
+      return null
+    }
+    case 'turn_started':
+    case 'done':
+      return null
+  }
+}
+
+function appendOrFoldSchedulerSummary(
+  summaries: SchedulerCriticalSummary[],
+  summary: SchedulerCriticalSummary | null,
+): SchedulerCriticalSummary[] {
+  if (!summary) return summaries
+  const last = summaries[summaries.length - 1]
+  if (summary.kind === 'deterministic_selection' && last?.kind === summary.kind) {
+    const count = last.count + summary.count
+    const next = summaries.slice()
+    next[next.length - 1] = {
+      ...last,
+      id: summary.id,
+      count,
+      message: `Scheduler selected ${count} speakers`,
+    }
+    return next
+  }
+  return appendCriticalSummary(summaries, summary)
+}
+
+function schedulerTerminalFields(update: SchedulerStreamUpdate): {
+  status: GroupTurnStatus | null
+  reason: GroupTurnTerminationReason | null
+} {
+  switch (update.kind) {
+    case 'turn_started':
+      return { status: 'running', reason: null }
+    case 'turn_cancelled':
+    case 'turn_superseded':
+    case 'turn_budget_exhausted':
+    case 'turn_completed':
+      return { status: update.payload.status, reason: update.payload.reason }
+    case 'speaker_selected':
+    case 'dispatch_failed':
+    case 'moderator_fallback':
+    case 'done':
+      return { status: null, reason: null }
+  }
+}
+
+function schedulerTurnId(update: SchedulerStreamUpdate): string {
+  return update.payload.turn_id
+}
+
+function schedulerStatusAcceptsEvents(status: GroupTurnStatus | null): boolean {
+  return status === null || status === 'pending' || status === 'running'
 }
 
 function upsertTimelineEvent(
@@ -330,7 +574,7 @@ function pruneStreamRunIdMap(
   )
 }
 
-export const useMessageStore = create<MessageState>((set) => ({
+export const useMessageStore = create<MessageState>((set, get) => ({
   byGroup: {},
   inFlightByGroup: {},
   activeAgentsByGroup: {},
@@ -595,6 +839,11 @@ export const useMessageStore = create<MessageState>((set) => ({
         group_id: groupId,
         user_message_id: userMessage.id,
         status: 'active',
+        turn_id: existing?.turn_id ?? userMessage.turn_id,
+        scheduler_status: existing?.scheduler_status ?? userMessage.turn_summary?.status ?? null,
+        terminal_reason:
+          existing?.terminal_reason ?? userMessage.turn_summary?.termination_reason ?? null,
+        criticalSummaries: existing?.criticalSummaries ?? [],
         created_at: existing?.created_at ?? userMessage.created_at,
         updated_at: timestamp,
         events: existing?.events ?? [],
@@ -623,15 +872,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       const event: StreamAgentStartEvent = {
         id: `agent-start:${streamId}:${agent.agent_id}:${agent.round ?? 0}:${agent.index}`,
         type: 'agent_start',
@@ -696,15 +937,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       const nextRun: StreamRun = {
         ...run,
         status: 'active',
@@ -728,15 +961,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       const last = run.events[run.events.length - 1]
       let events: StreamTimelineEvent[]
       if (
@@ -816,15 +1041,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       let events = markReasoningDone(run.events, agentId)
       const segmentIds = events
         .filter(
@@ -886,15 +1103,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       const eventId = `tool:${streamId}:${activity.id}`
       const existing = run.events.find(
         (event): event is StreamToolEvent => event.id === eventId && event.type === 'tool',
@@ -937,15 +1146,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       const eventId = `external:${streamId}:${eventInput.run_id}`
       const existing = run.events.find(
         (event): event is StreamExternalRunEvent =>
@@ -989,15 +1190,7 @@ export const useMessageStore = create<MessageState>((set) => ({
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
       const timestamp = nowIso()
-      const run = groupRuns[streamId] ?? {
-        id: streamId,
-        group_id: groupId,
-        user_message_id: streamId,
-        status: 'active',
-        created_at: timestamp,
-        updated_at: timestamp,
-        events: [],
-      }
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       const event: StreamNoticeEvent = {
         ...eventInput,
         id: `${eventInput.type}:${streamId}:${run.events.length}:${timestamp}`,
@@ -1023,6 +1216,53 @@ export const useMessageStore = create<MessageState>((set) => ({
         },
       }
     }),
+
+  applySchedulerEvent: (groupId, streamId, update) => {
+    if (update.stream_id !== streamId) return false
+    const groupRuns = get().streamRunsByGroup[groupId] ?? {}
+    const existing = groupRuns[streamId]
+    const turnId = schedulerTurnId(update)
+    if (existing?.turn_id && existing.turn_id !== turnId) {
+      return false
+    }
+    if (
+      existing &&
+      !schedulerStatusAcceptsEvents(existing.scheduler_status) &&
+      update.kind !== 'done'
+    ) {
+      return false
+    }
+
+    const timestamp = nowIso()
+    const run = existing ?? emptyStreamRun(groupId, streamId, timestamp)
+    const terminal = schedulerTerminalFields(update)
+    const summary = schedulerSummary(update, timestamp)
+    const nextRun: StreamRun = {
+      ...run,
+      turn_id: turnId,
+      scheduler_status: terminal.status ?? run.scheduler_status,
+      terminal_reason: terminal.status === null ? run.terminal_reason : terminal.reason,
+      criticalSummaries: appendOrFoldSchedulerSummary(run.criticalSummaries, summary),
+      updated_at: timestamp,
+    }
+    const groupOrder = get().streamRunOrderByGroup[groupId] ?? []
+    set((s) => ({
+      streamRunsByGroup: {
+        ...s.streamRunsByGroup,
+        [groupId]: { ...(s.streamRunsByGroup[groupId] ?? {}), [streamId]: nextRun },
+      },
+      streamRunOrderByGroup: {
+        ...s.streamRunOrderByGroup,
+        [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+      },
+    }))
+    return true
+  },
+
+  acceptsStreamEvent: (groupId, streamId) => {
+    const run = get().streamRunsByGroup[groupId]?.[streamId]
+    return !run || schedulerStatusAcceptsEvents(run.scheduler_status)
+  },
 
   markStreamRunDone: (groupId, streamId) =>
     set((s) => {
@@ -1112,9 +1352,24 @@ export const useMessageStore = create<MessageState>((set) => ({
           message: 'Stream cancelled',
           created_at: timestamp,
         }
+        const schedulerCancelSummary: SchedulerCriticalSummary | null = run.turn_id
+          ? {
+              id: `scheduler-cancelled:${streamId}:${timestamp}`,
+              kind: 'cancelled',
+              message: 'Turn cancelled',
+              count: 1,
+              created_at: timestamp,
+            }
+          : null
         nextRuns[streamId] = {
           ...run,
           status: 'cancelled',
+          scheduler_status: run.turn_id ? 'cancelled' : run.scheduler_status,
+          terminal_reason: run.turn_id ? 'user_cancelled' : run.terminal_reason,
+          criticalSummaries: appendOrFoldSchedulerSummary(
+            run.criticalSummaries,
+            schedulerCancelSummary,
+          ),
           updated_at: timestamp,
           events: [...run.events, event],
         }
