@@ -39,7 +39,7 @@ export function GroupChatPage() {
   const group = useGroup(groupId)
   const messagesQuery = useGroupMessages(groupId)
   const groupAgents = useGroupAgents(groupId)
-  const stream = useSendMessageStream(groupId)
+  const stream = useSendMessageStream(groupId, group.data?.scheduler_enabled ?? false)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const fileNavRequest = useFileNavStore((s) => s.request)
   const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)

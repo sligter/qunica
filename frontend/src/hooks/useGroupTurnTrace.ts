@@ -32,7 +32,9 @@ export function useGroupTurnTrace(groupId: string | undefined, turnId: string | 
     enabled: token !== null && groupId !== undefined && turnId !== null,
     refetchInterval: (query) => {
       const status = query.state.data?.turn.status
-      return status === 'pending' || status === 'running' ? 2_000 : false
+      return status === 'pending' || status === 'running' || status === 'waiting_for_user'
+        ? 2_000
+        : false
     },
     refetchIntervalInBackground: false,
   })

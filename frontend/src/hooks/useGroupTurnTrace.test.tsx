@@ -92,7 +92,7 @@ describe('useGroupTurnTrace', () => {
     vi.useFakeTimers()
     try {
       mockedFetchJson
-        .mockResolvedValueOnce(traceFixture('running'))
+        .mockResolvedValueOnce(traceFixture('waiting_for_user'))
         .mockResolvedValueOnce(traceFixture('completed'))
       const client = testClient()
       renderHook(() => useGroupTurnTrace('group-1', 'turn-1'), {

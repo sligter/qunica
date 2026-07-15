@@ -99,13 +99,18 @@ describe('TurnTraceDrawer', () => {
     })
   })
 
-  it('does not offer cancellation for a waiting turn', () => {
+  it('keeps a waiting turn cancellable with its exact group and turn target', async () => {
+    const user = userEvent.setup()
     const waiting = traceFixture()
     waiting.turn.status = 'waiting_for_user'
     mocks.trace = { ...mocks.trace, data: waiting }
     renderDrawer()
 
-    expect(screen.queryByRole('button', { name: 'Stop turn' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stop turn' }))
+    expect(mocks.mutate).toHaveBeenCalledWith({
+      groupId: 'group-1',
+      turnId: 'turn-1',
+    })
   })
 
   it('restores focus to the exact button that opened the drawer', async () => {

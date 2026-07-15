@@ -17,7 +17,7 @@ interface TurnTraceDrawerProps {
   returnFocusRef?: RefObject<HTMLElement | null>
 }
 
-const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running'])
+const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running', 'waiting_for_user'])
 
 function humanize(value: string): string {
   return value.replace(/_/g, ' ')
