@@ -56,6 +56,24 @@ const interruptedMessage: Message = {
   created_at: '2026-07-15T00:00:00Z',
 }
 
+const triggerMessage: Message = {
+  id: 'trigger-1',
+  group_id: 'group-1',
+  thread_id: 'thread-1',
+  sender_type: 'user',
+  sender_id: 'user-1',
+  message_type: 'text',
+  content: 'Start the task',
+  status: 'visible',
+  refs: null,
+  context_usage: null,
+  turn_id: 'turn-1',
+  dispatch_id: null,
+  reply_to_message_id: null,
+  turn_summary: { status: 'waiting_for_user', termination_reason: 'waiting_for_user' },
+  created_at: '2026-07-14T23:59:59Z',
+}
+
 function wrapper(queryClient: QueryClient) {
   return function TestWrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -252,5 +270,55 @@ describe('useResumeStream scheduler events', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['groups', 'group-1', 'turns', 'turn-1'],
     })
+  })
+
+  it('maps a resumed scheduler run back to the persisted trigger user message', () => {
+    useMessageStore.getState().setHistory('group-1', [triggerMessage, interruptedMessage])
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-resumed',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-resumed',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'turn_completed',
+      payload: {
+        turn_id: 'turn-1',
+        status: 'completed',
+        reason: null,
+        budget: {
+          agent_steps: 2,
+          moderator_calls: 0,
+          consecutive_failures: 0,
+          total_failures: 0,
+          total_tokens: 20,
+        },
+      },
+    })
+
+    const state = useMessageStore.getState()
+    expect(state.streamRunIdByUserMessageIdByGroup['group-1']['trigger-1']).toBe(
+      'stream-resumed',
+    )
+    expect(state.streamRunsByGroup['group-1']['stream-resumed']).toMatchObject({
+      user_message_id: 'trigger-1',
+      turn_id: 'turn-1',
+      scheduler_status: 'completed',
+    })
+    expect(state.byGroup['group-1'].map((message) => message.id)).toEqual([
+      'trigger-1',
+      'message-1',
+    ])
   })
 })

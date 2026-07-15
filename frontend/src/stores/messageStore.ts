@@ -248,6 +248,11 @@ interface MessageState {
     streamId: string,
     update: SchedulerStreamUpdate,
   ) => boolean
+  linkStreamRunToUserMessage: (
+    groupId: string,
+    streamId: string,
+    userMessageId: string,
+  ) => void
   acceptsStreamEvent: (groupId: string, streamId: string) => boolean
   markStreamRunWaitingForUser: (groupId: string, streamId: string) => string | null
   markStreamRunDone: (groupId: string, streamId: string) => void
@@ -1275,6 +1280,34 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }))
     return true
   },
+
+  linkStreamRunToUserMessage: (groupId, streamId, userMessageId) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const run = groupRuns[streamId]
+      if (!run) return {}
+      const groupRunIdsByMessage =
+        s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
+      if (
+        run.user_message_id === userMessageId &&
+        groupRunIdsByMessage[userMessageId] === streamId
+      ) {
+        return {}
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: {
+            ...groupRuns,
+            [streamId]: { ...run, user_message_id: userMessageId },
+          },
+        },
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: { ...groupRunIdsByMessage, [userMessageId]: streamId },
+        },
+      }
+    }),
 
   acceptsStreamEvent: (groupId, streamId) => {
     const run = get().streamRunsByGroup[groupId]?.[streamId]

@@ -100,6 +100,7 @@ export function useResumeStream(
   const startResume = useMessageStore((s) => s.startResume)
   const endResume = useMessageStore((s) => s.endResume)
   const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
+  const linkStreamRunToUserMessage = useMessageStore((s) => s.linkStreamRunToUserMessage)
   const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
@@ -145,6 +146,16 @@ export function useResumeStream(
           const schedulerUpdate = parseSchedulerStreamEvent(event)
           if (schedulerUpdate) {
             if (!applySchedulerEvent(groupId, streamId, schedulerUpdate)) return
+            const interrupted = useMessageStore
+              .getState()
+              .byGroup[groupId]?.find((message) => message.id === messageId)
+            if (interrupted?.reply_to_message_id) {
+              linkStreamRunToUserMessage(
+                groupId,
+                streamId,
+                interrupted.reply_to_message_id,
+              )
+            }
             if (isTerminalSchedulerUpdate(schedulerUpdate)) {
               void qc.invalidateQueries({
                 queryKey: ['groups', groupId, 'turns', schedulerUpdate.payload.turn_id],
@@ -231,6 +242,7 @@ export function useResumeStream(
     finish,
     groupId,
     isStreaming,
+    linkStreamRunToUserMessage,
     messageId,
     markStreamRunDone,
     markStreamRunWaitingForUser,
