@@ -30,26 +30,46 @@ export function useGroupTurnTrace(groupId: string | undefined, turnId: string | 
     queryKey: groupTurnTraceQueryKey(groupId, turnId),
     queryFn: () => fetchGroupTurnTrace(groupId!, turnId!, token!),
     enabled: token !== null && groupId !== undefined && turnId !== null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.turn.status
+      return status === 'pending' || status === 'running' ? 2_000 : false
+    },
+    refetchIntervalInBackground: false,
   })
 }
 
-export function useCancelGroupTurn(groupId: string | undefined, turnId: string | null) {
+interface CancelGroupTurnTarget {
+  groupId: string
+  turnId: string
+}
+
+export function useCancelGroupTurn() {
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async () => {
-      if (!token || !groupId || !turnId) {
+    mutationFn: async ({ groupId, turnId }: CancelGroupTurnTarget) => {
+      if (!token) {
         throw new Error('A signed-in group turn is required to cancel')
       }
       const response = await fetchJson<unknown>(
         `/groups/${groupId}/turns/${turnId}/cancel`,
         { method: 'POST', token },
       )
-      return parseGroupTurnTrace(response)
+      return {
+        trace: parseGroupTurnTrace(response),
+        groupId,
+        turnId,
+      }
     },
-    onSuccess: (trace) => {
-      queryClient.setQueryData(groupTurnTraceQueryKey(groupId, turnId), trace)
+    onSuccess: (result) => {
+      queryClient.setQueryData(
+        groupTurnTraceQueryKey(result.groupId, result.turnId),
+        result.trace,
+      )
+      void queryClient.invalidateQueries({
+        queryKey: ['groups', result.groupId, 'messages'],
+      })
     },
   })
 }

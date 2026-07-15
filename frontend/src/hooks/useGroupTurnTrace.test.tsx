@@ -35,7 +35,9 @@ function traceFixture(status: GroupTurnTraceResponse['turn']['status'] = 'runnin
       termination_reason: status === 'cancelled' ? 'user_cancelled' : null,
       created_at: '2026-07-15T00:00:00Z',
       started_at: '2026-07-15T00:00:01Z',
-      completed_at: status === 'cancelled' ? '2026-07-15T00:00:02Z' : null,
+      completed_at: status === 'pending' || status === 'running' || status === 'waiting_for_user'
+        ? null
+        : '2026-07-15T00:00:02Z',
       updated_at: '2026-07-15T00:00:02Z',
     },
     budget: {
@@ -86,6 +88,36 @@ describe('useGroupTurnTrace', () => {
     expect(result.current.data?.turn.id).toBe('turn-1')
   })
 
+  it('polls active traces and stops after a terminal response', async () => {
+    vi.useFakeTimers()
+    try {
+      mockedFetchJson
+        .mockResolvedValueOnce(traceFixture('running'))
+        .mockResolvedValueOnce(traceFixture('completed'))
+      const client = testClient()
+      renderHook(() => useGroupTurnTrace('group-1', 'turn-1'), {
+        wrapper: wrapper(client),
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(mockedFetchJson).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      expect(mockedFetchJson).toHaveBeenCalledTimes(2)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+      expect(mockedFetchJson).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('rejects a malformed trace instead of leaking unchecked data', async () => {
     mockedFetchJson.mockResolvedValueOnce({ ...traceFixture(), reasoning: 'private' })
     const client = testClient()
@@ -101,12 +133,12 @@ describe('useGroupTurnTrace', () => {
     mockedFetchJson.mockResolvedValueOnce(cancelled)
     const client = testClient()
     client.setQueryData(groupTurnTraceQueryKey('group-1', 'turn-1'), traceFixture())
-    const { result } = renderHook(() => useCancelGroupTurn('group-1', 'turn-1'), {
+    const { result } = renderHook(() => useCancelGroupTurn(), {
       wrapper: wrapper(client),
     })
 
     await act(async () => {
-      await result.current.mutateAsync()
+      await result.current.mutateAsync({ groupId: 'group-1', turnId: 'turn-1' })
     })
 
     expect(mockedFetchJson).toHaveBeenCalledWith('/groups/group-1/turns/turn-1/cancel', {
@@ -114,5 +146,35 @@ describe('useGroupTurnTrace', () => {
       token: 'owner-token',
     })
     expect(client.getQueryData<GroupTurnTraceResponse>(groupTurnTraceQueryKey('group-1', 'turn-1'))?.turn.status).toBe('cancelled')
+  })
+
+  it('caches cancellation under the request snapshot and invalidates its messages', async () => {
+    let resolveRequest: ((trace: GroupTurnTraceResponse) => void) | undefined
+    mockedFetchJson.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRequest = resolve
+    }))
+    const client = testClient()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useCancelGroupTurn(), {
+      wrapper: wrapper(client),
+    })
+
+    let cancellation!: Promise<unknown>
+    act(() => {
+      cancellation = result.current.mutateAsync({ groupId: 'group-1', turnId: 'turn-1' })
+    })
+    await waitFor(() => expect(resolveRequest).toBeTypeOf('function'))
+    resolveRequest?.(traceFixture('cancelled'))
+    await act(async () => {
+      await cancellation
+    })
+
+    expect(client.getQueryData<GroupTurnTraceResponse>(
+      groupTurnTraceQueryKey('group-1', 'turn-1'),
+    )?.turn.status).toBe('cancelled')
+    expect(client.getQueryData(groupTurnTraceQueryKey('group-2', 'turn-2'))).toBeUndefined()
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'group-1', 'messages'],
+    })
   })
 })

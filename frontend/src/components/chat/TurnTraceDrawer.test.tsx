@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
@@ -92,6 +93,50 @@ describe('TurnTraceDrawer', () => {
     expect(screen.queryByText(/reasoning/i)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Stop turn' }))
-    expect(mocks.mutate).toHaveBeenCalledTimes(1)
+    expect(mocks.mutate).toHaveBeenCalledWith({
+      groupId: 'group-1',
+      turnId: 'turn-1',
+    })
+  })
+
+  it('does not offer cancellation for a waiting turn', () => {
+    const waiting = traceFixture()
+    waiting.turn.status = 'waiting_for_user'
+    mocks.trace = { ...mocks.trace, data: waiting }
+    renderDrawer()
+
+    expect(screen.queryByRole('button', { name: 'Stop turn' })).not.toBeInTheDocument()
+  })
+
+  it('restores focus to the exact button that opened the drawer', async () => {
+    const user = userEvent.setup()
+    mocks.trace = { ...mocks.trace, data: traceFixture() }
+
+    function Harness() {
+      const [open, setOpen] = useState(false)
+      const triggerRef = useRef<HTMLButtonElement | null>(null)
+      return (
+        <>
+          <button type="button">First trace</button>
+          <button ref={triggerRef} type="button" onClick={() => setOpen(true)}>
+            Second trace
+          </button>
+          <TurnTraceDrawer
+            groupId="group-1"
+            turnId="turn-1"
+            open={open}
+            onOpenChange={setOpen}
+            returnFocusRef={triggerRef}
+          />
+        </>
+      )
+    }
+
+    render(<Harness />)
+    const trigger = screen.getByRole('button', { name: 'Second trace' })
+    await user.click(trigger)
+    await user.keyboard('{Escape}')
+
+    expect(trigger).toHaveFocus()
   })
 })

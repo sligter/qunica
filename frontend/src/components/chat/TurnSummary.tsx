@@ -14,7 +14,7 @@ interface TurnSummaryProps {
   turnId: string
   status: GroupTurnStatus
   summaries?: readonly TurnCriticalSummary[]
-  onViewTrace: (turnId: string) => void
+  onViewTrace: (turnId: string, trigger: HTMLButtonElement) => void
   className?: string
 }
 
@@ -63,11 +63,15 @@ export function TurnSummary({
       className={cn('mx-4 my-1 border-l-2 border-border py-1 pl-3', className)}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <span className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs font-medium', statusClasses(status))}>
+        <span
+          role="status"
+          aria-live="polite"
+          className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs font-medium', statusClasses(status))}
+        >
           <StatusIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span>{statusLabels[status]}</span>
         </span>
-        {summaries.slice(0, 2).map((summary) => (
+        {summaries.slice(-2).map((summary) => (
           <span
             key={summary.id}
             className={cn(
@@ -85,7 +89,7 @@ export function TurnSummary({
           variant="ghost"
           size="sm"
           className="ml-auto h-7 shrink-0 px-2"
-          onClick={() => onViewTrace(turnId)}
+          onClick={(event) => onViewTrace(turnId, event.currentTarget)}
         >
           View trace
           <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />

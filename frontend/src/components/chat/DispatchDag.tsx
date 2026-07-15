@@ -16,33 +16,65 @@ interface DagNode {
   issue?: EdgeIssue
 }
 
-function edgeIssue(
-  dispatch: AgentDispatchTrace,
-  dispatchById: ReadonlyMap<string, AgentDispatchTrace>,
-): EdgeIssue | undefined {
-  const parentId = dispatch.parent_dispatch_id
-  if (!parentId) return undefined
-  if (!dispatchById.has(parentId)) return 'orphan'
+const MAX_VISUAL_DEPTH = 3
 
-  const visited = new Set<string>([dispatch.id])
-  let currentId: string | null = parentId
-  while (currentId) {
-    if (visited.has(currentId)) return 'cycle'
-    visited.add(currentId)
-    currentId = dispatchById.get(currentId)?.parent_dispatch_id ?? null
+function findCycleRoots(
+  dispatchById: ReadonlyMap<string, AgentDispatchTrace>,
+  order: ReadonlyMap<string, number>,
+): Set<string> {
+  const processed = new Set<string>()
+  const roots = new Set<string>()
+
+  for (const startId of dispatchById.keys()) {
+    if (processed.has(startId)) continue
+    const path: string[] = []
+    const pathIndex = new Map<string, number>()
+    let currentId: string | null = startId
+
+    while (currentId && dispatchById.has(currentId) && !processed.has(currentId)) {
+      const cycleStart = pathIndex.get(currentId)
+      if (cycleStart !== undefined) {
+        const cycle = path.slice(cycleStart)
+        const root = cycle.reduce((earliest, id) =>
+          (order.get(id) ?? Number.MAX_SAFE_INTEGER) <
+          (order.get(earliest) ?? Number.MAX_SAFE_INTEGER)
+            ? id
+            : earliest,
+        )
+        roots.add(root)
+        break
+      }
+      pathIndex.set(currentId, path.length)
+      path.push(currentId)
+      currentId = dispatchById.get(currentId)?.parent_dispatch_id ?? null
+    }
+
+    for (const id of path) processed.add(id)
   }
-  return undefined
+
+  return roots
 }
 
 function buildDispatchForest(dispatches: readonly AgentDispatchTrace[]): DagNode[] {
   const dispatchById = new Map<string, AgentDispatchTrace>()
+  const order = new Map<string, number>()
   for (const dispatch of dispatches) {
-    if (!dispatchById.has(dispatch.id)) dispatchById.set(dispatch.id, dispatch)
+    if (!dispatchById.has(dispatch.id)) {
+      order.set(dispatch.id, order.size)
+      dispatchById.set(dispatch.id, dispatch)
+    }
   }
+  const cycleRoots = findCycleRoots(dispatchById, order)
 
   const nodes = new Map<string, DagNode>()
   for (const dispatch of dispatchById.values()) {
-    nodes.set(dispatch.id, { dispatch, children: [], issue: edgeIssue(dispatch, dispatchById) })
+    const parentId = dispatch.parent_dispatch_id
+    const issue = parentId && !dispatchById.has(parentId)
+      ? 'orphan'
+      : cycleRoots.has(dispatch.id)
+        ? 'cycle'
+        : undefined
+    nodes.set(dispatch.id, { dispatch, children: [], issue })
   }
 
   const roots: DagNode[] = []
@@ -56,6 +88,28 @@ function buildDispatchForest(dispatches: readonly AgentDispatchTrace[]): DagNode
     }
   }
   return roots
+}
+
+interface FlatDagNode {
+  node: DagNode
+  depth: number
+}
+
+function flattenForest(forest: readonly DagNode[]): FlatDagNode[] {
+  const flattened: FlatDagNode[] = []
+  const stack = forest
+    .map((node) => ({ node, depth: 0 }))
+    .reverse()
+
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    flattened.push(current)
+    for (let index = current.node.children.length - 1; index >= 0; index -= 1) {
+      stack.push({ node: current.node.children[index], depth: current.depth + 1 })
+    }
+  }
+
+  return flattened
 }
 
 function humanize(value: string): string {
@@ -75,12 +129,16 @@ function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) 
   )
 }
 
-function DagBranch({ node, depth = 0 }: { node: DagNode; depth?: number }) {
+function DagRow({ node, depth }: FlatDagNode) {
   const IssueIcon = node.issue === 'orphan' ? Link2Off : AlertTriangle
   const dispatch = node.dispatch
   return (
-    <li className="relative min-w-0">
-      {depth > 0 ? <span className="absolute -left-4 top-4 h-px w-4 bg-border" aria-hidden="true" /> : null}
+    <li
+      className="relative min-w-0"
+      data-dispatch-id={dispatch.id}
+      data-visual-depth={Math.min(depth, MAX_VISUAL_DEPTH)}
+      style={{ paddingInlineStart: `${Math.min(depth, MAX_VISUAL_DEPTH) * 12}px` }}
+    >
       <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Route className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -108,17 +166,13 @@ function DagBranch({ node, depth = 0 }: { node: DagNode; depth?: number }) {
         {dispatch.failure_code ? <p className="mt-1 break-words text-[11px] text-destructive">{dispatch.failure_code}</p> : null}
         <ArtifactDetails artifact={dispatch.artifact} />
       </div>
-      {node.children.length > 0 ? (
-        <ul className="ml-4 space-y-2 border-l border-border pl-4 pt-2">
-          {node.children.map((child) => <DagBranch key={child.dispatch.id} node={child} depth={depth + 1} />)}
-        </ul>
-      ) : null}
     </li>
   )
 }
 
 export function DispatchDag({ dispatches, className }: DispatchDagProps) {
   const forest = buildDispatchForest(dispatches)
+  const flattened = flattenForest(forest)
   if (forest.length === 0) {
     return <p className={cn('py-6 text-center text-sm text-muted-foreground', className)}>No dispatches recorded.</p>
   }
@@ -129,7 +183,9 @@ export function DispatchDag({ dispatches, className }: DispatchDagProps) {
         Dispatch path
       </div>
       <ul className="space-y-2" aria-label="Dispatch path">
-        {forest.map((node) => <DagBranch key={node.dispatch.id} node={node} />)}
+        {flattened.map(({ node, depth }) => (
+          <DagRow key={node.dispatch.id} node={node} depth={depth} />
+        ))}
       </ul>
     </div>
   )

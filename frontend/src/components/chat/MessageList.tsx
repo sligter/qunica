@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MessageItem } from '@/components/chat/MessageItem'
 import { StreamTimeline } from '@/components/chat/StreamTimeline'
+import { TurnSummary } from '@/components/chat/TurnSummary'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { useMessageStore, type StreamRun } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
@@ -13,6 +14,7 @@ interface MessageListProps {
   isLoadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
   onSubmitHumanInput?: (content: string) => void
+  onViewTurnTrace?: (turnId: string, trigger: HTMLButtonElement) => void
 }
 
 const EMPTY_MESSAGES: readonly Message[] = []
@@ -62,6 +64,7 @@ export function MessageList({
   isLoadingOlderMessages = false,
   onLoadOlderMessages,
   onSubmitHumanInput,
+  onViewTurnTrace,
 }: MessageListProps) {
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
   const warnings = useMessageStore(
@@ -182,6 +185,8 @@ export function MessageList({
           if (hiddenMessageIds.has(m.id)) return null
           const runId = streamRunIdsByUserMessageId[m.id] ?? m.id
           const run = m.sender_type === 'user' ? streamRuns[runId] : undefined
+          const turnId = m.sender_type === 'user' ? (run?.turn_id ?? m.turn_id) : null
+          const schedulerStatus = run?.scheduler_status ?? m.turn_summary?.status ?? null
           return (
             <Fragment key={m.id}>
               <MessageItem
@@ -189,6 +194,14 @@ export function MessageList({
                 groupId={groupId}
                 onSubmitHumanInput={onSubmitHumanInput}
               />
+              {turnId && schedulerStatus && onViewTurnTrace ? (
+                <TurnSummary
+                  turnId={turnId}
+                  status={schedulerStatus}
+                  summaries={run?.criticalSummaries}
+                  onViewTrace={onViewTurnTrace}
+                />
+              ) : null}
               {run ? (
                 <StreamTimeline run={run} onSubmitHumanInput={onSubmitHumanInput} />
               ) : null}

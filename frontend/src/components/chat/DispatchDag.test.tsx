@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { DispatchDag } from '@/components/chat/DispatchDag'
@@ -40,14 +40,14 @@ describe('DispatchDag', () => {
       dispatch('child-a', 'root'),
       dispatch('child-b', 'root'),
     ]} />)
-    const rootBranch = screen.getByText('root').closest('li')
-    expect(rootBranch).not.toBeNull()
-    const childList = rootBranch?.querySelector('ul')
-    expect(childList).not.toBeNull()
-    expect(within(childList!).getAllByText(/child-/).map((node) => node.textContent)).toEqual([
+    const rows = screen.getByRole('list', { name: 'Dispatch path' }).querySelectorAll(':scope > li')
+    expect(Array.from(rows).map((row) => row.getAttribute('data-dispatch-id'))).toEqual([
+      'root',
       'child-a',
       'child-b',
     ])
+    expect(rows[1]).toHaveAttribute('data-visual-depth', '1')
+    expect(rows[2]).toHaveAttribute('data-visual-depth', '1')
   })
 
   it('renders orphan and cycle records once without recursing forever', () => {
@@ -56,6 +56,7 @@ describe('DispatchDag', () => {
         dispatch('orphan', 'missing', 'Orphan agent'),
         dispatch('cycle-a', 'cycle-b', 'Cycle A'),
         dispatch('cycle-b', 'cycle-a', 'Cycle B'),
+        dispatch('cycle-child', 'cycle-b', 'Cycle child'),
       ]} />,
     )
 
@@ -63,7 +64,26 @@ describe('DispatchDag', () => {
     expect(screen.getAllByText('Missing parent')).toHaveLength(1)
     expect(screen.getByText('Cycle A')).toBeVisible()
     expect(screen.getByText('Cycle B')).toBeVisible()
-    expect(screen.getAllByText('Cycle detached')).toHaveLength(2)
+    expect(screen.getAllByText('Cycle detached')).toHaveLength(1)
+    expect(screen.getByText('Cycle child')).toBeVisible()
+    expect(
+      screen.getByText('Cycle child').closest('li')?.querySelector('[data-edge-issue]'),
+    ).toBeNull()
+  })
+
+  it('caps visual indentation without changing deep adjacency order', () => {
+    const chain = Array.from({ length: 10 }, (_, index) =>
+      dispatch(`node-${index}`, index === 0 ? null : `node-${index - 1}`),
+    )
+    render(<DispatchDag dispatches={chain} />)
+
+    const rows = screen.getByRole('list', { name: 'Dispatch path' }).querySelectorAll(':scope > li')
+    expect(rows).toHaveLength(10)
+    expect(Array.from(rows).map((row) => row.getAttribute('data-dispatch-id'))).toEqual(
+      chain.map((item) => item.id),
+    )
+    expect(rows[9]).toHaveAttribute('data-visual-depth', '3')
+    expect(rows[9]).toHaveStyle({ paddingInlineStart: '36px' })
   })
 
   it('renders only allowlisted artifact fields', () => {

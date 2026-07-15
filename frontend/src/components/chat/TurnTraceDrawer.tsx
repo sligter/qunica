@@ -1,3 +1,4 @@
+import type { RefObject } from 'react'
 import { AlertTriangle, Ban, CircleDollarSign, Coins, Footprints, RefreshCcw, Route } from 'lucide-react'
 
 import { DispatchDag } from '@/components/chat/DispatchDag'
@@ -13,9 +14,10 @@ interface TurnTraceDrawerProps {
   turnId: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  returnFocusRef?: RefObject<HTMLElement | null>
 }
 
-const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running', 'waiting_for_user'])
+const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running'])
 
 function humanize(value: string): string {
   return value.replace(/_/g, ' ')
@@ -33,16 +35,27 @@ function Metric({ icon: Icon, label, value }: { icon: typeof Footprints; label: 
   )
 }
 
-export function TurnTraceDrawer({ groupId, turnId, open, onOpenChange }: TurnTraceDrawerProps) {
+export function TurnTraceDrawer({
+  groupId,
+  turnId,
+  open,
+  onOpenChange,
+  returnFocusRef,
+}: TurnTraceDrawerProps) {
   const trace = useGroupTurnTrace(groupId, turnId)
-  const cancelTurn = useCancelGroupTurn(groupId, turnId)
+  const cancelTurn = useCancelGroupTurn()
   const data = trace.data
   const maxHop = data?.dispatches.reduce((maximum, dispatch) => Math.max(maximum, dispatch.hop), 0) ?? 0
   const canCancel = data ? activeStatuses.has(data.turn.status) : false
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent>
+      <SheetContent
+        onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          returnFocusRef?.current?.focus()
+        }}
+      >
         <SheetHeader className="shrink-0 border-b border-border px-5 py-4 pr-14">
           <SheetTitle>Scheduler trace</SheetTitle>
           <SheetDescription>
@@ -85,7 +98,9 @@ export function TurnTraceDrawer({ groupId, turnId, open, onOpenChange }: TurnTra
                     size="sm"
                     className="ml-auto"
                     disabled={cancelTurn.isPending}
-                    onClick={() => cancelTurn.mutate()}
+                    onClick={() => {
+                      if (groupId && turnId) cancelTurn.mutate({ groupId, turnId })
+                    }}
                   >
                     <Ban className="h-3.5 w-3.5" aria-hidden="true" />
                     {cancelTurn.isPending ? 'Stopping...' : 'Stop turn'}

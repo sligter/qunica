@@ -24,6 +24,29 @@ describe('TurnSummary', () => {
     await user.tab()
     expect(screen.getByRole('button', { name: 'View trace' })).toHaveFocus()
     await user.keyboard('{Enter}')
-    expect(onViewTrace).toHaveBeenCalledWith('turn-1')
+    expect(onViewTrace).toHaveBeenCalledWith(
+      'turn-1',
+      screen.getByRole('button', { name: 'View trace' }),
+    )
+  })
+
+  it('announces status and keeps the latest two critical summaries', () => {
+    render(
+      <TurnSummary
+        turnId="turn-1"
+        status="cancelled"
+        summaries={[
+          { id: 'old', message: 'Initial route' },
+          { id: 'failure', message: 'Agent call failed', tone: 'destructive' },
+          { id: 'cancel', message: 'Turn cancelled', tone: 'warning' },
+        ]}
+        onViewTrace={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('Cancelled')
+    expect(screen.queryByText('Initial route')).not.toBeInTheDocument()
+    expect(screen.getByText('Agent call failed')).toBeVisible()
+    expect(screen.getByText('Turn cancelled')).toBeVisible()
   })
 })
