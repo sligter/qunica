@@ -59,6 +59,17 @@ afterEach(() => {
 })
 
 describe('MessageList scheduler summary integration', () => {
+  it('keeps the message column shrinkable and clips page-level horizontal overflow', () => {
+    setMessageState()
+
+    const { container } = render(<MessageList groupId="group-1" />)
+
+    const scrollRoot = container.firstElementChild
+    const messageColumn = scrollRoot?.firstElementChild
+    expect(scrollRoot).toHaveClass('min-w-0', 'overflow-x-hidden', 'overflow-y-auto')
+    expect(messageColumn).toHaveClass('min-w-0', 'w-full', 'max-w-3xl')
+  })
+
   it('anchors a persisted turn summary below its trigger message', async () => {
     const user = userEvent.setup()
     const onViewTurnTrace = vi.fn()
