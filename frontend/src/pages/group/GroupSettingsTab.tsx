@@ -12,6 +12,7 @@ import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
 import { ApiError } from '@/lib/api-v2/client'
+import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
 import type { GroupCommunicationMode, GroupRead, GroupUpdate } from '@/types/api'
 
 const communicationModeOptions: Array<{
@@ -371,6 +372,8 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           </p>
         ) : null}
       </SettingsSection>
+
+      <GroupSchedulerSettingsSection group={group} />
 
       <SettingsSection title="Danger">
         <SettingsRow

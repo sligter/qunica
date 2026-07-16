@@ -1,0 +1,192 @@
+import { AlertTriangle, GitBranch, Link2Off, Route } from 'lucide-react'
+
+import { cn } from '@/lib/utils'
+import type { AgentDispatchTrace, PublicTurnArtifact } from '@/lib/api-v2/types'
+
+interface DispatchDagProps {
+  dispatches: readonly AgentDispatchTrace[]
+  className?: string
+}
+
+type EdgeIssue = 'orphan' | 'cycle'
+
+interface DagNode {
+  dispatch: AgentDispatchTrace
+  children: DagNode[]
+  issue?: EdgeIssue
+}
+
+const MAX_VISUAL_DEPTH = 3
+
+function findCycleRoots(
+  dispatchById: ReadonlyMap<string, AgentDispatchTrace>,
+  order: ReadonlyMap<string, number>,
+): Set<string> {
+  const processed = new Set<string>()
+  const roots = new Set<string>()
+
+  for (const startId of dispatchById.keys()) {
+    if (processed.has(startId)) continue
+    const path: string[] = []
+    const pathIndex = new Map<string, number>()
+    let currentId: string | null = startId
+
+    while (currentId && dispatchById.has(currentId) && !processed.has(currentId)) {
+      const cycleStart = pathIndex.get(currentId)
+      if (cycleStart !== undefined) {
+        const cycle = path.slice(cycleStart)
+        const root = cycle.reduce((earliest, id) =>
+          (order.get(id) ?? Number.MAX_SAFE_INTEGER) <
+          (order.get(earliest) ?? Number.MAX_SAFE_INTEGER)
+            ? id
+            : earliest,
+        )
+        roots.add(root)
+        break
+      }
+      pathIndex.set(currentId, path.length)
+      path.push(currentId)
+      currentId = dispatchById.get(currentId)?.parent_dispatch_id ?? null
+    }
+
+    for (const id of path) processed.add(id)
+  }
+
+  return roots
+}
+
+function buildDispatchForest(dispatches: readonly AgentDispatchTrace[]): DagNode[] {
+  const dispatchById = new Map<string, AgentDispatchTrace>()
+  const order = new Map<string, number>()
+  for (const dispatch of dispatches) {
+    if (!dispatchById.has(dispatch.id)) {
+      order.set(dispatch.id, order.size)
+      dispatchById.set(dispatch.id, dispatch)
+    }
+  }
+  const cycleRoots = findCycleRoots(dispatchById, order)
+
+  const nodes = new Map<string, DagNode>()
+  for (const dispatch of dispatchById.values()) {
+    const parentId = dispatch.parent_dispatch_id
+    const issue = parentId && !dispatchById.has(parentId)
+      ? 'orphan'
+      : cycleRoots.has(dispatch.id)
+        ? 'cycle'
+        : undefined
+    nodes.set(dispatch.id, { dispatch, children: [], issue })
+  }
+
+  const roots: DagNode[] = []
+  for (const node of nodes.values()) {
+    const parentId = node.dispatch.parent_dispatch_id
+    const parent = parentId ? nodes.get(parentId) : undefined
+    if (!parent || node.issue) {
+      roots.push(node)
+    } else {
+      parent.children.push(node)
+    }
+  }
+  return roots
+}
+
+interface FlatDagNode {
+  node: DagNode
+  depth: number
+}
+
+function flattenForest(forest: readonly DagNode[]): FlatDagNode[] {
+  const flattened: FlatDagNode[] = []
+  const stack = forest
+    .map((node) => ({ node, depth: 0 }))
+    .reverse()
+
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    flattened.push(current)
+    for (let index = current.node.children.length - 1; index >= 0; index -= 1) {
+      stack.push({ node: current.node.children[index], depth: current.depth + 1 })
+    }
+  }
+
+  return flattened
+}
+
+function humanize(value: string): string {
+  return value.replace(/_/g, ' ')
+}
+
+function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) {
+  if (!artifact) return null
+  return (
+    <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-t border-border pt-2 text-[11px]">
+      {artifact.mode ? <><dt className="text-muted-foreground">Mode</dt><dd>{artifact.mode}</dd></> : null}
+      {artifact.target_agent_id ? <><dt className="text-muted-foreground">Target</dt><dd className="truncate" title={artifact.target_agent_id}>{artifact.target_agent_id}</dd></> : null}
+      {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">Child</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
+      {artifact.outcome ? <><dt className="text-muted-foreground">Outcome</dt><dd className="break-words">{artifact.outcome}</dd></> : null}
+      {artifact.failure_code ? <><dt className="text-muted-foreground">Failure</dt><dd className="break-words text-destructive">{artifact.failure_code}</dd></> : null}
+    </dl>
+  )
+}
+
+function DagRow({ node, depth }: FlatDagNode) {
+  const IssueIcon = node.issue === 'orphan' ? Link2Off : AlertTriangle
+  const dispatch = node.dispatch
+  return (
+    <li
+      className="relative min-w-0"
+      data-dispatch-id={dispatch.id}
+      data-visual-depth={Math.min(depth, MAX_VISUAL_DEPTH)}
+      style={{ paddingInlineStart: `${Math.min(depth, MAX_VISUAL_DEPTH) * 12}px` }}
+    >
+      <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Route className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="min-w-0 truncate font-mono text-xs font-semibold" title={dispatch.target_agent_id}>
+            {dispatch.target_agent_id}
+          </span>
+          <span className="rounded-[3px] bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
+            {humanize(dispatch.action_kind)}
+          </span>
+          <span className={cn('ml-auto text-[10px] capitalize text-muted-foreground', dispatch.status === 'failed' && 'text-destructive')}>
+            {humanize(dispatch.status)}
+          </span>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          <span>{humanize(dispatch.selection_reason)}</span>
+          <span>hop {dispatch.hop}</span>
+          <span>{dispatch.total_tokens.toLocaleString()} tokens</span>
+          {node.issue ? (
+            <span className="inline-flex items-center gap-1 text-warning-foreground" data-edge-issue={node.issue}>
+              <IssueIcon className="h-3 w-3" aria-hidden="true" />
+              {node.issue === 'orphan' ? 'Missing parent' : 'Cycle detached'}
+            </span>
+          ) : null}
+        </div>
+        {dispatch.failure_code ? <p className="mt-1 break-words text-[11px] text-destructive">{dispatch.failure_code}</p> : null}
+        <ArtifactDetails artifact={dispatch.artifact} />
+      </div>
+    </li>
+  )
+}
+
+export function DispatchDag({ dispatches, className }: DispatchDagProps) {
+  const forest = buildDispatchForest(dispatches)
+  const flattened = flattenForest(forest)
+  if (forest.length === 0) {
+    return <p className={cn('py-6 text-center text-sm text-muted-foreground', className)}>No dispatches recorded.</p>
+  }
+  return (
+    <div className={cn('min-w-0', className)}>
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
+        Dispatch path
+      </div>
+      <ul className="space-y-2" aria-label="Dispatch path">
+        {flattened.map(({ node, depth }) => (
+          <DagRow key={node.dispatch.id} node={node} depth={depth} />
+        ))}
+      </ul>
+    </div>
+  )
+}

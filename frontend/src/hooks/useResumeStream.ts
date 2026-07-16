@@ -11,8 +11,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
+import { fetchJson } from '@/lib/api-v2/client'
+import { parseGroupTurnTrace, parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
-import type { StreamEvent } from '@/lib/api-v2/types'
+import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
@@ -44,6 +46,8 @@ function buildAgentMessage(
   threadId: string,
   event: StreamEvent,
   payload: AgentMessagePayload,
+  previous: Message | undefined,
+  turnId: string | null,
 ): Message {
   return {
     id: payload.message_id,
@@ -54,10 +58,29 @@ function buildAgentMessage(
     message_type: 'text',
     content: payload.content ?? '',
     status: 'visible',
-    refs: null,
-    context_usage: null,
-    reply_to_message_id: event.stream_id,
-    created_at: nowIso(),
+    refs: previous?.refs ?? null,
+    context_usage: previous?.context_usage ?? null,
+    turn_id: turnId ?? previous?.turn_id ?? null,
+    dispatch_id: previous?.dispatch_id ?? null,
+    reply_to_message_id: previous?.reply_to_message_id ?? event.stream_id,
+    turn_summary: previous?.turn_summary ?? null,
+    created_at: previous?.created_at ?? nowIso(),
+  }
+}
+
+function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
+  switch (update.kind) {
+    case 'turn_cancelled':
+    case 'turn_superseded':
+    case 'turn_budget_exhausted':
+    case 'turn_completed':
+      return true
+    case 'turn_started':
+    case 'speaker_selected':
+    case 'dispatch_failed':
+    case 'moderator_fallback':
+    case 'done':
+      return false
   }
 }
 
@@ -76,11 +99,19 @@ export function useResumeStream(
   const replaceMessage = useMessageStore((s) => s.replaceMessage)
   const startResume = useMessageStore((s) => s.startResume)
   const endResume = useMessageStore((s) => s.endResume)
+  const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
+  const linkStreamRunToUserMessage = useMessageStore((s) => s.linkStreamRunToUserMessage)
+  const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
+  const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
+  const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
+  const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
+  const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
   const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const ctrlRef = useRef<AbortController | null>(null)
+  const streamIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     return () => {
@@ -91,6 +122,7 @@ export function useResumeStream(
   const finish = useCallback(() => {
     setIsStreaming(false)
     ctrlRef.current = null
+    streamIdRef.current = null
     if (messageId) endResume(messageId)
     if (groupId) {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
@@ -110,6 +142,33 @@ export function useResumeStream(
       token,
       handlers: {
         onEvent: (event) => {
+          const streamId = event.stream_id
+          streamIdRef.current = streamId
+          const schedulerUpdate = parseSchedulerStreamEvent(event)
+          if (schedulerUpdate) {
+            if (!applySchedulerEvent(groupId, streamId, schedulerUpdate)) return
+            const interrupted = useMessageStore
+              .getState()
+              .byGroup[groupId]?.find((message) => message.id === messageId)
+            if (interrupted?.reply_to_message_id) {
+              linkStreamRunToUserMessage(
+                groupId,
+                streamId,
+                interrupted.reply_to_message_id,
+              )
+            }
+            if (isTerminalSchedulerUpdate(schedulerUpdate)) {
+              void qc.invalidateQueries({
+                queryKey: ['groups', groupId, 'turns', schedulerUpdate.payload.turn_id],
+              })
+            }
+            if (schedulerUpdate.kind === 'done') {
+              markStreamRunDone(groupId, streamId)
+              finish()
+            }
+            return
+          }
+          if (!acceptsStreamEvent(groupId, streamId)) return
           switch (event.kind) {
             case 'token': {
               const parsed = tokenPayloadSchema.safeParse(event.payload)
@@ -121,7 +180,15 @@ export function useResumeStream(
             case 'agent_message': {
               const parsed = agentMessagePayloadSchema.safeParse(event.payload)
               if (!parsed.success) return
-              replaceMessage(groupId, buildAgentMessage(groupId, threadId, event, parsed.data))
+              const state = useMessageStore.getState()
+              const previous = state.byGroup[groupId]?.find(
+                (message) => message.id === parsed.data.message_id,
+              )
+              const turnId = state.streamRunsByGroup[groupId]?.[streamId]?.turn_id ?? null
+              replaceMessage(
+                groupId,
+                buildAgentMessage(groupId, threadId, event, parsed.data, previous, turnId),
+              )
               return
             }
             case 'error': {
@@ -133,13 +200,21 @@ export function useResumeStream(
               finish()
               return
             }
+            case 'waiting_for_user': {
+              const turnId = markStreamRunWaitingForUser(groupId, streamId)
+              if (turnId) {
+                void qc.invalidateQueries({
+                  queryKey: ['groups', groupId, 'turns', turnId],
+                })
+              }
+              return
+            }
             case 'user_message':
             case 'agent_start':
             case 'reasoning':
             case 'tool_call_start':
             case 'tool_call_result':
             case 'agent_silent':
-            case 'waiting_for_user':
             case 'context_usage':
             case 'acp_agent_run':
             case 'silence':
@@ -163,20 +238,57 @@ export function useResumeStream(
     ctrlRef.current = ctrl
   }, [
     appendToMessage,
+    acceptsStreamEvent,
+    applySchedulerEvent,
     finish,
     groupId,
     isStreaming,
+    linkStreamRunToUserMessage,
     messageId,
+    markStreamRunDone,
+    markStreamRunWaitingForUser,
+    qc,
     replaceMessage,
     startResume,
     threadId,
     token,
   ])
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback(async () => {
+    const streamId = streamIdRef.current
+    const state = useMessageStore.getState()
+    const turnId =
+      (streamId ? state.streamRunsByGroup[groupId ?? '']?.[streamId]?.turn_id : null) ??
+      (groupId
+        ? state.byGroup[groupId]?.find((message) => message.id === messageId)?.turn_id
+        : null)
+    if (groupId && turnId && token) {
+      try {
+        const trace = parseGroupTurnTrace(
+          await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
+            method: 'POST',
+            token,
+          }),
+        )
+        reconcileSchedulerTurn(groupId, trace)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        return
+      }
+    }
     ctrlRef.current?.abort()
+    if (groupId && streamId && !turnId) {
+      markStreamRunCancelled(groupId, [streamId])
+    }
     finish()
-  }, [finish])
+  }, [
+    finish,
+    groupId,
+    markStreamRunCancelled,
+    messageId,
+    reconcileSchedulerTurn,
+    token,
+  ])
 
   return { resume, cancel, isStreaming, error }
 }

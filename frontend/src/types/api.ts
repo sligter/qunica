@@ -4,6 +4,8 @@
  * contracts until a Rust schema generation flow is introduced.
  */
 
+import type { GroupSchedulerConfig, GroupTurnSummary } from '@/lib/api-v2/types'
+
 export interface UserRead {
   id: string
   email: string
@@ -292,7 +294,7 @@ export interface SkillGithubImport {
 export type GroupCommunicationMode = 'mesh' | 'star' | 'hierarchical' | 'ring'
 export type GroupTopologyRole = 'hub' | 'leader' | 'worker'
 
-export interface GroupRead {
+export interface GroupRead extends GroupSchedulerConfig {
   id: string
   workspace_id: string | null
   name: string
@@ -312,7 +314,7 @@ export interface GroupRead {
   created_at: string
 }
 
-export interface GroupCreate {
+export interface GroupCreate extends Partial<GroupSchedulerConfig> {
   name: string
   workspace_id?: string | null
   description?: string | null
@@ -321,7 +323,7 @@ export interface GroupCreate {
   initial_agents?: string[]
 }
 
-export interface GroupUpdate {
+export interface GroupUpdate extends Partial<GroupSchedulerConfig> {
   name?: string
   workspace_id?: string | null
   description?: string | null
@@ -445,7 +447,10 @@ export interface Message {
   reasoning?: string[] | null
   /** Persisted tool calls (from `content_json`), in order. */
   tool_calls?: MessageToolCall[] | null
+  turn_id: string | null
+  dispatch_id: string | null
   reply_to_message_id: string | null
+  turn_summary: Pick<GroupTurnSummary, 'status' | 'termination_reason'> | null
   created_at: string
 }
 

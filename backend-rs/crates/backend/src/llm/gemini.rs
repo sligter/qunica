@@ -167,7 +167,9 @@ impl LlmProvider for GeminiProvider {
         if let Some(system) = system_instruction(&request.messages) {
             body["systemInstruction"] = system;
         }
-        if !request.tools.is_empty() {
+        if request.include_empty_tools && request.tools.is_empty() {
+            body["tools"] = Value::Array(Vec::new());
+        } else if !request.tools.is_empty() {
             body["tools"] = json!([{
                 "functionDeclarations": request
                     .tools

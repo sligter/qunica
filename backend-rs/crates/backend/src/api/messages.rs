@@ -72,8 +72,20 @@ pub struct MessageResponse {
     context_usage: Option<Value>,
     reasoning: Option<Value>,
     tool_calls: Option<Value>,
+    turn_id: Option<String>,
+    dispatch_id: Option<String>,
     reply_to_message_id: Option<String>,
+    turn_summary: Option<TurnSummaryResponse>,
     created_at: String,
+}
+
+/// A compact scheduler terminal state attached only to the user message that
+/// created a bounded turn. History consumers can render a summary without
+/// fetching a trace for every message.
+#[derive(Debug, Serialize)]
+struct TurnSummaryResponse {
+    status: String,
+    termination_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +133,11 @@ struct MessageRow {
     content: Option<String>,
     content_json: Option<String>,
     status: String,
+    turn_id: Option<String>,
+    dispatch_id: Option<String>,
+    reply_to_message_id: Option<String>,
+    turn_status: Option<String>,
+    turn_termination_reason: Option<String>,
     created_at: String,
 }
 
@@ -161,7 +178,13 @@ impl From<MessageRow> for MessageResponse {
             context_usage,
             reasoning,
             tool_calls,
-            reply_to_message_id: None,
+            turn_id: row.turn_id,
+            dispatch_id: row.dispatch_id,
+            reply_to_message_id: row.reply_to_message_id,
+            turn_summary: row.turn_status.map(|status| TurnSummaryResponse {
+                status,
+                termination_reason: row.turn_termination_reason,
+            }),
             created_at: row.created_at,
         }
     }
@@ -346,7 +369,8 @@ pub async fn send(
     ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
 
     let (tx, mut rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
-    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_active_turn_registry(state.active_turns.clone());
     let request = TurnRequest {
         group_id: group_id.clone(),
         owner_id,
@@ -499,7 +523,8 @@ pub async fn stream(
     }
 
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
-    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_active_turn_registry(state.active_turns.clone());
     let request = TurnRequest {
         group_id,
         owner_id,
@@ -547,10 +572,14 @@ async fn fetch_message_response(
     message_id: &str,
 ) -> Result<MessageResponse, ApiError> {
     let row = sqlx::query_as::<_, MessageRow>(
-        "SELECT id, group_id, thread_id, sender_type, sender_id, message_type, \
-                content, content_json, status, created_at \
-         FROM messages \
-         WHERE id = ? AND group_id = ?",
+        "SELECT m.id, m.group_id, m.thread_id, m.sender_type, m.sender_id, m.message_type, \
+                m.content, m.content_json, m.status, m.turn_id, m.dispatch_id, m.reply_to_message_id, \
+                CASE WHEN gt.trigger_message_id = m.id THEN gt.status END AS turn_status, \
+                CASE WHEN gt.trigger_message_id = m.id THEN gt.termination_reason END AS turn_termination_reason, \
+                m.created_at \
+         FROM messages m \
+         LEFT JOIN group_turns gt ON gt.id = m.turn_id \
+         WHERE m.id = ? AND m.group_id = ?",
     )
     .bind(message_id)
     .bind(group_id)
@@ -587,13 +616,17 @@ async fn fetch_message_page(
     let rows = match before_cursor {
         Some((before_seq, before_id)) => {
             sqlx::query_as::<_, MessageRow>(
-                "SELECT id, group_id, thread_id, seq, sender_type, sender_id, message_type, \
-                        content, content_json, status, created_at \
-                 FROM messages \
-                 WHERE group_id = ? \
-                   AND status IN ('visible', 'interrupted') \
-                   AND (seq < ? OR (seq = ? AND id < ?)) \
-                 ORDER BY seq DESC, id DESC \
+                "SELECT m.id, m.group_id, m.thread_id, m.seq, m.sender_type, m.sender_id, m.message_type, \
+                        m.content, m.content_json, m.status, m.turn_id, m.dispatch_id, m.reply_to_message_id, \
+                        CASE WHEN gt.trigger_message_id = m.id THEN gt.status END AS turn_status, \
+                        CASE WHEN gt.trigger_message_id = m.id THEN gt.termination_reason END AS turn_termination_reason, \
+                        m.created_at \
+                 FROM messages m \
+                 LEFT JOIN group_turns gt ON gt.id = m.turn_id \
+                 WHERE m.group_id = ? \
+                   AND m.status IN ('visible', 'interrupted') \
+                   AND (m.seq < ? OR (m.seq = ? AND m.id < ?)) \
+                 ORDER BY m.seq DESC, m.id DESC \
                  LIMIT ?",
             )
             .bind(group_id)
@@ -606,11 +639,15 @@ async fn fetch_message_page(
         }
         None => {
             sqlx::query_as::<_, MessageRow>(
-                "SELECT id, group_id, thread_id, seq, sender_type, sender_id, message_type, \
-                        content, content_json, status, created_at \
-                 FROM messages \
-                 WHERE group_id = ? AND status IN ('visible', 'interrupted') \
-                 ORDER BY seq DESC, id DESC \
+                "SELECT m.id, m.group_id, m.thread_id, m.seq, m.sender_type, m.sender_id, m.message_type, \
+                        m.content, m.content_json, m.status, m.turn_id, m.dispatch_id, m.reply_to_message_id, \
+                        CASE WHEN gt.trigger_message_id = m.id THEN gt.status END AS turn_status, \
+                        CASE WHEN gt.trigger_message_id = m.id THEN gt.termination_reason END AS turn_termination_reason, \
+                        m.created_at \
+                 FROM messages m \
+                 LEFT JOIN group_turns gt ON gt.id = m.turn_id \
+                 WHERE m.group_id = ? AND m.status IN ('visible', 'interrupted') \
+                 ORDER BY m.seq DESC, m.id DESC \
                  LIMIT ?",
             )
             .bind(group_id)

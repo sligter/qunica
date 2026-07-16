@@ -11,8 +11,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
+import { fetchJson } from '@/lib/api-v2/client'
+import { parseGroupTurnTrace, parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
-import type { StreamEvent } from '@/lib/api-v2/types'
+import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
@@ -193,7 +195,10 @@ function buildUserMessage(
     status: 'visible',
     refs: null,
     context_usage: null,
+    turn_id: null,
+    dispatch_id: null,
     reply_to_message_id: null,
+    turn_summary: null,
     created_at: nowIso(),
   }
 }
@@ -202,6 +207,7 @@ function buildAgentMessage(
   groupId: string,
   event: StreamEvent,
   payload: AgentMessagePayload,
+  turnId: string | null,
 ): Message {
   return {
     id: payload.message_id,
@@ -214,12 +220,43 @@ function buildAgentMessage(
     status: 'visible',
     refs: null,
     context_usage: normalizeContextUsage(payload.context_usage),
+    turn_id: turnId,
+    dispatch_id: null,
     reply_to_message_id: event.stream_id,
+    turn_summary: null,
     created_at: nowIso(),
   }
 }
 
-export function useSendMessageStream(groupId: string | undefined) {
+function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
+  switch (update.kind) {
+    case 'turn_cancelled':
+    case 'turn_superseded':
+    case 'turn_budget_exhausted':
+    case 'turn_completed':
+      return true
+    case 'turn_started':
+    case 'speaker_selected':
+    case 'dispatch_failed':
+    case 'moderator_fallback':
+    case 'done':
+      return false
+  }
+}
+
+type StreamProtocol = 'scheduler' | 'legacy'
+
+interface PendingCancellation {
+  requestIds: Set<string>
+  completing: boolean
+  promise: Promise<void>
+  resolve: () => void
+}
+
+export function useSendMessageStream(
+  groupId: string | undefined,
+  schedulerEnabled: boolean,
+) {
   const token = useAuthStore((s) => s.token)
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const appendMessage = useMessageStore((s) => s.appendMessage)
@@ -244,6 +281,11 @@ export function useSendMessageStream(groupId: string | undefined) {
   const upsertStreamTool = useMessageStore((s) => s.upsertStreamTool)
   const upsertStreamExternalRun = useMessageStore((s) => s.upsertStreamExternalRun)
   const appendStreamNotice = useMessageStore((s) => s.appendStreamNotice)
+  const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
+  const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
+  const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
+  const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
+  const detachStreamRun = useMessageStore((s) => s.detachStreamRun)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunError = useMessageStore((s) => s.markStreamRunError)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
@@ -255,32 +297,161 @@ export function useSendMessageStream(groupId: string | undefined) {
   const streamIdsRef = useRef<Map<string, string>>(new Map())
   const erroredStreamIdsRef = useRef<Set<string>>(new Set())
   const agentNamesRef = useRef<Map<string, string>>(new Map())
+  const streamProtocolByRequestRef = useRef<Map<string, StreamProtocol>>(new Map())
+  const schedulerTurnByRequestRef = useRef<Map<string, string>>(new Map())
+  const pendingCancellationRef = useRef<PendingCancellation | null>(null)
 
   const refreshActiveCount = useCallback(() => {
     setActiveStreamCount(streamsRef.current.size)
   }, [])
 
   useEffect(() => {
+    const abandonedGroupId = groupId
     const streams = streamsRef.current
     const streamIds = streamIdsRef.current
     const erroredStreamIds = erroredStreamIdsRef.current
     const agentNames = agentNamesRef.current
+    const streamProtocols = streamProtocolByRequestRef.current
+    const schedulerTurns = schedulerTurnByRequestRef.current
     return () => {
-      for (const ctrl of streams.values()) {
+      const hadAbandonedStreams = streams.size > 0
+      const pendingCancellation = pendingCancellationRef.current
+      if (pendingCancellation) {
+        pendingCancellation.resolve()
+        pendingCancellationRef.current = null
+      }
+      for (const [requestId, ctrl] of streams) {
         ctrl.abort()
+        const streamId = streamIds.get(requestId)
+        if (abandonedGroupId && streamId) {
+          detachStreamRun(abandonedGroupId, streamId)
+        }
+      }
+      if (abandonedGroupId && hadAbandonedStreams) {
+        clearToolActivity(abandonedGroupId)
       }
       streams.clear()
       streamIds.clear()
       erroredStreamIds.clear()
       agentNames.clear()
+      streamProtocols.clear()
+      schedulerTurns.clear()
+      setActiveStreamCount(0)
     }
-  }, [])
+  }, [clearToolActivity, detachStreamRun, groupId])
 
   const invalidate = useCallback(() => {
     if (!groupId) return
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
   }, [groupId, qc])
+
+  const invalidateTurn = useCallback(
+    (turnId: string) => {
+      if (!groupId) return
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'turns', turnId] })
+    },
+    [groupId, qc],
+  )
+
+  const completePendingCancellation = useCallback(async () => {
+    const pending = pendingCancellationRef.current
+    if (!pending || pending.completing) return
+
+    const activeRequestIds = Array.from(pending.requestIds).filter((id) =>
+      streamsRef.current.has(id),
+    )
+    for (const id of activeRequestIds) {
+      const protocol = streamProtocolByRequestRef.current.get(id)
+      if (!protocol) return
+      if (protocol === 'scheduler' && !schedulerTurnByRequestRef.current.has(id)) return
+    }
+
+    pending.completing = true
+    const schedulerRequestIds = activeRequestIds.filter(
+      (id) => streamProtocolByRequestRef.current.get(id) === 'scheduler',
+    )
+    const turnIds = new Set(
+      schedulerRequestIds
+        .map((id) => schedulerTurnByRequestRef.current.get(id))
+        .filter((turnId): turnId is string => Boolean(turnId)),
+    )
+
+    if (turnIds.size > 0 && (!groupId || !token)) {
+      setError('Authentication is required to cancel this turn')
+      pendingCancellationRef.current = null
+      pending.resolve()
+      return
+    }
+
+    try {
+      if (groupId && token) {
+        const traces = await Promise.all(
+          Array.from(turnIds, (turnId) =>
+            fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
+              method: 'POST',
+              token,
+            }).then(parseGroupTurnTrace),
+          ),
+        )
+        for (const trace of traces) {
+          reconcileSchedulerTurn(groupId, trace)
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      pendingCancellationRef.current = null
+      pending.resolve()
+      return
+    }
+    if (pendingCancellationRef.current !== pending) return
+
+    const streamIds = activeRequestIds
+      .map((id) => streamIdsRef.current.get(id))
+      .filter((streamId): streamId is string => Boolean(streamId))
+    const legacyStreamIds = activeRequestIds
+      .filter((id) => streamProtocolByRequestRef.current.get(id) === 'legacy')
+      .map((id) => streamIdsRef.current.get(id))
+      .filter((streamId): streamId is string => Boolean(streamId))
+    for (const id of activeRequestIds) {
+      streamsRef.current.get(id)?.abort()
+      streamsRef.current.delete(id)
+      streamIdsRef.current.delete(id)
+      streamProtocolByRequestRef.current.delete(id)
+      schedulerTurnByRequestRef.current.delete(id)
+    }
+    erroredStreamIdsRef.current.clear()
+    agentNamesRef.current.clear()
+    refreshActiveCount()
+
+    if (groupId) {
+      if (legacyStreamIds.length > 0) {
+        markStreamRunCancelled(groupId, legacyStreamIds)
+      }
+      if (streamIds.length > 0) {
+        for (const streamId of streamIds) {
+          clearStreamInFlight(groupId, streamId)
+          clearActiveAgent(groupId, undefined, streamId)
+        }
+      } else {
+        clearInFlight(groupId)
+      }
+    }
+    pendingCancellationRef.current = null
+    setError(null)
+    pending.resolve()
+    window.setTimeout(invalidate, 700)
+  }, [
+    clearActiveAgent,
+    clearInFlight,
+    clearStreamInFlight,
+    groupId,
+    invalidate,
+    markStreamRunCancelled,
+    reconcileSchedulerTurn,
+    refreshActiveCount,
+    token,
+  ])
 
   const finishStream = useCallback(
     (id: string, streamId?: string | null) => {
@@ -290,6 +461,8 @@ export function useSendMessageStream(groupId: string | undefined) {
         clearActiveAgent(groupId, undefined, resolvedStreamId)
       }
       streamIdsRef.current.delete(id)
+      streamProtocolByRequestRef.current.delete(id)
+      schedulerTurnByRequestRef.current.delete(id)
       if (resolvedStreamId) {
         erroredStreamIdsRef.current.delete(resolvedStreamId)
         for (const key of Array.from(agentNamesRef.current.keys())) {
@@ -303,14 +476,29 @@ export function useSendMessageStream(groupId: string | undefined) {
         clearActiveAgent(groupId)
       }
       invalidate()
+      void completePendingCancellation()
     },
-    [clearActiveAgent, groupId, invalidate, refreshActiveCount],
+    [
+      clearActiveAgent,
+      completePendingCancellation,
+      groupId,
+      invalidate,
+      refreshActiveCount,
+    ],
   )
 
   const send = useCallback(
     (content: string) => {
       if (!groupId || !token) return
+      if (pendingCancellationRef.current) {
+        setError('Cancellation is in progress')
+        return
+      }
       const id = requestId()
+      streamProtocolByRequestRef.current.set(
+        id,
+        schedulerEnabled ? 'scheduler' : 'legacy',
+      )
       setError(null)
       clearWarnings(groupId)
       clearToolActivity(groupId)
@@ -323,6 +511,25 @@ export function useSendMessageStream(groupId: string | undefined) {
           onEvent: (event) => {
             const streamId = event.stream_id
             streamIdsRef.current.set(id, streamId)
+            const schedulerUpdate = parseSchedulerStreamEvent(event)
+            if (schedulerUpdate) {
+              streamProtocolByRequestRef.current.set(id, 'scheduler')
+              schedulerTurnByRequestRef.current.set(id, schedulerUpdate.payload.turn_id)
+              void completePendingCancellation()
+              if (!applySchedulerEvent(groupId, streamId, schedulerUpdate)) return
+              if (isTerminalSchedulerUpdate(schedulerUpdate)) {
+                invalidateTurn(schedulerUpdate.payload.turn_id)
+              }
+              if (schedulerUpdate.kind === 'done') {
+                if (!erroredStreamIdsRef.current.has(streamId)) {
+                  markStreamRunDone(groupId, streamId)
+                }
+                finishStream(id, streamId)
+                window.setTimeout(() => clearToolActivity(groupId), 4_000)
+              }
+              return
+            }
+            if (!acceptsStreamEvent(groupId, streamId)) return
             const agentDisplayName = (agentId: string | undefined, fallback?: string) => {
               if (fallback) return fallback
               if (agentId) {
@@ -397,7 +604,9 @@ export function useSendMessageStream(groupId: string | undefined) {
               case 'agent_message': {
                 const parsed = agentMessagePayloadSchema.safeParse(event.payload)
                 if (!parsed.success) return
-                const msg = buildAgentMessage(groupId, event, parsed.data)
+                const turnId = useMessageStore.getState().streamRunsByGroup[groupId]?.[streamId]
+                  ?.turn_id ?? null
+                const msg = buildAgentMessage(groupId, event, parsed.data, turnId)
                 finalizeStreamDraft(
                   groupId,
                   streamId,
@@ -500,6 +709,8 @@ export function useSendMessageStream(groupId: string | undefined) {
                   message,
                 })
                 pushWarning(groupId, message)
+                const turnId = markStreamRunWaitingForUser(groupId, streamId)
+                if (turnId) invalidateTurn(turnId)
                 return
               }
               case 'warning': {
@@ -558,6 +769,8 @@ export function useSendMessageStream(groupId: string | undefined) {
     },
     [
       addStreamAgentStart,
+      acceptsStreamEvent,
+      applySchedulerEvent,
       appendMessage,
       appendStreamNotice,
       clearActiveAgent,
@@ -566,14 +779,17 @@ export function useSendMessageStream(groupId: string | undefined) {
       clearStreamInFlight,
       clearToolActivity,
       clearWarnings,
+      completePendingCancellation,
       currentUserId,
       clearStreamingStreamDraft,
       finalizeInFlight,
       finalizeStreamDraft,
       finishStream,
       groupId,
+      invalidateTurn,
       markStreamRunDone,
       markStreamRunError,
+      markStreamRunWaitingForUser,
       patchInFlight,
       patchStreamDraft,
       patchStreamReasoning,
@@ -581,6 +797,7 @@ export function useSendMessageStream(groupId: string | undefined) {
       pushWarning,
       qc,
       refreshActiveCount,
+      schedulerEnabled,
       setActiveAgent,
       setStreamAgentContextUsage,
       startStreamRun,
@@ -590,28 +807,24 @@ export function useSendMessageStream(groupId: string | undefined) {
     ],
   )
 
-  const cancel = useCallback(() => {
-    const streamIds = Array.from(new Set(streamIdsRef.current.values()))
-    for (const ctrl of streamsRef.current.values()) {
-      ctrl.abort()
+  const cancel = useCallback((): Promise<void> => {
+    const existing = pendingCancellationRef.current
+    if (existing) return existing.promise
+
+    let resolve!: () => void
+    const promise = new Promise<void>((next) => {
+      resolve = next
+    })
+    const pending: PendingCancellation = {
+      requestIds: new Set(streamsRef.current.keys()),
+      completing: false,
+      promise,
+      resolve,
     }
-    streamsRef.current.clear()
-    streamIdsRef.current.clear()
-    erroredStreamIdsRef.current.clear()
-    agentNamesRef.current.clear()
-    setActiveStreamCount(0)
-    if (groupId) {
-      markStreamRunCancelled(groupId, streamIds)
-      if (streamIds.length > 0) {
-        for (const streamId of streamIds) {
-          clearStreamInFlight(groupId, streamId)
-        }
-      } else {
-        clearInFlight(groupId)
-      }
-    }
-    window.setTimeout(invalidate, 700)
-  }, [clearInFlight, clearStreamInFlight, groupId, invalidate, markStreamRunCancelled])
+    pendingCancellationRef.current = pending
+    void completePendingCancellation()
+    return promise
+  }, [completePendingCancellation])
 
   return { send, cancel, isStreaming: activeStreamCount > 0, activeStreamCount, error }
 }

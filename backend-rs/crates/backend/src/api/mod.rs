@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod auth;
 pub mod error;
+pub mod group_turns;
 pub mod groups;
 pub mod health;
 pub mod llm_providers;
@@ -25,7 +26,7 @@ use axum::{
 use tokio::sync::Mutex;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::db::Db;
+use crate::{db::Db, runtime::group_scheduler::ActiveTurnRegistry};
 
 /// Shared application state injected into every API v2 handler.
 #[derive(Clone)]
@@ -35,6 +36,9 @@ pub struct AppState {
     /// Serializes chat/runtime writes so per-thread sequence allocation stays
     /// atomic across concurrent streams on the same SQLite database.
     pub write_lock: Arc<Mutex<()>>,
+    /// Process-local cancellation handles for scheduler turns that are still
+    /// executing. Durable turn state remains the source of truth.
+    pub active_turns: ActiveTurnRegistry,
     /// Root directory for extracted skill package resources.
     pub skill_storage_root: PathBuf,
 }
@@ -230,6 +234,14 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(groups::set_group_agent_workspace_sharing),
         )
         .route(
+            "/api/v2/groups/:group_id/turns/:turn_id",
+            get(group_turns::get),
+        )
+        .route(
+            "/api/v2/groups/:group_id/turns/:turn_id/cancel",
+            axum::routing::post(group_turns::cancel),
+        )
+        .route(
             "/api/v2/groups/:group_id/messages",
             axum::routing::post(messages::send).get(messages::list),
         )
@@ -321,6 +333,7 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
             access_token_expire_minutes: 10080,
         },
         write_lock: Arc::new(Mutex::new(())),
+        active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: std::env::temp_dir()
             .join(format!("ag-swarmer-test-skills-{}", uuid::Uuid::new_v4())),
     };

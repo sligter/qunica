@@ -20,6 +20,14 @@ pub(crate) struct AgentAsToolCall {
     pub requested_agent: String,
     pub task: String,
     pub instructions: Option<String>,
+    pub mode: AgentAsToolMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentAsToolMode {
+    Call,
+    Handoff,
 }
 
 impl AgentAsToolCall {
@@ -41,6 +49,13 @@ impl AgentAsToolCall {
         let instructions = first_string(args, &["instructions"])
             .filter(|value| !value.trim().is_empty())
             .map(str::to_string);
+        let mode = args
+            .get("mode")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| AgentAsToolFailure::failed("mode must be call or handoff"))?
+            .unwrap_or(AgentAsToolMode::Handoff);
 
         let requested_agent = requested_agent.trim().to_string();
         if requested_agent.is_empty() {
@@ -58,6 +73,7 @@ impl AgentAsToolCall {
             requested_agent,
             task,
             instructions,
+            mode,
         })
     }
 }
@@ -128,9 +144,10 @@ pub(crate) async fn resolve_dispatch(
     caller: &CallerAgent,
     call: &AgentAsToolCall,
     handoff_depth: usize,
+    scheduler_enabled: bool,
     muted_agent_ids: &HashSet<String>,
 ) -> Result<AgentAsToolDispatch, AgentAsToolFailure> {
-    if handoff_depth >= MAX_HANDOFF_DEPTH {
+    if !scheduler_enabled && handoff_depth >= MAX_HANDOFF_DEPTH {
         return Err(AgentAsToolFailure::unavailable(
             "nested AgentAsTool dispatch is unavailable for this turn",
         ));

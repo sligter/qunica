@@ -54,6 +54,8 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub temperature: Option<f32>,
     pub reasoning_passback: bool,
+    #[serde(default)]
+    pub include_empty_tools: bool,
     pub tools: Vec<ToolDefinition>,
 }
 

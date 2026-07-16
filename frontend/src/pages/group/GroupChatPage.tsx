@@ -5,6 +5,7 @@ import { Files, PanelRightClose, Settings } from 'lucide-react'
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
+import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
 import { useGroup } from '@/hooks/useGroups'
@@ -38,13 +39,15 @@ export function GroupChatPage() {
   const group = useGroup(groupId)
   const messagesQuery = useGroupMessages(groupId)
   const groupAgents = useGroupAgents(groupId)
-  const stream = useSendMessageStream(groupId)
+  const stream = useSendMessageStream(groupId, group.data?.scheduler_enabled ?? false)
   const clearWarnings = useMessageStore((s) => s.clearWarnings)
   const fileNavRequest = useFileNavStore((s) => s.request)
   const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)
+  const traceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
     readWorkspaceFilesOpen(groupId),
   )
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const workspaceFilesPane = usePersistentPaneWidth({
     storageKey: 'ag-swarmer:layout:workspace-files-pane-width',
     defaultWidth: 320,
@@ -54,6 +57,7 @@ export function GroupChatPage() {
 
   useEffect(() => {
     setWorkspaceFilesOpen(readWorkspaceFilesOpen(groupId))
+    setSelectedTurnId(null)
   }, [groupId])
 
   const setWorkspaceFilesOpenPersisted = useCallback(
@@ -73,6 +77,11 @@ export function GroupChatPage() {
 
   const insertWorkspacePaths = useCallback((paths: string[]) => {
     composerPathInserterRef.current?.(paths)
+  }, [])
+
+  const openTurnTrace = useCallback((turnId: string, trigger: HTMLButtonElement) => {
+    traceTriggerRef.current = trigger
+    setSelectedTurnId(turnId)
   }, [])
 
   useEffect(() => {
@@ -153,6 +162,7 @@ export function GroupChatPage() {
             isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
             onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
             onSubmitHumanInput={stream.send}
+            onViewTurnTrace={openTurnTrace}
           />
 
           {stream.error && (
@@ -192,6 +202,16 @@ export function GroupChatPage() {
           </>
         )}
       </div>
+
+      <TurnTraceDrawer
+        groupId={groupId}
+        turnId={selectedTurnId}
+        open={selectedTurnId !== null}
+        returnFocusRef={traceTriggerRef}
+        onOpenChange={(open) => {
+          if (!open) setSelectedTurnId(null)
+        }}
+      />
 
     </div>
   )

@@ -7,6 +7,7 @@ use crate::{
     api::{self, AppState, AuthSettings},
     config::AppConfig,
     db::Db,
+    runtime::group_scheduler::{ActiveTurnRegistry, SchedulerStore},
 };
 
 /// Runtime options for embedding or launching the backend HTTP service.
@@ -47,6 +48,11 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         .await
         .with_context(|| format!("failed to connect database {}", config.database_url))?;
     db.migrate().await.context("failed to run migrations")?;
+    let write_lock = Arc::new(Mutex::new(()));
+    SchedulerStore::new(db.pool().clone(), write_lock.clone())
+        .recover_incomplete_turns()
+        .await
+        .context("failed to recover incomplete scheduler turns")?;
 
     Ok(AppState {
         db,
@@ -54,7 +60,8 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
             secret_key: config.secret_key.clone(),
             access_token_expire_minutes: config.access_token_expire_minutes,
         },
-        write_lock: Arc::new(Mutex::new(())),
+        write_lock,
+        active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: config.skill_storage_root(),
     })
 }
