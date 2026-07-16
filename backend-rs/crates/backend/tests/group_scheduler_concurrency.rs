@@ -12,7 +12,7 @@ use ag_swarmer_backend::{
     },
 };
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{Barrier, Mutex};
 use uuid::Uuid;
 
 const NOW: &str = "2026-07-14T00:00:00Z";
@@ -82,6 +82,48 @@ async fn superseding_the_active_turn_allows_a_replacement_for_the_same_thread() 
         .await
         .unwrap();
     assert_eq!(replacement.turn.status, TurnStatus::Pending);
+}
+
+#[tokio::test]
+async fn concurrent_turn_creation_keeps_one_active_turn_per_thread() {
+    let fixture = Fixture::new().await;
+    let barrier = Arc::new(Barrier::new(2));
+
+    let first_store = fixture.store.clone();
+    let first_barrier = barrier.clone();
+    let first_turn = fixture.turn("turn-concurrent-a");
+    let first = tokio::spawn(async move {
+        first_barrier.wait().await;
+        first_store.create_turn(first_turn).await
+    });
+
+    let second_store = fixture.store.clone();
+    let second_barrier = barrier;
+    let second_turn = fixture.turn("turn-concurrent-b");
+    let second = tokio::spawn(async move {
+        second_barrier.wait().await;
+        second_store.create_turn(second_turn).await
+    });
+
+    let results = [first.await.unwrap(), second.await.unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(SchedulerStoreError::ActiveTurnExists { .. })))
+            .count(),
+        1
+    );
+
+    let active_turns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM group_turns \
+         WHERE thread_id = ? AND status IN ('pending', 'running', 'waiting_for_user')",
+    )
+    .bind(&fixture.thread_id)
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    assert_eq!(active_turns, 1);
 }
 
 struct Fixture {

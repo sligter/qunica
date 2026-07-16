@@ -5506,6 +5506,102 @@ async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal
 }
 
 #[tokio::test]
+async fn bounded_stream_client_disconnect_runs_to_replayable_scheduler_terminal_state() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "bounded-disconnect@example.com").await;
+    let owner = owner_id(&state, "bounded-disconnect@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true}),
+    )
+    .await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("bounded reply")]).await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let request = TurnRequest {
+        group_id: group.clone(),
+        owner_id: owner,
+        thread_id: None,
+        content: "hi".to_string(),
+    };
+    let (tx, mut rx) = mpsc::channel(1);
+    let handle = tokio::spawn(run_group_turn(services, request, tx));
+
+    let first = rx.recv().await.unwrap();
+    assert_eq!(first.kind, StreamEventKind::UserMessage);
+    drop(rx);
+
+    assert_eq!(handle.await.unwrap(), TurnOutcome::Completed);
+
+    let turn: (String, String) =
+        sqlx::query_as("SELECT id, status FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let dispatch: (String, Option<String>) =
+        sqlx::query_as("SELECT status, output_message_id FROM agent_dispatches WHERE turn_id = ?")
+            .bind(&turn.0)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(turn.1, "completed");
+    assert_eq!(dispatch.0, "completed");
+    assert!(dispatch.1.is_some());
+
+    let first_event_id: String = sqlx::query_scalar(
+        "SELECT se.event_id FROM stream_events se \
+         JOIN threads t ON t.id = se.thread_id \
+         WHERE t.group_id = ? AND se.kind = 'user_message'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let (status, replay_text) = stream_text(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "must not start another turn"}),
+        Some(&first_event_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let replay_events: Vec<Value> = parse_sse_frames(&replay_text)
+        .into_iter()
+        .map(|frame| frame.data)
+        .collect();
+    let replay_kinds = kinds(&replay_events);
+    assert!(replay_kinds.contains(&"agent_message".to_string()));
+    assert!(replay_kinds.contains(&"turn_completed".to_string()));
+    assert_eq!(replay_kinds.last().map(String::as_str), Some("done"));
+
+    let turn_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_turns WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(turn_count, 1);
+}
+
+#[tokio::test]
 async fn resume_thread_unknown_thread_returns_not_found() {
     let (app, _state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "resume-unknown@example.com").await;
