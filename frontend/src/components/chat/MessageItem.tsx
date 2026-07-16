@@ -66,7 +66,7 @@ export function MessageItem({
     <div
       id={`message-${message.id}`}
       className={cn(
-        'group/message flex w-full gap-3 px-4 py-2',
+        'group/message flex min-w-0 w-full gap-3 px-4 py-2',
         isUser ? 'flex-row-reverse' : 'flex-row',
       )}
     >
@@ -78,7 +78,7 @@ export function MessageItem({
       />
       <div
         className={cn(
-          'flex max-w-[78%] flex-col gap-1',
+          'flex min-w-0 w-full max-w-[78%] flex-col gap-1',
           isUser ? 'items-end' : 'items-start',
         )}
       >
@@ -115,7 +115,7 @@ export function MessageItem({
         )}
         <div
           className={cn(
-            'min-w-0 rounded-lg',
+            'min-w-0 max-w-full rounded-lg',
             inputRequest
               ? 'w-full'
               : isUser
