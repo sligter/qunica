@@ -15,6 +15,8 @@ export interface ActivityToolItem {
   status: string | null
   argsSummary?: string | null
   resultSummary?: string | null
+  argsLabel?: string
+  resultLabel?: string
   details?: ReactNode
   defaultOpen?: boolean
   kind?: 'tool' | 'external'
@@ -82,8 +84,8 @@ function ToolRow({ tool }: { tool: ActivityToolItem }) {
       <div className="space-y-1.5 border-t border-border bg-muted/20 px-2.5 py-2">
         {tool.details ?? (
           <>
-            <DetailBlock label="Arguments" value={tool.argsSummary} />
-            <DetailBlock label="Result" value={tool.resultSummary} />
+            <DetailBlock label={tool.argsLabel ?? 'Arguments'} value={tool.argsSummary} />
+            <DetailBlock label={tool.resultLabel ?? 'Result'} value={tool.resultSummary} />
             {!hasDetails ? (
               <p className="text-xs text-muted-foreground">No details returned.</p>
             ) : null}
