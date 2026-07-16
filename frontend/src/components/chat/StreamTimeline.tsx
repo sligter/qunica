@@ -292,53 +292,64 @@ function AgentBlockView({
         ]
       : [],
   )
+  const visibleInputRequestKeys = new Set(
+    block.events.flatMap((event) => {
+      if (event.type !== 'waiting_for_user') return []
+      const request = normalizeHumanInputRequest(event.input_request, event.message)
+      return request ? [inputRequestKey(request)] : []
+    }),
+  )
   const tools: ActivityToolItem[] = block.events.flatMap(
     (event): ActivityToolItem[] => {
-    if (event.type === 'tool') {
-      const inputRequest = normalizeHumanInputRequest(
-        event.input_request,
-        event.result_summary,
-        event.args_summary,
-      )
-      const details =
-        inputRequest && shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
-          <HumanInputRequestForm
-            compact
-            request={inputRequest}
-            targetDisplayName={event.display_name}
-            onSubmitResponse={onSubmitHumanInput}
-          />
-        ) : undefined
-      return [
-        {
-          id: event.id,
-          name: event.tool_name,
-          status: event.status,
-          argsSummary: event.args_summary,
-          resultSummary: event.result_summary,
-          details,
-          defaultOpen: toolDefaultOpen(event.status),
-        },
-      ]
-    }
-    if (event.type === 'external_run') {
-      const exitCode = event.exit_code === undefined ? null : `exit ${event.exit_code}`
-      return [
-        {
-          id: event.id,
-          name: event.adapter ? `External CLI: ${event.adapter}` : 'External CLI',
-          status: event.status ?? exitCode ?? 'running',
-          argsSummary: event.cwd,
-          resultSummary: event.summary,
-          argsLabel: 'Working directory',
-          resultLabel: 'Summary',
-          defaultOpen:
-            event.status === 'running' ||
-            (event.status === undefined && event.exit_code === undefined),
-          kind: 'external' as const,
-        },
-      ]
-    }
+      if (event.type === 'tool') {
+        const inputRequest = normalizeHumanInputRequest(
+          event.input_request,
+          event.result_summary,
+          event.args_summary,
+        )
+        const keepInputRequestVisible =
+          inputRequest && visibleInputRequestKeys.has(inputRequestKey(inputRequest))
+        const details =
+          inputRequest &&
+          !keepInputRequestVisible &&
+          shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
+            <HumanInputRequestForm
+              compact
+              request={inputRequest}
+              targetDisplayName={event.display_name}
+              onSubmitResponse={onSubmitHumanInput}
+            />
+          ) : undefined
+        return [
+          {
+            id: event.id,
+            name: event.tool_name,
+            status: event.status,
+            argsSummary: event.args_summary,
+            resultSummary: event.result_summary,
+            details,
+            defaultOpen: toolDefaultOpen(event.status),
+          },
+        ]
+      }
+      if (event.type === 'external_run') {
+        const exitCode = event.exit_code === undefined ? null : `exit ${event.exit_code}`
+        return [
+          {
+            id: event.id,
+            name: event.adapter ? `External CLI: ${event.adapter}` : 'External CLI',
+            status: event.status ?? exitCode ?? 'running',
+            argsSummary: event.cwd,
+            resultSummary: event.summary,
+            argsLabel: 'Working directory',
+            resultLabel: 'Summary',
+            defaultOpen:
+              event.status === 'running' ||
+              (event.status === undefined && event.exit_code === undefined),
+            kind: 'external' as const,
+          },
+        ]
+      }
       return []
     },
   )

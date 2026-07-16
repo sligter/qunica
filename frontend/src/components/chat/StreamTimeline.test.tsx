@@ -158,4 +158,49 @@ describe('StreamTimeline activity rendering', () => {
     }) as HTMLDetailsElement
     expect(activity.open).toBe(false)
   })
+
+  it('keeps a required input form visible outside the collapsed activity bubble', () => {
+    const inputRequest = {
+      question: 'Which environment should I use?',
+      required: true,
+      choices: ['Staging', 'Production'],
+    }
+    render(
+      <StreamTimeline
+        onSubmitHumanInput={vi.fn()}
+        run={run(
+          [
+            event({
+              id: 'tool-1',
+              stream_id: 'stream-1',
+              type: 'tool',
+              agent_id: 'agent-1',
+              display_name: 'Researcher',
+              tool_call_id: 'call-1',
+              tool_name: 'AskUser',
+              status: 'input_required',
+              input_request: inputRequest,
+              created_at: '2026-07-16T10:00:02Z',
+            }),
+            event({
+              id: 'waiting-1',
+              stream_id: 'stream-1',
+              type: 'waiting_for_user',
+              agent_id: 'agent-1',
+              display_name: 'Researcher',
+              message: inputRequest.question,
+              input_request: inputRequest,
+              created_at: '2026-07-16T10:00:03Z',
+            }),
+          ],
+          'active',
+        )}
+      />,
+    )
+
+    const activity = screen.getByRole('group', { name: 'Activity: 1 tool' }) as HTMLDetailsElement
+    expect(activity.open).toBe(false)
+    expect(screen.getByText(inputRequest.question)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Staging' })).toBeVisible()
+  })
 })
