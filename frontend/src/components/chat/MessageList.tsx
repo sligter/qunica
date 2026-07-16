@@ -160,10 +160,10 @@ export function MessageList({
   return (
     <div
       ref={scrollRef}
-      className="relative flex flex-1 flex-col overflow-y-auto py-4"
+      className="relative flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto py-4"
       onScroll={updateNearBottom}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
+      <div className="mx-auto flex min-w-0 w-full max-w-3xl flex-1 flex-col">
         {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
           <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
             No messages yet. Try sending <code>@AgentName hello</code> to start.

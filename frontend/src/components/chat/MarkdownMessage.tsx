@@ -46,7 +46,7 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
   }
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-border bg-code text-code-foreground shadow-sm">
+    <div className="my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-code text-code-foreground shadow-sm">
       <div className="flex items-center justify-between border-b border-code-foreground/10 bg-code-foreground/10 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-code-foreground/70">
         <span>{language ?? 'code'}</span>
         <Button
@@ -61,7 +61,7 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
           {copied ? 'Copied' : 'Copy'}
         </Button>
       </div>
-      <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
+      <pre className="max-w-full overflow-x-auto p-3 text-xs leading-relaxed">
         <code className={className}>{children}</code>
       </pre>
     </div>
@@ -78,7 +78,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
   return (
     <div
       className={cn(
-        'min-w-0 break-words text-sm leading-6',
+        'min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-sm leading-6',
         isUser && 'whitespace-pre-wrap',
         isUser ? 'chat-user-message text-current' : 'text-foreground',
       )}
@@ -114,7 +114,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
                 target="_blank"
                 rel="noreferrer"
                 className={cn(
-                  'font-medium underline underline-offset-4',
+                  'break-all font-medium underline underline-offset-4',
                   isUser ? 'text-current' : 'text-primary',
                 )}
               >
@@ -140,7 +140,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
           h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-semibold">{children}</h2>,
           h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-sm font-semibold">{children}</h3>,
           table: ({ children }) => (
-            <div className="my-3 overflow-x-auto rounded-lg border border-border">
+            <div className="my-3 min-w-0 max-w-full overflow-x-auto rounded-lg border border-border">
               <table className="w-full border-collapse text-left text-xs">{children}</table>
             </div>
           ),
@@ -154,7 +154,7 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
             return (
               <code
                 className={cn(
-                  'rounded px-1.5 py-0.5 text-[0.85em]',
+                  'break-all rounded px-1.5 py-0.5 text-[0.85em]',
                   isUser ? 'bg-current/15 text-current' : 'bg-muted text-foreground',
                 )}
               >
