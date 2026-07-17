@@ -13,6 +13,10 @@ use std::path::{Path as FsPath, PathBuf};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::acp::{
+    normalize_acp_runtime, probe_acp_runtime_capabilities, AcpCapabilityError,
+    AcpRuntimeCapabilities, PermissionPolicy,
+};
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 
 const RUNTIME_LLM_CHAT: &str = "llm_chat";
@@ -190,6 +194,46 @@ pub async fn acp_runtime_presets() -> Json<AcpRuntimePresetListResponse> {
     Json(AcpRuntimePresetListResponse {
         presets: fallback_acp_presets(),
     })
+}
+
+pub async fn acp_runtime_capabilities(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<AcpRuntimeCapabilities>), ApiError> {
+    let _owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+
+    let mut config = match normalize_acp_runtime(Some(&body)) {
+        Ok(config) => config,
+        Err(error) => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(AcpRuntimeCapabilities::warning(error.to_string())),
+            ));
+        }
+    };
+    let selected_model = config.model.take();
+    config.permission_policy = PermissionPolicy::Deny;
+
+    match probe_acp_runtime_capabilities(config, selected_model).await {
+        Ok(capabilities) => Ok((StatusCode::OK, Json(capabilities))),
+        Err(error @ AcpCapabilityError::Spawn { .. }) => Ok((
+            StatusCode::BAD_REQUEST,
+            Json(AcpRuntimeCapabilities::warning(error.to_string())),
+        )),
+        Err(error @ AcpCapabilityError::Protocol { .. }) => Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(AcpRuntimeCapabilities::warning(error.to_string())),
+        )),
+        Err(error @ AcpCapabilityError::Timeout) => Ok((
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(AcpRuntimeCapabilities::warning(error.to_string())),
+        )),
+        Err(error @ AcpCapabilityError::Environment { .. }) => Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AcpRuntimeCapabilities::warning(error.to_string())),
+        )),
+    }
 }
 
 pub async fn create(

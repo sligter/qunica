@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
-import type { LLMProviderCreate, LLMProviderRead, LLMProviderUpdate } from '@/types/api'
+import type {
+  LLMProviderCreate,
+  LLMProviderRead,
+  LLMProviderUpdate,
+  ModelInfo,
+} from '@/types/api'
 
 export function useProviders() {
   const token = useAuthStore((s) => s.token)
@@ -75,7 +80,7 @@ export function useProviderModels(providerId: string | undefined) {
   return useQuery({
     queryKey: ['llm-providers', providerId, 'models'],
     queryFn: () =>
-      fetchJson<{ id: string; name: string }[]>(`/llm-providers/${providerId}/models`, {
+      fetchJson<ModelInfo[]>(`/llm-providers/${providerId}/models`, {
         token,
       }),
     enabled: token !== null && !!providerId,

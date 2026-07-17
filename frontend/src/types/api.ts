@@ -138,6 +138,17 @@ export interface AcpRuntimePresetListResponse {
   presets: AcpRuntimePresetRead[]
 }
 
+export interface AcpRuntimeCapabilitiesRead {
+  models: AcpRuntimeChoice[]
+  modes: AcpRuntimeChoice[]
+  thinking_efforts: AcpRuntimeChoice[]
+  current_model: string | null
+  current_mode: string | null
+  current_thinking_effort: string | null
+  source: 'acp'
+  warning: string | null
+}
+
 export interface AgentRead {
   id: string
   name: string

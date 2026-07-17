@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use axum::{
-    body::Body,
-    http::{Request, StatusCode},
+    body::{Body, Bytes},
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+    response::{IntoResponse, Response},
     Router,
 };
+use futures_util::stream;
 use serde_json::{json, Value};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 async fn app() -> Router {
@@ -78,6 +81,27 @@ async fn register_and_login(app: &Router, email: &str) -> String {
 }
 
 async fn create_provider(app: &Router, token: &str, name: &str, api_key: &str) -> Value {
+    create_provider_config(
+        app,
+        token,
+        name,
+        "openai-compatible",
+        "https://llm.example.test/v1",
+        api_key,
+        "test-model",
+    )
+    .await
+}
+
+async fn create_provider_config(
+    app: &Router,
+    token: &str,
+    name: &str,
+    kind: &str,
+    base_url: &str,
+    api_key: &str,
+    default_model: &str,
+) -> Value {
     let (status, provider) = send(
         app,
         authed_json(
@@ -86,10 +110,10 @@ async fn create_provider(app: &Router, token: &str, name: &str, api_key: &str) -
             token,
             json!({
                 "name": name,
-                "kind": "openai-compatible",
-                "base_url": "https://llm.example.test/v1",
+                "kind": kind,
+                "base_url": base_url,
                 "api_key": api_key,
-                "default_model": "test-model",
+                "default_model": default_model,
                 "context_window_tokens": 32000,
                 "context_output_reserve_ratio": 0.25,
                 "description": "primary provider",
@@ -100,6 +124,118 @@ async fn create_provider(app: &Router, token: &str, name: &str, api_key: &str) -
     .await;
     assert_eq!(status, StatusCode::CREATED);
     provider
+}
+
+#[derive(Debug, Clone)]
+struct CapturedRequest {
+    method: String,
+    uri: String,
+    headers: HeaderMap,
+}
+
+async fn catalog_server(
+    status: StatusCode,
+    body: impl Into<String>,
+) -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind model catalog server");
+    let address = listener.local_addr().expect("model catalog address");
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let body = body.into();
+    let app = Router::new().fallback({
+        let captures = Arc::clone(&captures);
+        move |request: Request<Body>| {
+            let captures = Arc::clone(&captures);
+            let body = body.clone();
+            async move {
+                captures.lock().await.push(CapturedRequest {
+                    method: request.method().to_string(),
+                    uri: request.uri().to_string(),
+                    headers: request.headers().clone(),
+                });
+                (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve model catalog response");
+    });
+    (format!("http://{address}"), captures)
+}
+
+async fn oversized_chunked_catalog_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind chunked model catalog server");
+    let address = listener.local_addr().expect("chunked catalog address");
+    let chunks = vec![
+        Bytes::from(vec![b'x'; 1024 * 1024]),
+        Bytes::from(vec![b'x'; 1024 * 1024]),
+        Bytes::from_static(b"x"),
+    ];
+    let app = Router::new().fallback(move || {
+        let chunks = chunks.clone();
+        async move {
+            let body = Body::from_stream(stream::iter(
+                chunks.into_iter().map(Ok::<Bytes, Infallible>),
+            ));
+            Response::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .unwrap()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve chunked model catalog response");
+    });
+    format!("http://{address}")
+}
+
+async fn pending_catalog_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pending model catalog server");
+    let address = listener.local_addr().expect("pending catalog address");
+    let app = Router::new().fallback(|| async move {
+        let body = Body::from_stream(stream::pending::<Result<Bytes, Infallible>>());
+        Response::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .unwrap()
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve pending model catalog response");
+    });
+    format!("http://{address}")
+}
+
+async fn redirect_server(location: &str) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind redirect model catalog server");
+    let address = listener.local_addr().expect("redirect catalog address");
+    let location = HeaderValue::from_str(location).expect("redirect location");
+    let app = Router::new().fallback(move || {
+        let location = location.clone();
+        async move {
+            let mut response = StatusCode::FOUND.into_response();
+            response.headers_mut().insert(header::LOCATION, location);
+            response
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve redirect model catalog response");
+    });
+    format!("http://{address}")
 }
 
 #[tokio::test]
@@ -243,10 +379,73 @@ async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fie
 }
 
 #[tokio::test]
-async fn providers_settings_provider_models_use_default_without_network() {
+async fn providers_settings_provider_models_require_authentication_and_ownership() {
+    let (base_url, captures) = catalog_server(
+        StatusCode::OK,
+        json!({ "data": [{ "id": "must-not-be-fetched" }] }).to_string(),
+    )
+    .await;
     let app = app().await;
-    let token = register_and_login(&app, "provider-models@example.com").await;
-    let provider = create_provider(&app, &token, "Models", "model-secret-5678").await;
+    let owner_token = register_and_login(&app, "provider-model-owner@example.com").await;
+    let other_token = register_and_login(&app, "provider-model-other@example.com").await;
+    let provider = create_provider_config(
+        &app,
+        &owner_token,
+        "Owned models",
+        "openai-compatible",
+        &base_url,
+        "owner-model-secret",
+        "saved-default",
+    )
+    .await;
+    let provider_id = provider["id"].as_str().unwrap();
+    let uri = format!("/api/v2/llm-providers/{provider_id}/models");
+
+    let (status, response) = send(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri(&uri)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(response["error"]["code"], "unauthorized");
+
+    let (status, response) = send(&app, authed("GET", &uri, &other_token)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(response["error"]["code"], "permission_denied");
+    assert!(captures.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn providers_settings_provider_models_openai_discovers_normalizes_and_authenticates() {
+    let (base_url, captures) = catalog_server(
+        StatusCode::OK,
+        json!({
+            "data": [
+                {"id": "Zulu", "name": "Zulu model"},
+                {"id": "alpha"},
+                {"id": "Beta", "name": "Beta model"},
+                {"id": "alpha", "name": "duplicate is ignored"}
+            ]
+        })
+        .to_string(),
+    )
+    .await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-models-openai@example.com").await;
+    let provider = create_provider_config(
+        &app,
+        &token,
+        "OpenAI models",
+        "openai-compatible",
+        &format!("{base_url}/openai/v1/?api-version=2026-07-16"),
+        "openai-secret",
+        "custom-default",
+    )
+    .await;
     let provider_id = provider["id"].as_str().unwrap().to_string();
 
     let (status, models) = send(
@@ -259,7 +458,453 @@ async fn providers_settings_provider_models_use_default_without_network() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(models, json!([{"id": "test-model", "name": "test-model"}]));
+    assert_eq!(
+        models,
+        json!([
+            {"id": "alpha", "name": "alpha"},
+            {"id": "Beta", "name": "Beta model"},
+            {"id": "custom-default", "name": "custom-default"},
+            {"id": "Zulu", "name": "Zulu model"}
+        ])
+    );
+
+    let captures = captures.lock().await;
+    assert_eq!(captures.len(), 1);
+    assert_eq!(captures[0].method, "GET");
+    assert_eq!(captures[0].uri, "/openai/v1/models?api-version=2026-07-16");
+    assert_eq!(
+        captures[0]
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer openai-secret")
+    );
+    assert!(captures[0].headers.get("x-api-key").is_none());
+}
+
+#[tokio::test]
+async fn providers_settings_provider_models_anthropic_kinds_use_v1_headers() {
+    let (base_url, captures) = catalog_server(
+        StatusCode::OK,
+        json!({"data": [{"id": "claude-live", "display_name": "Claude Live"}]}).to_string(),
+    )
+    .await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-models-anthropic@example.com").await;
+
+    for (kind, path, key) in [
+        ("anthropic", "/anthropic/v1/models", "anthropic-secret"),
+        (
+            "anthropic-compatible",
+            "/proxy/anthropic/v1/models",
+            "compatible-secret",
+        ),
+    ] {
+        let provider = create_provider_config(
+            &app,
+            &token,
+            &format!("{kind} models"),
+            kind,
+            &format!("{base_url}{}", path.trim_end_matches("/v1/models")),
+            key,
+            "claude-live",
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap();
+        let (status, models) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/llm-providers/{provider_id}/models"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            models,
+            json!([{"id": "claude-live", "name": "Claude Live"}])
+        );
+    }
+
+    let captures = captures.lock().await;
+    assert_eq!(captures.len(), 2);
+    for (capture, (path, key)) in captures.iter().zip([
+        ("/anthropic/v1/models", "anthropic-secret"),
+        ("/proxy/anthropic/v1/models", "compatible-secret"),
+    ]) {
+        assert_eq!(capture.method, "GET");
+        assert_eq!(capture.uri, path);
+        assert_eq!(
+            capture
+                .headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some(key)
+        );
+        assert_eq!(
+            capture
+                .headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("2023-06-01")
+        );
+        assert!(capture.headers.get(header::AUTHORIZATION).is_none());
+    }
+}
+
+#[tokio::test]
+async fn providers_settings_provider_models_gemini_normalizes_filters_and_authenticates() {
+    let (base_url, captures) = catalog_server(
+        StatusCode::OK,
+        json!({
+            "models": [
+                {
+                    "name": "models/gemini-z",
+                    "displayName": "Gemini Z",
+                    "supportedGenerationMethods": ["generateContent"]
+                },
+                {
+                    "name": "models/gemini-chat",
+                    "displayName": "Gemini Chat"
+                },
+                {
+                    "name": "models/text-embedding",
+                    "displayName": "Embedding",
+                    "supportedGenerationMethods": ["embedContent"]
+                },
+                {
+                    "name": "models/gemini-z",
+                    "displayName": "Gemini Z"
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-models-gemini@example.com").await;
+
+    for (index, provider_base) in [
+        format!("{base_url}/google"),
+        format!("{base_url}/google/v1beta/?alt=json&key=stale-key"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let provider = create_provider_config(
+            &app,
+            &token,
+            &format!("Gemini models {index}"),
+            "gemini",
+            &provider_base,
+            "gemini-secret",
+            "custom-gemini",
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap();
+        let (status, models) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/llm-providers/{provider_id}/models"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            models,
+            json!([
+                {"id": "custom-gemini", "name": "custom-gemini"},
+                {"id": "gemini-chat", "name": "Gemini Chat"},
+                {"id": "gemini-z", "name": "Gemini Z"}
+            ])
+        );
+        assert!(!models.to_string().contains("gemini-secret"));
+    }
+
+    let captures = captures.lock().await;
+    assert_eq!(captures.len(), 2);
+    for (capture, expected_uri) in captures.iter().zip([
+        "/google/v1beta/models?key=gemini-secret",
+        "/google/v1beta/models?alt=json&key=gemini-secret",
+    ]) {
+        assert_eq!(capture.method, "GET");
+        assert_eq!(capture.uri, expected_uri);
+        assert!(capture.headers.get(header::AUTHORIZATION).is_none());
+        assert!(capture.headers.get("x-api-key").is_none());
+    }
+}
+
+#[tokio::test]
+async fn providers_settings_provider_models_reject_malformed_openai_and_anthropic_entries() {
+    let app = app().await;
+    let token = register_and_login(&app, "provider-model-malformed-entries@example.com").await;
+
+    for (kind, payload) in [
+        (
+            "openai-compatible",
+            json!({ "data": [{ "id": "valid-model" }, { "object": "model" }] }),
+        ),
+        (
+            "anthropic",
+            json!({ "data": [{ "id": "valid-model" }, { "id": 42 }] }),
+        ),
+    ] {
+        let (base_url, _) = catalog_server(StatusCode::OK, payload.to_string()).await;
+        let provider = create_provider_config(
+            &app,
+            &token,
+            &format!("Malformed {kind}"),
+            kind,
+            &base_url,
+            &format!("malformed-{kind}-secret"),
+            "saved-default-must-not-mask-malformed-data",
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap();
+        let (status, response) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/llm-providers/{provider_id}/models"),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(response["error"]["code"], "provider_model_discovery_failed");
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("malformed response"));
+        assert!(!response
+            .to_string()
+            .contains("saved-default-must-not-mask-malformed-data"));
+    }
+}
+
+#[tokio::test]
+async fn providers_settings_provider_models_reject_credential_reflection() {
+    let app = app().await;
+    let token = register_and_login(&app, "provider-model-reflection@example.com").await;
+
+    for (name, api_key, default_model, payload) in [
+        (
+            "Reflected id",
+            "reflected-id-secret",
+            "safe-default",
+            json!({ "data": [{ "id": "model-reflected-id-secret" }] }),
+        ),
+        (
+            "Reflected name",
+            "reflected-name-secret",
+            "safe-default",
+            json!({ "data": [{ "id": "safe-model", "name": "reflected-name-secret" }] }),
+        ),
+        (
+            "Reflected default",
+            "reflected-default-secret",
+            "reflected-default-secret",
+            json!({ "data": [] }),
+        ),
+    ] {
+        let (base_url, _) = catalog_server(StatusCode::OK, payload.to_string()).await;
+        let provider = create_provider_config(
+            &app,
+            &token,
+            name,
+            "openai-compatible",
+            &base_url,
+            api_key,
+            default_model,
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap();
+        let (status, response) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/llm-providers/{provider_id}/models"),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(response["error"]["code"], "provider_model_discovery_failed");
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("malformed response"));
+        assert!(!response.to_string().contains(api_key));
+    }
+}
+
+#[tokio::test]
+async fn providers_settings_provider_model_failures_are_bounded_and_redacted() {
+    let (rejected_url, _) = catalog_server(
+        StatusCode::UNAUTHORIZED,
+        "UPSTREAM_SECRET_RESPONSE model-secret-401",
+    )
+    .await;
+    let (malformed_url, _) = catalog_server(
+        StatusCode::OK,
+        json!({"unexpected": "UPSTREAM_SECRET_RESPONSE"}).to_string(),
+    )
+    .await;
+    let oversized_url = oversized_chunked_catalog_server().await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-model-errors@example.com").await;
+
+    for (name, base_url, api_key, expected_text) in [
+        ("Rejected models", rejected_url, "model-secret-401", "(401)"),
+        (
+            "Malformed models",
+            malformed_url,
+            "model-secret-malformed",
+            "malformed response",
+        ),
+        (
+            "Oversized models",
+            oversized_url,
+            "model-secret-oversized",
+            "2 MiB",
+        ),
+    ] {
+        let provider = create_provider_config(
+            &app,
+            &token,
+            name,
+            "openai-compatible",
+            &base_url,
+            api_key,
+            "saved-default",
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap();
+        let (status, response) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/llm-providers/{provider_id}/models"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(response["error"]["code"], "provider_model_discovery_failed");
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("openai-compatible"));
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(expected_text));
+        let serialized = response.to_string();
+        assert!(!serialized.contains(api_key));
+        assert!(!serialized.contains("UPSTREAM_SECRET_RESPONSE"));
+        assert!(!serialized.contains(&base_url));
+    }
+}
+
+#[tokio::test]
+async fn providers_settings_provider_model_redirects_do_not_forward_credentials() {
+    let (destination_url, destination_captures) = catalog_server(
+        StatusCode::OK,
+        json!({"data": [], "models": []}).to_string(),
+    )
+    .await;
+    let redirect_url = redirect_server(&format!("{destination_url}/credential-sink")).await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-model-redirects@example.com").await;
+
+    for (name, kind, api_key, base_url) in [
+        (
+            "Anthropic redirect",
+            "anthropic",
+            "anthropic-redirect-secret",
+            format!("{redirect_url}/anthropic"),
+        ),
+        (
+            "Gemini redirect",
+            "gemini",
+            "gemini-redirect-secret",
+            format!("{redirect_url}/gemini/v1beta"),
+        ),
+    ] {
+        let provider = create_provider_config(
+            &app,
+            &token,
+            name,
+            kind,
+            &base_url,
+            api_key,
+            "saved-default",
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap();
+        let (status, response) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/llm-providers/{provider_id}/models"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(response["error"]["code"], "provider_model_discovery_failed");
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("(302)"));
+        let serialized = response.to_string();
+        assert!(!serialized.contains(api_key));
+        assert!(!serialized.contains(&base_url));
+    }
+
+    assert!(destination_captures.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn providers_settings_provider_model_timeout_is_safe_gateway_timeout() {
+    let base_url = pending_catalog_server().await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-model-timeout@example.com").await;
+    let provider = create_provider_config(
+        &app,
+        &token,
+        "Pending models",
+        "openai-compatible",
+        &base_url,
+        "timeout-model-secret",
+        "saved-default",
+    )
+    .await;
+    let provider_id = provider["id"].as_str().unwrap();
+
+    let (status, response) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/llm-providers/{provider_id}/models"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(response["error"]["code"], "provider_model_discovery_failed");
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("timed out"));
+    let serialized = response.to_string();
+    assert!(!serialized.contains("timeout-model-secret"));
+    assert!(!serialized.contains(&base_url));
 }
 
 #[tokio::test]

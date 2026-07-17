@@ -147,6 +147,11 @@ pub enum TurnOutcome {
 /// Marker that the receiving end of the stream has gone away.
 struct Cancelled;
 
+/// Internal marker for a failure already surfaced with ACP agent identity.
+#[derive(Debug, thiserror::Error)]
+#[error("ACP agent execution failed")]
+struct AcpAgentFailure;
+
 /// A step failed either because the client vanished or because a write errored.
 enum StepErr {
     #[allow(dead_code)]
@@ -459,6 +464,10 @@ macro_rules! step {
         match $expr {
             Ok(value) => value,
             Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+            Err(StepErr::Db(err)) if err.is::<AcpAgentFailure>() => {
+                let _ = $ctx.emit_done().await;
+                return Ok(TurnOutcome::Error);
+            }
             Err(StepErr::Db(err)) => return $ctx.fail(&err.to_string()).await,
             Err(StepErr::SchedulerPersistence) => {
                 return $ctx.fail("scheduler persistence failed").await
@@ -1104,7 +1113,7 @@ async fn run_scheduled_turn(
                 ctx.scheduled_dispatch = None;
                 return cancel_scheduled_turn(ctx, &store, &turn_id).await;
             }
-            Err(StepErr::Db(_error)) => {
+            Err(StepErr::Db(_error)) if !_error.is::<AcpAgentFailure>() => {
                 ctx.scheduled_dispatch = None;
                 account_scheduled_tokens(ctx, &mut scheduler_runtime.budget);
                 scheduler_runtime.budget.record_failure();
@@ -1167,6 +1176,95 @@ async fn run_scheduled_turn(
                     return fail_scheduled_persistence(ctx, &store, &turn_id).await;
                 }
                 continue;
+            }
+            Err(StepErr::Db(_error)) => {
+                ctx.scheduled_dispatch = None;
+                account_scheduled_tokens(ctx, &mut scheduler_runtime.budget);
+                scheduler_runtime.budget.record_failure();
+                if let Err(error) = ctx
+                    .emit_durable_event(
+                        StreamEventKind::DispatchFailed,
+                        json!({
+                            "turn_id": turn_id,
+                            "dispatch_id": dispatch_id,
+                            "target_agent_id": agent.agent_id,
+                            "action_kind": dispatch.action_kind.as_str(),
+                            "reason": "agent_failure",
+                        }),
+                    )
+                    .await
+                {
+                    return match error {
+                        StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
+                        StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                            fail_scheduled_persistence(ctx, &store, &turn_id).await
+                        }
+                    };
+                }
+                let dispatch_running = match dispatch_is_running(&services.pool, &dispatch_id).await
+                {
+                    Ok(running) => running,
+                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                };
+                if dispatch_running
+                    && store
+                        .finish_dispatch(FinishDispatch {
+                            dispatch_id,
+                            next: DispatchStatus::Failed,
+                            artifact: None,
+                            total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
+                            failure_code: Some("acp_failure".to_owned()),
+                            output: None,
+                        })
+                        .await
+                        .is_err()
+                {
+                    tracing::error!(turn_id, "failed to persist failed ACP dispatch");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                }
+                if store
+                    .update_turn_budget(
+                        &turn_id,
+                        scheduler_runtime.budget.agent_steps() as i64,
+                        scheduler_runtime.budget.moderator_calls() as i64,
+                        scheduler_runtime.budget.consecutive_failures() as i64,
+                        scheduler_runtime.budget.total_failures() as i64,
+                        scheduler_runtime.budget.total_tokens() as i64,
+                    )
+                    .await
+                    .is_err()
+                {
+                    tracing::error!(turn_id, "failed to persist ACP failure budget");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                }
+                if store
+                    .transition_turn(&turn_id, TurnStatus::Running, TurnStatus::Failed, None)
+                    .await
+                    .is_err()
+                {
+                    tracing::error!(turn_id, "failed to terminalize ACP scheduler failure");
+                    return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                }
+                if let Err(error) = emit_turn_terminal(
+                    ctx,
+                    &turn_id,
+                    TurnStatus::Failed,
+                    None,
+                    &scheduler_runtime.budget,
+                )
+                .await
+                {
+                    return match error {
+                        StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
+                        StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                            fail_scheduled_persistence(ctx, &store, &turn_id).await
+                        }
+                    };
+                }
+                return Ok(TurnOutcome::Error);
             }
             Err(StepErr::SchedulerPersistence) => {
                 ctx.scheduled_dispatch = None;
@@ -2628,7 +2726,22 @@ async fn run_acp_agent_turn(
     }
     let run_control = run.control();
     match await_with_cancellation(ctx, run.join()).await {
-        Ok(result) => result.map_err(|err| StepErr::Db(err.into()))?,
+        Ok(Ok(())) => {}
+        Ok(Err(crate::acp::AcpRunJoinError::Cancelled(_))) => {
+            return Err(StepErr::Cancelled);
+        }
+        Ok(Err(error)) => {
+            ctx.emit(
+                StreamEventKind::Error,
+                json!({
+                    "agent_id": agent.agent_id,
+                    "display_name": agent.display_name,
+                    "message": error.to_string(),
+                }),
+            )
+            .await?;
+            return Err(StepErr::Db(anyhow::Error::new(AcpAgentFailure)));
+        }
         Err(StepErr::Cancelled) => {
             run_control.cancel();
             return Err(StepErr::Cancelled);

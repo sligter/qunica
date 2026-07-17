@@ -11,6 +11,7 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
 import {
@@ -23,6 +24,7 @@ import {
 import { isThinkingLevel, thinkingLevelValues } from '@/components/agents/thinkingLevel'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
+import { useCommittedAcpRuntimeCapabilities } from '@/components/agents/useCommittedAcpRuntimeCapabilities'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,7 +33,7 @@ import { Slider } from '@/components/ui/slider'
 import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
-import { useProviders } from '@/hooks/useProviders'
+import { useProviderModels, useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { useUpdateAgent } from '@/hooks/useUpdateAgent'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
@@ -61,6 +63,7 @@ const schema = z.object({
   acp_mode: z.string().optional(),
   acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
+  model: z.string().optional(),
   workspace_id: z.string().min(1, 'Workspace is required'),
   temperature: z
     .number()
@@ -124,6 +127,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       acp_mode: agent.acp_runtime?.mode ?? '',
       acp_thinking_effort: agent.acp_runtime?.thinking_effort ?? '',
       llm_provider_id: agent.llm_provider_id ?? '',
+      model: typeof agent.llm_config?.model === 'string' ? agent.llm_config.model : '',
       workspace_id: agent.workspace_id ?? '',
       temperature: (agent.llm_config?.temperature as number) ?? DEFAULT_AGENT_TEMPERATURE,
       top_p: (agent.llm_config?.top_p as number) ?? 1,
@@ -143,6 +147,21 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
   const runtimeKind = form.watch('runtime_kind')
   const acpPresets = acpRuntimePresets.data?.presets ?? []
+  const selectedProviderId = form.watch('llm_provider_id') || undefined
+  const providerModels = useProviderModels(
+    runtimeKind === 'llm_chat' ? selectedProviderId : undefined,
+  )
+  const acpCapabilities = useCommittedAcpRuntimeCapabilities(
+    {
+      profile: form.watch('acp_profile'),
+      command: form.watch('acp_command') ?? '',
+      argsText: form.watch('acp_args') ?? '',
+      envText: form.watch('acp_env') ?? '',
+      permissionPolicy: form.watch('acp_permission_policy'),
+      model: form.watch('acp_model') ?? '',
+    },
+    runtimeKind === 'acp',
+  )
   const tools = builtinTools.data?.tools ?? []
   const selectedWorkspace = (workspaces.data ?? []).find(
     (workspace) => workspace.id === form.watch('workspace_id'),
@@ -152,17 +171,29 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
   const applyAcpPreset = useCallback(
     (preset: AcpRuntimePresetRead) => {
+      const command = preset.command ?? ''
+      const argsText = formatAcpArgs(preset.args)
+      const envText = formatAcpEnv(preset.env)
+      const model = preset.default_model ?? ''
       form.setValue('acp_profile', preset.profile)
-      form.setValue('acp_command', preset.command ?? '')
-      form.setValue('acp_args', formatAcpArgs(preset.args))
-      form.setValue('acp_env', formatAcpEnv(preset.env))
+      form.setValue('acp_command', command)
+      form.setValue('acp_args', argsText)
+      form.setValue('acp_env', envText)
       form.setValue('acp_timeout_seconds', preset.timeout_seconds)
       form.setValue('acp_permission_policy', preset.permission_policy)
-      form.setValue('acp_model', preset.default_model ?? '')
+      form.setValue('acp_model', model)
       form.setValue('acp_mode', preset.default_mode ?? '')
       form.setValue('acp_thinking_effort', preset.default_thinking_effort ?? '')
+      acpCapabilities.commit({
+        profile: preset.profile,
+        command,
+        argsText,
+        envText,
+        permissionPolicy: preset.permission_policy,
+        model,
+      })
     },
-    [form],
+    [acpCapabilities, form],
   )
 
   const toggleSkill = (id: string) => {
@@ -175,6 +206,8 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
     setSubmitError(null)
     try {
       const llm_config: Record<string, unknown> = {}
+      const model = values.model?.trim()
+      if (model) llm_config.model = model
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
@@ -328,18 +361,43 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           model={form.watch('acp_model') ?? ''}
           mode={form.watch('acp_mode') ?? ''}
           thinkingEffort={form.watch('acp_thinking_effort') ?? ''}
-          onProfileChange={(value: AcpRuntimeProfile) => form.setValue('acp_profile', value)}
+          modelOptions={acpCapabilities.data?.models}
+          modeOptions={acpCapabilities.data?.modes}
+          thinkingEffortOptions={acpCapabilities.data?.thinking_efforts}
+          capabilitiesLoading={acpCapabilities.isFetching}
+          capabilitiesStale={acpCapabilities.capabilitiesStale}
+          capabilitiesWarning={
+            acpCapabilities.data?.warning ??
+            (acpCapabilities.isError
+              ? 'Unable to load runtime capabilities. Check the adapter settings and refresh.'
+              : null)
+          }
+          onProfileChange={(value: AcpRuntimeProfile) => {
+            form.setValue('acp_profile', value)
+            acpCapabilities.commitProfile(value)
+          }}
           onPresetSelect={applyAcpPreset}
-          onCommandChange={(value) => form.setValue('acp_command', value)}
-          onArgsTextChange={(value) => form.setValue('acp_args', value)}
-          onEnvTextChange={(value) => form.setValue('acp_env', value)}
+          onCommandChange={(value) => {
+            form.setValue('acp_command', value)
+            acpCapabilities.markStale()
+          }}
+          onArgsTextChange={(value) => {
+            form.setValue('acp_args', value)
+            acpCapabilities.markStale()
+          }}
+          onEnvTextChange={(value) => {
+            form.setValue('acp_env', value)
+            acpCapabilities.markStale()
+          }}
           onTimeoutSecondsChange={(value) => form.setValue('acp_timeout_seconds', value)}
           onPermissionPolicyChange={(value: AcpPermissionPolicy) =>
             form.setValue('acp_permission_policy', value)
           }
           onModelChange={(value) => form.setValue('acp_model', value)}
+          onModelCommit={acpCapabilities.commitModel}
           onModeChange={(value) => form.setValue('acp_mode', value)}
           onThinkingEffortChange={(value) => form.setValue('acp_thinking_effort', value)}
+          onRefreshCapabilities={acpCapabilities.refresh}
         />
       )}
 
@@ -360,6 +418,24 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
               ))}
             </select>
           </div>
+
+          <RuntimeCapabilityField
+            id="ea-model"
+            label="Model"
+            value={form.watch('model') ?? ''}
+            options={(providerModels.data ?? []).map((model) => ({
+              value: model.id,
+              label: model.name,
+            }))}
+            placeholder="Provider default"
+            onChange={(value) => form.setValue('model', value)}
+            isLoading={providerModels.isFetching}
+            warning={
+              providerModels.isError
+                ? 'Unable to load provider models. You can still enter a custom model.'
+                : null
+            }
+          />
 
           <div className="space-y-1.5">
             <button

@@ -118,6 +118,209 @@ async fn create_provider(app: &Router, token: &str, name: &str) -> String {
     provider["id"].as_str().unwrap().to_string()
 }
 
+fn acp_capability_runtime(mode: &str, extra_env: Value) -> Value {
+    let exe = std::env::current_exe().expect("current test binary path");
+    let mut env = serde_json::Map::new();
+    env.insert("ACP_API_FAKE_MODE".to_string(), json!(mode));
+    if let Value::Object(extra_env) = extra_env {
+        env.extend(extra_env);
+    }
+    json!({
+        "profile": "custom",
+        "command": exe.to_string_lossy(),
+        "args": ["--exact", "agent_acp_capability_fake_child_entrypoint"],
+        "env": env,
+        "permission_policy": "auto_allow",
+        "model": "gpt-5.5",
+        "mode": "saved-mode-must-not-apply",
+        "thinking_effort": "saved-effort-must-not-apply",
+        "config_options": { "saved-option": "must-not-apply" },
+    })
+}
+
+#[tokio::test]
+async fn acp_runtime_capabilities_requires_authentication() {
+    let app = app().await;
+    let (status, body) = send(
+        &app,
+        post_json(
+            "/api/v2/agents/acp-runtime-capabilities",
+            json!({ "command": "should-not-run" }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn acp_runtime_capabilities_returns_normalized_response_without_prompt() {
+    let app = app().await;
+    let token = register_and_login(&app, "acp-capabilities@example.com").await;
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("api-probe.log");
+    let request = acp_capability_runtime(
+        "success",
+        json!({
+            "ACP_API_FAKE_LOG": log_path.to_string_lossy(),
+            "ACP_API_SECRET": "TOP_SECRET_VALUE",
+        }),
+    );
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/acp-runtime-capabilities",
+            &token,
+            request,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["models"][0]["value"], "gpt-5.5");
+    assert_eq!(body["models"][0]["label"], "GPT-5.5");
+    assert_eq!(body["models"][0]["description"], Value::Null);
+    assert_eq!(body["modes"][0]["value"], "auto");
+    assert_eq!(body["thinking_efforts"][0]["value"], "xhigh");
+    assert_eq!(body["current_model"], "gpt-5.5");
+    assert_eq!(body["current_mode"], "auto");
+    assert_eq!(body["current_thinking_effort"], "xhigh");
+    assert_eq!(body["source"], "acp");
+    assert_eq!(body["warning"], Value::Null);
+    assert!(!body.to_string().contains("TOP_SECRET_VALUE"));
+
+    let log = std::fs::read_to_string(log_path).expect("read API fake log");
+    assert!(log.find("initialize").unwrap() < log.find("session/new").unwrap());
+    assert!(log.contains("session/set_model"));
+    assert!(!log.contains("\"method\":\"session/set_mode\""));
+    assert!(!log.contains("session/set_config_option"));
+    assert!(!log.contains("saved-mode-must-not-apply"));
+    assert!(!log.contains("saved-effort-must-not-apply"));
+    assert!(!log.contains("saved-option"));
+    assert!(!log.contains("session/prompt"));
+    assert!(log.contains("ACP_API_FAKE_EXIT"));
+}
+
+#[tokio::test]
+async fn acp_runtime_capabilities_returns_normalized_warnings_for_failures() {
+    let app = app().await;
+    let token = register_and_login(&app, "acp-capability-errors@example.com").await;
+
+    let (status, invalid) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/acp-runtime-capabilities",
+            &token,
+            json!({ "command": " " }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid["source"], "acp");
+    assert!(invalid["models"].as_array().unwrap().is_empty());
+    assert!(invalid["warning"].as_str().is_some());
+
+    let (status, omitted) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/acp-runtime-capabilities",
+            &token,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(omitted["source"], "acp");
+    assert!(omitted["models"].as_array().unwrap().is_empty());
+    assert!(omitted["warning"].as_str().is_some());
+
+    let (status, missing) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/acp-runtime-capabilities",
+            &token,
+            json!({ "command": "ag-swarmer-definitely-missing-acp-command" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing["source"], "acp");
+    assert_eq!(
+        missing["warning"],
+        "Unable to start the configured ACP runtime."
+    );
+}
+
+#[tokio::test]
+async fn acp_runtime_capabilities_redacts_protocol_rejection() {
+    let app = app().await;
+    let token = register_and_login(&app, "acp-capability-reject@example.com").await;
+    let request = acp_capability_runtime("reject", json!({ "ACP_API_SECRET": "TOP_SECRET_VALUE" }));
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/acp-runtime-capabilities",
+            &token,
+            request,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["source"], "acp");
+    assert_eq!(
+        body["warning"],
+        "The configured ACP runtime rejected capability discovery."
+    );
+    assert!(!body.to_string().contains("TOP_SECRET_VALUE"));
+}
+
+#[tokio::test]
+async fn acp_runtime_capabilities_maps_timeout_and_cleans_up() {
+    let app = app().await;
+    let token = register_and_login(&app, "acp-capability-timeout@example.com").await;
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("api-timeout.log");
+    let request = acp_capability_runtime(
+        "timeout",
+        json!({
+            "ACP_API_FAKE_LOG": log_path.to_string_lossy(),
+            "ACP_API_SECRET": "TOP_SECRET_VALUE",
+        }),
+    );
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/acp-runtime-capabilities",
+            &token,
+            request,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(body["source"], "acp");
+    assert_eq!(
+        body["warning"],
+        "ACP runtime capability discovery timed out after 15 seconds."
+    );
+    assert!(!body.to_string().contains("TOP_SECRET_VALUE"));
+    let log = std::fs::read_to_string(log_path).expect("read API timeout log");
+    assert!(log.contains("initialize"));
+    assert!(!log.contains("session/prompt"));
+    assert!(log.contains("ACP_API_FAKE_EXIT"));
+}
+
 #[tokio::test]
 async fn agent_create_requires_active_owned_workspace() {
     let app = app().await;
@@ -156,6 +359,144 @@ async fn agent_create_requires_active_owned_workspace() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+#[test]
+fn agent_acp_capability_fake_child_entrypoint() {
+    let Ok(mode) = std::env::var("ACP_API_FAKE_MODE") else {
+        return;
+    };
+    run_agent_acp_capability_fake_child(&mode);
+    std::process::exit(0);
+}
+
+fn run_agent_acp_capability_fake_child(mode: &str) {
+    use std::io::BufRead;
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        append_agent_acp_fake_log(&message.to_string());
+        let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+        let id = message.get("id").cloned();
+        match method {
+            "initialize" => match mode {
+                "timeout" => {}
+                "reject" => {
+                    let secret = std::env::var("ACP_API_SECRET").unwrap_or_default();
+                    write_agent_acp_line(
+                        &stdout,
+                        &agent_acp_rpc_error(&id, -32602, &format!("rejected {secret}")),
+                    );
+                }
+                _ => write_agent_acp_line(
+                    &stdout,
+                    &agent_acp_rpc_result(&id, json!({ "protocolVersion": 1 })),
+                ),
+            },
+            "session/new" => {
+                let mut options = agent_acp_capability_options("gpt-5.4", "low");
+                if mode == "success" {
+                    let secret = std::env::var("ACP_API_SECRET").unwrap_or_default();
+                    options[0]["options"][0]["description"] = json!(format!("reflected {secret}"));
+                }
+                write_agent_acp_line(
+                    &stdout,
+                    &agent_acp_rpc_result(
+                        &id,
+                        json!({
+                            "sessionId": "sess-api",
+                            "configOptions": options,
+                        }),
+                    ),
+                );
+            }
+            "session/set_model" | "session/set_config_option" => {
+                let mut options = agent_acp_capability_options("gpt-5.5", "xhigh");
+                if mode == "success" {
+                    let secret = std::env::var("ACP_API_SECRET").unwrap_or_default();
+                    options[0]["options"][0]["description"] = json!(format!("reflected {secret}"));
+                }
+                write_agent_acp_line(
+                    &stdout,
+                    &agent_acp_rpc_result(&id, json!({ "configOptions": options })),
+                );
+            }
+            _ => {
+                if matches!(id, Some(ref value) if !value.is_null()) {
+                    write_agent_acp_line(
+                        &stdout,
+                        &agent_acp_rpc_error(&id, -32601, "method not found"),
+                    );
+                }
+            }
+        }
+    }
+    append_agent_acp_fake_log("ACP_API_FAKE_EXIT");
+}
+
+fn agent_acp_capability_options(model: &str, effort: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "id": "model",
+            "category": "model",
+            "type": "select",
+            "currentValue": model,
+            "options": [{ "value": "gpt-5.5", "name": "GPT-5.5" }],
+        }),
+        json!({
+            "id": "approval_preset",
+            "type": "select",
+            "currentValue": "auto",
+            "options": [{ "value": "auto", "name": "Default" }],
+        }),
+        json!({
+            "id": "reasoning_effort",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": effort,
+            "options": [{ "value": "xhigh", "name": "XHigh" }],
+        }),
+    ]
+}
+
+fn agent_acp_rpc_result(id: &Option<Value>, result: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id.clone().unwrap_or(Value::Null), "result": result })
+}
+
+fn agent_acp_rpc_error(id: &Option<Value>, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.clone().unwrap_or(Value::Null),
+        "error": { "code": code, "message": message },
+    })
+}
+
+fn write_agent_acp_line(stdout: &std::io::Stdout, value: &Value) {
+    use std::io::Write;
+
+    let mut handle = stdout.lock();
+    let _ = writeln!(handle, "{value}");
+    let _ = handle.flush();
+}
+
+fn append_agent_acp_fake_log(line: &str) {
+    use std::io::Write;
+
+    let Ok(path) = std::env::var("ACP_API_FAKE_LOG") else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 #[tokio::test]

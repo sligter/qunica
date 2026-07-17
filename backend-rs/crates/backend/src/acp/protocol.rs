@@ -44,7 +44,7 @@ use tokio::{
     process::{ChildStdin, ChildStdout},
     sync::{mpsc, oneshot, Mutex},
     task::JoinHandle,
-    time::timeout,
+    time::{timeout, Instant},
 };
 
 use crate::acp::config::PermissionPolicy;
@@ -117,6 +117,7 @@ struct RpcError {
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, RpcError>>>>>;
 type EventSink = Arc<Mutex<Option<mpsc::UnboundedSender<AcpAgentEvent>>>>;
+type RawUpdateSink = Option<mpsc::Sender<Value>>;
 
 /// Messages sent to the background writer task.
 enum WriterMessage {
@@ -139,12 +140,14 @@ impl AcpConnection {
     /// Take ownership of a child's stdio pipes and start the reader/writer
     /// tasks. `session/update` notifications are mapped to [`AcpAgentEvent`]s
     /// and forwarded on `events_tx`; permission requests are answered with
-    /// `permission_policy`.
+    /// `permission_policy`. When `raw_updates_tx` is present, response results
+    /// and raw session updates are also forwarded in wire order for probes.
     pub fn spawn(
         stdin: ChildStdin,
         stdout: ChildStdout,
         permission_policy: PermissionPolicy,
         events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
+        raw_updates_tx: RawUpdateSink,
     ) -> Self {
         let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<WriterMessage>();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -172,6 +175,7 @@ impl AcpConnection {
         let reader_pending = pending.clone();
         let reader_writer_tx = writer_tx.clone();
         let reader_events_tx = events_tx.clone();
+        let reader_raw_updates_tx = raw_updates_tx;
         let reader_stdout_tail = stdout_tail.clone();
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -188,6 +192,7 @@ impl AcpConnection {
                     &reader_writer_tx,
                     permission_policy,
                     &reader_events_tx,
+                    &reader_raw_updates_tx,
                 )
                 .await;
             }
@@ -285,12 +290,23 @@ impl AcpConnection {
     pub async fn shutdown(mut self, reader_drain_grace: Duration) -> Option<String> {
         self.close_stdin();
         let stdout_tail = self.stdout_tail.clone();
-        if timeout(reader_drain_grace, &mut self.reader).await.is_err() {
+        let deadline = Instant::now() + reader_drain_grace;
+        if timeout(remaining_until(deadline), &mut self.reader)
+            .await
+            .is_err()
+        {
             self.reader.abort();
-            let _ = self.reader.await;
         }
-        let _ = self.writer.await;
-        let text = stdout_tail.lock().await.snapshot().to_string();
+        if timeout(remaining_until(deadline), &mut self.writer)
+            .await
+            .is_err()
+        {
+            self.writer.abort();
+        }
+        let text = stdout_tail
+            .try_lock()
+            .map(|tail| tail.snapshot().to_string())
+            .unwrap_or_default();
         (!text.is_empty()).then_some(text)
     }
 }
@@ -310,6 +326,7 @@ async fn route_incoming(
     writer_tx: &mpsc::UnboundedSender<WriterMessage>,
     permission_policy: PermissionPolicy,
     events_tx: &EventSink,
+    raw_updates_tx: &RawUpdateSink,
 ) {
     let trimmed = line.trim();
     if trimmed.is_empty() || !trimmed.starts_with('{') {
@@ -333,6 +350,14 @@ async fn route_incoming(
         // Notification (no id).
         (Some(method), _) => {
             if method == METHOD_SESSION_UPDATE {
+                if let Some(update) = message
+                    .get("params")
+                    .and_then(|params| params.get("update"))
+                {
+                    if let Some(raw_updates_tx) = raw_updates_tx {
+                        let _ = raw_updates_tx.send(update.clone()).await;
+                    }
+                }
                 if let Some(event) = message.get("params").and_then(event_from_update) {
                     let events_tx = events_tx.lock().await.clone();
                     if let Some(events_tx) = events_tx {
@@ -357,12 +382,19 @@ async fn route_incoming(
                     Ok(message.get("result").cloned().unwrap_or(Value::Null))
                 };
                 if let Some(tx) = pending.lock().await.remove(&id) {
+                    if let (Ok(result), Some(raw_updates_tx)) = (&outcome, raw_updates_tx) {
+                        let _ = raw_updates_tx.send(result.clone()).await;
+                    }
                     let _ = tx.send(outcome);
                 }
             }
         }
         (None, None) => {}
     }
+}
+
+fn remaining_until(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
 }
 
 /// Build the JSON-RPC response to an agent-initiated request. Only

@@ -1,5 +1,6 @@
 import { CircleAlert, Terminal } from 'lucide-react'
 
+import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type {
@@ -20,6 +21,12 @@ interface ExternalRuntimeFieldsProps {
   model: string
   mode: string
   thinkingEffort: string
+  modelOptions?: AcpRuntimeChoice[]
+  modeOptions?: AcpRuntimeChoice[]
+  thinkingEffortOptions?: AcpRuntimeChoice[]
+  capabilitiesLoading?: boolean
+  capabilitiesStale?: boolean
+  capabilitiesWarning?: string | null
   onProfileChange: (value: AcpRuntimeProfile) => void
   onPresetSelect: (preset: AcpRuntimePresetRead) => void
   onCommandChange: (value: string) => void
@@ -28,84 +35,10 @@ interface ExternalRuntimeFieldsProps {
   onTimeoutSecondsChange: (value: number) => void
   onPermissionPolicyChange: (value: AcpPermissionPolicy) => void
   onModelChange: (value: string) => void
+  onModelCommit: (value: string) => void
   onModeChange: (value: string) => void
   onThinkingEffortChange: (value: string) => void
-}
-
-function optionsWithCurrentValue(
-  options: AcpRuntimeChoice[],
-  value: string,
-): AcpRuntimeChoice[] {
-  if (!value || options.some((option) => option.value === value)) {
-    return options
-  }
-  return [...options, { value, label: value, description: 'Saved custom value' }]
-}
-
-interface RuntimeChoiceFieldProps {
-  id: string
-  label: string
-  value: string
-  options: AcpRuntimeChoice[]
-  placeholder: string
-  onChange: (value: string) => void
-}
-
-function RuntimeChoiceField({
-  id,
-  label,
-  value,
-  options,
-  placeholder,
-  onChange,
-}: RuntimeChoiceFieldProps) {
-  const choices = optionsWithCurrentValue(options, value)
-  const hasEmptyChoice = choices.some((option) => option.value === '')
-
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <select
-        id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        {!hasEmptyChoice && <option value="">{placeholder}</option>}
-        {choices.map((option, index) => (
-          <option key={`${option.value}-${index}`} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  )
-}
-
-function RuntimeTextField({
-  id,
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
-  id: string
-  label: string
-  value: string
-  placeholder: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-      />
-    </div>
-  )
+  onRefreshCapabilities: () => void
 }
 
 export function ExternalRuntimeFields({
@@ -119,6 +52,12 @@ export function ExternalRuntimeFields({
   model,
   mode,
   thinkingEffort,
+  modelOptions: discoveredModelOptions = [],
+  modeOptions: discoveredModeOptions = [],
+  thinkingEffortOptions: discoveredThinkingOptions = [],
+  capabilitiesLoading = false,
+  capabilitiesStale = false,
+  capabilitiesWarning = null,
   onProfileChange,
   onPresetSelect,
   onCommandChange,
@@ -127,8 +66,10 @@ export function ExternalRuntimeFields({
   onTimeoutSecondsChange,
   onPermissionPolicyChange,
   onModelChange,
+  onModelCommit,
   onModeChange,
   onThinkingEffortChange,
+  onRefreshCapabilities,
 }: ExternalRuntimeFieldsProps) {
   const selectedPreset =
     selectedProfile === 'custom'
@@ -136,9 +77,18 @@ export function ExternalRuntimeFields({
       : presets.find((preset) => preset.profile === selectedProfile) ?? null
   const installedPresets = presets.filter((preset) => preset.installed)
   const missingPresets = presets.filter((preset) => !preset.installed)
-  const modelOptions = selectedPreset?.model_options ?? []
-  const modeOptions = selectedPreset?.mode_options ?? []
-  const thinkingOptions = selectedPreset?.thinking_effort_options ?? []
+  const modelOptions =
+    discoveredModelOptions.length > 0
+      ? discoveredModelOptions
+      : (selectedPreset?.model_options ?? [])
+  const modeOptions =
+    discoveredModeOptions.length > 0
+      ? discoveredModeOptions
+      : (selectedPreset?.mode_options ?? [])
+  const thinkingOptions =
+    discoveredThinkingOptions.length > 0
+      ? discoveredThinkingOptions
+      : (selectedPreset?.thinking_effort_options ?? [])
 
   const handlePresetChange = (value: string) => {
     if (value === 'custom') {
@@ -231,58 +181,35 @@ export function ExternalRuntimeFields({
       )}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        {selectedPreset ? (
-          <>
-            <RuntimeChoiceField
-              id="acp-model"
-              label="Model"
-              value={model}
-              options={modelOptions}
-              placeholder="Adapter default"
-              onChange={onModelChange}
-            />
-            <RuntimeChoiceField
-              id="acp-mode"
-              label="Mode"
-              value={mode}
-              options={modeOptions}
-              placeholder="Adapter default"
-              onChange={onModeChange}
-            />
-            <RuntimeChoiceField
-              id="acp-thinking"
-              label="Thinking"
-              value={thinkingEffort}
-              options={thinkingOptions}
-              placeholder="Adapter default"
-              onChange={onThinkingEffortChange}
-            />
-          </>
-        ) : (
-          <>
-            <RuntimeTextField
-              id="acp-model"
-              label="Model"
-              value={model}
-              placeholder="Default"
-              onChange={onModelChange}
-            />
-            <RuntimeTextField
-              id="acp-mode"
-              label="Mode"
-              value={mode}
-              placeholder="Default"
-              onChange={onModeChange}
-            />
-            <RuntimeTextField
-              id="acp-thinking"
-              label="Thinking"
-              value={thinkingEffort}
-              placeholder="Default"
-              onChange={onThinkingEffortChange}
-            />
-          </>
-        )}
+        <RuntimeCapabilityField
+          id="acp-model"
+          label="Model"
+          value={model}
+          options={modelOptions}
+          placeholder="Adapter default"
+          onChange={onModelChange}
+          onCommit={onModelCommit}
+          onRefresh={onRefreshCapabilities}
+          isLoading={capabilitiesLoading}
+          stale={capabilitiesStale}
+          warning={capabilitiesWarning}
+        />
+        <RuntimeCapabilityField
+          id="acp-mode"
+          label="Mode"
+          value={mode}
+          options={modeOptions}
+          placeholder="Adapter default"
+          onChange={onModeChange}
+        />
+        <RuntimeCapabilityField
+          id="acp-thinking"
+          label="Thinking"
+          value={thinkingEffort}
+          options={thinkingOptions}
+          placeholder="Adapter default"
+          onChange={onThinkingEffortChange}
+        />
       </div>
 
       <div className="space-y-1.5">

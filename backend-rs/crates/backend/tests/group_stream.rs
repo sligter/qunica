@@ -68,6 +68,40 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     )
 }
 
+#[cfg(windows)]
+fn write_failing_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
+    let script = root.join("failing-fake-acp.ps1");
+    std::fs::write(
+        &script,
+        r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq "initialize") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/new") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ sessionId = "s1" } } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/set_model") {
+    @{ jsonrpc = "2.0"; id = $request.id; error = @{ code = -32602; message = "Invalid params: TOP_SECRET_VALUE LINE1`nLINE2" } } | ConvertTo-Json -Compress
+    break
+  } elseif ($request.method -eq "session/prompt") {
+    throw "session/prompt must not be called after session/set_model fails"
+  }
+}
+"#,
+    )
+    .unwrap();
+    (
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.to_string_lossy().to_string(),
+        ],
+    )
+}
+
 #[cfg(not(windows))]
 fn write_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
     let script = root.join("fake-acp.sh");
@@ -89,6 +123,35 @@ while IFS= read -r line; do
       ;;
     *)
       printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    ("sh".to_string(), vec![script.to_string_lossy().to_string()])
+}
+
+#[cfg(not(windows))]
+fn write_failing_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
+    let script = root.join("failing-fake-acp.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}'
+      ;;
+    *'"method":"session/set_model"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"Invalid params: TOP_SECRET_VALUE LINE1\nLINE2"}}'
+      break
+      ;;
+    *'"method":"session/prompt"'*)
+      exit 97
       ;;
   esac
 done
@@ -393,6 +456,45 @@ async fn seed_agent(
     .await
     .unwrap();
 
+    agent_id
+}
+
+async fn seed_acp_agent(
+    state: &AppState,
+    owner_id: &str,
+    workspace_id: &str,
+    group_id: &str,
+    display_name: &str,
+    external_runtime: Value,
+) -> String {
+    let agent_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO agents \
+         (id, owner_id, workspace_id, name, system_prompt, runtime_kind, provider_id, \
+          external_runtime_json, skill_ids_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 'You are an ACP test agent.', 'acp', NULL, ?, '[]', \
+                 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&agent_id)
+    .bind(owner_id)
+    .bind(workspace_id)
+    .bind(display_name)
+    .bind(external_runtime.to_string())
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO group_agents \
+         (group_id, agent_id, display_name, context_scope_json, status, joined_at, updated_at) \
+         VALUES (?, ?, ?, '{\"share_group_workspace\":true}', 'active', \
+                 '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(group_id)
+    .bind(&agent_id)
+    .bind(display_name)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
     agent_id
 }
 
@@ -2316,6 +2418,162 @@ async fn group_stream_runs_acp_agent_without_llm_provider() {
     assert!(payloads_of_kind(&events, StreamEventKind::AcpAgentRun)
         .iter()
         .any(|payload| payload["status"] == "completed"));
+}
+
+fn assert_invalid_params_agent_error(events: &[Value], agent_id: &str) {
+    let failed_runs = payloads_of_kind(events, StreamEventKind::AcpAgentRun)
+        .into_iter()
+        .filter(|payload| payload["status"] == "failed")
+        .collect::<Vec<_>>();
+    assert_eq!(failed_runs.len(), 1);
+    assert_eq!(failed_runs[0]["agent_id"], agent_id);
+    assert!(failed_runs[0]["summary"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("ACP request failed (-32602): Invalid params"));
+
+    // `error` is the backend wire kind that the frontend normalizes to an
+    // `agent_error` timeline notice.
+    let agent_errors = payloads_of_kind(events, StreamEventKind::Error);
+    assert_eq!(agent_errors.len(), 1);
+    assert_eq!(agent_errors[0]["agent_id"], agent_id);
+    assert_eq!(agent_errors[0]["display_name"], "Codex");
+    assert!(agent_errors[0]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("ACP request failed (-32602): Invalid params"));
+
+    let event_kinds = kinds(events);
+    assert!(!event_kinds.contains(&"agent_silent".to_string()));
+    assert!(!event_kinds.contains(&"silence".to_string()));
+    let serialized = serde_json::to_string(events).unwrap();
+    assert!(!serialized.contains("TOP_SECRET_VALUE"));
+    assert!(!serialized.contains("_VALUE"));
+    assert!(!serialized.contains("LINE1"));
+    assert!(!serialized.contains("LINE2"));
+}
+
+#[tokio::test]
+async fn acp_invalid_params_is_agent_error_without_legacy_silence() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "acp-invalid-legacy@example.com").await;
+    let owner = owner_id(&state, "acp-invalid-legacy@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (command, args) = write_failing_fake_acp_agent(root.path());
+    let agent_id = seed_acp_agent(
+        &state,
+        &owner,
+        &workspace,
+        &group,
+        "Codex",
+        json!({
+            "command": command,
+            "args": args,
+            "env": {
+                "A_SHORT_SECRET": "TOP_SECRET",
+                "Z_LONG_SECRET": "TOP_SECRET_VALUE",
+                "WHITESPACE_SECRET": "LINE1\nLINE2",
+            },
+            "model": "gpt-5",
+            "timeout_seconds": 10,
+        }),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Codex reply"}),
+    )
+    .await;
+
+    assert_invalid_params_agent_error(&events, &agent_id);
+    assert!(kinds(&events).contains(&"done".to_string()));
+    assert!(!kinds(&events).contains(&"agent_message".to_string()));
+    let audit: (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM external_agent_runs WHERE agent_id = ?")
+            .bind(&agent_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(audit.0, "failed");
+    assert!(audit.1.unwrap_or_default().contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn scheduler_acp_invalid_params_fails_dispatch_without_silence() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "acp-invalid-scheduler@example.com").await;
+    let owner = owner_id(&state, "acp-invalid-scheduler@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true}),
+    )
+    .await;
+    let (command, args) = write_failing_fake_acp_agent(root.path());
+    let agent_id = seed_acp_agent(
+        &state,
+        &owner,
+        &workspace,
+        &group,
+        "Codex",
+        json!({
+            "command": command,
+            "args": args,
+            "env": {
+                "A_SHORT_SECRET": "TOP_SECRET",
+                "Z_LONG_SECRET": "TOP_SECRET_VALUE",
+                "WHITESPACE_SECRET": "LINE1\nLINE2",
+            },
+            "model": "gpt-5",
+            "timeout_seconds": 10,
+        }),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Codex reply"}),
+    )
+    .await;
+
+    assert_invalid_params_agent_error(&events, &agent_id);
+    let dispatch: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, failure_code FROM agent_dispatches WHERE target_agent_id = ?",
+    )
+    .bind(&agent_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        dispatch,
+        ("failed".to_string(), Some("acp_failure".to_string()))
+    );
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(turn_status, "failed");
+    let active_dispatches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches WHERE status IN ('queued', 'running')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(active_dispatches, 0);
+    assert!(payloads_of_kind(&events, StreamEventKind::TurnCompleted)
+        .iter()
+        .any(|payload| payload["status"] == "failed"));
+    assert!(kinds(&events).contains(&"done".to_string()));
 }
 
 #[tokio::test]

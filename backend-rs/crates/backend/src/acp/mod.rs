@@ -13,6 +13,7 @@
 //! state on normal completion, timeout, or cancellation. Wiring this into the
 //! group/direct runtimes is deferred to a later task.
 
+pub mod capabilities;
 pub mod config;
 pub mod process;
 pub mod protocol;
@@ -40,6 +41,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+pub use capabilities::{
+    probe_acp_runtime_capabilities, AcpCapabilityChoice, AcpCapabilityError, AcpRuntimeCapabilities,
+};
 pub use config::{
     normalize_acp_runtime, AcpConfigError, AcpConfigValue, AcpRuntimeConfig, AcpRuntimeProfile,
     PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS,
@@ -125,6 +129,27 @@ pub enum AcpRunError {
     Audit(#[from] AcpAuditError),
 }
 
+/// A terminal failure from an ACP run's background driver.
+///
+/// Protocol failures and timeouts retain their safe user-facing message while
+/// cancellation remains a separate outcome. Driver task failures never expose
+/// panic details.
+#[derive(Debug, Error)]
+pub enum AcpRunJoinError {
+    /// The ACP peer rejected or otherwise failed the run.
+    #[error("{0}")]
+    Failed(String),
+    /// The configured ACP turn timeout elapsed.
+    #[error("{0}")]
+    Timeout(String),
+    /// The run was cancelled by the caller or ACP peer.
+    #[error("{0}")]
+    Cancelled(String),
+    /// The background driver task terminated unexpectedly.
+    #[error("ACP run task failed")]
+    Driver(#[source] tokio::task::JoinError),
+}
+
 /// Everything needed to start one ACP turn.
 pub struct AcpRunRequest {
     /// Owning user id.
@@ -179,7 +204,7 @@ pub struct AcpRun {
     run_id: String,
     events: mpsc::UnboundedReceiver<AcpAgentEvent>,
     control: AcpRunControl,
-    handle: JoinHandle<()>,
+    handle: JoinHandle<Result<(), AcpRunJoinError>>,
 }
 
 impl AcpRun {
@@ -200,8 +225,8 @@ impl AcpRun {
     }
 
     /// Await the background driver task to completion.
-    pub async fn join(self) -> Result<(), tokio::task::JoinError> {
-        self.handle.await
+    pub async fn join(self) -> Result<(), AcpRunJoinError> {
+        self.handle.await.map_err(AcpRunJoinError::Driver)?
     }
 }
 
@@ -323,7 +348,7 @@ struct DriveTask {
 }
 
 /// Drive one turn to completion and persist its terminal audit state.
-async fn drive_run(task: DriveTask) {
+async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
     let DriveTask {
         audit,
         run_id,
@@ -343,7 +368,7 @@ async fn drive_run(task: DriveTask) {
     } = task;
 
     let reuse_key = reusable_session_key(group_id.as_deref(), thread_id.as_deref(), &agent_id);
-    let outcome = if let Some(key) = reuse_key {
+    let mut outcome = if let Some(key) = reuse_key {
         run_reusable_turn(ReusableTurn {
             key,
             owner_id,
@@ -361,6 +386,12 @@ async fn drive_run(task: DriveTask) {
     } else {
         run_one_shot_turn(&config, &cwd, &prompt, &events_tx, &cancelled, &notify).await
     };
+
+    if outcome.status == TurnStatus::Failed {
+        if let Some(message) = outcome.error_message.as_mut() {
+            *message = sanitize_failure_message(message, &config);
+        }
+    }
 
     let stdout_tail = outcome.stdout_tail.as_deref();
     let stderr_tail = outcome.stderr_tail.as_deref();
@@ -404,6 +435,13 @@ async fn drive_run(task: DriveTask) {
         ));
     }
     // Dropping `events_tx` here closes the stream once all queued events drain.
+
+    match outcome.status {
+        TurnStatus::Completed => Ok(()),
+        TurnStatus::Failed => Err(AcpRunJoinError::Failed(error_message)),
+        TurnStatus::Timeout => Err(AcpRunJoinError::Timeout(error_message)),
+        TurnStatus::Cancelled => Err(AcpRunJoinError::Cancelled(error_message)),
+    }
 }
 
 /// Spawn the child, drive the ACP session under a timeout and cancellation, and
@@ -710,7 +748,7 @@ impl LiveAcpSession {
             tail.into_string()
         });
 
-        let conn = AcpConnection::spawn(stdin, stdout, config.permission_policy, events_tx);
+        let conn = AcpConnection::spawn(stdin, stdout, config.permission_policy, events_tx, None);
         Ok(Self {
             child,
             conn: Some(conn),
@@ -1195,5 +1233,47 @@ fn failed_outcome(message: String) -> TurnOutcome {
         stdout_tail: None,
         stderr_tail: None,
         was_cancelled: false,
+    }
+}
+
+/// Remove configured environment values and unsafe formatting from a message
+/// before it reaches audit summaries, stream events, or callers of `join`.
+fn sanitize_failure_message(message: &str, config: &AcpRuntimeConfig) -> String {
+    const MAX_CHARS: usize = 500;
+
+    let mut sensitive_values = config
+        .env
+        .values()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    sensitive_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+
+    let mut sanitized = message.to_string();
+    for value in sensitive_values {
+        sanitized = sanitized.replace(value, "[REDACTED]");
+    }
+
+    sanitized = sanitized
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+
+    let compact = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "ACP agent failed".to_string();
+    }
+
+    let mut characters = compact.chars();
+    let truncated = characters.by_ref().take(MAX_CHARS).collect::<String>();
+    if characters.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
     }
 }

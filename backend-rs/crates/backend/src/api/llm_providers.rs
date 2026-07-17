@@ -9,6 +9,9 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::llm::{
+    discover_models, ModelCatalogError, ModelInfo, ProviderConfig, MODEL_CATALOG_TIMEOUT,
+};
 
 const PROVIDER_COLUMNS: &str = "id, owner_id, name, kind, base_url, api_key, default_model, \
      context_window_tokens, context_output_reserve_ratio, description, reasoning_passback, \
@@ -75,12 +78,6 @@ pub struct ProviderResponse {
     reasoning_passback: bool,
     status: String,
     created_at: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ModelInfo {
-    id: String,
-    name: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -315,16 +312,34 @@ pub async fn models(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let provider_id = validate_uuid(&provider_id, "provider id")?;
     let provider = load_active_owned(state.db.pool(), &provider_id, &owner_id).await?;
-    let model = provider.default_model.trim();
-    let models = if model.is_empty() {
-        Vec::new()
-    } else {
-        vec![ModelInfo {
-            id: model.to_string(),
-            name: model.to_string(),
-        }]
+    let config = ProviderConfig {
+        kind: provider.kind,
+        base_url: provider.base_url,
+        api_key: provider.api_key,
+        default_model: provider.default_model,
+        reasoning_passback: provider.reasoning_passback != 0,
+        context_window_tokens: provider.context_window_tokens,
+        context_output_reserve_ratio: provider.context_output_reserve_ratio,
     };
+    let client = reqwest::Client::builder()
+        .timeout(MODEL_CATALOG_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false)
+        .build()
+        .map_err(|_| ApiError::internal("failed to create provider model discovery client"))?;
+    let models = discover_models(&client, &config)
+        .await
+        .map_err(model_catalog_api_error)?;
     Ok(Json(models))
+}
+
+fn model_catalog_api_error(error: ModelCatalogError) -> ApiError {
+    let status = if matches!(error, ModelCatalogError::Timeout { .. }) {
+        StatusCode::GATEWAY_TIMEOUT
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    ApiError::new(status, "provider_model_discovery_failed", error.to_string())
 }
 
 async fn load_active_owned(

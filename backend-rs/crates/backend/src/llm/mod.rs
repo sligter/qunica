@@ -8,10 +8,12 @@
 
 pub mod anthropic;
 pub mod gemini;
+pub mod model_catalog;
 pub mod openai_compatible;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
+pub use model_catalog::{discover_models, ModelCatalogError, ModelInfo, MODEL_CATALOG_TIMEOUT};
 pub use openai_compatible::OpenAiCompatibleProvider;
 
 // Re-export the runtime data contract so integration tests (which link only

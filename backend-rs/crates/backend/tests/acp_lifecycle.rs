@@ -8,10 +8,10 @@
 //! protocol instead of running assertions. No Python/Node and no live network.
 
 use ag_swarmer_backend::acp::{
-    normalize_acp_runtime, run_acp_agent_stream, shutdown_reusable_acp_sessions, AcpConfigValue,
-    AcpEventKind, AcpRunAudit, AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile,
-    PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
-    MAX_TIMEOUT_SECONDS,
+    normalize_acp_runtime, probe_acp_runtime_capabilities, run_acp_agent_stream,
+    shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpEventKind, AcpRunAudit,
+    AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy,
+    BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS, MAX_TIMEOUT_SECONDS,
 };
 use ag_swarmer_backend::db::Db;
 use serde_json::{json, Value};
@@ -962,6 +962,314 @@ async fn run_and_collect_tokens(pool: SqlitePool, request: AcpRunRequest) -> Str
     tokens
 }
 
+#[tokio::test]
+async fn acp_capability_probe_normalizes_initial_options_without_prompt() {
+    let cwd = tempfile::tempdir().unwrap();
+    let log = cwd.path().join("probe.log");
+    let config = fake_child_config(
+        "capabilities_initial",
+        "custom",
+        json!({ "env": { "ACP_FAKE_LOG": log.to_string_lossy() } }),
+    );
+
+    let capabilities = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("capability probe succeeds");
+
+    assert_eq!(capabilities.models[0].value, "gpt-5.5");
+    assert_eq!(capabilities.models[0].label, "GPT-5.5");
+    assert_eq!(
+        capabilities.models[0].description.as_deref(),
+        Some("Primary model")
+    );
+    assert_eq!(capabilities.modes[0].value, "auto");
+    assert_eq!(capabilities.thinking_efforts[0].value, "low");
+    assert_eq!(capabilities.current_model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(capabilities.current_mode.as_deref(), Some("auto"));
+    assert_eq!(capabilities.current_thinking_effort.as_deref(), Some("low"));
+    assert_eq!(capabilities.source, "acp");
+    assert_eq!(capabilities.warning, None);
+
+    let log = std::fs::read_to_string(log).expect("read fake ACP log");
+    assert!(log.find("initialize").unwrap() < log.find("session/new").unwrap());
+    assert!(!log.contains("session/prompt"));
+    assert!(log.contains("ACP_FAKE_EXIT"));
+}
+
+#[tokio::test]
+async fn acp_capability_probe_applies_only_the_selected_model() {
+    let cwd = tempfile::tempdir().unwrap();
+    let log_path = cwd.path().join("probe.log");
+    let config = fake_child_config(
+        "capabilities_update",
+        "custom",
+        json!({
+            "env": { "ACP_FAKE_LOG": log_path.to_string_lossy() },
+            "model": "saved-model-must-not-apply",
+            "mode": "saved-mode-must-not-apply",
+            "thinking_effort": "saved-effort-must-not-apply",
+            "config_options": { "custom_runtime_option": "preserved" },
+        }),
+    );
+
+    let capabilities = probe_acp_runtime_capabilities(config, Some("gpt-5.5".to_string()))
+        .await
+        .expect("model-dependent capability probe succeeds");
+
+    assert_eq!(capabilities.current_model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(capabilities.thinking_efforts[0].value, "xhigh");
+    assert_eq!(
+        capabilities.current_thinking_effort.as_deref(),
+        Some("xhigh")
+    );
+
+    let log = std::fs::read_to_string(log_path).expect("read fake ACP log");
+    assert!(log.contains("session/set_model"));
+    assert!(log.contains("gpt-5.5"));
+    assert!(!log.contains("saved-model-must-not-apply"));
+    assert!(!log.contains("\"method\":\"session/set_mode\""));
+    assert!(!log.contains("saved-mode-must-not-apply"));
+    assert!(!log.contains("saved-effort-must-not-apply"));
+    assert!(!log.contains("custom_runtime_option"));
+    assert!(!log.contains("preserved"));
+    assert!(!log.contains("session/set_config_option"));
+    assert!(!log.contains("session/prompt"));
+}
+
+#[tokio::test]
+async fn acp_capability_probe_falls_back_to_model_config_option() {
+    let cwd = tempfile::tempdir().unwrap();
+    let log_path = cwd.path().join("probe.log");
+    let config = fake_child_config(
+        "capabilities_fallback",
+        "custom",
+        json!({ "env": { "ACP_FAKE_LOG": log_path.to_string_lossy() } }),
+    );
+
+    let capabilities = probe_acp_runtime_capabilities(config, Some("gpt-5.5".to_string()))
+        .await
+        .expect("fallback capability probe succeeds");
+
+    assert_eq!(capabilities.current_model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(capabilities.thinking_efforts[0].value, "xhigh");
+    let log = std::fs::read_to_string(log_path).expect("read fake ACP log");
+    let set_model = log.find("session/set_model").unwrap();
+    let fallback = log.find("\"configId\":\"model\"").unwrap();
+    assert!(set_model < fallback);
+    assert!(!log.contains("session/prompt"));
+}
+
+#[tokio::test]
+async fn acp_capability_probe_preserves_wire_order_for_updates_and_responses() {
+    let config = fake_child_config("capabilities_ordering", "custom", json!({}));
+
+    let capabilities = probe_acp_runtime_capabilities(config, Some("gpt-5.5".to_string()))
+        .await
+        .expect("ordered capability probe succeeds");
+
+    assert_eq!(capabilities.thinking_efforts[0].value, "medium");
+    assert_eq!(
+        capabilities.current_thinking_effort.as_deref(),
+        Some("medium")
+    );
+}
+
+#[tokio::test]
+async fn acp_capability_probe_uses_latest_mode_source_on_the_wire() {
+    for (fake_mode, expected_mode) in [
+        ("capabilities_mode_legacy_latest", "legacy-latest"),
+        ("capabilities_mode_config_latest", "config-latest"),
+    ] {
+        let config = fake_child_config(fake_mode, "custom", json!({}));
+        let capabilities = probe_acp_runtime_capabilities(config, Some("gpt-5.5".to_string()))
+            .await
+            .expect("mode ordering probe succeeds");
+
+        assert_eq!(capabilities.current_mode.as_deref(), Some(expected_mode));
+        assert_eq!(capabilities.modes[0].value, expected_mode);
+    }
+}
+
+#[tokio::test]
+async fn acp_capability_probe_merges_partial_config_updates_by_category() {
+    let config = fake_child_config("capabilities_partial", "custom", json!({}));
+
+    let capabilities = probe_acp_runtime_capabilities(config, Some("gpt-5.5".to_string()))
+        .await
+        .expect("partial capability update succeeds");
+
+    assert_eq!(capabilities.current_model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(capabilities.current_mode.as_deref(), Some("auto"));
+    assert_eq!(capabilities.current_thinking_effort.as_deref(), Some("low"));
+    assert_eq!(capabilities.modes[0].value, "auto");
+    assert_eq!(capabilities.thinking_efforts[0].value, "low");
+}
+
+#[tokio::test]
+async fn acp_capability_probe_applies_latest_current_mode_update() {
+    let config = fake_child_config("capabilities_mode_update", "custom", json!({}));
+
+    let capabilities = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("current mode capability update succeeds");
+
+    assert_eq!(capabilities.current_mode.as_deref(), Some("manual"));
+    assert!(
+        capabilities.modes.iter().any(|mode| mode.value == "manual"),
+        "modes: {:?}",
+        capabilities.modes
+    );
+}
+
+#[tokio::test]
+async fn acp_capability_probe_uses_isolated_cwd_home_and_minimal_environment() {
+    let output = tempfile::tempdir().unwrap();
+    let log_path = output.path().join("probe-env.log");
+    let config = fake_child_config(
+        "capabilities_env",
+        "custom",
+        json!({ "env": { "ACP_FAKE_LOG": log_path.to_string_lossy() } }),
+    );
+
+    probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("environment probe succeeds");
+
+    let log = std::fs::read_to_string(log_path).expect("read probe environment log");
+    let env_line = log
+        .lines()
+        .find_map(|line| line.strip_prefix("ACP_FAKE_ENV "))
+        .expect("fake child logged its environment");
+    let summary: Value = serde_json::from_str(env_line).expect("environment summary is JSON");
+    let cwd = summary["cwd"].as_str().expect("cwd present");
+    let env = summary["env"].as_object().expect("env present");
+    let home = env["HOME"].as_str().expect("isolated HOME present");
+    assert!(cwd.contains("ag-swarmer-acp-probe-"));
+    assert!(home.contains("ag-swarmer-acp-probe-"));
+    assert_ne!(cwd, home);
+    assert_eq!(
+        std::path::Path::new(cwd).parent(),
+        std::path::Path::new(home).parent()
+    );
+
+    let allowed = [
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "TMP",
+        "TEMP",
+        "TMPDIR",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_HOME",
+        "AG_SWARMER_ACP_AGENT",
+        "ACP_FAKE_CHILD_MODE",
+        "ACP_FAKE_LOG",
+    ];
+    for key in env.keys() {
+        assert!(
+            allowed
+                .iter()
+                .any(|allowed_key| key.eq_ignore_ascii_case(allowed_key)),
+            "unexpected inherited probe environment key: {key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn acp_capability_probe_redacts_reflected_runtime_environment_values() {
+    let secret = "TOP_SECRET_CAPABILITY_VALUE";
+    let config = fake_child_config(
+        "capabilities_reflection",
+        "custom",
+        json!({ "env": { "ACP_FAKE_SECRET": secret } }),
+    );
+
+    let capabilities = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("reflected values are safely redacted");
+    let serialized = serde_json::to_string(&capabilities).unwrap();
+    assert!(!serialized.contains(secret));
+    assert!(capabilities.models.is_empty());
+    assert!(capabilities.current_model.is_none());
+    assert_eq!(capabilities.modes[0].value, "safe-mode");
+    assert_eq!(capabilities.modes[0].label, "safe-mode");
+    assert!(capabilities.modes[0].description.is_none());
+    assert!(capabilities.current_mode.is_none());
+}
+
+#[tokio::test]
+async fn acp_capability_probe_backpressures_observation_floods_without_reordering() {
+    let config = fake_child_config("capabilities_flood", "custom", json!({}));
+
+    let capabilities = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("bounded observation flood is drained");
+
+    assert_eq!(
+        capabilities.current_thinking_effort.as_deref(),
+        Some("medium")
+    );
+    assert_eq!(capabilities.thinking_efforts[0].value, "medium");
+}
+
+#[tokio::test]
+async fn acp_capability_probe_redacts_protocol_errors() {
+    let config = fake_child_config(
+        "capabilities_error",
+        "custom",
+        json!({ "env": { "ACP_FAKE_SECRET": "TOP_SECRET_VALUE" } }),
+    );
+
+    let error = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect_err("capability probe should fail");
+
+    assert!(matches!(error, AcpCapabilityError::Protocol { .. }));
+    assert!(!error.to_string().contains("TOP_SECRET_VALUE"));
+}
+
+#[tokio::test]
+async fn acp_capability_probe_timeout_reaps_child() {
+    let cwd = tempfile::tempdir().unwrap();
+    let port_path = cwd.path().join("probe.port");
+    let log_path = cwd.path().join("probe.log");
+    let config = fake_child_config(
+        "capabilities_timeout",
+        "custom",
+        json!({
+            "env": {
+                "ACP_FAKE_LOG": log_path.to_string_lossy(),
+                "ACP_FAKE_PORT_FILE": port_path.to_string_lossy(),
+            }
+        }),
+    );
+
+    let error = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect_err("capability probe should time out");
+
+    assert!(matches!(error, AcpCapabilityError::Timeout));
+    let address = std::fs::read_to_string(port_path).expect("fake child wrote listener address");
+    let rebound = std::net::TcpListener::bind(address.trim())
+        .expect("fake child listener released after timeout cleanup");
+    drop(rebound);
+    let log = std::fs::read_to_string(log_path).expect("read fake ACP log");
+    assert!(log.contains("initialize"));
+    assert!(!log.contains("session/prompt"));
+}
+
 // ---------------------------------------------------------------------------
 // Fake ACP child process
 // ---------------------------------------------------------------------------
@@ -988,6 +1296,12 @@ fn acp_lifecycle_fake_child_entrypoint() {
 fn run_fake_child(mode: &str) {
     use std::io::BufRead;
 
+    let _listener = std::env::var("ACP_FAKE_PORT_FILE").ok().map(|path| {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake ACP port");
+        std::fs::write(path, listener.local_addr().unwrap().to_string())
+            .expect("write fake ACP port");
+        listener
+    });
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut applied: Vec<Value> = Vec::new();
@@ -1006,26 +1320,140 @@ fn run_fake_child(mode: &str) {
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let id = message.get("id").cloned();
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        append_fake_log(&message.to_string());
 
         match method {
-            "initialize" => write_line(&stdout, &rpc_result(&id, json!({ "protocolVersion": 1 }))),
+            "initialize" => match mode {
+                "capabilities_timeout" => {}
+                "capabilities_error" => {
+                    let secret = std::env::var("ACP_FAKE_SECRET").unwrap_or_default();
+                    write_line(
+                        &stdout,
+                        &rpc_error(&id, -32602, &format!("rejected {secret}")),
+                    );
+                }
+                _ => write_line(&stdout, &rpc_result(&id, json!({ "protocolVersion": 1 }))),
+            },
             "session/new" => {
                 new_count += 1;
-                write_line(
-                    &stdout,
-                    &rpc_result(&id, json!({ "sessionId": "sess-fake" })),
-                );
+                if mode == "capabilities_env" {
+                    let summary = json!({
+                        "cwd": std::env::current_dir().unwrap(),
+                        "env": std::env::vars().collect::<std::collections::BTreeMap<_, _>>(),
+                    });
+                    append_fake_log(&format!("ACP_FAKE_ENV {summary}"));
+                }
+                if mode == "capabilities_flood" {
+                    for index in 0..256 {
+                        let effort = if index % 2 == 0 { "low" } else { "xhigh" };
+                        write_line(
+                            &stdout,
+                            &session_update(json!({
+                                "sessionUpdate": "config_option_update",
+                                "configOptions": capability_config_options("gpt-5.4", effort),
+                            })),
+                        );
+                    }
+                }
+                let result = if mode == "capabilities_reflection" {
+                    capability_reflection_state(
+                        &std::env::var("ACP_FAKE_SECRET").unwrap_or_default(),
+                    )
+                } else if mode == "capabilities_flood" {
+                    capability_session_state("gpt-5.4", "medium")
+                } else if mode.starts_with("capabilities_") {
+                    let model = if mode == "capabilities_initial" {
+                        "gpt-5.5"
+                    } else {
+                        "gpt-5.4"
+                    };
+                    capability_session_state(model, "low")
+                } else {
+                    json!({ "sessionId": "sess-fake" })
+                };
+                write_line(&stdout, &rpc_result(&id, result));
+                if mode == "capabilities_mode_update" {
+                    write_line(
+                        &stdout,
+                        &session_update(json!({
+                            "sessionUpdate": "current_mode_update",
+                            "currentModeId": "manual",
+                        })),
+                    );
+                }
             }
             "session/set_model" | "session/set_mode" => {
-                if mode == "settings" {
+                if mode == "settings" || mode == "capabilities_fallback" {
                     write_line(&stdout, &rpc_error(&id, -32601, "method not found"));
+                } else if mode == "capabilities_mode_legacy_latest" {
+                    write_line(
+                        &stdout,
+                        &rpc_result(&id, json!({ "modes": legacy_mode_state("legacy-latest") })),
+                    );
+                } else if mode == "capabilities_mode_config_latest" {
+                    write_line(
+                        &stdout,
+                        &session_update(json!({
+                            "sessionUpdate": "available_modes_update",
+                            "modes": legacy_mode_state("legacy-before-config"),
+                        })),
+                    );
+                    write_line(
+                        &stdout,
+                        &rpc_result(
+                            &id,
+                            json!({ "configOptions": [mode_config_option("config-latest")] }),
+                        ),
+                    );
+                } else if mode == "capabilities_ordering" && method == "session/set_model" {
+                    write_line(
+                        &stdout,
+                        &session_update(json!({
+                            "sessionUpdate": "config_option_update",
+                            "configOptions": capability_config_options("gpt-5.5", "xhigh"),
+                        })),
+                    );
+                    write_line(
+                        &stdout,
+                        &rpc_result(
+                            &id,
+                            json!({
+                                "configOptions": capability_config_options("gpt-5.5", "medium"),
+                            }),
+                        ),
+                    );
+                } else if mode == "capabilities_partial" && method == "session/set_model" {
+                    let model_option = capability_config_options("gpt-5.5", "xhigh")
+                        .into_iter()
+                        .next()
+                        .unwrap();
+                    write_line(
+                        &stdout,
+                        &rpc_result(&id, json!({ "configOptions": [model_option] })),
+                    );
                 } else {
                     write_line(&stdout, &rpc_result(&id, json!({})));
+                    if mode == "capabilities_update" && method == "session/set_model" {
+                        write_line(
+                            &stdout,
+                            &session_update(json!({
+                                "sessionUpdate": "config_option_update",
+                                "configOptions": capability_config_options("gpt-5.5", "xhigh"),
+                            })),
+                        );
+                    }
                 }
             }
             "session/set_config_option" => {
                 applied.push(params);
-                write_line(&stdout, &rpc_result(&id, json!({})));
+                let result = if mode == "capabilities_fallback" {
+                    json!({
+                        "configOptions": capability_config_options("gpt-5.5", "xhigh"),
+                    })
+                } else {
+                    json!({})
+                };
+                write_line(&stdout, &rpc_result(&id, result));
             }
             "session/prompt" => match mode {
                 // Hold the turn open so the parent can time out or cancel it.
@@ -1156,6 +1584,120 @@ fn run_fake_child(mode: &str) {
                 }
             }
         }
+    }
+    append_fake_log("ACP_FAKE_EXIT");
+}
+
+fn capability_session_state(model: &str, effort: &str) -> Value {
+    json!({
+        "sessionId": "sess-fake",
+        "configOptions": capability_config_options(model, effort),
+        "modes": {
+            "currentModeId": "legacy",
+            "availableModes": [{ "id": "legacy", "name": "Legacy" }],
+        },
+    })
+}
+
+fn capability_reflection_state(secret: &str) -> Value {
+    json!({
+        "sessionId": "sess-fake",
+        "configOptions": [
+            {
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": secret,
+                "options": [{ "value": secret, "name": "reflected model" }],
+            },
+            {
+                "id": "approval_preset",
+                "type": "select",
+                "currentValue": secret,
+                "options": [{
+                    "value": "safe-mode",
+                    "name": format!("Mode {secret}"),
+                    "description": format!("Description {secret}"),
+                }],
+            },
+            {
+                "id": "reasoning_effort",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": "safe-effort",
+                "options": [{ "value": "safe-effort", "name": "Safe effort" }],
+            },
+        ],
+    })
+}
+
+fn legacy_mode_state(mode: &str) -> Value {
+    json!({
+        "currentModeId": mode,
+        "availableModes": [{ "id": mode, "name": mode }],
+    })
+}
+
+fn mode_config_option(mode: &str) -> Value {
+    json!({
+        "id": "approval_preset",
+        "type": "select",
+        "currentValue": mode,
+        "options": [{ "value": mode, "name": mode }],
+    })
+}
+
+fn capability_config_options(model: &str, effort: &str) -> Vec<Value> {
+    let effort_options = match effort {
+        "xhigh" => vec![json!({ "value": "xhigh", "name": "XHigh" })],
+        "medium" => vec![json!({ "value": "medium", "name": "Medium" })],
+        _ => vec![json!({ "value": "low", "name": "Low" })],
+    };
+    vec![
+        json!({
+            "id": "adapter_model_selector",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": model,
+            "options": [
+                { "value": "gpt-5.5", "name": "GPT-5.5", "description": "Primary model" },
+                { "value": "gpt-5.4", "name": "GPT-5.4" },
+            ],
+        }),
+        json!({
+            "id": "approval_preset",
+            "name": "Mode",
+            "type": "select",
+            "currentValue": "auto",
+            "options": [
+                { "value": "auto", "name": "Default" },
+                { "value": "manual", "name": "Manual" },
+            ],
+        }),
+        json!({
+            "id": "adapter_reasoning_selector",
+            "name": "Thinking",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": effort,
+            "options": effort_options,
+        }),
+    ]
+}
+
+fn append_fake_log(line: &str) {
+    use std::io::Write;
+
+    let Ok(path) = std::env::var("ACP_FAKE_LOG") else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
     }
 }
 

@@ -283,6 +283,107 @@ fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Environment prepared specifically for a short-lived capability probe.
+///
+/// A probe must not inherit the backend's full environment. `variables`
+/// contains only process-launch essentials, an isolated home/temp tree,
+/// profile-specific authentication variables, and the runtime's explicit
+/// environment. `sensitive_values` is retained so probe output can be checked
+/// before it crosses the API boundary.
+pub(super) struct ProbeChildEnv {
+    pub variables: Vec<(String, String)>,
+    pub sensitive_values: Vec<String>,
+}
+
+/// Build the minimal environment used by capability-discovery children.
+pub(super) fn build_probe_child_env(
+    profile: AcpRuntimeProfile,
+    isolated_home: &Path,
+    runtime_env: &BTreeMap<String, String>,
+) -> io::Result<ProbeChildEnv> {
+    const PROCESS_LAUNCH_KEYS: &[&str] = &[
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+    ];
+    const CODEX_AUTH_KEYS: &[&str] = &["CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY"];
+    const CLAUDE_AUTH_KEYS: &[&str] = &[
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_HOME",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+    ];
+
+    let mut env = BTreeMap::new();
+    for (key, value) in std::env::vars() {
+        if PROCESS_LAUNCH_KEYS
+            .iter()
+            .any(|allowed| key.eq_ignore_ascii_case(allowed))
+        {
+            env.insert(key, value);
+        }
+    }
+
+    let config_dir = isolated_home.join("config");
+    let data_dir = isolated_home.join("data");
+    let cache_dir = isolated_home.join("cache");
+    let temp_dir = isolated_home.join("tmp");
+    for dir in [isolated_home, &config_dir, &data_dir, &cache_dir, &temp_dir] {
+        std::fs::create_dir_all(dir)?;
+    }
+    let s = |path: &Path| path.to_string_lossy().to_string();
+    for (key, value) in [
+        ("HOME", s(isolated_home)),
+        ("USERPROFILE", s(isolated_home)),
+        ("APPDATA", s(&config_dir)),
+        ("LOCALAPPDATA", s(&data_dir)),
+        ("XDG_CONFIG_HOME", s(&config_dir)),
+        ("XDG_DATA_HOME", s(&data_dir)),
+        ("XDG_CACHE_HOME", s(&cache_dir)),
+        ("TMP", s(&temp_dir)),
+        ("TEMP", s(&temp_dir)),
+        ("TMPDIR", s(&temp_dir)),
+        ("CODEX_HOME", s(&config_dir.join("codex"))),
+        ("CLAUDE_CONFIG_DIR", s(&config_dir.join("claude"))),
+        ("CLAUDE_HOME", s(&config_dir.join("claude"))),
+    ] {
+        env.insert(key.to_string(), value);
+    }
+    env.insert(ACP_AGENT_ENV_FLAG.to_string(), "1".to_string());
+
+    let auth_keys = match profile {
+        AcpRuntimeProfile::Codex => CODEX_AUTH_KEYS,
+        AcpRuntimeProfile::Claude => CLAUDE_AUTH_KEYS,
+        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => &[],
+    };
+    let mut sensitive_values = Vec::new();
+    for key in auth_keys {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                sensitive_values.push(value.clone());
+            }
+            env.insert((*key).to_string(), value);
+        }
+    }
+
+    for (key, value) in runtime_env {
+        if !value.is_empty() {
+            sensitive_values.push(value.clone());
+        }
+        env.insert(key.clone(), value.clone());
+    }
+
+    Ok(ProbeChildEnv {
+        variables: env.into_iter().collect(),
+        sensitive_values,
+    })
+}
+
 /// Build the ACP-specific environment overlay for a child, mirroring the Python
 /// `_acp_agent_env`.
 ///
