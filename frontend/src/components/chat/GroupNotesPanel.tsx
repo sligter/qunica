@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NotebookPen, Plus, Trash2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,6 +19,7 @@ interface GroupNotesPanelProps {
 }
 
 export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
+  const { t } = useTranslation(['chat', 'common'])
   const notes = useGroupNotes(groupId)
   const create = useCreateGroupNote(groupId)
   const update = useUpdateGroupNote(groupId)
@@ -56,15 +58,17 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
 
   const isForm = creating || editing !== null
   const isPending = create.isPending || update.isPending
+  const mutationError = create.error ?? update.error ?? del.error
+  const displayError = (error: unknown) => error instanceof Error ? error.message : String(error)
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Group Notes</h2>
+        <h2 className="text-sm font-semibold">{t('chat:workspace.notesPanel.title')}</h2>
         {!isForm && (
           <Button size="sm" variant="outline" onClick={openCreate}>
             <Plus className="mr-1 h-3.5 w-3.5" />
-            New Note
+            {t('chat:workspace.notesPanel.new')}
           </Button>
         )}
       </div>
@@ -72,22 +76,22 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
       {isForm ? (
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="note-title">Title</Label>
+            <Label htmlFor="note-title">{t('chat:workspace.notesPanel.titleLabel')}</Label>
             <Input
               id="note-title"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Note title"
+              placeholder={t('chat:workspace.notesPanel.titlePlaceholder')}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="note-content">Content</Label>
+            <Label htmlFor="note-content">{t('chat:workspace.notesPanel.contentLabel')}</Label>
             <Textarea
               id="note-content"
               rows={10}
               value={noteContent}
               onChange={(e) => setNoteContent(e.target.value)}
-              placeholder="Write your note…"
+              placeholder={t('chat:workspace.notesPanel.contentPlaceholder')}
             />
           </div>
           <div className="flex justify-end gap-2">
@@ -98,23 +102,29 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
                 setEditing(null)
               }}
             >
-              Cancel
+              {t('common:actions.cancel')}
             </Button>
             <Button onClick={() => void onSave()} disabled={isPending || !title.trim()}>
-              {isPending ? 'Saving…' : 'Save'}
+              {isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           </div>
         </div>
       ) : (
         <>
           {notes.isLoading && (
-            <p className="text-sm text-muted-foreground">Loading notes…</p>
+            <p className="text-sm text-muted-foreground">{t('chat:workspace.notesPanel.loading')}</p>
+          )}
+
+          {notes.error && (
+            <p className="text-sm text-destructive" role="alert">
+              {t('chat:workspace.notesPanel.loadError', { message: displayError(notes.error) })}
+            </p>
           )}
 
           {notes.data && notes.data.length === 0 && (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
               <NotebookPen className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">No notes yet</p>
+              <p className="text-sm text-muted-foreground">{t('chat:workspace.notesPanel.empty')}</p>
             </div>
           )}
 
@@ -129,7 +139,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
                   >
                     <p className="truncate text-sm font-medium">{n.title}</p>
                     <p className="line-clamp-1 text-[10px] text-muted-foreground">
-                      {n.content.slice(0, 80) || 'Empty note'}
+                      {n.content.slice(0, 80) || t('chat:workspace.notesPanel.emptyNote')}
                     </p>
                   </button>
                   <Button
@@ -138,7 +148,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
                     className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
                     onClick={() => del.mutate(n.id)}
                     disabled={del.isPending}
-                    aria-label={`Delete note ${n.title}`}
+                    aria-label={t('chat:workspace.notesPanel.deleteNamed', { title: n.title })}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -147,6 +157,11 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
             </ul>
           )}
         </>
+      )}
+      {mutationError && (
+        <p className="text-sm text-destructive" role="alert">
+          {t('chat:workspace.notesPanel.mutationError', { message: displayError(mutationError) })}
+        </p>
       )}
     </div>
   )

@@ -1,7 +1,16 @@
 import { AlertTriangle, GitBranch, Link2Off, Route } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
+import { normalizeLanguage } from '@/i18n'
+import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { AgentDispatchTrace, PublicTurnArtifact } from '@/lib/api-v2/types'
+import type {
+  AgentDispatchStatus,
+  AgentDispatchTrace,
+  PublicTurnArtifact,
+  SchedulerActionKind,
+  SchedulerSelectionReason,
+} from '@/lib/api-v2/types'
 
 interface DispatchDagProps {
   dispatches: readonly AgentDispatchTrace[]
@@ -112,24 +121,52 @@ function flattenForest(forest: readonly DagNode[]): FlatDagNode[] {
   return flattened
 }
 
-function humanize(value: string): string {
-  return value.replace(/_/g, ' ')
-}
+const actionKeys = {
+  speak: 'trace.actions.speak',
+  call: 'trace.actions.call',
+  handoff: 'trace.actions.handoff',
+  wait: 'trace.actions.wait',
+  silent: 'trace.actions.silent',
+} as const satisfies Record<SchedulerActionKind, string>
+
+const reasonKeys = {
+  user_mention: 'trace.reasons.user_mention',
+  agent_call: 'trace.reasons.agent_call',
+  agent_handoff: 'trace.reasons.agent_handoff',
+  agent_text_mention: 'trace.reasons.agent_text_mention',
+  deterministic_order: 'trace.reasons.deterministic_order',
+  moderator: 'trace.reasons.moderator',
+  moderator_fallback: 'trace.reasons.moderator_fallback',
+} as const satisfies Record<SchedulerSelectionReason, string>
+
+const statusKeys = {
+  queued: 'trace.dispatchStatuses.queued',
+  running: 'trace.dispatchStatuses.running',
+  completed: 'trace.dispatchStatuses.completed',
+  silent: 'trace.dispatchStatuses.silent',
+  waiting_for_user: 'trace.dispatchStatuses.waiting_for_user',
+  interrupted: 'trace.dispatchStatuses.interrupted',
+  cancelled: 'trace.dispatchStatuses.cancelled',
+  failed: 'trace.dispatchStatuses.failed',
+} as const satisfies Record<AgentDispatchStatus, string>
 
 function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) {
+  const { t } = useTranslation('chat')
   if (!artifact) return null
   return (
     <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-t border-border pt-2 text-[11px]">
-      {artifact.mode ? <><dt className="text-muted-foreground">Mode</dt><dd>{artifact.mode}</dd></> : null}
-      {artifact.target_agent_id ? <><dt className="text-muted-foreground">Target</dt><dd className="truncate" title={artifact.target_agent_id}>{artifact.target_agent_id}</dd></> : null}
-      {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">Child</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
-      {artifact.outcome ? <><dt className="text-muted-foreground">Outcome</dt><dd className="break-words">{artifact.outcome}</dd></> : null}
-      {artifact.failure_code ? <><dt className="text-muted-foreground">Failure</dt><dd className="break-words text-destructive">{artifact.failure_code}</dd></> : null}
+      {artifact.mode ? <><dt className="text-muted-foreground">{t('trace.mode')}</dt><dd>{t(actionKeys[artifact.mode])}</dd></> : null}
+      {artifact.target_agent_id ? <><dt className="text-muted-foreground">{t('trace.target')}</dt><dd className="truncate" title={artifact.target_agent_id}>{artifact.target_agent_id}</dd></> : null}
+      {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">{t('trace.child')}</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
+      {artifact.outcome ? <><dt className="text-muted-foreground">{t('trace.outcome')}</dt><dd className="break-words">{artifact.outcome}</dd></> : null}
+      {artifact.failure_code ? <><dt className="text-muted-foreground">{t('trace.failure')}</dt><dd className="break-words text-destructive">{artifact.failure_code}</dd></> : null}
     </dl>
   )
 }
 
 function DagRow({ node, depth }: FlatDagNode) {
+  const { t, i18n } = useTranslation('chat')
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const IssueIcon = node.issue === 'orphan' ? Link2Off : AlertTriangle
   const dispatch = node.dispatch
   return (
@@ -146,24 +183,24 @@ function DagRow({ node, depth }: FlatDagNode) {
             {dispatch.target_agent_id}
           </span>
           <span className="rounded-[3px] bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
-            {humanize(dispatch.action_kind)}
+            {t(actionKeys[dispatch.action_kind])}
           </span>
           <span className={cn('ml-auto text-[10px] capitalize text-muted-foreground', dispatch.status === 'failed' && 'text-destructive')}>
-            {humanize(dispatch.status)}
+            {t(statusKeys[dispatch.status])}
           </span>
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-          <span>{humanize(dispatch.selection_reason)}</span>
-          <span>hop {dispatch.hop}</span>
-          <span>{dispatch.total_tokens.toLocaleString()} tokens</span>
+          <span>{t(reasonKeys[dispatch.selection_reason])}</span>
+          <span>{t('trace.hop', { count: formatNumber(dispatch.hop, language) })}</span>
+          <span>{t('trace.tokenCount', { count: formatNumber(dispatch.total_tokens, language) })}</span>
           {node.issue ? (
             <span className="inline-flex items-center gap-1 text-warning-foreground" data-edge-issue={node.issue}>
               <IssueIcon className="h-3 w-3" aria-hidden="true" />
-              {node.issue === 'orphan' ? 'Missing parent' : 'Cycle detached'}
+              {node.issue === 'orphan' ? t('trace.missingParent') : t('trace.cycleDetached')}
             </span>
           ) : null}
         </div>
-        {dispatch.failure_code ? <p className="mt-1 break-words text-[11px] text-destructive">{dispatch.failure_code}</p> : null}
+        {dispatch.failure_code ? <p className="mt-1 break-words text-[11px] text-destructive">{t('trace.failureDetail', { message: dispatch.failure_code })}</p> : null}
         <ArtifactDetails artifact={dispatch.artifact} />
       </div>
     </li>
@@ -171,18 +208,19 @@ function DagRow({ node, depth }: FlatDagNode) {
 }
 
 export function DispatchDag({ dispatches, className }: DispatchDagProps) {
+  const { t } = useTranslation('chat')
   const forest = buildDispatchForest(dispatches)
   const flattened = flattenForest(forest)
   if (forest.length === 0) {
-    return <p className={cn('py-6 text-center text-sm text-muted-foreground', className)}>No dispatches recorded.</p>
+    return <p className={cn('py-6 text-center text-sm text-muted-foreground', className)}>{t('trace.noDispatches')}</p>
   }
   return (
     <div className={cn('min-w-0', className)}>
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
-        Dispatch path
+        {t('trace.dispatchPath')}
       </div>
-      <ul className="space-y-2" aria-label="Dispatch path">
+      <ul className="space-y-2" aria-label={t('trace.dispatchPath')}>
         {flattened.map(({ node, depth }) => (
           <DagRow key={node.dispatch.id} node={node} depth={depth} />
         ))}

@@ -10,6 +10,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -30,7 +31,9 @@ import {
   useRenameGroupWorkspaceFile,
   useUploadGroupWorkspaceFile,
 } from '@/hooks/useGroupFiles'
+import { normalizeLanguage } from '@/i18n'
 import { isDesktopRuntime, revealInFileManager } from '@/lib/desktop'
+import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { encodeWorkspacePaths, WORKSPACE_PATHS_MIME } from '@/lib/workspaceDrag'
 import { joinWorkspaceAbsPath } from '@/lib/workspaceFileLink'
@@ -49,11 +52,11 @@ function parentPath(path: string) {
   return parts.join('/')
 }
 
-function formatSize(size: number | null | undefined) {
+function formatSize(size: number | null | undefined, language: 'en-US' | 'zh-CN') {
   if (size == null) return ''
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  if (size < 1024) return `${formatNumber(size, language)} B`
+  if (size < 1024 * 1024) return `${formatNumber(Number((size / 1024).toFixed(1)), language)} KB`
+  return `${formatNumber(Number((size / (1024 * 1024)).toFixed(1)), language)} MB`
 }
 
 function displayError(error: unknown) {
@@ -61,6 +64,8 @@ function displayError(error: unknown) {
 }
 
 export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabProps) {
+  const { t, i18n } = useTranslation(['chat', 'common'])
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const [currentPath, setCurrentPath] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<Set<string>>(
@@ -88,7 +93,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
   const desktop = isDesktopRuntime()
   const hasGroupId = groupId !== undefined && groupId.length > 0
 
-  const title = currentPath || 'Workspace root'
+  const title = currentPath || t('chat:workspace.root')
   const sortedFiles = files.data ?? []
   const selectedCount = selectedWorkspacePaths.size
 
@@ -295,7 +300,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             type="file"
             className="sr-only"
             onChange={(event) => uploadFile(event.target.files?.[0])}
-            aria-label="Upload file to workspace uploads"
+            aria-label={t('chat:workspace.filePanel.uploadAria')}
           />
           <Button
             variant="ghost"
@@ -303,8 +308,8 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             className="h-8 w-8 shrink-0"
             onClick={() => fileInputRef.current?.click()}
             disabled={upload.isPending || !hasGroupId}
-            aria-label="Upload file to workspace uploads"
-            title="Upload to uploads/"
+            aria-label={t('chat:workspace.filePanel.uploadAria')}
+            title={t('chat:workspace.filePanel.uploadTitle')}
           >
             <Upload className="h-4 w-4" />
           </Button>
@@ -314,7 +319,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             className="h-8 w-8 shrink-0"
             onClick={() => void files.refetch()}
             disabled={files.isFetching || !hasGroupId}
-            aria-label="Refresh workspace files"
+            aria-label={t('chat:workspace.filePanel.refresh')}
           >
             <RefreshCw className={cn('h-4 w-4', files.isFetching && 'animate-spin')} />
           </Button>
@@ -328,13 +333,13 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
           onClick={() => setCurrentPath(parentPath(currentPath))}
         >
           <ChevronLeft className="h-3.5 w-3.5" />
-          Up one folder
+          {t('chat:workspace.filePanel.up')}
         </button>
       )}
 
       {selectedCount > 0 && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-          <span>{selectedCount} selected</span>
+          <span>{t('chat:workspace.selected', { count: selectedCount })}</span>
           <Button
             type="button"
             variant="outline"
@@ -343,34 +348,34 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             onClick={insertSelectedPaths}
             disabled={!onInsertPaths}
           >
-            Insert paths
+            {t('chat:workspace.insertSelected')}
           </Button>
         </div>
       )}
 
       {files.error && (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-          {displayError(files.error)}
+          {t('chat:workspace.filePanel.loadError', { message: displayError(files.error) })}
         </div>
       )}
       {upload.error && (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-          {displayError(upload.error)}
+          {t('chat:errors.uploadDetail', { message: displayError(upload.error) })}
         </div>
       )}
       {downloadError && (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-          {downloadError}
+          {t('chat:workspace.filePanel.operationError', { message: downloadError })}
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!hasGroupId && <p className="p-3 text-sm text-muted-foreground">Select a group to view workspace files.</p>}
-        {hasGroupId && files.isLoading && <p className="p-3 text-sm text-muted-foreground">Loading files…</p>}
+        {!hasGroupId && <p className="p-3 text-sm text-muted-foreground">{t('chat:workspace.filePanel.selectGroup')}</p>}
+        {hasGroupId && files.isLoading && <p className="p-3 text-sm text-muted-foreground">{t('chat:workspace.loading')}</p>}
         {hasGroupId && !files.isLoading && !files.error && sortedFiles.length === 0 && (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
             <Folder className="h-8 w-8" />
-            <p>No files in this folder.</p>
+            <p>{t('chat:workspace.empty')}</p>
           </div>
         )}
         {sortedFiles.length > 0 && (
@@ -405,7 +410,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">{file.name}</span>
                       <span className="block text-[10px] text-muted-foreground">
-                        {file.is_dir ? 'Folder' : formatSize(file.size)}
+                        {file.is_dir ? t('chat:workspace.filePanel.folder') : formatSize(file.size, language)}
                       </span>
                     </span>
                   </button>
@@ -416,7 +421,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
                       className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                       onClick={() => downloadFile(file)}
                       disabled={downloadingPath === file.path}
-                      aria-label={`Download ${file.name}`}
+                      aria-label={t('chat:workspace.filePanel.downloadNamed', { name: file.name })}
                     >
                       <Download className="h-3.5 w-3.5" />
                     </Button>
@@ -426,7 +431,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
                     size="icon"
                     className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                     onClick={() => startRename(file)}
-                    aria-label={`Rename ${file.name}`}
+                    aria-label={t('chat:workspace.filePanel.renameNamed', { name: file.name })}
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
@@ -436,7 +441,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
                     className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100"
                     onClick={() => deletePath(file)}
                     disabled={del.isPending}
-                    aria-label={`Delete ${file.name}`}
+                    aria-label={t('chat:workspace.filePanel.deleteNamed', { name: file.name })}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -453,13 +458,13 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
           onOpenChange={(open) => {
             if (!open) setPendingDelete(null)
           }}
-          title={`Delete ${pendingDelete.path}?`}
+          title={t('chat:workspace.deleteTitle', { path: pendingDelete.path })}
           description={
             pendingDelete.is_dir
-              ? 'This folder and everything inside it will be deleted.'
-              : 'This file will be deleted from the group workspace.'
+              ? t('chat:workspace.filePanel.deleteFolderDescription')
+              : t('chat:workspace.filePanel.deleteFileDescription')
           }
-          confirmLabel="Delete"
+          confirmLabel={t('common:actions.delete')}
           destructive
           onConfirm={() => performDelete(pendingDelete)}
         />
@@ -469,31 +474,37 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-0">
           <DialogHeader className="border-b border-border px-6 py-4 pr-12">
             <DialogTitle className="truncate text-base">
-              {selectedPath ?? 'File preview'}
+              {selectedPath ?? t('chat:workspace.preview')}
             </DialogTitle>
             <DialogDescription>
-              Preview is bounded by the server and may be truncated for large files.
+              {t('chat:workspace.filePanel.previewDescription')}
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-40 overflow-y-auto px-6 py-4">
             {selectedPath && preview.isLoading && (
-              <p className="text-sm text-muted-foreground">Loading preview…</p>
+              <p className="text-sm text-muted-foreground">{t('chat:workspace.previewLoading')}</p>
             )}
             {selectedPath && preview.error && (
               <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                {displayError(preview.error)}
+                {t('chat:workspace.filePanel.previewError', { message: displayError(preview.error) })}
               </p>
             )}
             {preview.data && !preview.data.is_text && (
               <p className="rounded-md border border-border bg-muted/50 p-3 text-sm text-muted-foreground">
-                {preview.data.message ?? 'Preview is not available for this file.'}
+                {preview.data.message
+                  ? t('chat:workspace.filePanel.previewUnavailableDetail', { message: preview.data.message })
+                  : t('chat:workspace.binaryPreview')}
               </p>
             )}
             {preview.data?.is_text && (
-              <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed whitespace-pre-wrap break-words text-foreground">
-                {preview.data.content}
-                {preview.data.truncated ? '\n… Preview truncated.' : ''}
-              </pre>
+              <>
+                <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed whitespace-pre-wrap break-words text-foreground">
+                  {preview.data.content}
+                </pre>
+                {preview.data.truncated ? (
+                  <p className="mt-2 text-xs text-muted-foreground">{t('chat:workspace.filePanel.previewTruncated')}</p>
+                ) : null}
+              </>
             )}
           </div>
         </DialogContent>
@@ -502,7 +513,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
       {renaming && (
         <div className="border-t border-border p-3">
           <label className="mb-1 block text-xs font-medium" htmlFor="workspace-file-rename">
-            Rename path
+            {t('chat:workspace.filePanel.renamePath')}
           </label>
           <div className="flex gap-2">
             <Input
@@ -512,13 +523,13 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
               className="h-8 text-xs"
             />
             <Button size="sm" onClick={submitRename} disabled={rename.isPending}>
-              Save
+              {t('common:actions.save')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setRenaming(null)}>
-              Cancel
+              {t('common:actions.cancel')}
             </Button>
           </div>
-          {rename.error && <p className="mt-2 text-xs text-destructive">{displayError(rename.error)}</p>}
+          {rename.error && <p className="mt-2 text-xs text-destructive">{t('chat:workspace.filePanel.renameError', { message: displayError(rename.error) })}</p>}
         </div>
       )}
 
@@ -541,7 +552,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             ) : (
               <File className="h-3.5 w-3.5" />
             )}
-            {menu.file.is_dir ? 'Open folder' : 'Open preview'}
+            {menu.file.is_dir ? t('chat:workspace.filePanel.openFolder') : t('chat:workspace.filePanel.openPreview')}
           </button>
           {desktop && (
             <button
@@ -553,7 +564,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
               }}
             >
               <FolderOpen className="h-3.5 w-3.5" />
-              Reveal in File Explorer
+              {t('chat:workspace.filePanel.revealExplorer')}
             </button>
           )}
           {!menu.file.is_dir && (
@@ -566,7 +577,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
               }}
             >
               <Download className="h-3.5 w-3.5" />
-              Download
+              {t('chat:workspace.download')}
             </button>
           )}
           <button
@@ -578,7 +589,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             }}
           >
             <Pencil className="h-3.5 w-3.5" />
-            Rename
+            {t('chat:workspace.rename')}
           </button>
           <button
             type="button"
@@ -589,7 +600,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             }}
           >
             <Trash2 className="h-3.5 w-3.5" />
-            Delete
+            {t('common:actions.delete')}
           </button>
         </div>
       )}

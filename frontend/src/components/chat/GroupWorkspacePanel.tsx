@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { WorkspaceFilesTab } from '@/components/chat/WorkspaceFilesTab'
@@ -29,6 +30,7 @@ export function GroupWorkspacePanel({
   className,
   onInsertPaths,
 }: GroupWorkspacePanelProps) {
+  const { t } = useTranslation('chat')
   const [tab, setTab] = useState<WorkspaceTab>(() => readStoredTab())
   const navRequest = useFileNavStore((s) => s.request)
   const queryClient = useQueryClient()
@@ -66,8 +68,8 @@ export function GroupWorkspacePanel({
       <Tabs value={tab} onValueChange={changeTab} className="flex min-h-0 flex-1 flex-col">
         <div className="flex h-14 shrink-0 items-center border-b border-border px-3">
           <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="files">Files</TabsTrigger>
-            <TabsTrigger value="git">Git</TabsTrigger>
+            <TabsTrigger value="files">{t('workspace.files')}</TabsTrigger>
+            <TabsTrigger value="git">{t('workspace.git')}</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="files" className="mt-0 min-h-0 flex-1">

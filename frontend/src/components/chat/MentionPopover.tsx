@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bot } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import type { GroupAgentRead } from '@/types/api'
@@ -19,6 +20,7 @@ export function MentionPopover({
   onClose,
   visible,
 }: MentionPopoverProps) {
+  const { t } = useTranslation('chat')
   const [activeIndex, setActiveIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -68,11 +70,15 @@ export function MentionPopover({
     <div
       ref={listRef}
       className="absolute bottom-full left-0 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-border bg-background shadow-lg z-50"
+      role="listbox"
+      aria-label={t('workspace.mentionPicker')}
     >
       {filtered.map((agent, idx) => (
         <button
           key={agent.id}
           type="button"
+          role="option"
+          aria-selected={idx === activeIndex}
           className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
             idx === activeIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'
           }`}

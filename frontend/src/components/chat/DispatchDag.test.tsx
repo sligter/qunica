@@ -1,7 +1,8 @@
 import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { DispatchDag } from '@/components/chat/DispatchDag'
+import i18n from '@/i18n'
 import type { AgentDispatchTrace } from '@/lib/api-v2/types'
 
 function dispatch(
@@ -33,6 +34,9 @@ function dispatch(
 
 describe('DispatchDag', () => {
   afterEach(cleanup)
+  beforeEach(async () => {
+    await i18n.changeLanguage('en-US')
+  })
 
   it('builds parent-child adjacency in stable dispatch order', () => {
     render(<DispatchDag dispatches={[
@@ -96,9 +100,40 @@ describe('DispatchDag', () => {
     } as AgentDispatchTrace['artifact']
     render(<DispatchDag dispatches={[item]} />)
 
-    expect(screen.getByText('handoff')).toBeVisible()
+    expect(screen.getByText('Handoff')).toBeVisible()
     expect(screen.getByText('accepted')).toBeVisible()
     expect(screen.queryByText('never render this')).not.toBeInTheDocument()
     expect(screen.queryByText('private')).not.toBeInTheDocument()
+  })
+
+  it('localizes known dispatch framing while preserving raw agent and artifact values', async () => {
+    const item = dispatch('root', null, 'Agent_RAW_42')
+    item.selection_reason = 'deterministic_order'
+    item.action_kind = 'handoff'
+    item.status = 'waiting_for_user'
+    item.hop = 2
+    item.total_tokens = 12345
+    item.artifact = {
+      mode: 'handoff',
+      target_agent_id: 'target/raw-id',
+      child_dispatch_id: 'child_RAW',
+      outcome: 'SERVER_OUTCOME_RAW',
+      failure_code: 'FAILURE_CODE_RAW',
+    }
+
+    await i18n.changeLanguage('zh-CN')
+    render(<DispatchDag dispatches={[item]} />)
+
+    expect(screen.getByRole('list', { name: '调度路径' })).toBeVisible()
+    expect(screen.getAllByText('转交')).toHaveLength(2)
+    expect(screen.getByText('等待用户输入')).toBeVisible()
+    expect(screen.getByText('确定性顺序')).toBeVisible()
+    expect(screen.getByText('第 2 跳')).toBeVisible()
+    expect(screen.getByText('12,345 Token')).toBeVisible()
+    expect(screen.getByText('Agent_RAW_42')).toBeVisible()
+    expect(screen.getByText('target/raw-id')).toBeVisible()
+    expect(screen.getByText('child_RAW')).toBeVisible()
+    expect(screen.getByText('SERVER_OUTCOME_RAW')).toBeVisible()
+    expect(screen.getByText('FAILURE_CODE_RAW')).toBeVisible()
   })
 })
