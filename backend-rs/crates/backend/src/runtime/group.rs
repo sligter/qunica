@@ -36,7 +36,10 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::acp::{normalize_acp_runtime, run_acp_agent_stream, AcpEventKind, AcpRunRequest};
+use crate::acp::{
+    canonicalize_codex_acp_runtime, normalize_acp_runtime, run_acp_agent_stream, AcpEventKind,
+    AcpRunRequest,
+};
 use crate::llm::{
     build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
     ToolCall, ToolDefinition,
@@ -2597,7 +2600,8 @@ async fn run_acp_agent_turn(
         .external_runtime_json
         .as_deref()
         .and_then(|value| serde_json::from_str::<Value>(value).ok());
-    let config = normalize_acp_runtime(raw.as_ref()).map_err(|err| StepErr::Db(err.into()))?;
+    let mut config = normalize_acp_runtime(raw.as_ref()).map_err(|err| StepErr::Db(err.into()))?;
+    canonicalize_codex_acp_runtime(&mut config);
     let invocation = build_invocation_context(&services.pool, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;

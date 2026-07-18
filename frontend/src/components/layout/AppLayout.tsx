@@ -4,9 +4,12 @@ import { AppSidebar } from '@/components/layout/AppSidebar'
 
 export function AppLayout() {
   return (
-    <div className="flex h-screen bg-background">
+    <div
+      className="flex h-screen min-h-0 bg-background"
+      onContextMenu={(event) => event.preventDefault()}
+    >
       <AppSidebar />
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Outlet />
       </main>
     </div>

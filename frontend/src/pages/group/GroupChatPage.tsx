@@ -50,8 +50,8 @@ export function GroupChatPage() {
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const workspaceFilesPane = usePersistentPaneWidth({
     storageKey: 'ag-swarmer:layout:workspace-files-pane-width',
-    defaultWidth: 320,
-    minWidth: 260,
+    defaultWidth: 280,
+    minWidth: 240,
     maxWidth: 560,
   })
 
@@ -113,12 +113,11 @@ export function GroupChatPage() {
   }
 
   const agents = groupAgents.data ?? []
-  const agentNames = agents.map((g) => `@${g.display_name}`).join(' · ')
-  const hint = agentNames || 'No agents in this group yet — add one above.'
+  const hint = agents.length === 0 ? 'No agents in this group yet - add one above.' : undefined
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-background px-6">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-background px-4 lg:px-5">
         <div className="flex min-w-0 items-baseline gap-3">
           <h1 className="font-serif truncate text-base font-semibold tracking-tight">
             {group.data?.name}
@@ -149,7 +148,7 @@ export function GroupChatPage() {
       </header>
 
       {group.data?.announcement && (
-        <div className="shrink-0 border-b border-border/60 bg-card px-6 py-2 text-xs text-muted-foreground">
+        <div className="shrink-0 border-b border-border/60 bg-card px-4 py-2 text-xs text-muted-foreground lg:px-5">
           Announcement: {group.data.announcement}
         </div>
       )}
@@ -167,7 +166,7 @@ export function GroupChatPage() {
 
           {stream.error && (
             <div className="shrink-0 px-4">
-              <div className="mx-auto w-full max-w-3xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <div className="mx-auto w-full max-w-6xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 Stream error: {stream.error}
               </div>
             </div>

@@ -49,7 +49,7 @@ export function GroupManagePage() {
       ) : group.isLoading ? (
         <div className="text-sm text-muted-foreground">Loading…</div>
       ) : group.data ? (
-        <Tabs value={tab} onValueChange={onTabChange} className="w-full">
+        <Tabs value={tab} onValueChange={onTabChange} className="min-h-0 w-full">
           <TabsList>
             <TabsTrigger value="settings">Settings</TabsTrigger>
             <TabsTrigger value="members">Members</TabsTrigger>

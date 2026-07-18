@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { FolderPlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,6 +20,7 @@ interface WorkspaceFieldProps {
   value: string
   onChange: (workspaceId: string) => void
   error?: string
+  variant?: 'default' | 'compact'
 }
 
 const PICKER_SCOPE = 'workspace-root'
@@ -34,7 +36,12 @@ function localPathLooksAbsolute(path: string) {
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
 }
 
-export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) {
+export function WorkspaceField({
+  value,
+  onChange,
+  error,
+  variant = 'default',
+}: WorkspaceFieldProps) {
   const workspaces = useWorkspaces()
   const createWorkspace = useCreateWorkspace()
   const fallbackInputRef = useRef<HTMLInputElement | null>(null)
@@ -125,9 +132,18 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
     <div className="space-y-2">
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
-          <Label htmlFor="agent-workspace">Workspace</Label>
+          {variant === 'default' ? <Label htmlFor="agent-workspace">Workspace</Label> : <span />}
           <Button type="button" variant="outline" size="sm" onClick={() => setShowCreate(!showCreate)}>
-            {showCreate ? 'Cancel' : 'New local workspace'}
+            {showCreate ? (
+              'Cancel'
+            ) : variant === 'compact' ? (
+              <>
+                <FolderPlus className="h-3.5 w-3.5" />
+                New workspace
+              </>
+            ) : (
+              'New local workspace'
+            )}
           </Button>
         </div>
         <select
@@ -150,8 +166,12 @@ export function WorkspaceField({ value, onChange, error }: WorkspaceFieldProps) 
           </p>
         )}
         {selected && (
-          <p className="text-[11px] text-muted-foreground">
-            Bound to {selectedBackendType}: {selected.local_path ?? selected.sandbox_ref ?? 'not configured'}
+          <p
+            className="truncate text-[11px] text-muted-foreground"
+            title={selected.local_path ?? selected.sandbox_ref ?? undefined}
+          >
+            {variant === 'compact' ? 'Location: ' : `Bound to ${selectedBackendType}: `}
+            {selected.local_path ?? selected.sandbox_ref ?? 'not configured'}
           </p>
         )}
       </div>

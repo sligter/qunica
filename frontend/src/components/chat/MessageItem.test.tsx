@@ -123,7 +123,7 @@ describe('MessageItem', () => {
     const contentColumn = row?.querySelector(':scope > div:last-child')
     const bubble = screen.getByText(longContent).closest('.chat-user-bubble')
     expect(row).toHaveClass('min-w-0', 'w-full')
-    expect(contentColumn).toHaveClass('min-w-0', 'w-full', 'max-w-[78%]', 'items-end')
+    expect(contentColumn).toHaveClass('min-w-0', 'flex-1', 'ml-auto', 'max-w-[72%]', 'items-end')
     expect(bubble).toHaveClass('min-w-0', 'max-w-full')
   })
 })

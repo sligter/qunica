@@ -23,7 +23,7 @@ use super::{
         AcpConnection, ProtocolError, METHOD_INITIALIZE, METHOD_SESSION_NEW,
         METHOD_SESSION_SET_CONFIG_OPTION, METHOD_SESSION_SET_MODEL, PROTOCOL_VERSION,
     },
-    AcpAgentEvent, AcpRuntimeConfig, STDERR_DRAIN_GRACE, STDOUT_DRAIN_GRACE,
+    AcpAgentEvent, AcpRuntimeConfig, AcpRuntimeProfile, STDERR_DRAIN_GRACE, STDOUT_DRAIN_GRACE,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -133,7 +133,7 @@ async fn run_probe(
     selected_model: Option<String>,
     raw_updates_rx: &mut mpsc::Receiver<Value>,
 ) -> Result<AcpRuntimeCapabilities, ProtocolError> {
-    let mut state = CapabilityState::default();
+    let mut state = CapabilityState::new(session.profile);
     request_observing(
         session.conn(),
         raw_updates_rx,
@@ -267,6 +267,7 @@ struct ProbeSession {
     temp_root: Option<tempfile::TempDir>,
     cwd: PathBuf,
     sensitive_values: Vec<String>,
+    profile: AcpRuntimeProfile,
 }
 
 impl ProbeSession {
@@ -317,6 +318,7 @@ impl ProbeSession {
                 temp_root: Some(temp_root),
                 cwd,
                 sensitive_values: probe_env.sensitive_values,
+                profile: config.profile,
             },
             raw_updates_rx,
         ))
@@ -363,6 +365,7 @@ impl ProbeSession {
 
 #[derive(Default)]
 struct CapabilityState {
+    profile: AcpRuntimeProfile,
     model: Option<SelectCapability>,
     mode: Option<SelectCapability>,
     thinking: Option<SelectCapability>,
@@ -380,6 +383,13 @@ struct SelectCapability {
 }
 
 impl CapabilityState {
+    fn new(profile: AcpRuntimeProfile) -> Self {
+        Self {
+            profile,
+            ..Self::default()
+        }
+    }
+
     fn observe(&mut self, value: &Value) {
         self.wire_revision = self.wire_revision.saturating_add(1);
         let revision = self.wire_revision;
@@ -398,6 +408,21 @@ impl CapabilityState {
                 &["reasoning_effort", "effort", "effortLevel"],
             ) {
                 self.thinking = Some(thinking);
+            }
+        }
+
+        if let Some(models) = available_models(value) {
+            if self.profile != AcpRuntimeProfile::Opencode || self.model.is_none() {
+                let existing = self.model.take();
+                let current = existing
+                    .as_ref()
+                    .and_then(|model| model.current.clone())
+                    .or(models.current);
+                self.model = Some(SelectCapability {
+                    choices: merge_choices(models.choices, existing),
+                    current,
+                });
+                self.model_revision = self.model_revision.saturating_add(1);
             }
         }
 
@@ -455,6 +480,54 @@ impl CapabilityState {
         capabilities.redact_sensitive_values(sensitive_values);
         capabilities
     }
+}
+
+fn available_models(value: &Value) -> Option<SelectCapability> {
+    let models = value.get("models")?;
+    let choices = models
+        .get("availableModels")?
+        .as_array()?
+        .iter()
+        .filter_map(|model| {
+            let value = model.get("modelId").and_then(nonempty_str)?.to_string();
+            let label = model
+                .get("name")
+                .and_then(nonempty_str)
+                .unwrap_or(&value)
+                .to_string();
+            let description = model
+                .get("description")
+                .and_then(nonempty_str)
+                .map(str::to_string);
+            Some(AcpCapabilityChoice {
+                value,
+                label,
+                description,
+            })
+        })
+        .collect();
+    Some(SelectCapability {
+        choices,
+        current: models
+            .get("currentModelId")
+            .and_then(nonempty_str)
+            .map(str::to_string),
+    })
+}
+
+fn merge_choices(
+    mut primary: Vec<AcpCapabilityChoice>,
+    secondary: Option<SelectCapability>,
+) -> Vec<AcpCapabilityChoice> {
+    let mut seen: HashSet<String> = primary.iter().map(|choice| choice.value.clone()).collect();
+    if let Some(secondary) = secondary {
+        for choice in secondary.choices {
+            if seen.insert(choice.value.clone()) {
+                primary.push(choice);
+            }
+        }
+    }
+    primary
 }
 
 impl AcpRuntimeCapabilities {

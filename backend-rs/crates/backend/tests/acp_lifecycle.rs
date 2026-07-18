@@ -148,6 +148,18 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
     .expect("opencode profile should normalize");
     assert_eq!(opencode.profile, AcpRuntimeProfile::Opencode);
 
+    let migrated_codex = normalize_acp_runtime(Some(&json!({
+        "command": "npx",
+        "profile": "codex",
+        "args": ["@zed-industries/codex-acp"],
+    })))
+    .expect("legacy Codex config normalizes");
+    assert_eq!(migrated_codex.command, "npx");
+    assert_eq!(
+        migrated_codex.args,
+        vec!["-y", "@agentclientprotocol/codex-acp"]
+    );
+
     // Rejections with stable user-facing messages.
     assert_eq!(
         normalize_acp_runtime(None).unwrap_err().to_string(),
@@ -997,6 +1009,45 @@ async fn acp_capability_probe_normalizes_initial_options_without_prompt() {
 }
 
 #[tokio::test]
+async fn acp_capability_probe_reads_session_model_catalog() {
+    let config = fake_child_config("capabilities_model_catalog", "custom", json!({}));
+
+    let capabilities = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("model catalog probe succeeds");
+
+    assert!(capabilities
+        .models
+        .iter()
+        .any(|model| model.value == "gpt-5.6-terra[high]"));
+    assert!(capabilities
+        .models
+        .iter()
+        .any(|model| model.value == "gpt-5.5"));
+    assert_eq!(capabilities.current_model.as_deref(), Some("gpt-5.5"));
+}
+
+#[tokio::test]
+async fn acp_capability_probe_keeps_opencode_model_config_options_scoped() {
+    let config = fake_child_config("capabilities_model_catalog", "opencode", json!({}));
+
+    let capabilities = probe_acp_runtime_capabilities(config, None)
+        .await
+        .expect("OpenCode capability probe succeeds");
+
+    assert!(capabilities
+        .models
+        .iter()
+        .any(|model| model.value == "gpt-5.5"));
+    assert!(capabilities.models.iter().all(|model| {
+        !matches!(
+            model.value.as_str(),
+            "gpt-5.6-terra[low]" | "gpt-5.6-terra[high]"
+        )
+    }));
+}
+
+#[tokio::test]
 async fn acp_capability_probe_applies_only_the_selected_model() {
     let cwd = tempfile::tempdir().unwrap();
     let log_path = cwd.path().join("probe.log");
@@ -1359,6 +1410,8 @@ fn run_fake_child(mode: &str) {
                     capability_reflection_state(
                         &std::env::var("ACP_FAKE_SECRET").unwrap_or_default(),
                     )
+                } else if mode == "capabilities_model_catalog" {
+                    capability_model_catalog_state()
                 } else if mode == "capabilities_flood" {
                     capability_session_state("gpt-5.4", "medium")
                 } else if mode.starts_with("capabilities_") {
@@ -1595,6 +1648,24 @@ fn capability_session_state(model: &str, effort: &str) -> Value {
         "modes": {
             "currentModeId": "legacy",
             "availableModes": [{ "id": "legacy", "name": "Legacy" }],
+        },
+    })
+}
+
+fn capability_model_catalog_state() -> Value {
+    json!({
+        "sessionId": "sess-fake",
+        "models": {
+            "currentModelId": "gpt-5.6-terra[high]",
+            "availableModels": [
+                { "modelId": "gpt-5.6-terra[low]", "name": "GPT-5.6-terra (low)" },
+                { "modelId": "gpt-5.6-terra[high]", "name": "GPT-5.6-terra (high)" },
+            ],
+        },
+        "configOptions": capability_config_options("gpt-5.5", "low"),
+        "modes": {
+            "currentModeId": "agent",
+            "availableModes": [{ "id": "agent", "name": "Agent" }],
         },
     })
 }

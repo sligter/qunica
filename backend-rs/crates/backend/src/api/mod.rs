@@ -95,6 +95,14 @@ pub fn router(state: AppState) -> Router {
             get(agents::acp_runtime_presets),
         )
         .route(
+            "/api/v2/agents/acp-runtime-versions",
+            get(agents::acp_runtime_versions),
+        )
+        .route(
+            "/api/v2/agents/acp-runtime-versions/:preset_id/install",
+            axum::routing::post(agents::install_acp_runtime_version),
+        )
+        .route(
             "/api/v2/agents/acp-runtime-capabilities",
             axum::routing::post(agents::acp_runtime_capabilities),
         )

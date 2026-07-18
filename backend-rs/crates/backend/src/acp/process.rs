@@ -9,7 +9,7 @@
 use std::{
     collections::BTreeMap,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
 };
 
@@ -333,7 +333,17 @@ pub(super) fn build_probe_child_env(
     let data_dir = isolated_home.join("data");
     let cache_dir = isolated_home.join("cache");
     let temp_dir = isolated_home.join("tmp");
-    for dir in [isolated_home, &config_dir, &data_dir, &cache_dir, &temp_dir] {
+    let codex_dir = config_dir.join("codex");
+    let claude_dir = config_dir.join("claude");
+    for dir in [
+        isolated_home,
+        &config_dir,
+        &data_dir,
+        &cache_dir,
+        &temp_dir,
+        &codex_dir,
+        &claude_dir,
+    ] {
         std::fs::create_dir_all(dir)?;
     }
     let s = |path: &Path| path.to_string_lossy().to_string();
@@ -348,13 +358,36 @@ pub(super) fn build_probe_child_env(
         ("TMP", s(&temp_dir)),
         ("TEMP", s(&temp_dir)),
         ("TMPDIR", s(&temp_dir)),
-        ("CODEX_HOME", s(&config_dir.join("codex"))),
-        ("CLAUDE_CONFIG_DIR", s(&config_dir.join("claude"))),
-        ("CLAUDE_HOME", s(&config_dir.join("claude"))),
+        ("CODEX_HOME", s(&codex_dir)),
+        ("CLAUDE_CONFIG_DIR", s(&claude_dir)),
+        ("CLAUDE_HOME", s(&claude_dir)),
     ] {
         env.insert(key.to_string(), value);
     }
     env.insert(ACP_AGENT_ENV_FLAG.to_string(), "1".to_string());
+
+    // Codex and Claude capability discovery needs the same authenticated CLI
+    // home as an actual agent run. Generic adapters remain fully isolated.
+    if matches!(
+        profile,
+        AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude
+    ) {
+        // If the host has no explicit CODEX_HOME/CLAUDE_* override, omit the
+        // isolated value so the CLI uses its normal location below HOME.
+        match profile {
+            AcpRuntimeProfile::Codex => {
+                env.remove("CODEX_HOME");
+            }
+            AcpRuntimeProfile::Claude => {
+                env.remove("CLAUDE_CONFIG_DIR");
+                env.remove("CLAUDE_HOME");
+            }
+            AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => {}
+        }
+        for (key, value) in host_cli_auth_env(profile) {
+            env.insert(key, value);
+        }
+    }
 
     let auth_keys = match profile {
         AcpRuntimeProfile::Codex => CODEX_AUTH_KEYS,
@@ -479,8 +512,9 @@ pub fn spawn_acp_child(
     cwd: &Path,
     env: &[(String, String)],
 ) -> io::Result<SpawnedAcpChild> {
-    let mut std_cmd = StdCommand::new(command);
-    std_cmd.args(args).current_dir(cwd).env_clear();
+    let (launch_command, launch_args) = windows_batch_launch_command(command, args);
+    let mut std_cmd = StdCommand::new(launch_command);
+    std_cmd.args(launch_args).current_dir(cwd).env_clear();
     for (key, value) in env {
         std_cmd.env(key, value);
     }
@@ -511,4 +545,87 @@ pub fn spawn_acp_child(
         stdout,
         stderr,
     })
+}
+
+/// Windows npm globally-installed executables are `.cmd` shims. Resolve the
+/// package's JavaScript entrypoint and invoke Node directly so the ACP process
+/// does not rely on Windows batch-file command-line semantics.
+fn windows_batch_launch_command(command: &str, args: &[String]) -> (PathBuf, Vec<String>) {
+    #[cfg(windows)]
+    {
+        if matches!(
+            Path::new(command)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some(extension) if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        ) {
+            if let Some((node, entrypoint)) = npm_cmd_entrypoint(command) {
+                let mut launch_args = vec![entrypoint.to_string_lossy().into_owned()];
+                launch_args.extend(args.iter().cloned());
+                return (node, launch_args);
+            }
+            let comspec = std::env::var_os("COMSPEC")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+            let mut launch_args = vec!["/d".to_string(), "/c".to_string(), "call".to_string()];
+            launch_args.push(command.to_string());
+            launch_args.extend(args.iter().cloned());
+            return (comspec, launch_args);
+        }
+    }
+
+    (PathBuf::from(command), args.to_vec())
+}
+
+#[cfg(windows)]
+fn npm_cmd_entrypoint(command: &str) -> Option<(PathBuf, PathBuf)> {
+    let npm_bin_dir = Path::new(command).parent()?;
+    let package_name = Path::new(command).file_stem()?.to_str()?;
+    let entrypoint = npm_bin_dir
+        .join("node_modules")
+        .join("@agentclientprotocol")
+        .join(package_name)
+        .join("dist")
+        .join("index.js");
+    let node = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|directory| directory.join("node.exe"))
+            .find(|candidate| candidate.is_file())
+    })?;
+    entrypoint.is_file().then_some((node, entrypoint))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::windows_batch_launch_command;
+
+    #[cfg(windows)]
+    #[test]
+    fn wraps_unknown_batch_shims_with_cmd_call() {
+        let (command, args) = windows_batch_launch_command(
+            r"C:\Users\Test\missing.cmd",
+            &["--flag".to_string(), "value with spaces".to_string()],
+        );
+
+        assert!(command.to_string_lossy().ends_with("cmd.exe"));
+        assert_eq!(
+            args,
+            vec![
+                "/d",
+                "/c",
+                "call",
+                r"C:\Users\Test\missing.cmd",
+                "--flag",
+                "value with spaces",
+            ]
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn leaves_regular_commands_unchanged() {
+        let (command, args) = windows_batch_launch_command("codex-acp", &["--flag".to_string()]);
+        assert_eq!(command.to_string_lossy(), "codex-acp");
+        assert_eq!(args, vec!["--flag"]);
+    }
 }

@@ -388,13 +388,13 @@ function AgentBlockView({
   }
 
   return (
-    <div className="flex w-full gap-3 px-4 py-1.5">
+    <div className="flex min-w-0 w-full gap-2 px-3 py-1.5">
       <AgentAvatar
         name={block.displayName}
         className="mt-0.5"
         contextUsage={block.contextUsage ?? fallbackUsage}
       />
-      <div className="flex min-w-0 max-w-[88%] flex-col gap-1 md:max-w-[82%]">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{block.displayName}</span>
           {streaming ? (
@@ -432,9 +432,9 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
     return (
-      <div className="flex w-full gap-3 px-4 py-2.5">
+      <div className="flex min-w-0 w-full gap-2 px-3 py-2.5">
         <AgentAvatar name="Assistant" className="mt-0.5" />
-        <div className="flex min-w-0 max-w-[88%] flex-col gap-1.5 md:max-w-[82%]">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">Assistant</span>
             <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">

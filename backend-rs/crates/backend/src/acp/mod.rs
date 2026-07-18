@@ -45,8 +45,9 @@ pub use capabilities::{
     probe_acp_runtime_capabilities, AcpCapabilityChoice, AcpCapabilityError, AcpRuntimeCapabilities,
 };
 pub use config::{
-    normalize_acp_runtime, AcpConfigError, AcpConfigValue, AcpRuntimeConfig, AcpRuntimeProfile,
-    PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS,
+    canonicalize_codex_acp_runtime, normalize_acp_runtime, AcpConfigError, AcpConfigValue,
+    AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy, BLOCKED_ENV_KEYS,
+    DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS,
 };
 pub use process::{
     build_child_env, spawn_acp_child, AcpAuditError, AcpRunAudit, AcpRunContext, SpawnedAcpChild,

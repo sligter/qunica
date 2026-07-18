@@ -4,24 +4,31 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path as FsPath, PathBuf};
+use std::process::Command as StdCommand;
+use std::time::Duration;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::acp::{
-    normalize_acp_runtime, probe_acp_runtime_capabilities, AcpCapabilityError,
-    AcpRuntimeCapabilities, PermissionPolicy,
+    canonicalize_codex_acp_runtime, normalize_acp_runtime, probe_acp_runtime_capabilities,
+    AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities, AcpRuntimeConfig, PermissionPolicy,
 };
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::process::tokio_command_no_window;
 
 const RUNTIME_LLM_CHAT: &str = "llm_chat";
 const RUNTIME_ACP: &str = "acp";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful AI agent.";
+const ACP_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+const ACP_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+const ACP_OUTPUT_LIMIT: usize = 8 * 1024;
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, name, description, system_prompt, \
      runtime_kind, provider_id, model_config_json, tool_config_json, external_runtime_json, \
@@ -142,6 +149,34 @@ struct AcpRuntimeChoiceResponse {
     description: Option<&'static str>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AcpRuntimeVersionListResponse {
+    presets: Vec<AcpRuntimeVersionResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct AcpRuntimeVersionResponse {
+    id: &'static str,
+    package_name: &'static str,
+    installed: bool,
+    local_version: Option<String>,
+    latest_version: Option<String>,
+    status: &'static str,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcpRuntimeInstallRequest {
+    #[serde(default)]
+    package_spec: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AcpRuntimeInstallResponse {
+    preset: AcpRuntimeVersionResponse,
+    output: String,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct AgentRow {
     id: String,
@@ -174,7 +209,7 @@ impl From<AgentRow> for AgentResponse {
             llm_config: parse_json(row.model_config_json.as_deref()),
             tool_config: parse_json(row.tool_config_json.as_deref()),
             runtime_kind: row.runtime_kind,
-            acp_runtime: parse_json(row.external_runtime_json.as_deref()),
+            acp_runtime: canonicalized_acp_runtime_json(row.external_runtime_json.as_deref()),
             workspace_id: row.workspace_id,
             llm_provider_id: row.provider_id,
             skill_ids,
@@ -196,6 +231,56 @@ pub async fn acp_runtime_presets() -> Json<AcpRuntimePresetListResponse> {
     })
 }
 
+pub async fn acp_runtime_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AcpRuntimeVersionListResponse>, ApiError> {
+    let _owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let mut presets = Vec::new();
+    for preset in ACP_RUNTIME_VERSION_PRESETS {
+        presets.push(runtime_version_status(preset).await);
+    }
+    Ok(Json(AcpRuntimeVersionListResponse { presets }))
+}
+
+pub async fn install_acp_runtime_version(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(preset_id): Path<String>,
+    Json(body): Json<AcpRuntimeInstallRequest>,
+) -> Result<Json<AcpRuntimeInstallResponse>, ApiError> {
+    let _owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let preset = acp_runtime_version_preset(&preset_id)
+        .ok_or_else(|| ApiError::not_found("ACP runtime preset not found"))?;
+    let package_spec = resolve_install_package_spec(preset, body.package_spec.as_deref())?;
+
+    let npm = npm_command().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "acp_runtime_install_failed",
+            "Unable to find npm. Ensure npm is installed and on PATH.",
+        )
+    })?;
+    let output = run_command(
+        &npm,
+        &["install", "--global", &package_spec],
+        ACP_INSTALL_TIMEOUT,
+    )
+    .await
+    .map_err(|message| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "acp_runtime_install_failed",
+            message,
+        )
+    })?;
+
+    Ok(Json(AcpRuntimeInstallResponse {
+        preset: runtime_version_status(preset).await,
+        output,
+    }))
+}
+
 pub async fn acp_runtime_capabilities(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -212,19 +297,30 @@ pub async fn acp_runtime_capabilities(
             ));
         }
     };
+    canonicalize_codex_acp_runtime(&mut config);
     let selected_model = config.model.take();
     config.permission_policy = PermissionPolicy::Deny;
 
     match probe_acp_runtime_capabilities(config, selected_model).await {
         Ok(capabilities) => Ok((StatusCode::OK, Json(capabilities))),
-        Err(error @ AcpCapabilityError::Spawn { .. }) => Ok((
-            StatusCode::BAD_REQUEST,
-            Json(AcpRuntimeCapabilities::warning(error.to_string())),
-        )),
-        Err(error @ AcpCapabilityError::Protocol { .. }) => Ok((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(AcpRuntimeCapabilities::warning(error.to_string())),
-        )),
+        Err(AcpCapabilityError::Spawn { source }) => {
+            tracing::warn!(error = %source, "ACP capability probe failed to spawn runtime");
+            Ok((
+                StatusCode::BAD_REQUEST,
+                Json(AcpRuntimeCapabilities::warning(
+                    "Unable to start the configured ACP runtime.",
+                )),
+            ))
+        }
+        Err(AcpCapabilityError::Protocol { source }) => {
+            tracing::warn!(error = %source, "ACP capability probe rejected by runtime");
+            Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(AcpRuntimeCapabilities::warning(
+                    "The configured ACP runtime rejected capability discovery.",
+                )),
+            ))
+        }
         Err(error @ AcpCapabilityError::Timeout) => Ok((
             StatusCode::GATEWAY_TIMEOUT,
             Json(AcpRuntimeCapabilities::warning(error.to_string())),
@@ -258,7 +354,10 @@ pub async fn create(
     // Runtime-specific binding: ACP agents store their runtime blob and never a
     // provider; LLM chat agents store an optional provider and never a runtime.
     let (provider_id, external_runtime_json) = if runtime_kind == RUNTIME_ACP {
-        (None, json_to_db_string(body.acp_runtime.as_ref()))
+        (
+            None,
+            canonicalized_acp_runtime_db_json(body.acp_runtime.as_ref())?,
+        )
     } else {
         let provider = match body.llm_provider_id.as_deref() {
             Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
@@ -380,7 +479,7 @@ pub async fn update(
     // The effective runtime kind decides which of provider/runtime survives.
     let (provider_id, external_runtime_json) = if runtime_kind == RUNTIME_ACP {
         let runtime = match body.acp_runtime {
-            Some(ref value) => json_to_db_string(value.as_ref()),
+            Some(ref value) => canonicalized_acp_runtime_db_json(value.as_ref())?,
             None => existing.external_runtime_json.clone(),
         };
         (None, runtime)
@@ -605,6 +704,52 @@ fn parse_json(raw: Option<&str>) -> Option<Value> {
     raw.and_then(|r| serde_json::from_str::<Value>(r).ok())
 }
 
+fn canonicalized_acp_runtime_db_json(raw: Option<&Value>) -> Result<Option<String>, ApiError> {
+    match raw {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => {
+            let mut config = normalize_acp_runtime(Some(raw))
+                .map_err(|error| ApiError::invalid_input(error.to_string()))?;
+            canonicalize_codex_acp_runtime(&mut config);
+            Ok(serde_json::to_string(&acp_runtime_config_value(config)).ok())
+        }
+    }
+}
+
+fn canonicalized_acp_runtime_json(raw: Option<&str>) -> Option<Value> {
+    let raw = parse_json(raw)?;
+    let mut config = normalize_acp_runtime(Some(&raw)).ok()?;
+    canonicalize_codex_acp_runtime(&mut config);
+    Some(acp_runtime_config_value(config))
+}
+
+fn acp_runtime_config_value(config: AcpRuntimeConfig) -> Value {
+    let config_options = config.config_options.map(|options| {
+        options
+            .into_iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    AcpConfigValue::Str(value) => Value::String(value),
+                    AcpConfigValue::Bool(value) => Value::Bool(value),
+                };
+                (key, value)
+            })
+            .collect::<serde_json::Map<_, _>>()
+    });
+    json!({
+        "profile": config.profile.as_str(),
+        "command": config.command,
+        "args": config.args,
+        "env": config.env,
+        "timeout_seconds": config.timeout_seconds,
+        "permission_policy": config.permission_policy.as_str(),
+        "model": config.model,
+        "mode": config.mode,
+        "thinking_effort": config.thinking_effort,
+        "config_options": config_options,
+    })
+}
+
 fn builtin_tools() -> Vec<BuiltinToolResponse> {
     vec![
         tool(
@@ -735,6 +880,7 @@ fn tool(
 
 fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
     let npx = fallback_npx_command();
+    let codex_acp = command_or_name("codex-acp");
     let pi_acp = command_or_name("pi-acp");
     let opencode = command_or_name("opencode");
 
@@ -742,11 +888,19 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
         AcpRuntimePresetResponse {
             id: "codex",
             name: "Codex",
-            description: "Codex CLI through the Zed Codex ACP adapter.",
+            description: "Codex CLI through the Agent Client Protocol Codex adapter.",
             profile: "codex",
-            installed: npx.installed,
-            command: Some(npx.command.clone()),
-            args: vec!["@zed-industries/codex-acp"],
+            installed: codex_acp.installed,
+            command: Some(if codex_acp.installed {
+                codex_acp.command.clone()
+            } else {
+                npx.command.clone()
+            }),
+            args: if codex_acp.installed {
+                Vec::new()
+            } else {
+                vec!["-y", "@agentclientprotocol/codex-acp"]
+            },
             env: BTreeMap::new(),
             timeout_seconds: 3600,
             permission_policy: "deny",
@@ -761,13 +915,13 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
                     Some("Read files in the current workspace; ask before edits or internet."),
                 ),
                 choice(
-                    "auto",
-                    "Default",
+                    "agent",
+                    "Agent",
                     Some("Read and edit workspace files; ask for internet or external edits."),
                 ),
                 choice(
-                    "full-access",
-                    "Full Access",
+                    "agent-full-access",
+                    "Agent Full Access",
                     Some("Edit outside the workspace and access the internet without asking."),
                 ),
             ],
@@ -779,7 +933,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
                 choice("high", "High", None),
                 choice("xhigh", "XHigh", None),
             ],
-            install_hint: "Install @zed-industries/codex-acp so codex-acp is on PATH, or keep the npx fallback command.",
+            install_hint: "Install @agentclientprotocol/codex-acp so codex-acp is on PATH, or keep the npx fallback command.",
             source: Some("fallback"),
         },
         AcpRuntimePresetResponse {
@@ -867,6 +1021,195 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             source: Some("fallback"),
         },
     ]
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AcpRuntimeVersionPreset {
+    id: &'static str,
+    package_name: &'static str,
+}
+
+const ACP_RUNTIME_VERSION_PRESETS: [AcpRuntimeVersionPreset; 4] = [
+    AcpRuntimeVersionPreset {
+        id: "codex",
+        package_name: "@agentclientprotocol/codex-acp",
+    },
+    AcpRuntimeVersionPreset {
+        id: "claude",
+        package_name: "@agentclientprotocol/claude-agent-acp",
+    },
+    AcpRuntimeVersionPreset {
+        id: "pi",
+        package_name: "pi-acp",
+    },
+    AcpRuntimeVersionPreset {
+        id: "opencode",
+        package_name: "opencode-ai",
+    },
+];
+
+fn acp_runtime_version_preset(id: &str) -> Option<AcpRuntimeVersionPreset> {
+    ACP_RUNTIME_VERSION_PRESETS
+        .into_iter()
+        .find(|preset| preset.id == id)
+}
+
+async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVersionResponse {
+    let local_version = local_npm_package_version(preset.package_name).await;
+    let latest_version = npm_latest_package_version(preset.package_name).await;
+    let installed = local_version.is_some();
+    let status = match (local_version.as_deref(), latest_version.as_deref()) {
+        (None, _) => "not_installed",
+        (Some(local), Some(latest)) if local == latest => "current",
+        (Some(_), Some(_)) => "update_available",
+        (Some(_), None) => "local_only",
+    };
+    let message = if !installed {
+        Some("Not installed locally.".to_string())
+    } else if latest_version.is_none() {
+        Some("Unable to check the npm registry.".to_string())
+    } else {
+        None
+    };
+
+    AcpRuntimeVersionResponse {
+        id: preset.id,
+        package_name: preset.package_name,
+        installed,
+        local_version,
+        latest_version,
+        status,
+        message,
+    }
+}
+
+async fn local_npm_package_version(package_name: &str) -> Option<String> {
+    let npm = npm_command()?;
+    let output = run_command(
+        &npm,
+        &["list", "--global", package_name, "--depth=0", "--json"],
+        ACP_VERSION_TIMEOUT,
+    )
+    .await
+    .ok()?;
+    let value: Value = serde_json::from_str(&output).ok()?;
+    value
+        .get("dependencies")?
+        .get(package_name)?
+        .get("version")?
+        .as_str()
+        .map(str::to_string)
+}
+
+async fn npm_latest_package_version(package_name: &str) -> Option<String> {
+    let encoded = package_name.replace('/', "%2F");
+    let url = format!("https://registry.npmjs.org/{encoded}");
+    let client = reqwest::Client::builder()
+        .timeout(ACP_VERSION_TIMEOUT)
+        .build()
+        .ok()?;
+    let value: Value = client
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    value
+        .get("dist-tags")?
+        .get("latest")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn resolve_install_package_spec(
+    preset: AcpRuntimeVersionPreset,
+    requested: Option<&str>,
+) -> Result<String, ApiError> {
+    let package_spec = requested.unwrap_or(preset.package_name).trim();
+    if package_spec.is_empty()
+        || package_spec.len() > 200
+        || package_spec.chars().any(char::is_whitespace)
+        || !is_package_spec_for(package_spec, preset.package_name)
+    {
+        return Err(ApiError::invalid_input(
+            "custom installation must be a version or dist-tag for the selected ACP package",
+        ));
+    }
+    Ok(package_spec.to_string())
+}
+
+fn is_package_spec_for(package_spec: &str, package_name: &str) -> bool {
+    package_spec == package_name
+        || package_spec
+            .strip_prefix(package_name)
+            .is_some_and(|suffix| suffix.starts_with('@') && suffix.len() > 1)
+}
+
+async fn run_command(
+    command: &str,
+    args: &[&str],
+    command_timeout: Duration,
+) -> Result<String, String> {
+    let (command, args) = windows_batch_command(command, args);
+    let mut standard = StdCommand::new(command);
+    standard.args(args);
+    let mut child = tokio_command_no_window(standard);
+    child.kill_on_drop(true);
+    let child = child.output();
+    let output = timeout(command_timeout, child)
+        .await
+        .map_err(|_| "The command timed out.".to_string())?
+        .map_err(|_| "Unable to start npm. Ensure npm is installed and on PATH.".to_string())?;
+    let mut combined = output.stdout;
+    combined.extend(output.stderr);
+    let text = String::from_utf8_lossy(&combined);
+    let text = truncate_command_output(&text);
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(if text.is_empty() {
+            "npm could not complete the operation.".to_string()
+        } else {
+            text
+        })
+    }
+}
+
+fn npm_command() -> Option<String> {
+    find_command_on_path("npm").map(|path| path.to_string_lossy().into_owned())
+}
+
+fn windows_batch_command<'a>(command: &'a str, args: &'a [&'a str]) -> (PathBuf, Vec<&'a str>) {
+    #[cfg(windows)]
+    {
+        if matches!(
+            FsPath::new(command)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some(extension) if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        ) {
+            let comspec = env::var_os("COMSPEC")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+            let mut launch_args = vec!["/d", "/s", "/c", "call", command];
+            launch_args.extend_from_slice(args);
+            return (comspec, launch_args);
+        }
+    }
+
+    (PathBuf::from(command), args.to_vec())
+}
+
+fn truncate_command_output(value: &str) -> String {
+    if value.len() <= ACP_OUTPUT_LIMIT {
+        return value.trim().to_string();
+    }
+    let start = value.len() - ACP_OUTPUT_LIMIT;
+    format!("...{}", value[start..].trim())
 }
 
 #[derive(Debug, Clone)]
@@ -1017,6 +1360,22 @@ where
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn custom_install_package_specs_are_scoped_to_the_selected_preset() {
+        let codex = acp_runtime_version_preset("codex").unwrap();
+
+        assert_eq!(
+            resolve_install_package_spec(codex, Some("@agentclientprotocol/codex-acp@next"))
+                .unwrap(),
+            "@agentclientprotocol/codex-acp@next"
+        );
+        assert!(resolve_install_package_spec(codex, Some("pi-acp@latest")).is_err());
+        assert!(
+            resolve_install_package_spec(codex, Some("@agentclientprotocol/codex-acp @next"))
+                .is_err()
+        );
+    }
 
     #[test]
     #[cfg(windows)]

@@ -31,7 +31,7 @@ export function DetailShell({
   children,
 }: DetailShellProps) {
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-y-auto bg-background">
       <header className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-4 border-b border-border bg-background/95 px-8 py-4 backdrop-blur">
         <div className="flex min-w-0 items-center gap-3">
           {leading}

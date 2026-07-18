@@ -55,17 +55,17 @@ const mocks = vi.hoisted(() => ({
       profile: 'codex',
       installed: false,
       command: 'npx',
-      args: ['codex-acp'],
+      args: ['-y', '@agentclientprotocol/codex-acp'],
       env: { ACP_MODE: 'test' },
       timeout_seconds: 3600,
       permission_policy: 'deny',
       default_model: 'gpt-preset',
-      default_mode: 'read-only',
+      default_mode: 'agent',
       default_thinking_effort: 'xhigh',
       model_options: [],
-      mode_options: [{ value: 'read-only', label: 'Read only' }],
+      mode_options: [{ value: 'agent', label: 'Agent' }],
       thinking_effort_options: [{ value: 'xhigh', label: 'XHigh' }],
-      install_hint: 'Install codex-acp.',
+      install_hint: 'Install @agentclientprotocol/codex-acp.',
       source: 'fallback',
     },
   ],
@@ -255,7 +255,7 @@ describe('agent runtime capabilities', () => {
 
   it('commits preset runtime settings and keeps preset choices as category fallbacks', async () => {
     const user = userEvent.setup()
-    const view = renderForm(<CreateAgentForm />)
+    renderForm(<CreateAgentForm />)
 
     await user.click(screen.getByRole('button', { name: /^ACPAgent Client Protocol process$/ }))
     await user.click(screen.getByRole('button', { name: /CodexUses fallback command/ }))
@@ -264,17 +264,14 @@ describe('agent runtime capabilities', () => {
     expect(lastCapabilityInput()).toEqual({
       profile: 'codex',
       command: 'npx',
-      args: ['codex-acp'],
+      args: ['-y', '@agentclientprotocol/codex-acp'],
       env: { ACP_MODE: 'test' },
       permission_policy: 'deny',
       selected_model: 'gpt-preset',
     })
     expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('gpt-preset')
-    expect(
-      view.container.querySelector(
-        '#acp-thinking-available-values option[value="xhigh"]',
-      ),
-    ).toHaveAttribute('label', 'XHigh')
+    await user.click(screen.getByRole('button', { name: 'Show thinking options' }))
+    expect(screen.getByRole('option', { name: /xhigh/i })).toHaveTextContent('XHigh')
 
     const mode = screen.getByRole('combobox', { name: 'Mode' })
     await user.clear(mode)
@@ -284,7 +281,7 @@ describe('agent runtime capabilities', () => {
 
   it('loads provider suggestions without replacing or rejecting a custom model override', async () => {
     const user = userEvent.setup()
-    const view = renderForm(
+    renderForm(
       <EditAgentForm
         agent={agent({
           runtime_kind: 'llm_chat',
@@ -297,9 +294,10 @@ describe('agent runtime capabilities', () => {
     expect(mocks.providerModelHook).toHaveBeenCalledWith('provider-1')
     const model = screen.getByRole('combobox', { name: 'Model' })
     expect(model).toHaveValue('saved-provider-custom')
-    expect(
-      view.container.querySelector('#ea-model-available-values option[value="provider-live"]'),
-    ).toHaveAttribute('label', 'Provider Live')
+    await user.click(screen.getByRole('button', { name: 'Show model options' }))
+    expect(screen.getByRole('option', { name: /provider-live/i })).toHaveTextContent(
+      'Provider Live',
+    )
 
     await user.clear(model)
     await user.type(model, 'private-provider-model')

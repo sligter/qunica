@@ -67,7 +67,7 @@ describe('MessageList scheduler summary integration', () => {
     const scrollRoot = container.firstElementChild
     const messageColumn = scrollRoot?.firstElementChild
     expect(scrollRoot).toHaveClass('min-w-0', 'overflow-x-hidden', 'overflow-y-auto')
-    expect(messageColumn).toHaveClass('min-w-0', 'w-full', 'max-w-3xl')
+    expect(messageColumn).toHaveClass('min-w-0', 'w-full', 'max-w-6xl')
   })
 
   it('anchors a persisted turn summary below its trigger message', async () => {

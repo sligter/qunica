@@ -64,18 +64,17 @@ function ProgrammaticValueField({ onCommit }: { onCommit: (value: string) => voi
 describe('RuntimeCapabilityField', () => {
   afterEach(cleanup)
 
-  it('keeps arbitrary values editable and exposes suggestions through a stable datalist', async () => {
+  it('keeps arbitrary values editable and exposes a styled suggestion list', async () => {
     const user = userEvent.setup()
     const onCommit = vi.fn()
-    const view = render(<EditableField onCommit={onCommit} />)
+    render(<EditableField onCommit={onCommit} />)
     const input = screen.getByRole('combobox', { name: 'Model' })
 
     expect(input).toHaveValue('saved-custom')
-    const listId = input.getAttribute('list')
-    expect(listId).toBe('runtime-model-available-values')
-    expect(view.container.querySelector(`#${listId} option[value="gpt-live"]`)).toHaveAttribute(
-      'label',
-      'GPT Live',
+    await user.click(input)
+    expect(screen.getByRole('listbox', { name: 'Model options' })).toHaveClass('bg-card')
+    expect(screen.getByRole('option', { name: /GPT Live/i })).toHaveTextContent(
+      'Discovered at runtime',
     )
 
     await user.clear(input)
@@ -86,6 +85,41 @@ describe('RuntimeCapabilityField', () => {
     await user.tab()
     expect(onCommit).toHaveBeenCalledOnce()
     expect(onCommit).toHaveBeenCalledWith('my-private-model')
+  })
+
+  it('selects a filtered option through click and keyboard navigation', async () => {
+    const user = userEvent.setup()
+    const onCommit = vi.fn()
+    render(<EditableField onCommit={onCommit} />)
+    const input = screen.getByRole('combobox', { name: 'Model' })
+
+    await user.click(input)
+    await user.clear(input)
+    await user.type(input, 'fast')
+    await user.click(screen.getByRole('option', { name: /GPT Fast/i }))
+    expect(input).toHaveValue('gpt-fast')
+    expect(onCommit).toHaveBeenCalledWith('gpt-fast')
+
+    await user.click(input)
+    await user.clear(input)
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(input).toHaveValue('gpt-live')
+  })
+
+  it('closes the suggestion list when the user clicks outside the field', async () => {
+    const user = userEvent.setup()
+    render(
+      <>
+        <EditableField />
+        <button type="button">Other control</button>
+      </>,
+    )
+
+    await user.click(screen.getByRole('combobox', { name: 'Model' }))
+    expect(screen.getByRole('listbox', { name: 'Model options' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Other control' }))
+    expect(screen.queryByRole('listbox', { name: 'Model options' })).not.toBeInTheDocument()
   })
 
   it('commits an exact suggestion without probing on each partial keystroke', () => {

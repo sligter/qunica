@@ -198,7 +198,7 @@ export function SystemPromptMentionTextarea({
         return
       }
 
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      if (event.key === 'Enter' || event.key === 'Tab' || event.key === ' ') {
         event.preventDefault()
         handleSelectSuggestion(suggestions[activeIndex])
         return

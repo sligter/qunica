@@ -204,7 +204,9 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     <div className="w-full space-y-10">
       <SettingsSection
         title="Basic information"
-        aside={
+        description="Identity, shared context, and working location for this group."
+        className="max-w-4xl"
+        aside={<div className="flex items-center gap-2"><span className="hidden text-xs text-muted-foreground sm:inline">{basicsDirty ? 'Unsaved changes' : 'All changes saved'}</span>
           <Button
             size="sm"
             onClick={() => void onSaveBasics()}
@@ -212,14 +214,14 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           >
             {update.isPending ? 'Saving…' : 'Save'}
           </Button>
-        }
+        </div>}
       >
-        <SettingsRow label="Group name" htmlFor="gs-name" stacked>
+        <SettingsRow label="Group name" htmlFor="gs-name" stacked className="py-5">
           <Input
             id="gs-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="max-w-xl"
+            className="max-w-2xl"
           />
         </SettingsRow>
 
@@ -228,13 +230,14 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           description="Shown to agents as shared group context."
           htmlFor="gs-announce"
           stacked
+          className="py-5"
         >
           <Textarea
             id="gs-announce"
-            rows={2}
+            rows={5}
             value={announcement}
             onChange={(e) => setAnnouncement(e.target.value)}
-            className="max-w-xl"
+            className="max-w-4xl resize-y"
           />
         </SettingsRow>
 
@@ -242,9 +245,11 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           label="Workspace"
           description="Group files live in this workspace. Choose another existing workspace or create a local workspace to move future group file operations to that folder."
           stacked
+          className="py-5"
         >
-          <div className="max-w-xl">
+          <div className="max-w-3xl">
             <WorkspaceField
+              variant="compact"
               value={selectedWorkspaceId}
               onChange={(workspaceId) => {
                 if (workspaceId) setSelectedWorkspaceId(workspaceId)

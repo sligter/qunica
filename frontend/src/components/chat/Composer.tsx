@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, Paperclip, Square } from 'lucide-react'
+import { ArrowUp, ChevronDown, Paperclip, Square } from 'lucide-react'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
 import { Button } from '@/components/ui/button'
@@ -41,6 +41,7 @@ export function Composer({
   const [mentionQuery, setMentionQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
   const [mentionStart, setMentionStart] = useState(-1)
+  const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const uploadWorkspaceFiles = useUploadGroupWorkspaceFiles(groupId)
@@ -192,7 +193,7 @@ export function Composer({
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-1">
-      <div className="mx-auto w-full max-w-3xl">
+      <div className="mx-auto w-full max-w-6xl">
         {uploadError && (
           <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {uploadError}
@@ -247,7 +248,48 @@ export function Composer({
             >
               <Paperclip className="h-4 w-4" />
             </Button>
-            {hint ? (
+            {groupAgents.length > 0 ? (
+              <div className="relative min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1 px-1 text-[11px] text-muted-foreground">
+                  {groupAgents.slice(0, 3).map((agent) => (
+                    <span key={agent.id} className="truncate whitespace-nowrap">
+                      @{agent.display_name}
+                    </span>
+                  ))}
+                  {groupAgents.length > 3 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 shrink-0 gap-0.5 px-1 text-[11px]"
+                      onClick={() => setAgentSummaryOpen((open) => !open)}
+                      aria-expanded={agentSummaryOpen}
+                      aria-label={`Show ${groupAgents.length - 3} more agents`}
+                    >
+                      +{groupAgents.length - 3}
+                      <ChevronDown className="h-3 w-3" />
+                    </Button>
+                  ) : null}
+                </div>
+                {agentSummaryOpen ? (
+                  <>
+                    <button
+                      type="button"
+                      className="fixed inset-0 z-40 cursor-default"
+                      aria-label="Close agent list"
+                      onClick={() => setAgentSummaryOpen(false)}
+                    />
+                    <div className="absolute bottom-full left-0 z-50 mb-2 max-h-48 w-64 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md">
+                      {groupAgents.map((agent) => (
+                        <div key={agent.id} className="truncate px-2 py-1.5 text-xs text-foreground">
+                          @{agent.display_name}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            ) : hint ? (
               <p className="min-w-0 flex-1 truncate px-1 text-[11px] text-muted-foreground">
                 {hint}
               </p>

@@ -1,8 +1,19 @@
-import { CircleAlert, Terminal } from 'lucide-react'
+import { useState } from 'react'
+import {
+  CircleAlert,
+  CircleCheck,
+  Download,
+  LoaderCircle,
+  PackagePlus,
+  Terminal,
+  TriangleAlert,
+} from 'lucide-react'
 
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useAcpRuntimeVersions, useInstallAcpRuntimeVersion } from '@/hooks/useAcpRuntimeVersions'
 import type {
   AcpPermissionPolicy,
   AcpRuntimeChoice,
@@ -71,6 +82,10 @@ export function ExternalRuntimeFields({
   onThinkingEffortChange,
   onRefreshCapabilities,
 }: ExternalRuntimeFieldsProps) {
+  const [packageSpec, setPackageSpec] = useState('')
+  const [installError, setInstallError] = useState<string | null>(null)
+  const runtimeVersions = useAcpRuntimeVersions()
+  const installRuntime = useInstallAcpRuntimeVersion()
   const selectedPreset =
     selectedProfile === 'custom'
       ? null
@@ -89,6 +104,9 @@ export function ExternalRuntimeFields({
     discoveredThinkingOptions.length > 0
       ? discoveredThinkingOptions
       : (selectedPreset?.thinking_effort_options ?? [])
+  const versionStatus = selectedPreset
+    ? runtimeVersions.data?.presets.find((status) => status.id === selectedPreset.id) ?? null
+    : null
 
   const handlePresetChange = (value: string) => {
     if (value === 'custom') {
@@ -98,6 +116,20 @@ export function ExternalRuntimeFields({
     const preset = presets.find((item) => item.profile === value)
     if (preset) {
       onPresetSelect(preset)
+    }
+  }
+
+  const install = async (custom = false) => {
+    if (!selectedPreset) return
+    setInstallError(null)
+    try {
+      await installRuntime.mutateAsync({
+        presetId: selectedPreset.id,
+        packageSpec: custom ? packageSpec.trim() : undefined,
+      })
+      setPackageSpec('')
+    } catch (error) {
+      setInstallError(error instanceof Error ? error.message : 'Installation failed.')
     }
   }
 
@@ -178,6 +210,71 @@ export function ExternalRuntimeFields({
             </p>
           ))}
         </div>
+      )}
+
+      {selectedPreset && (
+        <details className="rounded-md border border-border bg-background" open>
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium marker:content-none">
+            <span>Version status</span>
+            {runtimeVersions.isFetching ? (
+              <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : versionStatus?.status === 'current' ? (
+              <CircleCheck className="h-4 w-4 text-success" />
+            ) : (
+              <TriangleAlert className="h-4 w-4 text-warning-foreground" />
+            )}
+          </summary>
+          <div className="space-y-3 border-t border-border px-3 py-3">
+            {runtimeVersions.isError ? (
+              <p className="text-xs text-warning-foreground">Unable to check runtime versions.</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Local: {versionStatus?.local_version ?? 'Not installed'}
+                {' · '}
+                Remote: {versionStatus?.latest_version ?? 'Unavailable'}
+              </p>
+            )}
+            {versionStatus?.message && (
+              <p className="text-xs text-warning-foreground">{versionStatus.message}</p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void install()}
+                disabled={installRuntime.isPending}
+              >
+                {installRuntime.isPending ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                {versionStatus?.installed ? 'Update' : 'Install'}
+              </Button>
+              <span className="text-xs text-muted-foreground">{versionStatus?.package_name}</span>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                aria-label="Custom package version"
+                value={packageSpec}
+                onChange={(event) => setPackageSpec(event.target.value)}
+                placeholder={`${versionStatus?.package_name ?? selectedPreset.name}@latest`}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => void install(true)}
+                disabled={installRuntime.isPending || packageSpec.trim() === ''}
+              >
+                <PackagePlus className="h-3.5 w-3.5" />
+                Custom install
+              </Button>
+            </div>
+            {installError && <p className="text-xs text-destructive">{installError}</p>}
+          </div>
+        </details>
       )}
 
       <div className="grid gap-3 sm:grid-cols-3">

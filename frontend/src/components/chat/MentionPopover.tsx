@@ -40,8 +40,12 @@ export function MentionPopover({
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
         setActiveIndex((i) => (i - 1 + filtered.length) % Math.max(filtered.length, 1))
-      } else if (e.key === 'Enter' && filtered[activeIndex]) {
+      } else if (
+        (e.key === 'Enter' || e.key === 'Tab' || e.key === ' ') &&
+        filtered[activeIndex]
+      ) {
         e.preventDefault()
+        e.stopPropagation()
         onSelect(filtered[activeIndex])
       } else if (e.key === 'Escape') {
         e.preventDefault()

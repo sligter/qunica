@@ -163,7 +163,7 @@ export function MessageList({
       className="relative flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto py-4"
       onScroll={updateNearBottom}
     >
-      <div className="mx-auto flex min-w-0 w-full max-w-3xl flex-1 flex-col">
+      <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
         {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
           <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
             No messages yet. Try sending <code>@AgentName hello</code> to start.
@@ -211,7 +211,7 @@ export function MessageList({
         {latestWarning && Object.keys(streamRuns).length === 0 && (
           <div className="mt-2 px-4">
             {warningInputRequest ? (
-              <div className="mx-auto max-w-2xl">
+              <div className="mx-auto w-full max-w-5xl">
                 <HumanInputRequestForm
                   request={warningInputRequest}
                   onSubmitResponse={onSubmitHumanInput}

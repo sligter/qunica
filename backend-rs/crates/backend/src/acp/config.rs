@@ -7,6 +7,9 @@
 //! for the Rust ACP runtime.
 
 use std::collections::BTreeMap;
+use std::env;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -149,7 +152,7 @@ pub fn normalize_acp_runtime(raw: Option<&Value>) -> Result<AcpRuntimeConfig, Ac
 
     let command = normalize_required_text(map.get("command"), "ACP runtime command")?;
     let profile = normalize_profile(map.get("profile"))?;
-    let args = normalize_args(map.get("args"))?;
+    let mut args = normalize_args(map.get("args"))?;
     let env = normalize_env(map.get("env"))?;
     let timeout_seconds = normalize_timeout(map.get("timeout_seconds"))?;
     let permission_policy = normalize_permission_policy(map.get("permission_policy"))?;
@@ -158,6 +161,9 @@ pub fn normalize_acp_runtime(raw: Option<&Value>) -> Result<AcpRuntimeConfig, Ac
     let mode = normalize_optional_text(map.get("mode"), "ACP runtime mode")?;
     let thinking_effort =
         normalize_optional_text(map.get("thinking_effort"), "ACP runtime thinking_effort")?;
+
+    let mut command = command;
+    migrate_legacy_codex_acp_command(profile, &mut command, &mut args);
 
     Ok(AcpRuntimeConfig {
         command,
@@ -171,6 +177,140 @@ pub fn normalize_acp_runtime(raw: Option<&Value>) -> Result<AcpRuntimeConfig, Ac
         thinking_effort,
         config_options,
     })
+}
+
+/// Resolve the installed Codex ACP executable for legacy `npx` configurations.
+///
+/// Older saved Codex agents launch `npx @agentclientprotocol/codex-acp`. That
+/// command is unsuitable for the isolated capability probe because package
+/// resolution can exceed the probe deadline. Prefer the already-installed
+/// executable whenever it is available on the host PATH.
+pub fn canonicalize_codex_acp_runtime(config: &mut AcpRuntimeConfig) {
+    let command = find_command_on_path("codex-acp").map(|path| path.to_string_lossy().into_owned());
+    canonicalize_codex_acp_runtime_with_command(config, command.as_deref());
+}
+
+fn canonicalize_codex_acp_runtime_with_command(
+    config: &mut AcpRuntimeConfig,
+    installed_command: Option<&str>,
+) {
+    if config.profile != AcpRuntimeProfile::Codex || !is_codex_acp_config(config) {
+        return;
+    }
+
+    if is_codex_acp_npx_config(config) {
+        if let Some(command) = installed_command {
+            config.command = command.to_string();
+            config.args.clear();
+        }
+    }
+
+    config.mode = match config.mode.as_deref() {
+        Some("auto") => Some("agent".to_string()),
+        Some("full-access") => Some("agent-full-access".to_string()),
+        _ => config.mode.take(),
+    };
+}
+
+fn is_codex_acp_config(config: &AcpRuntimeConfig) -> bool {
+    is_codex_acp_npx_config(config)
+        || Path::new(&config.command)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("codex-acp"))
+}
+
+fn is_codex_acp_npx_config(config: &AcpRuntimeConfig) -> bool {
+    let command_name = Path::new(&config.command)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&config.command);
+    command_name.eq_ignore_ascii_case("npx")
+        && config
+            .args
+            .iter()
+            .any(|arg| arg == "@agentclientprotocol/codex-acp")
+}
+
+fn find_command_on_path(command: &str) -> Option<PathBuf> {
+    let path_env = env::var_os("PATH")?;
+    let candidates = command_candidates(command, env::var_os("PATHEXT"));
+    env::split_paths(&path_env)
+        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
+        .find(|path| is_executable_file(path))
+        .map(absolute_command_path)
+}
+
+fn command_candidates(command: &str, pathext: Option<OsString>) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let has_extension = Path::new(command).extension().is_some();
+        if has_extension {
+            return vec![command.to_string()];
+        }
+
+        let extensions = pathext
+            .as_deref()
+            .and_then(|value| value.to_str())
+            .unwrap_or(".COM;.EXE;.BAT;.CMD");
+        extensions
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+            .map(|extension| format!("{command}{extension}"))
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pathext;
+        vec![command.to_string()]
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        path.is_file()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.is_file()
+            && path
+                .metadata()
+                .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+    }
+}
+
+fn absolute_command_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn migrate_legacy_codex_acp_command(
+    profile: AcpRuntimeProfile,
+    command: &mut String,
+    args: &mut Vec<String>,
+) {
+    if profile != AcpRuntimeProfile::Codex
+        || !args.iter().any(|arg| arg == "@zed-industries/codex-acp")
+    {
+        return;
+    }
+
+    args.retain(|arg| arg != "@zed-industries/codex-acp");
+    if !args.iter().any(|arg| arg == "-y") {
+        args.insert(0, "-y".to_string());
+    }
+    args.push("@agentclientprotocol/codex-acp".to_string());
+    if command.eq_ignore_ascii_case("codex-acp") {
+        args.clear();
+    }
 }
 
 /// Reject the deprecated external-CLI `adapter` field. A legacy value gets the
@@ -374,4 +514,51 @@ fn reject_nul(value: &str, label: &str) -> Result<(), AcpConfigError> {
         return Err(invalid(format!("{label} is invalid")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        canonicalize_codex_acp_runtime_with_command, normalize_acp_runtime, AcpRuntimeProfile,
+    };
+
+    #[test]
+    fn canonicalizes_saved_npx_codex_adapter_and_legacy_modes() {
+        let mut config = normalize_acp_runtime(Some(&json!({
+            "profile": "codex",
+            "command": "C:/Program Files/nodejs/npx.cmd",
+            "args": ["-y", "@agentclientprotocol/codex-acp"],
+            "mode": "full-access",
+        })))
+        .expect("saved Codex configuration normalizes");
+
+        canonicalize_codex_acp_runtime_with_command(
+            &mut config,
+            Some("C:/Users/test/npm/codex-acp.cmd"),
+        );
+
+        assert_eq!(config.profile, AcpRuntimeProfile::Codex);
+        assert_eq!(config.command, "C:/Users/test/npm/codex-acp.cmd");
+        assert!(config.args.is_empty());
+        assert_eq!(config.mode.as_deref(), Some("agent-full-access"));
+    }
+
+    #[test]
+    fn keeps_npx_fallback_when_local_codex_adapter_is_missing() {
+        let mut config = normalize_acp_runtime(Some(&json!({
+            "profile": "codex",
+            "command": "npx",
+            "args": ["-y", "@agentclientprotocol/codex-acp"],
+            "mode": "auto",
+        })))
+        .expect("fallback Codex configuration normalizes");
+
+        canonicalize_codex_acp_runtime_with_command(&mut config, None);
+
+        assert_eq!(config.command, "npx");
+        assert_eq!(config.args, vec!["-y", "@agentclientprotocol/codex-acp"]);
+        assert_eq!(config.mode.as_deref(), Some("agent"));
+    }
 }

@@ -104,7 +104,7 @@ export function AppSidebar() {
     <aside
       className={cn(
         'flex h-full shrink-0 flex-col border-r border-border bg-card',
-        collapsed ? 'w-14' : 'w-[272px]',
+        collapsed ? 'w-14' : 'w-[248px]',
       )}
     >
       <GroupFormDialog open={dialogOpen} onOpenChange={setDialogOpen} />

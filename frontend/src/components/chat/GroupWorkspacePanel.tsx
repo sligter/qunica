@@ -58,7 +58,7 @@ export function GroupWorkspacePanel({
     <aside
       className={cn(
         'flex h-full shrink-0 flex-col border-l border-border bg-card',
-        width === undefined && 'w-80',
+        width === undefined && 'w-[280px]',
         className,
       )}
       style={width === undefined ? undefined : { width }}

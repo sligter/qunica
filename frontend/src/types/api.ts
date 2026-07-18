@@ -138,6 +138,31 @@ export interface AcpRuntimePresetListResponse {
   presets: AcpRuntimePresetRead[]
 }
 
+export type AcpRuntimeVersionStatus =
+  | 'not_installed'
+  | 'current'
+  | 'update_available'
+  | 'local_only'
+
+export interface AcpRuntimeVersionRead {
+  id: AcpRuntimePresetRead['id']
+  package_name: string
+  installed: boolean
+  local_version: string | null
+  latest_version: string | null
+  status: AcpRuntimeVersionStatus
+  message: string | null
+}
+
+export interface AcpRuntimeVersionListResponse {
+  presets: AcpRuntimeVersionRead[]
+}
+
+export interface AcpRuntimeInstallResponse {
+  preset: AcpRuntimeVersionRead
+  output: string
+}
+
 export interface AcpRuntimeCapabilitiesRead {
   models: AcpRuntimeChoice[]
   modes: AcpRuntimeChoice[]

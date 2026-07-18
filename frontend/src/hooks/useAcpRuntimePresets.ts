@@ -8,11 +8,11 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
   {
     id: 'codex',
     name: 'Codex',
-    description: 'Codex CLI through the Zed Codex ACP adapter.',
+    description: 'Codex CLI through the Agent Client Protocol Codex adapter.',
     profile: 'codex',
     installed: false,
     command: 'npx',
-    args: ['@zed-industries/codex-acp'],
+    args: ['-y', '@agentclientprotocol/codex-acp'],
     env: {},
     timeout_seconds: 3600,
     permission_policy: 'deny',
@@ -27,13 +27,13 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
         description: 'Read files in the current workspace; ask before edits or internet.',
       },
       {
-        value: 'auto',
-        label: 'Default',
+        value: 'agent',
+        label: 'Agent',
         description: 'Read and edit workspace files; ask for internet or external edits.',
       },
       {
-        value: 'full-access',
-        label: 'Full Access',
+        value: 'agent-full-access',
+        label: 'Agent Full Access',
         description: 'Edit outside the workspace and access the internet without asking.',
       },
     ],
@@ -46,7 +46,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
       { value: 'xhigh', label: 'XHigh' },
     ],
     install_hint:
-      'Install @zed-industries/codex-acp so codex-acp is on PATH, or keep the npx fallback command.',
+      'Install @agentclientprotocol/codex-acp so codex-acp is on PATH, or keep the npx fallback command.',
     source: 'fallback',
   },
   {

@@ -8,478 +8,61 @@ import { Input } from '@/components/ui/input'
 import { useAddAgentToGroup } from '@/hooks/useAddAgentToGroup'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroup } from '@/hooks/useGroups'
-import {
-  useAddGroupMember,
-  useGroupMemberCandidates,
-  useGroupMembers,
-  useMuteGroupMember,
-  useRemoveGroupMember,
-} from '@/hooks/useGroupMembers'
+import { useAddGroupMember, useGroupMemberCandidates, useGroupMembers, useMuteGroupMember, useRemoveGroupMember } from '@/hooks/useGroupMembers'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
-import {
-  useMuteGroupAgent,
-  useRemoveGroupAgent,
-  useSetGroupAgentTopology,
-  useSetGroupAgentWorkspaceSharing,
-} from '@/hooks/useGroupAgentActions'
+import { useMuteGroupAgent, useRemoveGroupAgent, useSetGroupAgentTopology, useSetGroupAgentWorkspaceSharing } from '@/hooks/useGroupAgentActions'
 import { ApiError } from '@/lib/api-v2/client'
-import type {
-  AgentRead,
-  GroupAgentRead,
-  GroupCommunicationMode,
-  GroupMemberRead,
-  GroupTopologyRole,
-  UserRead,
-} from '@/types/api'
+import { cn } from '@/lib/utils'
+import type { AgentRead, GroupAgentRead, GroupCommunicationMode, GroupMemberRead, GroupTopologyRole, UserRead } from '@/types/api'
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof ApiError ? error.message : fallback
+type Filter = 'all' | 'human' | 'agent' | 'muted'
+type Entry = { kind: 'human'; member: GroupMemberRead } | { kind: 'agent'; agent: GroupAgentRead; muted: boolean }
+
+function message(error: unknown, fallback: string) { return error instanceof ApiError ? error.message : fallback }
+function entryKey(entry: Entry) { return `${entry.kind}:${entry.kind === 'agent' ? entry.agent.agent_id : entry.member.user_id}` }
+function entryName(entry: Entry) { return entry.kind === 'agent' ? entry.agent.display_name : entry.member.display_name }
+function entryMuted(entry: Entry) { return entry.kind === 'agent' ? entry.muted : entry.member.is_muted }
+
+function AddUser({ user, groupId }: { user: UserRead; groupId: string }) {
+  const add = useAddGroupMember()
+  return <li className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{user.name}</p><p className="truncate text-xs text-muted-foreground">{user.email}</p></div><Button size="sm" onClick={() => add.mutate({ groupId, userId: user.id })} disabled={add.isPending}>Add</Button></li>
 }
 
-function formatRole(role: string | null): string {
-  return role ?? 'agent'
+function AddAgent({ agent, groupId }: { agent: AgentRead; groupId: string }) {
+  const add = useAddAgentToGroup()
+  const [share, setShare] = useState(true)
+  return <li className="flex items-start justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{agent.name}</p><p className="truncate text-xs text-muted-foreground">{agent.description || 'No description.'}</p><label className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={share} onChange={(event) => setShare(event.target.checked)} />Allow workspace</label></div><Button size="sm" onClick={() => add.mutate({ groupId, agentId: agent.id, shareGroupWorkspace: share })} disabled={add.isPending}>Add</Button></li>
 }
 
-interface MemberRowProps {
-  member: GroupMemberRead
-  groupId: string
+function EntryRow({ entry, active, mode, onSelect }: { entry: Entry; active: boolean; mode: GroupCommunicationMode; onSelect: () => void }) {
+  const agent = entry.kind === 'agent'
+  const tags = (agent
+    ? [entry.muted && 'Muted', entry.agent.share_group_workspace && 'Workspace', mode === 'star' && entry.agent.topology_role === 'hub' && 'Hub', mode === 'hierarchical' && (entry.agent.topology_role === 'leader' ? 'Leader' : 'Worker'), mode === 'ring' && entry.agent.speaking_order !== null && `#${entry.agent.speaking_order}`]
+    : [entry.member.is_muted && 'Muted']
+  ).filter((tag): tag is string => Boolean(tag))
+  return <li><button type="button" onClick={onSelect} className={cn('flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-0', active ? 'bg-primary/10' : 'hover:bg-card-hover')}><div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>{agent ? <Bot className="h-4 w-4" /> : <UserRound className="h-4 w-4" />}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{entryName(entry)}</span><Badge variant="outline" className="shrink-0">{agent ? entry.agent.role || 'agent' : entry.member.role}</Badge></div>{tags.length > 0 ? <div className="mt-1 flex flex-wrap gap-1">{tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}</div> : null}</div></button></li>
 }
 
-function MemberRow({ member, groupId }: MemberRowProps) {
-  const muteMember = useMuteGroupMember()
-  const removeMember = useRemoveGroupMember()
-  const [error, setError] = useState<string | null>(null)
-  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
-
-  const onMute = () => {
-    setError(null)
-    muteMember.mutate(
-      { groupId, userId: member.user_id, muted: !member.is_muted },
-      { onError: (err) => setError(errorMessage(err, 'Failed to update member mute')) },
-    )
-  }
-
-  const onRemove = () => {
-    setError(null)
-    removeMember.mutate(
-      { groupId, userId: member.user_id },
-      { onError: (err) => setError(errorMessage(err, 'Failed to remove member')) },
-    )
-  }
-
-  return (
-    <li className="rounded-lg border border-border bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <UserRound className="h-4 w-4" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="truncate text-sm font-medium">{member.display_name}</p>
-              <Badge variant="outline">{member.role}</Badge>
-              {member.is_muted ? <Badge variant="secondary">Muted</Badge> : null}
-            </div>
-            <p className="text-xs text-muted-foreground">User ID: {member.user_id}</p>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onMute}
-            disabled={muteMember.isPending}
-          >
-            {member.is_muted ? 'Unmute' : 'Mute'}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setConfirmRemoveOpen(true)}
-            disabled={removeMember.isPending}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-          >
-            Remove
-          </Button>
-        </div>
-      </div>
-      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-      <ConfirmDialog
-        open={confirmRemoveOpen}
-        onOpenChange={setConfirmRemoveOpen}
-        title={`Remove ${member.display_name}?`}
-        description="This member will no longer be part of the group."
-        confirmLabel="Remove"
-        destructive
-        onConfirm={onRemove}
-      />
-    </li>
-  )
+function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: string; mode: GroupCommunicationMode; onRemoved: () => void }) {
+  const muteHuman = useMuteGroupMember(); const removeHuman = useRemoveGroupMember(); const muteAgent = useMuteGroupAgent(); const removeAgent = useRemoveGroupAgent(); const sharing = useSetGroupAgentWorkspaceSharing(); const topology = useSetGroupAgentTopology()
+  const [error, setError] = useState<string | null>(null); const [confirm, setConfirm] = useState(false)
+  const agent = entry.kind === 'agent'; const muted = entryMuted(entry)
+  const fail = (fallback: string) => (error: unknown) => setError(message(error, fallback))
+  const updateTopology = (role?: GroupTopologyRole | null, order?: number | null) => { if (agent) topology.mutate({ groupId, agentId: entry.agent.agent_id, topologyRole: role, speakingOrder: order }, { onError: fail('Failed to update topology') }) }
+  const mute = () => { setError(null); if (agent) muteAgent.mutate({ groupId, agentId: entry.agent.agent_id, muted: !muted }, { onError: fail('Failed to update agent mute') }); else muteHuman.mutate({ groupId, userId: entry.member.user_id, muted: !muted }, { onError: fail('Failed to update member mute') }) }
+  const remove = () => { setError(null); if (agent) removeAgent.mutate({ groupId, agentId: entry.agent.agent_id }, { onSuccess: onRemoved, onError: fail('Failed to remove agent') }); else removeHuman.mutate({ groupId, userId: entry.member.user_id }, { onSuccess: onRemoved, onError: fail('Failed to remove member') }) }
+  return <section className="space-y-4 rounded-lg border border-border bg-card p-4"><div className="flex items-start gap-3"><div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>{agent ? <Bot className="h-5 w-5" /> : <UserRound className="h-5 w-5" />}</div><div className="min-w-0"><h2 className="truncate text-sm font-semibold">{entryName(entry)}</h2><p className="mt-0.5 truncate text-xs text-muted-foreground">{agent ? `Agent ID: ${entry.agent.agent_id}` : `User ID: ${entry.member.user_id}`}</p></div></div>{agent ? <div className="space-y-4 border-t border-border pt-4"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">Group workspace</p><p className="text-xs text-muted-foreground">Shared workspace access.</p></div><Button size="sm" variant="outline" disabled={sharing.isPending} onClick={() => sharing.mutate({ groupId, agentId: entry.agent.agent_id, shareGroupWorkspace: !entry.agent.share_group_workspace }, { onError: fail('Failed to update workspace sharing') })}>{entry.agent.share_group_workspace ? 'Unshare' : 'Share'}</Button></div>{mode === 'star' ? <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">Star topology</p><p className="text-xs text-muted-foreground">Set this agent as hub.</p></div><Button size="sm" variant={entry.agent.topology_role === 'hub' ? 'default' : 'outline'} disabled={topology.isPending || entry.agent.topology_role === 'hub'} onClick={() => updateTopology('hub', null)}>{entry.agent.topology_role === 'hub' ? 'Hub' : 'Make hub'}</Button></div> : null}{mode === 'hierarchical' ? <label className="block space-y-1.5 text-sm font-medium">Hierarchy role<select className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={entry.agent.topology_role === 'leader' ? 'leader' : 'worker'} disabled={topology.isPending} onChange={(event) => updateTopology(event.target.value as GroupTopologyRole, null)}><option value="leader">Leader</option><option value="worker">Worker</option></select></label> : null}{mode === 'ring' ? <label className="block space-y-1.5 text-sm font-medium">Speaking order<Input type="number" min={1} value={entry.agent.speaking_order ?? ''} disabled={topology.isPending} onChange={(event) => updateTopology(null, event.target.value === '' ? null : Number(event.target.value))} /></label> : null}</div> : null}<div className="flex justify-between gap-2 border-t border-border pt-4"><Button size="sm" variant="outline" onClick={mute} disabled={muteHuman.isPending || muteAgent.isPending}>{muted ? 'Unmute' : 'Mute'}</Button><Button size="sm" variant="outline" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm(true)} disabled={removeHuman.isPending || removeAgent.isPending}>Remove</Button></div>{error ? <p className="text-xs text-destructive">{error}</p> : null}<ConfirmDialog open={confirm} onOpenChange={setConfirm} title={`Remove ${entryName(entry)}?`} description="This member will no longer be part of the group." confirmLabel="Remove" destructive onConfirm={remove} /></section>
 }
 
-interface AgentRowProps {
-  agent: GroupAgentRead
-  groupId: string
-  isMuted: boolean
-  communicationMode: GroupCommunicationMode
-}
-
-function AgentRow({ agent, groupId, isMuted, communicationMode }: AgentRowProps) {
-  const muteAgent = useMuteGroupAgent()
-  const removeAgent = useRemoveGroupAgent()
-  const setSharing = useSetGroupAgentWorkspaceSharing()
-  const setTopology = useSetGroupAgentTopology()
-  const [error, setError] = useState<string | null>(null)
-  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
-
-  const onMute = () => {
-    setError(null)
-    muteAgent.mutate(
-      { groupId, agentId: agent.agent_id, muted: !isMuted },
-      { onError: (err) => setError(errorMessage(err, 'Failed to update agent mute')) },
-    )
-  }
-
-  const onToggleSharing = () => {
-    setError(null)
-    setSharing.mutate(
-      {
-        groupId,
-        agentId: agent.agent_id,
-        shareGroupWorkspace: !agent.share_group_workspace,
-      },
-      { onError: (err) => setError(errorMessage(err, 'Failed to update workspace sharing')) },
-    )
-  }
-
-  const updateTopology = (topologyRole?: GroupTopologyRole | null, speakingOrder?: number | null) => {
-    setError(null)
-    setTopology.mutate(
-      { groupId, agentId: agent.agent_id, topologyRole, speakingOrder },
-      { onError: (err) => setError(errorMessage(err, 'Failed to update topology')) },
-    )
-  }
-
-  const onHierarchyRoleChange = (value: string) => {
-    if (value === 'leader' || value === 'worker') {
-      updateTopology(value, null)
-    }
-  }
-
-  const onRingOrderChange = (value: string) => {
-    updateTopology(null, value === '' ? null : Number(value))
-  }
-
-  const onRemove = () => {
-    setError(null)
-    removeAgent.mutate(
-      { groupId, agentId: agent.agent_id },
-      { onError: (err) => setError(errorMessage(err, 'Failed to remove agent')) },
-    )
-  }
-
-  return (
-    <li className="rounded-lg border border-border bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <Bot className="h-4 w-4" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="truncate text-sm font-medium">{agent.display_name}</p>
-              <Badge variant="outline">{formatRole(agent.role)}</Badge>
-              {isMuted ? <Badge variant="secondary">Muted</Badge> : null}
-              {communicationMode === 'star' && agent.topology_role === 'hub' ? (
-                <Badge variant="secondary">Hub</Badge>
-              ) : null}
-              {communicationMode === 'hierarchical' ? (
-                <Badge variant="secondary">
-                  {agent.topology_role === 'leader' ? 'Leader' : 'Worker'}
-                </Badge>
-              ) : null}
-              {communicationMode === 'ring' && agent.speaking_order !== null ? (
-                <Badge variant="secondary">Order {agent.speaking_order}</Badge>
-              ) : null}
-              {agent.share_group_workspace ? <Badge variant="secondary">Group workspace</Badge> : null}
-            </div>
-            <p className="text-xs text-muted-foreground">Agent ID: {agent.agent_id}</p>
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {communicationMode === 'star' ? (
-            <Button
-              size="sm"
-              variant={agent.topology_role === 'hub' ? 'default' : 'outline'}
-              onClick={() => updateTopology('hub', null)}
-              disabled={setTopology.isPending || agent.topology_role === 'hub'}
-            >
-              {agent.topology_role === 'hub' ? 'Hub' : 'Make hub'}
-            </Button>
-          ) : null}
-          {communicationMode === 'hierarchical' ? (
-            <select
-              value={agent.topology_role === 'leader' ? 'leader' : 'worker'}
-              onChange={(event) => onHierarchyRoleChange(event.target.value)}
-              disabled={setTopology.isPending}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-            >
-              <option value="leader">Leader</option>
-              <option value="worker">Worker</option>
-            </select>
-          ) : null}
-          {communicationMode === 'ring' ? (
-            <Input
-              type="number"
-              min={1}
-              step={1}
-              value={agent.speaking_order ?? ''}
-              onChange={(event) => onRingOrderChange(event.target.value)}
-              disabled={setTopology.isPending}
-              className="h-8 w-24"
-              aria-label={`Speaking order for ${agent.display_name}`}
-            />
-          ) : null}
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onToggleSharing}
-            disabled={setSharing.isPending}
-          >
-            {agent.share_group_workspace ? 'Unshare workspace' : 'Share workspace'}
-          </Button>
-          <Button size="sm" variant="outline" onClick={onMute} disabled={muteAgent.isPending}>
-            {isMuted ? 'Unmute' : 'Mute'}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setConfirmRemoveOpen(true)}
-            disabled={removeAgent.isPending}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-          >
-            Remove
-          </Button>
-        </div>
-      </div>
-      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-      <ConfirmDialog
-        open={confirmRemoveOpen}
-        onOpenChange={setConfirmRemoveOpen}
-        title={`Remove ${agent.display_name}?`}
-        description="This agent will no longer participate in the group."
-        confirmLabel="Remove"
-        destructive
-        onConfirm={onRemove}
-      />
-    </li>
-  )
-}
-
-interface AddUserRowProps {
-  user: UserRead
-  groupId: string
-}
-
-function AddUserRow({ user, groupId }: AddUserRowProps) {
-  const addMember = useAddGroupMember()
-  const [error, setError] = useState<string | null>(null)
-
-  const onAdd = () => {
-    setError(null)
-    addMember.mutate(
-      { groupId, userId: user.id },
-      { onError: (err) => setError(errorMessage(err, 'Failed to add member')) },
-    )
-  }
-
-  return (
-    <li className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium">{user.name}</p>
-        <p className="truncate text-xs text-muted-foreground">{user.email}</p>
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      </div>
-      <Button size="sm" onClick={onAdd} disabled={addMember.isPending}>
-        Add
-      </Button>
-    </li>
-  )
-}
-
-interface AddAgentRowProps {
-  agent: AgentRead
-  groupId: string
-}
-
-function AddAgentRow({ agent, groupId }: AddAgentRowProps) {
-  const addAgent = useAddAgentToGroup()
-  const [shareGroupWorkspace, setShareGroupWorkspace] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  const onAdd = () => {
-    setError(null)
-    addAgent.mutate(
-      { groupId, agentId: agent.id, shareGroupWorkspace },
-      { onError: (err) => setError(errorMessage(err, 'Failed to add agent')) },
-    )
-  }
-
-  return (
-    <li className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium">{agent.name}</p>
-        <p className="truncate text-xs text-muted-foreground">{agent.description || 'No description.'}</p>
-        <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={shareGroupWorkspace}
-            onChange={(event) => setShareGroupWorkspace(event.target.checked)}
-          />
-          Allow group workspace
-        </label>
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      </div>
-      <Button
-        size="sm"
-        onClick={onAdd}
-        disabled={addAgent.isPending}
-        className="self-start"
-      >
-        Add
-      </Button>
-    </li>
-  )
-}
-
-interface GroupMembersTabProps {
-  groupId: string
-}
-
-export function GroupMembersTab({ groupId }: GroupMembersTabProps) {
-  const [userQuery, setUserQuery] = useState('')
-
-  const group = useGroup(groupId)
-  const members = useGroupMembers(groupId)
-  const groupAgents = useGroupAgents(groupId)
-  const userCandidates = useGroupMemberCandidates(groupId, userQuery)
-  const agents = useAgents()
-
-  const agentCandidates = useMemo(() => {
-    const existing = new Set((groupAgents.data ?? []).map((agent) => agent.agent_id))
-    return (agents.data ?? []).filter((agent) => !existing.has(agent.id))
-  }, [agents.data, groupAgents.data])
-
-  const isLoading = group.isLoading || members.isLoading || groupAgents.isLoading
-  const loadError = group.error ?? members.error ?? groupAgents.error
-  const mutedAgentIds = group.data?.muted_agent_ids ?? []
-
-  if (loadError) {
-    return (
-      <div className="text-sm text-destructive">Failed to load members: {String(loadError)}</div>
-    )
-  }
-  if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>
-  }
-
-  return (
-    <div className="grid w-full grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr]">
-      <section className="space-y-6">
-        <div className="space-y-3">
-          <div>
-            <h2 className="text-sm font-semibold">Human members</h2>
-            <p className="text-xs text-muted-foreground">
-              Mute or remove any human member in this group.
-            </p>
-          </div>
-          <ul className="space-y-3">
-            {(members.data ?? []).map((member) => (
-              <MemberRow key={member.user_id} member={member} groupId={groupId} />
-            ))}
-          </ul>
-        </div>
-
-        <div className="space-y-3">
-          <div>
-            <h2 className="text-sm font-semibold">Agent members</h2>
-            <p className="text-xs text-muted-foreground">
-              Mute or remove any agent that participates in this group. Use
-              "Share workspace" to control access to the group workspace.
-            </p>
-          </div>
-          {(groupAgents.data ?? []).length === 0 ? (
-            <p className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-              No agents are currently in this group.
-            </p>
-          ) : (
-            <ul className="space-y-3">
-              {(groupAgents.data ?? []).map((agent) => (
-                <AgentRow
-                  key={agent.agent_id}
-                  agent={agent}
-                  groupId={groupId}
-                  isMuted={mutedAgentIds.includes(agent.agent_id)}
-                  communicationMode={group.data?.communication_mode ?? 'mesh'}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      <aside className="space-y-6">
-        <section className="rounded-lg border border-border bg-card p-4">
-          <div className="space-y-1">
-            <h2 className="text-sm font-semibold">Communication topology</h2>
-            <p className="text-xs text-muted-foreground">
-              Current mode: {group.data?.communication_mode ?? 'mesh'}. Configure each
-              agent's role or order in the Agent members list.
-            </p>
-          </div>
-        </section>
-
-        <section className="space-y-3 rounded-lg border border-border bg-card p-4">
-          <div>
-            <h2 className="text-sm font-semibold">Add human member</h2>
-            <p className="text-xs text-muted-foreground">Search by name or email.</p>
-          </div>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              value={userQuery}
-              onChange={(event) => setUserQuery(event.target.value)}
-              placeholder="Search users"
-              className="pl-8"
-            />
-          </div>
-          <ul className="space-y-2">
-            {(userCandidates.data ?? [])
-              .filter(
-                (user) => !(members.data ?? []).some((member) => member.user_id === user.id),
-              )
-              .map((user) => (
-                <AddUserRow key={user.id} user={user} groupId={groupId} />
-              ))}
-          </ul>
-        </section>
-
-        <section className="space-y-3 rounded-lg border border-border bg-card p-4">
-          <div>
-            <h2 className="text-sm font-semibold">Add agent</h2>
-            <p className="text-xs text-muted-foreground">Add any of your active agents.</p>
-          </div>
-          {agentCandidates.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No available agents to add.</p>
-          ) : (
-            <ul className="space-y-2">
-              {agentCandidates.map((agent) => (
-                <AddAgentRow key={agent.id} agent={agent} groupId={groupId} />
-              ))}
-            </ul>
-          )}
-        </section>
-      </aside>
-    </div>
-  )
+export function GroupMembersTab({ groupId }: { groupId: string }) {
+  const [query, setQuery] = useState(''); const [userQuery, setUserQuery] = useState(''); const [filter, setFilter] = useState<Filter>('all'); const [selected, setSelected] = useState<string | null>(null)
+  const group = useGroup(groupId); const humans = useGroupMembers(groupId); const groupAgents = useGroupAgents(groupId); const userCandidates = useGroupMemberCandidates(groupId, userQuery); const agents = useAgents()
+  const mutedAgentIds = useMemo(() => group.data?.muted_agent_ids ?? [], [group.data?.muted_agent_ids]); const mode = group.data?.communication_mode ?? 'mesh'
+  const entries = useMemo<Entry[]>(() => [...(humans.data ?? []).map((member) => ({ kind: 'human' as const, member })), ...(groupAgents.data ?? []).map((agent) => ({ kind: 'agent' as const, agent, muted: mutedAgentIds.includes(agent.agent_id) }))], [humans.data, groupAgents.data, mutedAgentIds])
+  const visible = useMemo(() => entries.filter((entry) => { const name = entryName(entry).toLowerCase(); return (!query || name.includes(query.trim().toLowerCase())) && (filter === 'all' || filter === entry.kind || (filter === 'muted' && entryMuted(entry))) }), [entries, filter, query])
+  const current = entries.find((entry) => entryKey(entry) === selected) ?? null
+  const availableAgents = useMemo(() => { const existing = new Set((groupAgents.data ?? []).map((agent) => agent.agent_id)); return (agents.data ?? []).filter((agent) => !existing.has(agent.id)) }, [agents.data, groupAgents.data])
+  if (group.error || humans.error || groupAgents.error) return <div className="text-sm text-destructive">Failed to load members.</div>
+  if (group.isLoading || humans.isLoading || groupAgents.isLoading) return <div className="text-sm text-muted-foreground">Loading...</div>
+  return <div className="grid min-h-[34rem] w-full grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]"><section className="flex min-h-0 flex-col rounded-lg border border-border bg-card"><div className="space-y-3 border-b border-border p-4"><div><h2 className="text-sm font-semibold">Members</h2><p className="text-xs text-muted-foreground">{entries.length} people and agents in this group.</p></div><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-9 pl-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search members" /></div><div className="flex flex-wrap gap-1">{([['all', 'All'], ['human', 'Human'], ['agent', 'Agents'], ['muted', 'Muted']] as const).map(([value, label]) => <Button key={value} size="sm" variant={filter === value ? 'secondary' : 'ghost'} className="h-7" onClick={() => setFilter(value)}>{label}</Button>)}</div></div><ul className="min-h-0 flex-1 overflow-y-auto">{visible.map((entry) => <EntryRow key={entryKey(entry)} entry={entry} active={entryKey(entry) === selected} mode={mode} onSelect={() => setSelected(entryKey(entry))} />)}{visible.length === 0 ? <li className="p-6 text-center text-sm text-muted-foreground">No matching members.</li> : null}</ul></section><aside className="space-y-4">{current ? <Details entry={current} groupId={groupId} mode={mode} onRemoved={() => setSelected(null)} /> : <><section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">Member details</h2><p className="mt-1 text-xs text-muted-foreground">Select a member to manage access, mute status, and agent topology.</p></section><section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">Communication topology</h2><p className="mt-1 text-xs text-muted-foreground">Current mode: {mode}. Select an agent to configure its role or order.</p></section><section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">Add human member</h2><div className="relative mt-3"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-9 pl-8" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Search users" /></div><ul className="mt-2 max-h-48 overflow-y-auto">{(userCandidates.data ?? []).filter((user) => !(humans.data ?? []).some((member) => member.user_id === user.id)).map((user) => <AddUser key={user.id} user={user} groupId={groupId} />)}</ul></section><section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">Add agent</h2><ul className="mt-2 max-h-56 overflow-y-auto">{availableAgents.map((agent) => <AddAgent key={agent.id} agent={agent} groupId={groupId} />)}{availableAgents.length === 0 ? <li className="py-2 text-xs text-muted-foreground">No available agents to add.</li> : null}</ul></section></>}</aside></div>
 }
