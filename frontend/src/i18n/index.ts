@@ -46,6 +46,7 @@ void i18n.use(initReactI18next).init({
   },
   interpolation: { escapeValue: false },
   returnNull: false,
+  parseMissingKeyHandler: () => '',
   saveMissing: import.meta.env.DEV,
   missingKeyHandler: import.meta.env.DEV
     ? (_languages, namespace, key) => console.warn(`Missing i18n key: ${namespace}:${key}`)

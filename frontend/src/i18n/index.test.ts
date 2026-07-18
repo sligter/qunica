@@ -7,6 +7,7 @@ import {
   detectBootstrapLanguage,
   normalizeLanguage,
 } from './index'
+import i18n from './index'
 
 function keys(value: unknown, prefix = ''): string[] {
   if (typeof value !== 'object' || value === null) return [prefix]
@@ -18,6 +19,7 @@ function keys(value: unknown, prefix = ''): string[] {
 describe('i18n bootstrap', () => {
   afterEach(() => {
     localStorage.clear()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
@@ -42,5 +44,11 @@ describe('i18n bootstrap', () => {
 
   it('keeps English and Chinese resource keys identical', () => {
     expect(keys(zhCN).sort()).toEqual(keys(enUS).sort())
+  })
+
+  it('does not expose raw keys when a translation is missing', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    expect(i18n.t('missing.reviewKey')).not.toBe('missing.reviewKey')
   })
 })
