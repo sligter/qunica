@@ -190,6 +190,22 @@ pub fn router(state: AppState) -> Router {
             get(groups::get_group_workspace_git_diff),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-git/log",
+            get(groups::get_group_workspace_git_log),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/commits/:sha",
+            get(groups::get_group_workspace_git_commit),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/commits/:sha/diff",
+            get(groups::get_group_workspace_git_commit_diff),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/commits/:sha/create-branch",
+            axum::routing::post(groups::create_group_workspace_git_branch_from_commit),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-git/stage",
             axum::routing::post(groups::stage_group_workspace_git_paths),
         )

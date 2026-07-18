@@ -17,7 +17,10 @@ use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
-use crate::git::{self as workspace_git, DiffMode, WorkspaceGitDiff, WorkspaceGitStatus};
+use crate::git::{
+    self as workspace_git, DiffMode, WorkspaceGitCommitDetails, WorkspaceGitDiff, WorkspaceGitLog,
+    WorkspaceGitStatus,
+};
 use crate::llm::{
     build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
 };
@@ -55,9 +58,27 @@ const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or uns
 const MAX_COMMIT_DIFF_PROMPT_CHARS: usize = 20_000;
 const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
 
+fn default_workspace_git_log_limit() -> usize {
+    50
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GroupWorkspaceGitDiffQuery {
     mode: DiffMode,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitLogQuery {
+    #[serde(default = "default_workspace_git_log_limit")]
+    limit: usize,
+    #[serde(default)]
+    skip: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitCommitDiffQuery {
     #[serde(default)]
     path: Option<String>,
 }
@@ -1398,6 +1419,11 @@ pub async fn get_group_workspace_git_status(
     Ok(Json(workspace_git::status(&root).await))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitCreateBranchRequest {
+    name: String,
+}
+
 pub async fn get_group_workspace_git_diff(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1417,6 +1443,76 @@ pub async fn get_group_workspace_git_diff(
         .await
         .map_err(workspace_git_error)?;
     Ok(Json(diff))
+}
+
+pub async fn get_group_workspace_git_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceGitLogQuery>,
+) -> Result<Json<WorkspaceGitLog>, ApiError> {
+    if !workspace_git::pagination_is_valid(query.limit, query.skip) {
+        return Err(ApiError::invalid_input("log pagination is out of bounds"));
+    }
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let log = workspace_git::log(&root, query.limit, query.skip)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(log))
+}
+
+pub async fn get_group_workspace_git_commit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, sha)): Path<(String, String)>,
+) -> Result<Json<WorkspaceGitCommitDetails>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let details = workspace_git::commit_details(&root, &sha)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(details))
+}
+
+pub async fn get_group_workspace_git_commit_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, sha)): Path<(String, String)>,
+    Query(query): Query<GroupWorkspaceGitCommitDiffQuery>,
+) -> Result<Json<WorkspaceGitDiff>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let path = match query.path {
+        Some(path) => validate_git_paths(&root, &[path])?.into_iter().next(),
+        None => None,
+    };
+    let diff = workspace_git::commit_diff(&root, &sha, path.as_deref())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(diff))
+}
+
+pub async fn create_group_workspace_git_branch_from_commit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, sha)): Path<(String, String)>,
+    Json(body): Json<GroupWorkspaceGitCreateBranchRequest>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    workspace_git::create_branch_from_commit(&root, &sha, body.name.trim())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn stage_group_workspace_git_paths(

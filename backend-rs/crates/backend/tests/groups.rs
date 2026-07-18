@@ -2670,6 +2670,158 @@ async fn workspace_git_diff_marks_large_patch_as_truncated() {
 }
 
 #[tokio::test]
+async fn workspace_git_log_returns_newest_commits_with_pagination() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-log@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+    std::fs::write(root.path().join("tracked.txt"), b"second").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+    run_git(root.path(), &["commit", "-m", "second commit"]);
+
+    let (status, first_page) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?limit=1&skip=0", workspace_git_url(group_id, "log")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {first_page:?}");
+    assert_eq!(first_page["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(first_page["commits"][0]["subject"], "second commit");
+    assert_eq!(first_page["has_more"], true);
+    assert_eq!(first_page["commits"][0]["sha"].as_str().unwrap().len(), 40);
+
+    let (status, second_page) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?limit=1&skip=1", workspace_git_url(group_id, "log")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {second_page:?}");
+    assert_eq!(second_page["commits"][0]["subject"], "initial");
+    assert_eq!(second_page["has_more"], false);
+
+    let (status, invalid) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?limit=101", workspace_git_url(group_id, "log")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn workspace_git_commit_details_diff_and_branch_creation_validate_inputs() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-commit@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+    std::fs::write(root.path().join("tracked.txt"), b"changed\n").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+    run_git(root.path(), &["commit", "-m", "change tracked file"]);
+    let sha = Command::new("git")
+        .arg("rev-parse")
+        .arg("HEAD")
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8(sha.stdout).unwrap().trim().to_string();
+
+    let (status, details) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_git_url(group_id, &format!("commits/{sha}")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {details:?}");
+    assert_eq!(details["sha"], sha);
+    assert_eq!(details["subject"], "change tracked file");
+    assert_eq!(details["files"][0]["path"], "tracked.txt");
+    assert_eq!(details["insertions"], 1);
+    assert_eq!(details["deletions"], 1);
+
+    let (status, diff) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "{}?path=tracked.txt",
+                workspace_git_url(group_id, &format!("commits/{sha}/diff"))
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {diff:?}");
+    assert_eq!(diff["mode"], "commit");
+    assert!(diff["patch"].as_str().unwrap().contains("+changed"));
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, &format!("commits/{sha}/create-branch")),
+            &token,
+            json!({"name": "review/commit"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {created:?}");
+    let branch = Command::new("git")
+        .args(["rev-parse", "review/commit"])
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    assert!(branch.status.success());
+
+    for (url, body) in [
+        (
+            workspace_git_url(group_id, "commits/HEAD"),
+            None,
+        ),
+        (
+            workspace_git_url(group_id, &format!("commits/{sha}/diff?path=..%2Fsecret.txt")),
+            None,
+        ),
+        (
+            workspace_git_url(group_id, &format!("commits/{sha}/create-branch")),
+            Some(json!({"name": "-bad"})),
+        ),
+    ] {
+        let request = match body {
+            Some(body) => authed_json("POST", &url, &token, body),
+            None => authed("GET", &url, &token),
+        };
+        let (status, response) = send(&app, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response:?}");
+        assert_eq!(response["error"]["code"], "invalid_input");
+    }
+}
+
+#[tokio::test]
 async fn workspace_git_commit_message_generates_from_staged_diff() {
     if !git_available() {
         return;

@@ -20,6 +20,51 @@ pub enum DiffMode {
     Branch,
 }
 
+pub(super) async fn commit_diff(
+    root: &Path,
+    sha: &str,
+    path: Option<&str>,
+) -> Result<WorkspaceGitDiff, GitOperationError> {
+    let mut patch_args = vec![
+        "--no-optional-locks".to_string(),
+        "-c".to_string(),
+        "core.quotePath=false".to_string(),
+        "show".to_string(),
+        "--no-ext-diff".to_string(),
+        "--find-renames".to_string(),
+        "--format=".to_string(),
+        "--patch".to_string(),
+        sha.to_string(),
+    ];
+    append_path(&mut patch_args, path);
+    let patch = run_diff(root, &patch_args, "git commit diff failed").await?;
+
+    let mut stat_args = vec![
+        "--no-optional-locks".to_string(),
+        "-c".to_string(),
+        "core.quotePath=false".to_string(),
+        "show".to_string(),
+        "--format=".to_string(),
+        "--stat".to_string(),
+        sha.to_string(),
+    ];
+    append_path(&mut stat_args, path);
+    let stat = run_diff(root, &stat_args, "git commit diff stat failed").await?;
+
+    let binary_files = binary_files(&patch);
+    let (patch, truncated) = truncate_patch(patch);
+    Ok(WorkspaceGitDiff {
+        mode: "commit".to_string(),
+        base_ref: Some(format!("{sha}^")),
+        head_ref: Some(sha.to_string()),
+        path: path.map(str::to_string),
+        patch,
+        stat,
+        truncated,
+        binary_files,
+    })
+}
+
 impl DiffMode {
     pub fn as_str(self) -> &'static str {
         match self {
