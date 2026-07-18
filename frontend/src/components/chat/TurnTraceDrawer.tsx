@@ -10,7 +10,7 @@ import { useCancelGroupTurn, useGroupTurnTrace } from '@/hooks/useGroupTurnTrace
 import { cn } from '@/lib/utils'
 import { formatNumber } from '@/lib/format'
 import { normalizeLanguage } from '@/i18n'
-import type { GroupTurnStatus } from '@/lib/api-v2/types'
+import type { GroupTurnStatus, GroupTurnTerminationReason } from '@/lib/api-v2/types'
 
 interface TurnTraceDrawerProps {
   groupId: string | undefined
@@ -35,8 +35,24 @@ const turnStatusKeys = {
   failed: 'trace.statuses.failed',
 } as const satisfies Record<GroupTurnStatus, string>
 
-function humanize(value: string): string {
-  return value.replace(/_/g, ' ')
+const terminationReasonKeys = {
+  waiting_for_user: 'trace.terminationReasons.waiting_for_user',
+  budget_exhausted: 'trace.terminationReasons.budget_exhausted',
+  failure_budget_exhausted: 'trace.terminationReasons.failure_budget_exhausted',
+  user_cancelled: 'trace.terminationReasons.user_cancelled',
+  superseded: 'trace.terminationReasons.superseded',
+  server_restart: 'trace.terminationReasons.server_restart',
+  persistence_failed: 'trace.terminationReasons.persistence_failed',
+  silence: 'trace.terminationReasons.silence',
+} as const satisfies Record<GroupTurnTerminationReason, string>
+
+function isKnownTerminationReason(value: string): value is GroupTurnTerminationReason {
+  return Object.prototype.hasOwnProperty.call(terminationReasonKeys, value)
+}
+
+function formatCostAmount(amount: string, language: 'en-US' | 'zh-CN'): string {
+  const numericAmount = Number(amount)
+  return Number.isFinite(numericAmount) ? formatNumber(numericAmount, language) : amount
 }
 
 function Metric({ icon: Icon, label, value }: { icon: typeof Footprints; label: string; value: string }) {
@@ -108,7 +124,13 @@ export function TurnTraceDrawer({
                 )}>
                   {t(turnStatusKeys[data.turn.status])}
                 </span>
-                {data.turn.termination_reason ? <span className="text-xs text-muted-foreground">{humanize(data.turn.termination_reason)}</span> : null}
+                {data.turn.termination_reason ? (
+                  <span className="text-xs text-muted-foreground">
+                    {isKnownTerminationReason(data.turn.termination_reason)
+                      ? t(terminationReasonKeys[data.turn.termination_reason])
+                      : data.turn.termination_reason}
+                  </span>
+                ) : null}
                 {canCancel ? (
                   <Button
                     type="button"
@@ -134,7 +156,9 @@ export function TurnTraceDrawer({
                 <Metric
                   icon={CircleDollarSign}
                   label={t('trace.cost')}
-                  value={data.estimated_cost ? `${data.estimated_cost.amount} ${data.estimated_cost.currency}` : t('trace.costUnavailable')}
+                  value={data.estimated_cost
+                    ? `${formatCostAmount(data.estimated_cost.amount, language)} ${data.estimated_cost.currency}`
+                    : t('trace.costUnavailable')}
                 />
               </div>
 

@@ -24,7 +24,7 @@ interface ComposerProps {
 /** ~10 lines of text-sm (20px line-height) plus padding. */
 const MAX_TEXTAREA_HEIGHT = 208
 
-function displayError(error: unknown) {
+function errorDetail(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
@@ -112,7 +112,7 @@ export function Composer({
           if (error instanceof WorkspaceUploadManyError && error.uploaded.length > 0) {
             insertWorkspacePaths(error.uploaded.map((file) => file.path))
           }
-          setUploadError(displayError(error))
+          setUploadError(errorDetail(error))
         })
         .finally(() => {
           if (fileInputRef.current) fileInputRef.current.value = ''
@@ -198,7 +198,7 @@ export function Composer({
       <div className="mx-auto w-full max-w-6xl">
         {uploadError && (
           <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {uploadError}
+            {t('errors.uploadDetail', { message: uploadError })}
           </p>
         )}
         <div

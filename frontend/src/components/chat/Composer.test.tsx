@@ -1,16 +1,18 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Composer } from '@/components/chat/Composer'
 import i18n from '@/i18n'
 import type { GroupAgentRead } from '@/types/api'
 
+const mocks = vi.hoisted(() => ({ upload: vi.fn() }))
+
 vi.mock('@/hooks/useGroupFiles', () => ({
   WorkspaceUploadManyError: class WorkspaceUploadManyError extends Error {},
   useUploadGroupWorkspaceFiles: () => ({
     isPending: false,
-    mutateAsync: vi.fn(),
+    mutateAsync: mocks.upload,
   }),
 }))
 
@@ -32,6 +34,10 @@ const groupAgents: GroupAgentRead[] = [
 ]
 
 describe('Composer mentions', () => {
+  beforeEach(() => {
+    mocks.upload.mockReset()
+  })
+
   afterEach(async () => {
     cleanup()
     await i18n.changeLanguage('en-US')
@@ -48,6 +54,21 @@ describe('Composer mentions', () => {
     render(<Composer onSend={vi.fn()} onCancel={vi.fn()} isStreaming />)
     expect(screen.getByPlaceholderText('给你的 Agent 发消息…')).toBeVisible()
     expect(screen.getByRole('button', { name: '停止生成' })).toBeVisible()
+  })
+
+  it('localizes upload error framing while preserving the raw detail', async () => {
+    const user = userEvent.setup()
+    mocks.upload.mockRejectedValueOnce(new Error('RAW_UPLOAD_DETAIL'))
+    render(<Composer groupId="group-1" onSend={vi.fn()} />)
+
+    await user.upload(
+      screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
+      new File(['content'], 'notes.txt', { type: 'text/plain' }),
+    )
+    expect(await screen.findByText('Upload failed: RAW_UPLOAD_DETAIL')).toBeVisible()
+
+    await i18n.changeLanguage('zh-CN')
+    expect(await screen.findByText('上传失败：RAW_UPLOAD_DETAIL')).toBeVisible()
   })
 
   it.each([

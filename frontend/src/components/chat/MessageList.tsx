@@ -25,6 +25,17 @@ const EMPTY_STREAM_RUN_IDS: Record<string, never> = {}
 const BOTTOM_PROXIMITY_PX = 120
 const MESSAGE_SCROLL_KEY_PREFIX = 'ag-swarmer:groups:message-scroll:'
 
+const warningKeys = {
+  'No one replied': 'messages.warnings.noReply',
+  'Waiting for your input': 'messages.warnings.waitingForInput',
+  'Stream warning': 'messages.warnings.streamWarning',
+  'Stream failed': 'messages.warnings.streamFailed',
+} as const
+
+function isKnownWarning(warning: string): warning is keyof typeof warningKeys {
+  return Object.prototype.hasOwnProperty.call(warningKeys, warning)
+}
+
 function scrollStorageKey(groupId: string): string {
   return `${MESSAGE_SCROLL_KEY_PREFIX}${groupId}`
 }
@@ -87,6 +98,9 @@ export function MessageList({
   const hiddenMessageIds = useMemo(() => timelineMessageIds(streamRuns), [streamRuns])
   const latestWarning = warnings[warnings.length - 1]
   const warningInputRequest = humanInputRequestFromText(latestWarning)
+  const warningLabel = latestWarning && isKnownWarning(latestWarning)
+    ? t(warningKeys[latestWarning])
+    : latestWarning
   const hasActiveStreamRun = useMemo(
     () => Object.values(streamRuns).some((run) => run.status === 'active'),
     [streamRuns],
@@ -221,7 +235,7 @@ export function MessageList({
                 />
               </div>
             ) : (
-              <div className="text-center text-xs text-warning-foreground">{latestWarning}</div>
+              <div className="text-center text-xs text-warning-foreground">{warningLabel}</div>
             )}
           </div>
         )}

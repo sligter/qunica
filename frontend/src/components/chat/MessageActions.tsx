@@ -13,7 +13,6 @@ import {
 } from '@/components/ui/dialog'
 import { useGroups } from '@/hooks/useGroups'
 import { useDeleteGroupMessage, useSendGroupMessage } from '@/hooks/useGroupMessages'
-import { ApiError } from '@/lib/api-v2/client'
 
 interface MessageActionsProps {
   messageId: string
@@ -27,6 +26,10 @@ type CopiedAction = 'message' | null
 
 function shareText(senderName: string, timeLabel: string, content: string): string {
   return `${senderName} · ${timeLabel}\n\n${content}`.trim()
+}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 export function MessageActions({
@@ -59,7 +62,7 @@ export function MessageActions({
       await sendGroupMessage.mutateAsync({ groupId: targetGroupId, content: shareContent })
       setShareOpen(false)
     } catch (error) {
-      setShareError(error instanceof Error ? error.message : t('messages.shareFailed', { ns: 'chat' }))
+      setShareError(errorDetail(error))
     }
   }
 
@@ -68,7 +71,7 @@ export function MessageActions({
     try {
       await deleteGroupMessage.mutateAsync({ messageId })
     } catch (error) {
-      setDeleteError(error instanceof ApiError ? error.message : t('messages.deleteFailed', { ns: 'chat' }))
+      setDeleteError(errorDetail(error))
     }
   }
 
@@ -109,7 +112,9 @@ export function MessageActions({
           </Button>
         </div>
         {deleteError ? (
-          <p className="max-w-44 text-right text-xs text-destructive">{deleteError}</p>
+          <p className="max-w-44 text-right text-xs text-destructive">
+            {t('messages.deleteFailedDetail', { ns: 'chat', message: deleteError })}
+          </p>
         ) : null}
       </div>
 
@@ -144,7 +149,11 @@ export function MessageActions({
             ))}
           </div>
 
-          {shareError ? <p className="text-sm text-destructive">{shareError}</p> : null}
+          {shareError ? (
+            <p className="text-sm text-destructive">
+              {t('messages.shareFailedDetail', { ns: 'chat', message: shareError })}
+            </p>
+          ) : null}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setShareOpen(false)}>

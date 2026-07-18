@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import '@/i18n'
 import { cn } from '@/lib/utils'
+import type { ToolActivityStatus } from '@/stores/messageStore'
 
 export interface ActivityReasoningSegment {
   id: string
@@ -30,17 +31,21 @@ interface AgentActivityBubbleProps {
   active?: boolean
 }
 
-const toolStatusKeys = {
+const toolActivityStatusKeys = {
   completed: 'tools.statuses.completed',
   started: 'tools.statuses.started',
-  running: 'tools.statuses.running',
   failed: 'tools.statuses.failed',
-  cancelled: 'tools.statuses.cancelled',
   unavailable: 'tools.statuses.unavailable',
   setup_required: 'tools.statuses.setup_required',
   workspace_required: 'tools.statuses.workspace_required',
   input_required: 'tools.statuses.input_required',
   approval_required: 'tools.statuses.approval_required',
+} as const satisfies Record<ToolActivityStatus, string>
+
+const toolStatusKeys = {
+  ...toolActivityStatusKeys,
+  running: 'tools.statuses.running',
+  cancelled: 'tools.statuses.cancelled',
 } as const
 
 function isKnownToolStatus(status: string): status is keyof typeof toolStatusKeys {

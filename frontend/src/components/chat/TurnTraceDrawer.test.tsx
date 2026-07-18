@@ -86,6 +86,30 @@ describe('TurnTraceDrawer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('RAW_BACKEND_DETAIL')
   })
 
+  it('localizes known termination reasons and cost while preserving unknown reasons', async () => {
+    const localized = traceFixture()
+    localized.turn.termination_reason = 'user_cancelled'
+    localized.estimated_cost = { amount: '1234.5', currency: 'USD' }
+    mocks.trace = { ...mocks.trace, data: localized }
+    renderDrawer()
+    expect(screen.getByText('User cancelled')).toBeVisible()
+    expect(screen.getByText('1,234.5 USD')).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    renderDrawer()
+    expect(screen.getByText('用户取消')).toBeVisible()
+    expect(screen.getByText('1,234.5 USD')).toBeVisible()
+
+    cleanup()
+    const unknown = traceFixture()
+    ;(unknown.turn as { termination_reason: string | null }).termination_reason =
+      'RAW_TERMINATION_DETAIL'
+    mocks.trace = { ...mocks.trace, data: unknown }
+    renderDrawer()
+    expect(screen.getByText('RAW_TERMINATION_DETAIL')).toBeVisible()
+  })
+
   it('shows a loading state', () => {
     mocks.trace = { ...mocks.trace, isLoading: true }
     renderDrawer()

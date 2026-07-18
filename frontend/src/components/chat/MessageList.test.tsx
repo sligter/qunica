@@ -74,6 +74,66 @@ describe('MessageList scheduler summary integration', () => {
     expect(screen.getByRole('button', { name: '正在加载更早的消息…' })).toBeDisabled()
     expect(screen.getByText('Run the group')).toBeVisible()
   })
+
+  it('localizes known warnings and preserves unknown warning detail', async () => {
+    setMessageState()
+    useMessageStore.setState({ warningsByGroup: { 'group-1': ['No one replied'] } })
+    render(<MessageList groupId="group-1" />)
+    expect(screen.getByText('No one replied.')).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    useMessageStore.setState({ warningsByGroup: { 'group-1': ['No one replied'] } })
+    render(<MessageList groupId="group-1" />)
+    expect(screen.getByText('无人回复。')).toBeVisible()
+
+    cleanup()
+    useMessageStore.setState({ warningsByGroup: { 'group-1': ['RAW_WARNING_DETAIL'] } })
+    render(<MessageList groupId="group-1" />)
+    expect(screen.getByText('RAW_WARNING_DETAIL')).toBeVisible()
+  })
+
+  it('localizes known scheduler summaries and preserves unknown summary detail', async () => {
+    const run: StreamRun = {
+      id: 'stream-summary',
+      group_id: 'group-1',
+      user_message_id: userMessage.id,
+      status: 'active',
+      turn_id: 'turn-summary',
+      scheduler_status: 'running',
+      terminal_reason: null,
+      criticalSummaries: [
+        {
+          id: 'call-1',
+          kind: 'call',
+          message: 'Agent call routed to agent-2',
+          count: 1,
+          target_agent_id: 'agent-2',
+          created_at: '2026-07-15T10:00:01Z',
+        },
+        {
+          id: 'custom-1',
+          kind: 'handoff',
+          message: 'RAW_SUMMARY_DETAIL',
+          count: 1,
+          created_at: '2026-07-15T10:00:02Z',
+        },
+      ],
+      created_at: '2026-07-15T10:00:00Z',
+      updated_at: '2026-07-15T10:00:02Z',
+      events: [],
+    }
+    setMessageState(run)
+    render(<MessageList groupId="group-1" onViewTurnTrace={vi.fn()} />)
+    expect(screen.getByText('Agent call routed to agent-2')).toBeVisible()
+    expect(screen.getByText('RAW_SUMMARY_DETAIL')).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    render(<MessageList groupId="group-1" onViewTurnTrace={vi.fn()} />)
+    expect(screen.getByText('Agent 调用已路由至 agent-2')).toBeVisible()
+    expect(screen.getByText('RAW_SUMMARY_DETAIL')).toBeVisible()
+  })
   it('keeps the message column shrinkable and clips page-level horizontal overflow', () => {
     setMessageState()
 
