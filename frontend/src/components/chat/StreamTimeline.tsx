@@ -184,6 +184,20 @@ interface NoticeBlock {
 
 type RenderBlock = AgentBlock | NoticeBlock
 
+function knownStreamNoticeKey(event: StreamNoticeEvent): string | null {
+  if (event.type === 'warning') {
+    if (event.message === 'No one replied') return 'messages.warnings.noReply'
+    if (event.message === 'Stream warning') return 'messages.warnings.streamWarning'
+  }
+  if (event.type === 'agent_error' && event.message === 'Stream failed') {
+    return 'messages.warnings.streamFailed'
+  }
+  if (event.type === 'waiting_for_user' && event.message === 'Waiting for your input') {
+    return 'messages.warnings.waitingForInput'
+  }
+  return null
+}
+
 function eventAgentId(event: StreamTimelineEvent): string | undefined {
   if ('agent_id' in event && event.agent_id) return event.agent_id
   return undefined
@@ -451,12 +465,13 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
       {blocks.map((block, index) => {
         if (block.kind === 'notice') {
           if (block.event.type === 'done') return null
+          const noticeKey = knownStreamNoticeKey(block.event)
           return (
             <div
               key={`${block.event.id}-${index}`}
               className="px-4 py-1 text-center text-xs text-muted-foreground"
             >
-              {block.event.message}
+              {noticeKey ? t(noticeKey) : block.event.message}
             </div>
           )
         }

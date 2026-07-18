@@ -74,6 +74,61 @@ describe('StreamTimeline activity rendering', () => {
     expect(screen.getByText('需要设置')).toBeInTheDocument()
   })
 
+  it('retranslates known stream notices and preserves unknown notice text', async () => {
+    const notices = [
+      event({
+        id: 'silence-1',
+        stream_id: 'stream-1',
+        type: 'warning',
+        message: 'No one replied',
+        created_at: '2026-07-16T10:00:01Z',
+      }),
+      event({
+        id: 'warning-1',
+        stream_id: 'stream-1',
+        type: 'warning',
+        message: 'Stream warning',
+        created_at: '2026-07-16T10:00:02Z',
+      }),
+      event({
+        id: 'error-1',
+        stream_id: 'stream-1',
+        type: 'agent_error',
+        message: 'Stream failed',
+        created_at: '2026-07-16T10:00:03Z',
+      }),
+      event({
+        id: 'waiting-1',
+        stream_id: 'stream-1',
+        type: 'waiting_for_user',
+        message: 'Waiting for your input',
+        created_at: '2026-07-16T10:00:04Z',
+      }),
+      event({
+        id: 'unknown-1',
+        stream_id: 'stream-1',
+        type: 'warning',
+        message: 'RAW_STREAM_NOTICE',
+        created_at: '2026-07-16T10:00:05Z',
+      }),
+    ]
+
+    await i18n.changeLanguage('en-US')
+    render(<StreamTimeline run={run(notices)} />)
+    expect(screen.getByText('No one replied.')).toBeVisible()
+    expect(screen.getByText('Stream warning')).toBeVisible()
+    expect(screen.getByText('Stream failed')).toBeVisible()
+    expect(screen.getByText('Waiting for your input')).toBeVisible()
+    expect(screen.getByText('RAW_STREAM_NOTICE')).toBeVisible()
+
+    await i18n.changeLanguage('zh-CN')
+    expect(await screen.findByText('无人回复。')).toBeVisible()
+    expect(screen.getByText('流警告')).toBeVisible()
+    expect(screen.getByText('流失败')).toBeVisible()
+    expect(screen.getByText('等待你的输入')).toBeVisible()
+    expect(screen.getByText('RAW_STREAM_NOTICE')).toBeVisible()
+  })
+
   it('folds live reasoning and tool calls into one activity bubble', async () => {
     const user = userEvent.setup()
     render(
