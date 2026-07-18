@@ -523,19 +523,35 @@ export interface GroupWorkspaceFileRename {
 
 export interface GroupWorkspaceGitFileStatus {
   path: string
+  old_path: string | null
   status: string
   staged: boolean
   unstaged: boolean
+  untracked: boolean
+  conflicted: boolean
+}
+
+export interface GroupWorkspaceGitDirtyCounts {
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
 }
 
 export interface GroupWorkspaceGitStatus {
   available: boolean
+  status: 'ready' | 'not_repo' | 'error'
   branch: string | null
+  upstream: string | null
+  remote_name: string | null
+  remote_url: string | null
+  ahead: number | null
+  behind: number | null
+  stash_count: number
   clean: boolean
+  dirty_counts: GroupWorkspaceGitDirtyCounts
   files: GroupWorkspaceGitFileStatus[]
   message: string | null
-  ahead?: number | null
-  behind?: number | null
   state?: 'conflict' | 'detached' | 'initial' | null
 }
 
@@ -549,6 +565,113 @@ export interface GroupWorkspaceGitCommitRequest {
 
 export interface GroupWorkspaceGitCommitMessageResponse {
   message: string
+}
+
+export type GroupWorkspaceGitDiffMode = 'worktree' | 'staged' | 'branch' | 'commit'
+
+export interface GroupWorkspaceGitDiff {
+  mode: GroupWorkspaceGitDiffMode
+  base_ref: string | null
+  head_ref: string | null
+  path: string | null
+  patch: string
+  stat: string
+  truncated: boolean
+  binary_files: string[]
+}
+
+export interface GroupWorkspaceGitCommitSummary {
+  sha: string
+  short_sha: string
+  subject: string
+  author_name: string
+  author_email: string
+  author_date: string
+  local_only: boolean
+}
+
+export interface GroupWorkspaceGitLog {
+  commits: GroupWorkspaceGitCommitSummary[]
+  has_more: boolean
+}
+
+export interface GroupWorkspaceGitCommitFile {
+  path: string
+  old_path: string | null
+  status: string
+}
+
+export interface GroupWorkspaceGitCommitDetails {
+  sha: string
+  short_sha: string
+  subject: string
+  body: string
+  author_name: string
+  author_email: string
+  author_date: string
+  files: GroupWorkspaceGitCommitFile[]
+  insertions: number
+  deletions: number
+  stat: string
+}
+
+export interface GroupWorkspaceGitBranch {
+  name: string
+  full_name: string
+  kind: 'local' | 'remote'
+  current: boolean
+  upstream: string | null
+  ahead: number
+  behind: number
+}
+
+export interface GroupWorkspaceGitBranches {
+  branches: GroupWorkspaceGitBranch[]
+}
+
+export interface GroupWorkspaceGitDiscardRequest {
+  paths: string[]
+  all: boolean
+}
+
+export interface GroupWorkspaceGitRemoteRequest {
+  remote_url: string
+}
+
+export interface GroupWorkspaceGitBranchCreateRequest {
+  name: string
+  start_point?: string | null
+}
+
+export interface GroupWorkspaceGitBranchSwitchRequest {
+  name: string
+  kind?: 'local' | 'remote' | null
+}
+
+export interface GroupWorkspaceGitBranchRenameRequest {
+  old: string
+  new: string
+}
+
+export interface GroupWorkspaceGitBranchDeleteRequest {
+  name: string
+  force: boolean
+}
+
+export interface GroupWorkspaceGitInitRequest {
+  branch?: string | null
+}
+
+export interface GroupWorkspaceGitIgnoreRequest {
+  path: string
+}
+
+export interface GroupWorkspaceGitStashPushRequest {
+  message?: string | null
+}
+
+export interface GroupWorkspaceGitCreateBranchFromCommitRequest {
+  name: string
 }
 
 export interface GroupNoteRead {
