@@ -2464,16 +2464,27 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(git_status["available"], true);
+    assert_eq!(git_status["status"], "ready");
     assert_eq!(git_status["clean"], false);
     assert!(git_status["branch"].as_str().is_some());
+    assert_eq!(git_status["stash_count"], 0);
+    assert_eq!(git_status["dirty_counts"]["staged"], 0);
+    assert_eq!(git_status["dirty_counts"]["unstaged"], 1);
+    assert_eq!(git_status["dirty_counts"]["untracked"], 1);
+    assert_eq!(git_status["dirty_counts"]["conflicted"], 0);
     let tracked = git_status_file(&git_status, "tracked.txt");
     assert_eq!(tracked["status"], " M");
     assert_eq!(tracked["staged"], false);
     assert_eq!(tracked["unstaged"], true);
+    assert_eq!(tracked["untracked"], false);
+    assert_eq!(tracked["conflicted"], false);
+    assert!(tracked["old_path"].is_null());
     let new_file = git_status_file(&git_status, "new.txt");
     assert_eq!(new_file["status"], "??");
     assert_eq!(new_file["staged"], false);
     assert_eq!(new_file["unstaged"], true);
+    assert_eq!(new_file["untracked"], true);
+    assert_eq!(new_file["conflicted"], false);
 
     let (status, staged) = send(
         &app,
@@ -2533,8 +2544,13 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(committed["available"], true);
+    assert_eq!(committed["status"], "ready");
     assert_eq!(committed["clean"], true);
     assert_eq!(committed["files"].as_array().unwrap().len(), 0);
+    assert_eq!(committed["dirty_counts"]["staged"], 0);
+    assert_eq!(committed["dirty_counts"]["unstaged"], 0);
+    assert_eq!(committed["dirty_counts"]["untracked"], 0);
+    assert_eq!(committed["dirty_counts"]["conflicted"], 0);
 }
 
 #[tokio::test]
@@ -2656,7 +2672,13 @@ async fn workspace_git_reports_non_repo_failures_and_rejects_unsafe_paths() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(non_repo["available"], false);
+    assert_eq!(non_repo["status"], "not_repo");
     assert_eq!(non_repo["clean"], true);
+    assert_eq!(non_repo["stash_count"], 0);
+    assert_eq!(non_repo["dirty_counts"]["staged"], 0);
+    assert_eq!(non_repo["dirty_counts"]["unstaged"], 0);
+    assert_eq!(non_repo["dirty_counts"]["untracked"], 0);
+    assert_eq!(non_repo["dirty_counts"]["conflicted"], 0);
     assert!(non_repo["message"]
         .as_str()
         .unwrap()
