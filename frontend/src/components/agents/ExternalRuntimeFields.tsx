@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   CircleAlert,
   CircleCheck,
@@ -82,6 +83,7 @@ export function ExternalRuntimeFields({
   onThinkingEffortChange,
   onRefreshCapabilities,
 }: ExternalRuntimeFieldsProps) {
+  const { t } = useTranslation(['agents', 'common'])
   const [packageSpec, setPackageSpec] = useState('')
   const [installError, setInstallError] = useState<string | null>(null)
   const runtimeVersions = useAcpRuntimeVersions()
@@ -129,7 +131,7 @@ export function ExternalRuntimeFields({
       })
       setPackageSpec('')
     } catch (error) {
-      setInstallError(error instanceof Error ? error.message : 'Installation failed.')
+      setInstallError(error instanceof Error ? error.message : t('agents:runtime.installationFailed'))
     }
   }
 
@@ -138,26 +140,26 @@ export function ExternalRuntimeFields({
       <div className="flex items-start gap-2">
         <Terminal className="mt-0.5 h-4 w-4 text-muted-foreground" />
         <div>
-          <h3 className="text-sm font-medium">ACP runtime</h3>
+          <h3 className="text-sm font-medium">{t('agents:runtime.title')}</h3>
           <p className="text-[11px] text-muted-foreground">
-            Launches an Agent Client Protocol process for the selected workspace.
+            {t('agents:runtime.description')}
           </p>
         </div>
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="acp-profile">Runtime preset</Label>
+        <Label htmlFor="acp-profile">{t('agents:runtime.preset')}</Label>
         <select
           id="acp-profile"
           value={selectedProfile}
           onChange={(event) => handlePresetChange(event.target.value)}
           className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <option value="custom">Custom ACP command</option>
+          <option value="custom">{t('agents:runtime.customCommand')}</option>
           {presets.map((preset) => (
             <option key={preset.id} value={preset.profile}>
               {preset.name}
-              {preset.installed ? '' : ' (fallback command)'}
+              {preset.installed ? '' : t('agents:runtime.fallbackSuffix')}
             </option>
           ))}
         </select>
@@ -179,7 +181,7 @@ export function ExternalRuntimeFields({
                 >
                   <span className="block font-medium">{preset.name}</span>
                   <span className="block text-[11px] text-muted-foreground">
-                    {preset.installed ? 'Local adapter detected' : 'Uses fallback command'}
+                    {preset.installed ? t('agents:runtime.localDetected') : t('agents:runtime.usesFallback')}
                   </span>
                 </button>
               )
@@ -188,13 +190,12 @@ export function ExternalRuntimeFields({
         )}
         {installedPresets.length > 0 && (
           <p className="text-[11px] text-muted-foreground">
-            Detected: {installedPresets.map((preset) => preset.name).join(', ')}
+            {t('agents:runtime.detected', { names: installedPresets.map((preset) => preset.name).join(', ') })}
           </p>
         )}
         {installedPresets.length === 0 && presets.length > 0 && (
           <p className="text-[11px] text-muted-foreground">
-            No local ACP adapter executable was detected. Presets are still selectable
-            and will use editable fallback commands.
+            {t('agents:runtime.noneDetected')}
           </p>
         )}
       </div>
@@ -215,7 +216,7 @@ export function ExternalRuntimeFields({
       {selectedPreset && (
         <details className="rounded-md border border-border bg-background" open>
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium marker:content-none">
-            <span>Version status</span>
+            <span>{t('agents:runtime.versionStatus')}</span>
             {runtimeVersions.isFetching ? (
               <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" />
             ) : versionStatus?.status === 'current' ? (
@@ -226,12 +227,12 @@ export function ExternalRuntimeFields({
           </summary>
           <div className="space-y-3 border-t border-border px-3 py-3">
             {runtimeVersions.isError ? (
-              <p className="text-xs text-warning-foreground">Unable to check runtime versions.</p>
+              <p className="text-xs text-warning-foreground">{t('agents:runtime.versionError')}</p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Local: {versionStatus?.local_version ?? 'Not installed'}
+                {t('agents:runtime.localVersion', { version: versionStatus?.local_version ?? t('agents:runtime.notInstalled') })}
                 {' · '}
-                Remote: {versionStatus?.latest_version ?? 'Unavailable'}
+                {t('agents:runtime.remoteVersion', { version: versionStatus?.latest_version ?? t('agents:runtime.unavailable') })}
               </p>
             )}
             {versionStatus?.message && (
@@ -249,13 +250,13 @@ export function ExternalRuntimeFields({
                 ) : (
                   <Download className="h-3.5 w-3.5" />
                 )}
-                {versionStatus?.installed ? 'Update' : 'Install'}
+                {versionStatus?.installed ? t('common:actions.update') : t('common:actions.install')}
               </Button>
               <span className="text-xs text-muted-foreground">{versionStatus?.package_name}</span>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input
-                aria-label="Custom package version"
+                aria-label={t('agents:runtime.customPackageVersion')}
                 value={packageSpec}
                 onChange={(event) => setPackageSpec(event.target.value)}
                 placeholder={`${versionStatus?.package_name ?? selectedPreset.name}@latest`}
@@ -269,7 +270,7 @@ export function ExternalRuntimeFields({
                 disabled={installRuntime.isPending || packageSpec.trim() === ''}
               >
                 <PackagePlus className="h-3.5 w-3.5" />
-                Custom install
+                {t('agents:runtime.customInstall')}
               </Button>
             </div>
             {installError && <p className="text-xs text-destructive">{installError}</p>}
@@ -280,10 +281,10 @@ export function ExternalRuntimeFields({
       <div className="grid gap-3 sm:grid-cols-3">
         <RuntimeCapabilityField
           id="acp-model"
-          label="Model"
+          label={t('agents:fields.model')}
           value={model}
           options={modelOptions}
-          placeholder="Adapter default"
+          placeholder={t('agents:runtime.adapterDefault')}
           onChange={onModelChange}
           onCommit={onModelCommit}
           onRefresh={onRefreshCapabilities}
@@ -293,24 +294,24 @@ export function ExternalRuntimeFields({
         />
         <RuntimeCapabilityField
           id="acp-mode"
-          label="Mode"
+          label={t('agents:fields.mode')}
           value={mode}
           options={modeOptions}
-          placeholder="Adapter default"
+          placeholder={t('agents:runtime.adapterDefault')}
           onChange={onModeChange}
         />
         <RuntimeCapabilityField
           id="acp-thinking"
-          label="Thinking"
+          label={t('agents:fields.thinking')}
           value={thinkingEffort}
           options={thinkingOptions}
-          placeholder="Adapter default"
+          placeholder={t('agents:runtime.adapterDefault')}
           onChange={onThinkingEffortChange}
         />
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="acp-command">Command</Label>
+        <Label htmlFor="acp-command">{t('agents:runtime.command')}</Label>
         <Input
           id="acp-command"
           value={command}
@@ -320,7 +321,7 @@ export function ExternalRuntimeFields({
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="acp-args">Arguments</Label>
+        <Label htmlFor="acp-args">{t('agents:runtime.arguments')}</Label>
         <Input
           id="acp-args"
           value={argsText}
@@ -330,7 +331,7 @@ export function ExternalRuntimeFields({
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="acp-env">Environment</Label>
+        <Label htmlFor="acp-env">{t('agents:runtime.environment')}</Label>
         <textarea
           id="acp-env"
           value={envText}
@@ -343,7 +344,7 @@ export function ExternalRuntimeFields({
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor="acp-timeout">Timeout seconds</Label>
+          <Label htmlFor="acp-timeout">{t('agents:runtime.timeout')}</Label>
           <Input
             id="acp-timeout"
             type="number"
@@ -354,7 +355,7 @@ export function ExternalRuntimeFields({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="acp-permission">Permission requests</Label>
+          <Label htmlFor="acp-permission">{t('agents:runtime.permissions')}</Label>
           <select
             id="acp-permission"
             value={permissionPolicy}
@@ -363,8 +364,8 @@ export function ExternalRuntimeFields({
             }
             className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            <option value="deny">Deny requests</option>
-            <option value="auto_allow">Auto allow</option>
+            <option value="deny">{t('agents:runtime.denyRequests')}</option>
+            <option value="auto_allow">{t('agents:runtime.autoAllow')}</option>
           </select>
         </div>
       </div>

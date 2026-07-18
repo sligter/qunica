@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { FileArchive, Github, Upload } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,18 +18,8 @@ interface ImportSkillFormProps {
   onCreated?: (newSkillId: string) => void
 }
 
-const PLACEHOLDER = `---
-name: my-skill
-description: One-line summary of what this skill does.
----
-
-# My Skill
-
-The body is markdown. It will be appended to the agent's system prompt
-verbatim when this skill is mounted on the agent.
-`
-
 export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
+  const { t } = useTranslation('skills')
   const importSkill = useImportSkill()
   const importPackage = useImportSkillPackage()
   const importGithub = useImportSkillFromGithub()
@@ -44,7 +35,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     e.preventDefault()
     setError(null)
     if (!raw.trim()) {
-      setError('Paste a SKILL.md before submitting.')
+      setError(t('errors.markdownRequired'))
       return
     }
     try {
@@ -52,7 +43,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       setRaw('')
       onCreated?.(created.id)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Network error')
+      setError(err instanceof ApiError ? err.message : t('errors.network'))
     }
   }
 
@@ -60,7 +51,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     e.preventDefault()
     setError(null)
     if (!selectedFile) {
-      setError('Select a .zip file first.')
+      setError(t('errors.packageRequired'))
       return
     }
     try {
@@ -69,7 +60,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       if (fileInputRef.current) fileInputRef.current.value = ''
       onCreated?.(created.id)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Network error')
+      setError(err instanceof ApiError ? err.message : t('errors.network'))
     }
   }
 
@@ -77,7 +68,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     e.preventDefault()
     setError(null)
     if (!githubUrl.trim()) {
-      setError('Enter a GitHub repository URL first.')
+      setError(t('errors.githubRequired'))
       return
     }
     try {
@@ -91,7 +82,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       setGithubPath('')
       onCreated?.(created.id)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Network error')
+      setError(err instanceof ApiError ? err.message : t('errors.network'))
     }
   }
 
@@ -102,7 +93,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       setSelectedFile(file)
       setError(null)
     } else {
-      setError('Only .zip files are accepted.')
+      setError(t('errors.zipOnly'))
     }
   }
 
@@ -113,14 +104,14 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       <TabsList className="w-full">
         <TabsTrigger value="package" className="flex-1">
           <FileArchive className="mr-1.5 h-3.5 w-3.5" />
-          Package (.zip)
+          {t('form.packageTab')}
         </TabsTrigger>
         <TabsTrigger value="markdown" className="flex-1">
-          Paste SKILL.md
+          {t('form.markdownTab')}
         </TabsTrigger>
         <TabsTrigger value="github" className="flex-1">
           <Github className="mr-1.5 h-3.5 w-3.5" />
-          GitHub
+          {t('form.githubTab')}
         </TabsTrigger>
       </TabsList>
 
@@ -134,12 +125,12 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             <Upload className="h-8 w-8 text-muted-foreground" />
             <div>
               <p className="text-sm font-medium">
-                {selectedFile ? selectedFile.name : 'Drop a .zip skill package here'}
+                {selectedFile ? selectedFile.name : t('form.dropPackage')}
               </p>
               <p className="text-xs text-muted-foreground">
                 {selectedFile
                   ? `${(selectedFile.size / 1024).toFixed(1)} KB`
-                  : 'or click to browse'}
+                  : t('form.browse')}
               </p>
             </div>
             <input
@@ -158,8 +149,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             />
           </div>
           <p className="text-[11px] text-muted-foreground">
-            The zip must contain a <code>SKILL.md</code> file with YAML frontmatter.
-            Optional: <code>scripts/</code>, <code>references/</code>, <code>assets/</code> directories.
+            {t('form.packageHint')}
           </p>
           {error && (
             <p className="text-sm text-destructive" role="alert">
@@ -167,7 +157,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             </p>
           )}
           <Button type="submit" disabled={isPending || !selectedFile}>
-            {importPackage.isPending ? 'Importing…' : 'Import package'}
+            {importPackage.isPending ? t('form.importing') : t('form.importPackage')}
           </Button>
         </form>
       </TabsContent>
@@ -175,17 +165,17 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       <TabsContent value="github">
         <form onSubmit={onSubmitGithub} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="skill-github-url">GitHub repository</Label>
+            <Label htmlFor="skill-github-url">{t('form.repository')}</Label>
             <Input
               id="skill-github-url"
-              placeholder="https://github.com/user/repo or user/repo"
+              placeholder={t('form.repositoryPlaceholder')}
               value={githubUrl}
               onChange={(e) => setGithubUrl(e.target.value)}
             />
           </div>
           <div className="grid gap-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
             <div className="space-y-1.5">
-              <Label htmlFor="skill-github-branch">Branch</Label>
+              <Label htmlFor="skill-github-branch">{t('form.branch')}</Label>
               <Input
                 id="skill-github-branch"
                 placeholder="main"
@@ -194,7 +184,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="skill-github-path">Skill path</Label>
+              <Label htmlFor="skill-github-path">{t('form.skillPath')}</Label>
               <Input
                 id="skill-github-path"
                 placeholder="skills/calculator"
@@ -204,7 +194,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            The repository, or selected directory, must contain a <code>SKILL.md</code>.
+            {t('form.repositoryHint')}
           </p>
           {error && (
             <p className="text-sm text-destructive" role="alert">
@@ -212,7 +202,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             </p>
           )}
           <Button type="submit" disabled={isPending || !githubUrl.trim()}>
-            {importGithub.isPending ? 'Installing...' : 'Fetch and install'}
+            {importGithub.isPending ? t('form.installing') : t('form.fetchInstall')}
           </Button>
         </form>
       </TabsContent>
@@ -220,19 +210,18 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       <TabsContent value="markdown">
         <form onSubmit={onSubmitMd} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="skill-raw">Paste SKILL.md</Label>
+            <Label htmlFor="skill-raw">{t('form.paste')}</Label>
             <Textarea
               id="skill-raw"
               rows={14}
               spellCheck={false}
               className="font-mono text-xs"
-              placeholder={PLACEHOLDER}
+              placeholder={t('form.rawPlaceholder')}
               value={raw}
               onChange={(e) => setRaw(e.target.value)}
             />
             <p className="text-[11px] text-muted-foreground">
-              The file must start with YAML frontmatter (<code>---</code>) containing{' '}
-              <code>name</code> and an optional <code>description</code>.
+              {t('form.markdownHint')}
             </p>
           </div>
           {error && (
@@ -241,7 +230,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             </p>
           )}
           <Button type="submit" disabled={isPending}>
-            {importSkill.isPending ? 'Importing…' : 'Import skill'}
+            {importSkill.isPending ? t('form.importing') : t('form.importSkill')}
           </Button>
         </form>
       </TabsContent>

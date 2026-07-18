@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
@@ -19,6 +20,7 @@ import {
 const PICKER_SCOPE = 'workspace-management-root'
 
 export function WorkspaceCreatePage() {
+  const { t } = useTranslation('workspaces')
   const navigate = useNavigate()
   const createWorkspace = useCreateWorkspace()
   const [name, setName] = useState('')
@@ -57,7 +59,7 @@ export function WorkspaceCreatePage() {
     }
     if (result.kind === 'cancelled') return
     if (result.kind === 'fallback') {
-      setError('Folder picker is unavailable here. Enter an absolute backend path.')
+      setError(t('validation.pickerUnavailable'))
       return
     }
     setError(result.message)
@@ -66,7 +68,7 @@ export function WorkspaceCreatePage() {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!looksAbsolute(trimmedPath)) {
-      setError('Enter an absolute backend path.')
+      setError(t('validation.enterAbsolutePath'))
       return
     }
     setError(null)
@@ -81,7 +83,7 @@ export function WorkspaceCreatePage() {
           void navigate(`/workspaces/${created.id}`)
         },
         onError: (err) => {
-          setError(err instanceof ApiError ? err.message : 'Failed to create workspace')
+          setError(err instanceof ApiError ? err.message : t('errors.create'))
         },
       },
     )
@@ -89,28 +91,28 @@ export function WorkspaceCreatePage() {
 
   return (
     <DetailShell
-      title="New local workspace"
-      subtitle="A workspace points at an absolute folder on the backend host. Groups and agents bound to it read and write files there."
+      title={t('form.createTitle')}
+      subtitle={t('form.createSubtitle')}
     >
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="space-y-1.5">
-          <Label htmlFor="workspace-new-name">Name</Label>
+          <Label htmlFor="workspace-new-name">{t('fields.name')}</Label>
           <Input
             id="workspace-new-name"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Current project"
+            placeholder={t('form.namePlaceholder')}
             className="max-w-xl"
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="workspace-new-path">Backend local path</Label>
+          <Label htmlFor="workspace-new-path">{t('fields.backendLocalPath')}</Label>
           <div className="flex max-w-xl gap-2">
             <Input
               id="workspace-new-path"
               value={localPath}
               onChange={(event) => onPathChange(event.target.value)}
-              placeholder="D:/absolute/path/to/project"
+              placeholder={t('validation.pathPlaceholder')}
               className={
                 trimmedPath && !looksAbsolute(trimmedPath)
                   ? 'border-destructive'
@@ -118,12 +120,12 @@ export function WorkspaceCreatePage() {
               }
             />
             <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
-              Pick folder
+              {t('actions.pickFolder')}
             </Button>
           </div>
           {trimmedPath && !looksAbsolute(trimmedPath) ? (
             <p className="text-xs text-destructive">
-              Local workspace paths must be absolute.
+              {t('validation.absolutePath')}
             </p>
           ) : null}
         </div>
@@ -133,7 +135,7 @@ export function WorkspaceCreatePage() {
           </p>
         ) : null}
         <Button type="submit" disabled={!canCreate}>
-          {createWorkspace.isPending ? 'Creating…' : 'Create workspace'}
+          {createWorkspace.isPending ? t('actions.creating') : t('actions.create')}
         </Button>
       </form>
     </DetailShell>

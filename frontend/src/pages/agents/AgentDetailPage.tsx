@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { EditAgentForm } from '@/components/agents/EditAgentForm'
 import { DetailShell } from '@/components/layout/DetailShell'
@@ -12,6 +13,7 @@ import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 
 export function AgentDetailPage() {
+  const { t } = useTranslation(['agents', 'common'])
   const { agentId } = useParams<{ agentId: string }>()
   const agent = useAgent(agentId)
   const providers = useProviders()
@@ -22,17 +24,17 @@ export function AgentDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (agent.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading agent…</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('agents:detail.loading')}</div>
   }
   if (agent.error) {
     return (
       <div className="p-6 text-sm text-destructive">
-        Failed to load agent: {String(agent.error)}
+        {t('agents:detail.loadError', { error: String(agent.error) })}
       </div>
     )
   }
   if (!agent.data) {
-    return <div className="p-6 text-sm text-muted-foreground">Agent not found.</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('agents:detail.notFound')}</div>
   }
 
   const a = agent.data
@@ -44,10 +46,10 @@ export function AgentDetailPage() {
   if (editing) {
     return (
       <DetailShell
-        title={`Edit ${a.name}`}
+        title={t('agents:detail.editTitle', { name: a.name })}
         actions={
           <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
         }
       >
@@ -58,10 +60,10 @@ export function AgentDetailPage() {
 
   const runtimeText =
     a.runtime_kind === 'acp'
-      ? `ACP - ${a.acp_runtime?.command ?? 'not configured'}`
+      ? t('agents:detail.runtimeAcp', { command: a.acp_runtime?.command ?? t('agents:detail.notConfigured') })
       : provider
-        ? `LLM chat - ${provider.name} - ${provider.kind} - ${provider.default_model}`
-        : 'LLM chat - Default (env settings)'
+        ? t('agents:detail.runtimeChat', { provider: provider.name, kind: provider.kind, model: provider.default_model })
+        : t('agents:detail.runtimeDefault')
 
   return (
     <DetailShell
@@ -70,7 +72,7 @@ export function AgentDetailPage() {
       actions={
         <>
           <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
-            Edit
+            {t('common:actions.edit')}
           </Button>
           <Button
             size="sm"
@@ -78,7 +80,7 @@ export function AgentDetailPage() {
             onClick={() => setConfirmOpen(true)}
             disabled={del.isPending}
           >
-            {del.isPending ? 'Deleting…' : 'Delete'}
+            {del.isPending ? t('common:actions.deleting') : t('common:actions.delete')}
           </Button>
         </>
       }
@@ -87,13 +89,13 @@ export function AgentDetailPage() {
         <section className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2 xl:grid-cols-3">
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Runtime
+              {t('agents:detail.runtime')}
             </h3>
             <p className="mt-1">{runtimeText}</p>
           </div>
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Status
+              {t('agents:detail.status')}
             </h3>
             <Badge
               variant={a.status === 'active' ? 'default' : 'secondary'}
@@ -106,7 +108,7 @@ export function AgentDetailPage() {
 
         <section className="space-y-2">
           <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            System prompt
+            {t('agents:detail.systemPrompt')}
           </h2>
           <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-4 text-sm">
             {a.system_prompt}
@@ -116,7 +118,7 @@ export function AgentDetailPage() {
         {a.llm_config && Object.keys(a.llm_config).length > 0 && (
           <section className="space-y-2">
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Model parameters
+              {t('agents:detail.modelParameters')}
             </h3>
             <div className="flex flex-wrap gap-2">
               {Object.entries(a.llm_config).map(([k, v]) => (
@@ -130,10 +132,10 @@ export function AgentDetailPage() {
 
         <section className="space-y-2">
           <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Mounted skills
+            {t('agents:detail.mountedSkills')}
           </h3>
           {mountedSkills.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No skills mounted.</p>
+            <p className="text-sm text-muted-foreground">{t('agents:detail.noMountedSkills')}</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {mountedSkills.map((s) => (
@@ -149,9 +151,9 @@ export function AgentDetailPage() {
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={`Delete agent "${a.name}"?`}
-        description="This will remove it from active agent lists."
-        confirmLabel="Delete"
+        title={t('agents:detail.deleteTitle', { name: a.name })}
+        description={t('agents:detail.deleteDescription')}
+        confirmLabel={t('common:actions.delete')}
         destructive
         onConfirm={async () => {
           await del.mutateAsync(a.id)

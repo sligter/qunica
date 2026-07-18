@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { EditProviderForm } from '@/components/providers/EditProviderForm'
 import { DetailShell } from '@/components/layout/DetailShell'
@@ -7,8 +8,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useDeleteProvider, useProvider } from '@/hooks/useProviders'
+import { formatNumber } from '@/lib/format'
+import type { Language } from '@/i18n'
 
 export function ProviderDetailPage() {
+  const { t, i18n } = useTranslation(['providers', 'common'])
   const { providerId } = useParams<{ providerId: string }>()
   const provider = useProvider(providerId)
   const del = useDeleteProvider()
@@ -17,17 +21,17 @@ export function ProviderDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (provider.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('providers:detail.loading')}</div>
   }
   if (provider.error) {
     return (
       <div className="p-6 text-sm text-destructive">
-        Failed to load: {String(provider.error)}
+        {t('providers:detail.loadError', { error: String(provider.error) })}
       </div>
     )
   }
   if (!provider.data) {
-    return <div className="p-6 text-sm text-muted-foreground">Provider not found.</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('providers:detail.notFound')}</div>
   }
 
   const p = provider.data
@@ -35,10 +39,10 @@ export function ProviderDetailPage() {
   if (editing) {
     return (
       <DetailShell
-        title={`Edit ${p.name}`}
+        title={t('providers:detail.editTitle', { name: p.name })}
         actions={
           <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
         }
       >
@@ -54,7 +58,7 @@ export function ProviderDetailPage() {
       actions={
         <>
           <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-            Edit
+            {t('common:actions.edit')}
           </Button>
           <Button
             variant="destructive"
@@ -62,34 +66,34 @@ export function ProviderDetailPage() {
             onClick={() => setConfirmOpen(true)}
             disabled={del.isPending}
           >
-            {del.isPending ? 'Deleting…' : 'Delete'}
+            {del.isPending ? t('common:actions.deleting') : t('common:actions.delete')}
           </Button>
         </>
       }
     >
       <div className="space-y-8">
         <section className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
-          <Field label="Kind" value={p.kind} />
-          <Field label="Default model" value={p.default_model} />
+          <Field label={t('providers:fields.kind')} value={p.kind} />
+          <Field label={t('providers:fields.defaultModel')} value={p.default_model} />
           <Field
-            label="Context window"
+            label={t('providers:fields.contextWindow')}
             value={
               p.context_window_tokens !== null
-                ? p.context_window_tokens.toLocaleString()
-                : 'Auto'
+                ? formatNumber(p.context_window_tokens, i18n.resolvedLanguage as Language)
+                : t('providers:states.auto')
             }
           />
           <Field
-            label="Output reserve"
+            label={t('providers:fields.outputReserve')}
             value={
               p.context_output_reserve_ratio !== null
                 ? `${Math.round(p.context_output_reserve_ratio * 100)}%`
                 : '30%'
             }
           />
-          <Field label="Base URL" value={p.base_url ?? '-'} />
-          <Field label="API key" value={p.api_key_masked} mono />
-          <Field label="Status">
+          <Field label={t('providers:fields.baseUrl')} value={p.base_url ?? '-'} />
+          <Field label={t('providers:fields.apiKey')} value={p.api_key_masked} mono />
+          <Field label={t('providers:fields.status')}>
             <Badge variant={p.status === 'active' ? 'default' : 'secondary'}>
               {p.status}
             </Badge>
@@ -99,7 +103,7 @@ export function ProviderDetailPage() {
         {p.description && (
           <section className="space-y-2">
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Description
+              {t('providers:detail.description')}
             </h3>
             <p className="whitespace-pre-wrap text-sm">{p.description}</p>
           </section>
@@ -109,9 +113,9 @@ export function ProviderDetailPage() {
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={`Delete provider "${p.name}"?`}
-        description="Agents using it will fall back to defaults."
-        confirmLabel="Delete"
+        title={t('providers:detail.deleteTitle', { name: p.name })}
+        description={t('providers:detail.deleteDescription')}
+        confirmLabel={t('common:actions.delete')}
         destructive
         onConfirm={async () => {
           await del.mutateAsync(p.id)

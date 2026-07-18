@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,6 +18,7 @@ interface SkillResourcesPanelProps {
 }
 
 export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
+  const { t } = useTranslation('skills')
   const resources = useSkillResources(skill.id)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const selected = useSkillResource(skill.id, selectedPath)
@@ -59,7 +61,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
     try {
       await update.mutateAsync(draft)
     } catch (err) {
-      setSaveError(err instanceof ApiError ? err.message : 'Failed to save file')
+      setSaveError(err instanceof ApiError ? err.message : t('resources.saveError'))
     }
   }
 
@@ -67,10 +69,10 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
     return (
       <section className="space-y-2">
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Package resources
+          {t('resources.title')}
         </h3>
         <p className="text-sm text-muted-foreground">
-          This skill has no imported package resources.
+          {t('resources.empty')}
         </p>
       </section>
     )
@@ -80,16 +82,16 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Package resources
+          {t('resources.title')}
         </h3>
         <Badge variant="outline" className="text-[10px]">
-          {skill.files.length} files
+          {t('resources.file', { count: skill.files.length })}
         </Badge>
       </div>
 
       {resources.error && (
         <p className="text-xs text-destructive">
-          Failed to load resource editability. Showing package metadata only.
+          {t('resources.metadataError')}
         </p>
       )}
 
@@ -112,7 +114,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                     {file.category}
                   </Badge>
                   <span>{formatSize(file.size)}</span>
-                  <span>{file.is_text ? 'text' : 'binary/unknown'}</span>
+                  <span>{file.is_text ? t('resources.text') : t('resources.binaryUnknown')}</span>
                 </span>
               </button>
             ))}
@@ -121,7 +123,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
 
         <div className="min-w-0 rounded-md border border-border p-3">
           {!selectedInfo && (
-            <p className="text-sm text-muted-foreground">Select a resource file.</p>
+            <p className="text-sm text-muted-foreground">{t('resources.select')}</p>
           )}
           {selectedInfo && (
             <div className="space-y-3">
@@ -135,7 +137,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                     {formatSize(selectedInfo.size)}
                   </Badge>
                   <Badge variant={selectedInfo.is_text ? 'default' : 'secondary'} className="text-[10px]">
-                    {selectedInfo.is_text ? 'editable text' : 'not editable'}
+                    {selectedInfo.is_text ? t('resources.editable') : t('resources.notEditable')}
                   </Badge>
                 </div>
               </div>
@@ -143,13 +145,13 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
               <Separator />
 
               {selected.isLoading && (
-                <p className="text-sm text-muted-foreground">Loading file…</p>
+                <p className="text-sm text-muted-foreground">{t('resources.loading')}</p>
               )}
               {selected.error && (
                 <p className="text-sm text-destructive">
                   {selected.error instanceof ApiError
                     ? selected.error.message
-                    : 'Failed to load file.'}
+                    : t('resources.loadError')}
                 </p>
               )}
               {canEditSelected && (
@@ -166,13 +168,13 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                       </p>
                     )}
                     <Button size="sm" onClick={onSave} disabled={update.isPending || !canEditSelected}>
-                      {update.isPending ? 'Saving…' : 'Save file'}
+                      {update.isPending ? t('resources.saving') : t('resources.save')}
                     </Button>
                   </div>
                 )}
               {!selected.isLoading && !selectedInfo.is_text && (
                 <p className="text-sm text-muted-foreground">
-                  Binary files and non-UTF-8 resources cannot be edited in the browser.
+                  {t('resources.binaryHint')}
                 </p>
               )}
             </div>

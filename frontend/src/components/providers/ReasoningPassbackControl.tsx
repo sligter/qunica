@@ -1,5 +1,6 @@
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { useTranslation } from 'react-i18next'
 
 interface ReasoningPassbackControlProps {
   value: boolean
@@ -16,18 +17,17 @@ interface ReasoningPassbackControlProps {
  * because plain chat models neither emit nor need it.
  */
 export function ReasoningPassbackControl({ value, onChange }: ReasoningPassbackControlProps) {
+  const { t } = useTranslation('providers')
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="space-y-0.5">
-        <Label>Reasoning passback</Label>
+        <Label>{t('fields.reasoningPassback')}</Label>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          Re-send the model&apos;s prior reasoning on multi-turn tool calls. Reasoning
-          models with tool use (e.g. DeepSeek, MiMo) expect it. Enable for reasoning
-          models; leave off for plain chat models.
+          {t('reasoning.description')}
         </p>
       </div>
       <Switch
-        aria-label="Reasoning passback"
+        aria-label={t('fields.reasoningPassback')}
         checked={value}
         onCheckedChange={onChange}
         className="mt-1 shrink-0"

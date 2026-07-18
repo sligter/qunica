@@ -1,14 +1,16 @@
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { CreateProviderForm } from '@/components/providers/CreateProviderForm'
 import { DetailShell } from '@/components/layout/DetailShell'
 
 export function ProviderCreatePage() {
   const navigate = useNavigate()
+  const { t } = useTranslation('providers')
   return (
     <DetailShell
-      title="New LLM provider"
-      subtitle="Register a chat-completion endpoint. The API key is stored securely and shown masked on the detail page."
+      title={t('form.createTitle')}
+      subtitle={t('form.createSubtitle')}
     >
       <CreateProviderForm onCreated={(id) => void navigate(`/providers/${id}`)} />
     </DetailShell>

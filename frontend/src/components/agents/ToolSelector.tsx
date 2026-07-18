@@ -1,15 +1,6 @@
 import type { AgentRead, AgentToolConfig, BuiltinToolRead, ToolPolicy, WorkspaceBackendType } from '@/types/api'
 import { cn } from '@/lib/utils'
-
-const POLICY_LABELS: Record<ToolPolicy, string> = {
-  read: 'Filesystem read',
-  write: 'Filesystem write',
-  execute: 'Execution',
-  network: 'Web',
-  media: 'Media',
-  planning: 'Planning',
-  orchestration: 'Orchestration',
-}
+import { useTranslation } from 'react-i18next'
 
 const POLICY_ORDER: ToolPolicy[] = [
   'read',
@@ -41,15 +32,6 @@ function isToggleDisabled(tool: BuiltinToolRead, workspaceBackendType: Workspace
   )
 }
 
-function statusText(tool: BuiltinToolRead, workspaceBackendType: WorkspaceBackendType) {
-  if (tool.requires_sandbox && workspaceBackendType === 'local') return 'Cloud sandbox required'
-  if (isRuntimeExecutable(tool, workspaceBackendType)) return 'Executable now'
-  if (tool.runtime_status === 'available') return 'Executable now'
-  if (tool.runtime_status === 'planned') return 'Saved only'
-  if (tool.runtime_status === 'sandbox_required') return 'Sandbox required'
-  return 'Disabled'
-}
-
 export function ToolSelector({
   tools,
   value,
@@ -58,6 +40,14 @@ export function ToolSelector({
   currentAgentId,
   onChange,
 }: ToolSelectorProps) {
+  const { t } = useTranslation('agents')
+  const statusText = (tool: BuiltinToolRead) => {
+    if (tool.requires_sandbox && workspaceBackendType === 'local') return t('tools.states.cloudRequired')
+    if (isRuntimeExecutable(tool, workspaceBackendType) || tool.runtime_status === 'available') return t('tools.states.executable')
+    if (tool.runtime_status === 'planned') return t('tools.states.savedOnly')
+    if (tool.runtime_status === 'sandbox_required') return t('tools.states.sandboxRequired')
+    return t('tools.states.disabled')
+  }
   const toggleTool = (tool: BuiltinToolRead) => {
     if (isToggleDisabled(tool, workspaceBackendType)) return
     const current = value.tools[tool.id]
@@ -89,19 +79,16 @@ export function ToolSelector({
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-warning bg-warning/55 p-3 text-xs text-warning-foreground">
-        Selected built-ins are bound as executable provider-native tools with bounded safeguards.
-        Some tools may return setup-required or input-required results when a provider or resume
-        contract is not configured; they are still truthful runtime tool calls, not saved-only claims.
+        {t('tools.notice')}
       </div>
       <div className="space-y-2">
-        <p className="text-xs font-medium text-muted-foreground">Agent as tool</p>
+        <p className="text-xs font-medium text-muted-foreground">{t('tools.agentAsTool')}</p>
         <div className="rounded-md border border-border bg-background p-3">
           <p className="text-xs text-muted-foreground">
-            Bind other owned agents as callable assistants. Runtime delegation dispatches a bounded
-            @mention-style task to the selected helper and returns the helper response as a tool result.
+            {t('tools.agentAsToolDescription')}
           </p>
           {selectableAgents.length === 0 ? (
-            <p className="mt-2 text-[11px] text-muted-foreground">No other agents are available.</p>
+            <p className="mt-2 text-[11px] text-muted-foreground">{t('tools.noAgents')}</p>
           ) : (
             <div className="mt-3 flex flex-wrap gap-2">
               {selectableAgents.map((agent) => {
@@ -136,7 +123,7 @@ export function ToolSelector({
         if (policyTools.length === 0) return null
         return (
           <div key={policy} className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">{POLICY_LABELS[policy]}</p>
+            <p className="text-xs font-medium text-muted-foreground">{t(`tools.policies.${policy}`)}</p>
             <div className="grid gap-2 sm:grid-cols-2">
               {policyTools.map((tool) => {
                 const checked = value.tools[tool.id]?.enabled ?? false
@@ -159,13 +146,13 @@ export function ToolSelector({
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-sm font-medium">{tool.name}</span>
                       <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                        {statusText(tool, workspaceBackendType)}
+                        {statusText(tool)}
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{tool.description}</p>
                     {!executable && checked && (
                       <p className="mt-2 text-[11px] font-medium text-warning-foreground">
-                        This tool is unavailable for the selected workspace backend or disabled by policy.
+                        {t('tools.unavailable')}
                       </p>
                     )}
                   </button>

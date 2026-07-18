@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
+import '@/i18n'
 
 vi.mock('@/hooks/useAgents', () => ({
   useAgents: () => ({

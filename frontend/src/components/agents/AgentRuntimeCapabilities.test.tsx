@@ -9,6 +9,7 @@ import { EditAgentForm } from '@/components/agents/EditAgentForm'
 import type { AcpRuntimeCapabilitiesInput } from '@/hooks/useAcpRuntimeCapabilities'
 import { useAuthStore } from '@/stores/authStore'
 import type { AgentRead } from '@/types/api'
+import i18n from '@/i18n'
 
 const mocks = vi.hoisted(() => ({
   capabilityHook: vi.fn(),
@@ -194,10 +195,26 @@ describe('agent runtime capabilities', () => {
     mocks.capabilityState.data.warning = 'Adapter warning'
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
     useAuthStore.setState({ token: null })
     vi.unstubAllGlobals()
+    await i18n.changeLanguage('en-US')
+  })
+
+  it('renders translated agent fields, runtime choices, and validation errors', async () => {
+    await i18n.changeLanguage('zh-CN')
+    const user = userEvent.setup()
+    renderForm(<CreateAgentForm />)
+
+    expect(screen.getByLabelText('名称')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /LLM 对话提供商原生模型和工具/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^ACPAgent Client Protocol 进程$/ })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '创建 Agent' }))
+
+    expect(await screen.findByText('Agent 名称为必填项。')).toBeInTheDocument()
+    expect(screen.getByText('工作区为必填项。')).toBeInTheDocument()
   })
 
   it('auto-probes ACP on open and model commit while keeping command edits stale until refresh', async () => {

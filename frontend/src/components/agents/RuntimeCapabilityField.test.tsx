@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
+import i18n from '@/i18n'
 
 const options = [
   { value: 'gpt-live', label: 'GPT Live', description: 'Discovered at runtime' },
@@ -62,7 +63,10 @@ function ProgrammaticValueField({ onCommit }: { onCommit: (value: string) => voi
 }
 
 describe('RuntimeCapabilityField', () => {
-  afterEach(cleanup)
+  afterEach(async () => {
+    cleanup()
+    await i18n.changeLanguage('en-US')
+  })
 
   it('keeps arbitrary values editable and exposes a styled suggestion list', async () => {
     const user = userEvent.setup()
@@ -171,5 +175,18 @@ describe('RuntimeCapabilityField', () => {
     view.rerender(<EditableField onRefresh={onRefresh} isLoading />)
     expect(screen.getByRole('status')).toHaveTextContent('Loading available values...')
     expect(screen.getByRole('button', { name: 'Refresh available values' })).toBeDisabled()
+  })
+
+  it('translates capability actions and state framing without changing runtime values', async () => {
+    await i18n.changeLanguage('zh-CN')
+    const onRefresh = vi.fn()
+    const view = render(<EditableField onRefresh={onRefresh} stale />)
+
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('saved-custom')
+    expect(screen.getByRole('status')).toHaveTextContent('运行时设置已更改。请刷新可用值。')
+    expect(screen.getByRole('button', { name: '刷新可用值' })).toBeInTheDocument()
+
+    view.rerender(<EditableField onRefresh={onRefresh} isLoading />)
+    expect(screen.getByRole('status')).toHaveTextContent('正在加载可用值…')
   })
 })

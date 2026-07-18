@@ -2,6 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
+import i18n from '@/i18n'
 
 const mocks = vi.hoisted(() => ({
   workspaces: [
@@ -25,7 +26,10 @@ vi.mock('@/hooks/useWorkspaces', () => ({
 }))
 
 describe('WorkspaceField', () => {
-  afterEach(cleanup)
+  afterEach(async () => {
+    cleanup()
+    await i18n.changeLanguage('en-US')
+  })
 
   it('uses a compact workspace selector without a duplicate label', () => {
     render(<WorkspaceField variant="compact" value="workspace-1" onChange={vi.fn()} />)
@@ -33,5 +37,15 @@ describe('WorkspaceField', () => {
     expect(screen.getByRole('button', { name: 'New workspace' })).toBeInTheDocument()
     expect(screen.queryByText('Workspace', { selector: 'label' })).not.toBeInTheDocument()
     expect(screen.getByText(/Location: D:\/projects\/ag-swarmer/)).toBeInTheDocument()
+  })
+
+  it('translates the workspace label, picker action, and selected location', async () => {
+    await i18n.changeLanguage('zh-CN')
+
+    render(<WorkspaceField value="workspace-1" onChange={vi.fn()} />)
+
+    expect(screen.getByLabelText('工作区')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建本地工作区' })).toBeInTheDocument()
+    expect(screen.getByText(/绑定到本地：D:\/projects\/ag-swarmer/)).toBeInTheDocument()
   })
 })

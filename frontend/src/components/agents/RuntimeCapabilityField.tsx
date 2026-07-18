@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -39,6 +40,7 @@ export function RuntimeCapabilityField({
   stale = false,
   warning = null,
 }: RuntimeCapabilityFieldProps) {
+  const { t } = useTranslation('agents')
   const listId = `${id}-available-values`
   const statusId = `${id}-capability-status`
   const fieldRef = useRef<HTMLDivElement>(null)
@@ -96,9 +98,9 @@ export function RuntimeCapabilityField({
   }
 
   const status = isLoading
-    ? 'Loading available values...'
+    ? t('states.loadingValues')
     : stale
-      ? 'Runtime settings changed. Refresh available values.'
+      ? t('states.staleValues')
       : warning
 
   return (
@@ -169,7 +171,7 @@ export function RuntimeCapabilityField({
           />
           <button
             type="button"
-            aria-label={`Show ${label.toLocaleLowerCase()} options`}
+            aria-label={t('actions.showOptions', { label: label.toLocaleLowerCase() })}
             aria-expanded={open}
             className="absolute inset-y-0 right-0 grid w-9 place-items-center text-muted-foreground transition-colors hover:text-foreground"
             onMouseDown={(event) => event.preventDefault()}
@@ -185,7 +187,7 @@ export function RuntimeCapabilityField({
             <div
               id={listId}
               role="listbox"
-              aria-label={`${label} options`}
+              aria-label={t('actions.valueOptions', { label })}
               className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-card p-1 shadow-lg"
             >
               {filteredOptions.map((option, index) => {
@@ -227,7 +229,7 @@ export function RuntimeCapabilityField({
             variant="outline"
             size="icon"
             className="shrink-0"
-            aria-label="Refresh available values"
+            aria-label={t('actions.refreshValues')}
             disabled={isLoading}
             onClick={onRefresh}
           >

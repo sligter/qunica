@@ -1,4 +1,5 @@
 import { Label } from '@/components/ui/label'
+import { useTranslation } from 'react-i18next'
 import { thinkingLevelOptions, type ThinkingLevel } from '@/components/agents/thinkingLevel'
 import { cn } from '@/lib/utils'
 
@@ -8,17 +9,19 @@ interface ThinkingLevelControlProps {
 }
 
 export function ThinkingLevelControl({ value, onChange }: ThinkingLevelControlProps) {
+  const { t } = useTranslation('agents')
   const selected = thinkingLevelOptions.find((option) => option.value === value)
+  const optionLabel = (level: ThinkingLevel) => t(`thinking.${level}`)
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <Label>Thinking level</Label>
-        <span className="text-xs text-muted-foreground">{selected?.label}</span>
+        <Label>{t('fields.thinkingLevel')}</Label>
+        <span className="text-xs text-muted-foreground">{selected ? optionLabel(selected.value) : null}</span>
       </div>
       <div
         className="grid grid-cols-5 gap-1 rounded-md border border-border bg-muted/40 p-1"
-        aria-label="Thinking level"
+        aria-label={t('fields.thinkingLevel')}
       >
         {thinkingLevelOptions.map((option) => {
           const active = option.value === value
@@ -35,7 +38,7 @@ export function ThinkingLevelControl({ value, onChange }: ThinkingLevelControlPr
                   : 'text-muted-foreground hover:bg-background/70 hover:text-foreground',
               )}
             >
-              {option.label}
+              {optionLabel(option.value)}
             </button>
           )
         })}

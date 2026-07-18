@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Bot, Users } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
@@ -32,24 +33,25 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 export function WorkspaceDetailPage() {
+  const { t } = useTranslation('workspaces')
   const { workspaceId } = useParams<{ workspaceId: string }>()
   const workspaces = useWorkspaces()
   const navigate = useNavigate()
 
   if (workspaces.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading workspace…</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('detail.loading')}</div>
   }
   if (workspaces.error) {
     return (
       <div className="p-6 text-sm text-destructive">
-        Failed to load workspaces: {String(workspaces.error)}
+        {t('detail.loadError', { error: String(workspaces.error) })}
       </div>
     )
   }
 
   const workspace = (workspaces.data ?? []).find((w) => w.id === workspaceId)
   if (!workspace) {
-    return <div className="p-6 text-sm text-muted-foreground">Workspace not found.</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('detail.notFound')}</div>
   }
 
   return (
@@ -67,6 +69,7 @@ interface WorkspaceDetailProps {
 }
 
 function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
+  const { t } = useTranslation(['workspaces', 'common'])
   const updateWorkspace = useUpdateWorkspace(workspace.id)
   const deleteWorkspace = useDeleteWorkspace()
   const [name, setName] = useState(workspace.name)
@@ -117,7 +120,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     }
     if (result.kind === 'cancelled') return
     if (result.kind === 'fallback') {
-      setError('Folder picker is unavailable here. Enter an absolute backend path.')
+      setError(t('workspaces:validation.pickerUnavailable'))
       return
     }
     setError(result.message)
@@ -133,7 +136,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     setError(null)
     updateWorkspace.mutate(payload, {
       onError: (err) => {
-        setError(errorMessage(err, 'Failed to update workspace'))
+        setError(errorMessage(err, t('workspaces:errors.update')))
       },
     })
   }
@@ -156,20 +159,20 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
           onClick={() => setConfirmOpen(true)}
           disabled={updateWorkspace.isPending || deleteWorkspace.isPending}
         >
-          {deleteWorkspace.isPending ? 'Deleting…' : 'Delete'}
+          {deleteWorkspace.isPending ? t('common:actions.deleting') : t('common:actions.delete')}
         </Button>
       }
     >
       <div className="space-y-10">
         <SettingsSection
-          title="Workspace"
+          title={t('workspaces:detail.title')}
           aside={
             <Button size="sm" onClick={onSave} disabled={!canSave}>
-              {updateWorkspace.isPending ? 'Saving…' : 'Save'}
+              {updateWorkspace.isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           }
         >
-          <SettingsRow label="Name" htmlFor="workspace-edit-name" stacked>
+          <SettingsRow label={t('workspaces:fields.name')} htmlFor="workspace-edit-name" stacked>
             <Input
               id="workspace-edit-name"
               value={name}
@@ -179,8 +182,8 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
           </SettingsRow>
           {workspace.backend_type === 'local' ? (
             <SettingsRow
-              label="Backend local path"
-              description="Absolute folder on the backend host."
+              label={t('workspaces:fields.backendLocalPath')}
+              description={t('workspaces:fields.backendLocalPathDescription')}
               htmlFor="workspace-edit-path"
               stacked
             >
@@ -196,17 +199,17 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
                   variant="outline"
                   onClick={() => void onPickFolder()}
                 >
-                  Pick folder
+                  {t('workspaces:actions.pickFolder')}
                 </Button>
               </div>
               {localPathInvalid ? (
                 <p className="text-xs text-destructive">
-                  Local workspace paths must be absolute.
+                  {t('workspaces:validation.absolutePath')}
                 </p>
               ) : null}
             </SettingsRow>
           ) : (
-            <SettingsRow label="Sandbox ref" htmlFor="workspace-edit-sandbox" stacked>
+            <SettingsRow label={t('workspaces:fields.sandboxRef')} htmlFor="workspace-edit-sandbox" stacked>
               <Input
                 id="workspace-edit-sandbox"
                 value={sandboxRef}
@@ -228,9 +231,9 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={`Delete workspace "${workspace.name}"?`}
-        description="This hides it from the workspace list and clears it from active groups and agents that currently use it."
-        confirmLabel="Delete"
+        title={t('workspaces:detail.deleteTitle', { name: workspace.name })}
+        description={t('workspaces:detail.deleteDescription')}
+        confirmLabel={t('common:actions.delete')}
         destructive
         onConfirm={async () => {
           await deleteWorkspace.mutateAsync(workspace.id)
@@ -250,6 +253,7 @@ interface WorkspaceUsageSectionProps {
  * Bindings are configured on the entity side (agent detail, group manage).
  */
 function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
+  const { t } = useTranslation('workspaces')
   const groups = useGroups()
   const agents = useAgents()
 
@@ -259,15 +263,15 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
 
   return (
     <SettingsSection
-      title="Used by"
-      description="Bindings are configured on each group or agent, not here."
+      title={t('detail.usedBy')}
+      description={t('detail.usedByDescription')}
     >
       <div className="py-4">
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading usage…</p>
+          <p className="text-sm text-muted-foreground">{t('detail.loadingUsage')}</p>
         ) : boundGroups.length === 0 && boundAgents.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No groups or agents use this workspace.
+            {t('detail.unused')}
           </p>
         ) : (
           <ul className="space-y-1.5">
@@ -276,7 +280,7 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
                 <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="truncate">{group.name}</span>
                 <Badge variant="outline" className="text-[10px]">
-                  group
+                  {t('detail.group')}
                 </Badge>
               </li>
             ))}
@@ -285,7 +289,7 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
                 <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="truncate">{agent.name}</span>
                 <Badge variant="outline" className="text-[10px]">
-                  agent
+                  {t('detail.agent')}
                 </Badge>
               </li>
             ))}

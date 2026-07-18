@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
 import {
@@ -48,10 +49,11 @@ import type {
   AgentToolConfig,
 } from '@/types/api'
 
-const schema = z.object({
-  name: z.string().min(1, 'Required').max(100),
+function createSchema(nameRequired: string, promptRequired: string, workspaceRequired: string, increment: string) {
+ return z.object({
+  name: z.string().min(1, nameRequired).max(100),
   description: z.string().optional(),
-  system_prompt: z.string().min(1, 'Required'),
+  system_prompt: z.string().min(1, promptRequired),
   runtime_kind: z.enum(['llm_chat', 'acp']),
   acp_profile: z.enum(['custom', 'codex', 'claude', 'pi', 'opencode']),
   acp_command: z.string().optional(),
@@ -64,12 +66,12 @@ const schema = z.object({
   acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
   model: z.string().optional(),
-  workspace_id: z.string().min(1, 'Workspace is required'),
+  workspace_id: z.string().min(1, workspaceRequired),
   temperature: z
     .number()
     .min(0)
     .max(2)
-    .refine(isAgentTemperatureStep, 'Must use 0.05 increments')
+    .refine(isAgentTemperatureStep, increment)
     .optional(),
   top_p: z.number().min(0).max(1).optional(),
   reasoning_effort: z.enum(thinkingLevelValues),
@@ -81,9 +83,10 @@ const schema = z.object({
     (value) => (value === '' || Number.isNaN(value) ? undefined : value),
     z.number().min(1).max(90).optional(),
   ),
-})
+ })
+}
 
-type FormValues = z.infer<typeof schema>
+type FormValues = z.infer<ReturnType<typeof createSchema>>
 
 function optionalText(value: string | undefined): string | null {
   const trimmed = value?.trim() ?? ''
@@ -96,6 +99,7 @@ interface EditAgentFormProps {
 }
 
 export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
+  const { t } = useTranslation(['agents', 'common'])
   const update = useUpdateAgent(agent.id)
   const providers = useProviders()
   const skills = useSkills()
@@ -109,6 +113,10 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const savedThinkingLevel = agent.llm_config?.reasoning_effort
   const savedContextReserveRatio = agent.llm_config?.context_output_reserve_ratio
+  const schema = useMemo(
+    () => createSchema(t('agents:validation.nameRequired'), t('agents:validation.systemPromptRequired'), t('agents:validation.workspaceRequired'), t('agents:validation.temperatureIncrement')),
+    [t],
+  )
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -253,14 +261,14 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       })
       onSaved?.()
     } catch (err) {
-      setSubmitError(err instanceof ApiError ? err.message : 'Network error')
+      setSubmitError(err instanceof ApiError ? err.message : t('agents:errors.network'))
     }
   })
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="ea-name">Name</Label>
+        <Label htmlFor="ea-name">{t('agents:fields.name')}</Label>
         <Input id="ea-name" {...form.register('name')} />
         {form.formState.errors.name && (
           <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
@@ -268,12 +276,12 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="ea-description">Description (optional)</Label>
+        <Label htmlFor="ea-description">{t('agents:fields.descriptionOptional')}</Label>
         <Input id="ea-description" {...form.register('description')} />
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="ea-prompt">System prompt</Label>
+        <Label htmlFor="ea-prompt">{t('agents:fields.systemPrompt')}</Label>
         <SystemPromptMentionTextarea
           id="ea-prompt"
           rows={6}
@@ -297,15 +305,15 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
       <section className="space-y-2 rounded-md border border-border bg-card p-3">
         <div>
-          <h3 className="text-sm font-medium">Runtime</h3>
+          <h3 className="text-sm font-medium">{t('agents:fields.runtime')}</h3>
           <p className="text-[11px] text-muted-foreground">
-            Choose the execution engine for this agent.
+            {t('agents:form.runtimeDescription')}
           </p>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {([
-            ['llm_chat', 'LLM chat', 'Provider-native model and tools'],
-            ['acp', 'ACP', 'Agent Client Protocol process'],
+            ['llm_chat', t('agents:runtime.chatLabel'), t('agents:runtime.chatHint')],
+            ['acp', t('agents:runtime.acpLabel'), t('agents:runtime.acpHint')],
           ] as const).map(([value, label, hint]) => {
             const checked = runtimeKind === value
             return (
@@ -330,9 +338,9 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
       <section className="space-y-2 rounded-md border border-border bg-card p-3">
         <div>
-          <h3 className="text-sm font-medium">Workspace</h3>
+          <h3 className="text-sm font-medium">{t('agents:fields.workspace')}</h3>
           <p className="text-[11px] text-muted-foreground">
-            Bind this agent to a backend-visible project folder.
+            {t('agents:form.workspaceDescription')}
           </p>
         </div>
         <WorkspaceField
@@ -344,7 +352,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         />
         {!agent.workspace_id && (
           <p className="text-xs text-warning-foreground">
-            This existing agent has no workspace yet. Select one before saving.
+            {t('agents:form.noWorkspaceWarning')}
           </p>
         )}
       </section>
@@ -369,7 +377,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           capabilitiesWarning={
             acpCapabilities.data?.warning ??
             (acpCapabilities.isError
-              ? 'Unable to load runtime capabilities. Check the adapter settings and refresh.'
+              ? t('agents:errors.runtimeCapabilities')
               : null)
           }
           onProfileChange={(value: AcpRuntimeProfile) => {
@@ -404,13 +412,13 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       {runtimeKind === 'llm_chat' && (
         <>
           <div className="space-y-1.5">
-            <Label htmlFor="ea-provider">LLM provider</Label>
+            <Label htmlFor="ea-provider">{t('agents:fields.provider')}</Label>
             <select
               id="ea-provider"
               className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               {...form.register('llm_provider_id')}
             >
-              <option value="">Default (env settings)</option>
+              <option value="">{t('agents:states.defaultProvider')}</option>
               {(providers.data ?? []).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} - {p.kind} - {p.default_model}
@@ -421,18 +429,18 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
           <RuntimeCapabilityField
             id="ea-model"
-            label="Model"
+            label={t('agents:fields.model')}
             value={form.watch('model') ?? ''}
             options={(providerModels.data ?? []).map((model) => ({
               value: model.id,
               label: model.name,
             }))}
-            placeholder="Provider default"
+            placeholder={t('agents:states.providerDefault')}
             onChange={(value) => form.setValue('model', value)}
             isLoading={providerModels.isFetching}
             warning={
               providerModels.isError
-                ? 'Unable to load provider models. You can still enter a custom model.'
+                ? t('agents:errors.providerModels')
                 : null
             }
           />
@@ -448,13 +456,13 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
               ) : (
                 <ChevronRight className="h-4 w-4" />
               )}
-              Model Parameters
+              {t('agents:fields.modelParameters')}
             </button>
             {showAdvanced && (
               <div className="space-y-4 rounded-md border border-border bg-card p-4">
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label>Temperature</Label>
+                    <Label>{t('agents:fields.temperature')}</Label>
                     <span className="text-xs text-muted-foreground">
                       {formatAgentTemperature(form.watch('temperature'))}
                     </span>
@@ -471,7 +479,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label>Top P</Label>
+                    <Label>{t('agents:fields.topP')}</Label>
                     <span className="text-xs text-muted-foreground">
                       {form.watch('top_p')?.toFixed(2)}
                     </span>
@@ -490,23 +498,23 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                 />
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
-                    <Label htmlFor="ea-context-window">Context window override</Label>
+                    <Label htmlFor="ea-context-window">{t('agents:fields.contextWindowOverride')}</Label>
                     <Input
                       id="ea-context-window"
                       type="number"
                       min={1}
-                      placeholder="Inherit provider"
+                      placeholder={t('agents:states.inheritProvider')}
                       {...form.register('context_window_tokens', { valueAsNumber: true })}
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="ea-output-reserve">Output reserve % override</Label>
+                    <Label htmlFor="ea-output-reserve">{t('agents:fields.outputReserveOverride')}</Label>
                     <Input
                       id="ea-output-reserve"
                       type="number"
                       min={1}
                       max={90}
-                      placeholder="Inherit provider"
+                      placeholder={t('agents:states.inheritProvider')}
                       {...form.register('context_output_reserve_percent', {
                         valueAsNumber: true,
                       })}
@@ -519,13 +527,13 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
           <section className="space-y-2 rounded-md border border-border bg-card p-3">
             <div>
-              <h3 className="text-sm font-medium">Built-in tools</h3>
+              <h3 className="text-sm font-medium">{t('agents:fields.builtInTools')}</h3>
               <p className="text-[11px] text-muted-foreground">
-                Select tool permissions to include in the agent context.
+                {t('agents:form.toolsDescription')}
               </p>
             </div>
             {builtinTools.isLoading && (
-              <p className="text-xs text-muted-foreground">Loading tools...</p>
+              <p className="text-xs text-muted-foreground">{t('agents:states.loadingTools')}</p>
             )}
             {tools.length > 0 && (
               <ToolSelector
@@ -543,14 +551,14 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
 
       <section className="space-y-2 rounded-md border border-border bg-card p-3">
         <div>
-          <h3 className="text-sm font-medium">Skills</h3>
+          <h3 className="text-sm font-medium">{t('agents:fields.skills')}</h3>
           <p className="text-[11px] text-muted-foreground">
-            Enabled skills are mounted into the prompt through <code>skill_ids</code>.
+            {t('agents:form.skillsDescription')}
           </p>
         </div>
         {skills.data && skills.data.length === 0 && (
           <p className="text-[11px] text-muted-foreground">
-            No skills available. Import one in <strong>Skills</strong>.
+            {t('agents:form.noSkillsEdit')}
           </p>
         )}
         {skills.data && skills.data.length > 0 && (
@@ -590,7 +598,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         </p>
       )}
       <Button type="submit" disabled={update.isPending}>
-        {update.isPending ? 'Saving...' : 'Save'}
+        {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
       </Button>
     </form>
   )

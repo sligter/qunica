@@ -1,13 +1,12 @@
 import * as React from 'react'
 import { Bot, Users } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Textarea } from '@/components/ui/textarea'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroups } from '@/hooks/useGroups'
 import { cn } from '@/lib/utils'
 import type { AgentRead, GroupRead } from '@/types/api'
-
-const NO_DESCRIPTION = 'No description provided'
 
 interface ActiveMention {
   start: number
@@ -56,24 +55,24 @@ function getActiveMention(value: string, cursorPosition: number): ActiveMention 
   }
 }
 
-function normalizeDescription(description: string | null): string {
+function normalizeDescription(description: string | null, fallback: string): string {
   const trimmed = description?.trim()
-  return trimmed && trimmed.length > 0 ? trimmed : NO_DESCRIPTION
+  return trimmed && trimmed.length > 0 ? trimmed : fallback
 }
 
-function formatSuggestionContext(suggestion: MentionSuggestion): string {
+function formatSuggestionContext(suggestion: MentionSuggestion, labels: { agent: string; team: string; description: string; announcement: string; noDescription: string }): string {
   if (suggestion.type === 'agent') {
-    return `[Agent: ${suggestion.name}]\nDescription: ${normalizeDescription(suggestion.description)}`
+    return `[${labels.agent}: ${suggestion.name}]\n${labels.description}: ${normalizeDescription(suggestion.description, labels.noDescription)}`
   }
 
   const lines = [
-    `[Team: ${suggestion.name}]`,
-    `Description: ${normalizeDescription(suggestion.description)}`,
+    `[${labels.team}: ${suggestion.name}]`,
+    `${labels.description}: ${normalizeDescription(suggestion.description, labels.noDescription)}`,
   ]
   const announcement = suggestion.announcement?.trim()
 
   if (announcement) {
-    lines.push(`Announcement: ${announcement}`)
+    lines.push(`${labels.announcement}: ${announcement}`)
   }
 
   return lines.join('\n')
@@ -103,6 +102,7 @@ export function SystemPromptMentionTextarea({
   className,
   ...props
 }: SystemPromptMentionTextareaProps) {
+  const { t } = useTranslation('agents')
   const agents = useAgents()
   const groups = useGroups()
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
@@ -167,7 +167,9 @@ export function SystemPromptMentionTextarea({
     (suggestion: MentionSuggestion) => {
       if (!activeMention) return
 
-      const insertText = formatSuggestionContext(suggestion)
+      const insertText = formatSuggestionContext(suggestion, {
+        agent: t('mentions.agent'), team: t('mentions.team'), description: t('mentions.description'), announcement: t('mentions.announcement'), noDescription: t('mentions.noDescription'),
+      })
       const nextValue = `${value.slice(0, activeMention.start)}${insertText}${value.slice(
         activeMention.end,
       )}`
@@ -181,7 +183,7 @@ export function SystemPromptMentionTextarea({
         textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
       })
     },
-    [activeMention, onChange, value],
+    [activeMention, onChange, t, value],
   )
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -249,7 +251,7 @@ export function SystemPromptMentionTextarea({
           {suggestions.map((suggestion, index) => {
             const isActive = index === activeIndex
             const Icon = suggestion.type === 'agent' ? Bot : Users
-            const typeLabel = suggestion.type === 'agent' ? 'Agent' : 'Team'
+            const typeLabel = suggestion.type === 'agent' ? t('mentions.agent') : t('mentions.team')
 
             return (
               <button
@@ -278,7 +280,7 @@ export function SystemPromptMentionTextarea({
                     </span>
                   </span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {normalizeDescription(suggestion.description)}
+                    {normalizeDescription(suggestion.description, t('mentions.noDescription'))}
                   </span>
                 </span>
               </button>

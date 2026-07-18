@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { FolderPlus } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -42,6 +43,7 @@ export function WorkspaceField({
   error,
   variant = 'default',
 }: WorkspaceFieldProps) {
+  const { t } = useTranslation(['agents', 'common'])
   const workspaces = useWorkspaces()
   const createWorkspace = useCreateWorkspace()
   const fallbackInputRef = useRef<HTMLInputElement | null>(null)
@@ -53,6 +55,8 @@ export function WorkspaceField({
 
   const selected = (workspaces.data ?? []).find((workspace) => workspace.id === value)
   const selectedBackendType: WorkspaceBackendType = selected?.backend_type ?? 'local'
+  const backendLabel = (backend: WorkspaceBackendType) =>
+    backend === 'local' ? t('agents:states.backendLocal') : t('agents:states.backendSandbox')
 
   const onManualPathChange = (nextPath: string) => {
     setLocalPath(nextPath)
@@ -108,7 +112,7 @@ export function WorkspaceField({
   const onCreate = async () => {
     if (!localPathLooksAbsolute(localPath)) {
       setCreateError(
-        'Enter an absolute path that exists on the backend host, for example D:/file/learn/AIGC/ag-swarmer or /home/me/project.',
+        t('agents:workspacePicker.absolutePath'),
       )
       return
     }
@@ -124,7 +128,7 @@ export function WorkspaceField({
       setLocalPath('')
       setShowCreate(false)
     } catch (err) {
-      setCreateError(err instanceof ApiError ? err.message : 'Network error')
+      setCreateError(err instanceof ApiError ? err.message : t('agents:errors.network'))
     }
   }
 
@@ -132,17 +136,17 @@ export function WorkspaceField({
     <div className="space-y-2">
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
-          {variant === 'default' ? <Label htmlFor="agent-workspace">Workspace</Label> : <span />}
+          {variant === 'default' ? <Label htmlFor="agent-workspace">{t('agents:fields.workspace')}</Label> : <span />}
           <Button type="button" variant="outline" size="sm" onClick={() => setShowCreate(!showCreate)}>
             {showCreate ? (
-              'Cancel'
+              t('common:actions.cancel')
             ) : variant === 'compact' ? (
               <>
                 <FolderPlus className="h-3.5 w-3.5" />
-                New workspace
+                {t('agents:workspacePicker.new')}
               </>
             ) : (
-              'New local workspace'
+              t('agents:workspacePicker.newLocal')
             )}
           </Button>
         </div>
@@ -152,17 +156,17 @@ export function WorkspaceField({
           onChange={(event) => onChange(event.target.value)}
           className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <option value="">Select workspace</option>
+          <option value="">{t('agents:workspacePicker.select')}</option>
           {(workspaces.data ?? []).map((workspace) => (
             <option key={workspace.id} value={workspace.id}>
-              {workspace.name} — {workspace.backend_type}
+              {workspace.name} — {backendLabel(workspace.backend_type)}
             </option>
           ))}
         </select>
         {error && <p className="text-xs text-destructive">{error}</p>}
         {workspaces.data && workspaces.data.length === 0 && !showCreate && (
           <p className="text-[11px] text-muted-foreground">
-            Create a local workspace first. Cloud sandbox workspaces can use the same field later.
+            {t('agents:workspacePicker.createFirst')}
           </p>
         )}
         {selected && (
@@ -170,8 +174,14 @@ export function WorkspaceField({
             className="truncate text-[11px] text-muted-foreground"
             title={selected.local_path ?? selected.sandbox_ref ?? undefined}
           >
-            {variant === 'compact' ? 'Location: ' : `Bound to ${selectedBackendType}: `}
-            {selected.local_path ?? selected.sandbox_ref ?? 'not configured'}
+            {variant === 'compact'
+              ? t('agents:workspacePicker.location', {
+                  location: selected.local_path ?? selected.sandbox_ref ?? t('agents:workspacePicker.notConfigured'),
+                })
+              : t('agents:workspacePicker.bound', {
+                  backend: backendLabel(selectedBackendType),
+                  location: selected.local_path ?? selected.sandbox_ref ?? t('agents:workspacePicker.notConfigured'),
+                })}
           </p>
         )}
       </div>
@@ -179,23 +189,23 @@ export function WorkspaceField({
       {showCreate && (
         <div className="space-y-3 rounded-md border border-border bg-card p-3">
           <div className="space-y-1.5">
-            <Label htmlFor="workspace-name">Workspace name</Label>
+            <Label htmlFor="workspace-name">{t('agents:workspacePicker.name')}</Label>
             <Input
               id="workspace-name"
               value={workspaceName}
               onChange={(event) => setWorkspaceName(event.target.value)}
-              placeholder="Current project"
+              placeholder={t('agents:workspacePicker.namePlaceholder')}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="workspace-path">Backend local path</Label>
+            <Label htmlFor="workspace-path">{t('agents:workspacePicker.localPath')}</Label>
             <div className="flex gap-2">
               <Input
                 id="workspace-path"
                 ref={pathInputRef}
                 value={localPath}
                 onChange={(event) => onManualPathChange(event.target.value)}
-                placeholder="D:/absolute/path/to/project or /absolute/path/to/project"
+                placeholder={t('agents:workspacePicker.pathPlaceholder')}
                 className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-destructive')}
               />
               <Button
@@ -204,7 +214,7 @@ export function WorkspaceField({
                 size="sm"
                 onClick={() => void onPickFolder()}
               >
-                Pick folder
+                {t('agents:workspacePicker.pickFolder')}
               </Button>
             </div>
             <input
@@ -226,7 +236,7 @@ export function WorkspaceField({
             disabled={createWorkspace.isPending || !workspaceName || !localPath}
             onClick={() => void onCreate()}
           >
-            {createWorkspace.isPending ? 'Creating…' : 'Create workspace'}
+            {createWorkspace.isPending ? t('agents:workspacePicker.creating') : t('agents:workspacePicker.create')}
           </Button>
         </div>
       )}
