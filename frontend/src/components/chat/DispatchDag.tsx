@@ -1,4 +1,5 @@
 import { AlertTriangle, GitBranch, Link2Off, Route } from 'lucide-react'
+import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 
 import { normalizeLanguage } from '@/i18n'
@@ -150,12 +151,34 @@ const statusKeys = {
   failed: 'trace.dispatchStatuses.failed',
 } as const satisfies Record<AgentDispatchStatus, string>
 
+function hasOwnKey<T extends object>(record: T, key: PropertyKey): key is keyof T {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function actionLabel(value: string, t: TFunction<'chat'>) {
+  return hasOwnKey(actionKeys, value)
+    ? t(actionKeys[value])
+    : t('common:wireLabels.unknownAction', { value })
+}
+
+function statusLabel(value: string, t: TFunction<'chat'>) {
+  return hasOwnKey(statusKeys, value)
+    ? t(statusKeys[value])
+    : t('common:wireLabels.unknownDispatchStatus', { value })
+}
+
+function reasonLabel(value: string, t: TFunction<'chat'>) {
+  return hasOwnKey(reasonKeys, value)
+    ? t(reasonKeys[value])
+    : t('common:wireLabels.unknownSelectionReason', { value })
+}
+
 function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) {
   const { t } = useTranslation('chat')
   if (!artifact) return null
   return (
     <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-t border-border pt-2 text-[11px]">
-      {artifact.mode ? <><dt className="text-muted-foreground">{t('trace.mode')}</dt><dd>{t(actionKeys[artifact.mode])}</dd></> : null}
+      {artifact.mode ? <><dt className="text-muted-foreground">{t('trace.mode')}</dt><dd>{hasOwnKey(actionKeys, artifact.mode) ? t(actionKeys[artifact.mode]) : artifact.mode}</dd></> : null}
       {artifact.target_agent_id ? <><dt className="text-muted-foreground">{t('trace.target')}</dt><dd className="truncate" title={artifact.target_agent_id}>{artifact.target_agent_id}</dd></> : null}
       {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">{t('trace.child')}</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
       {artifact.outcome ? <><dt className="text-muted-foreground">{t('trace.outcome')}</dt><dd className="break-words">{artifact.outcome}</dd></> : null}
@@ -183,14 +206,14 @@ function DagRow({ node, depth }: FlatDagNode) {
             {dispatch.target_agent_id}
           </span>
           <span className="rounded-[3px] bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
-            {t(actionKeys[dispatch.action_kind])}
+            {actionLabel(dispatch.action_kind, t)}
           </span>
           <span className={cn('ml-auto text-[10px] capitalize text-muted-foreground', dispatch.status === 'failed' && 'text-destructive')}>
-            {t(statusKeys[dispatch.status])}
+            {statusLabel(dispatch.status, t)}
           </span>
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-          <span>{t(reasonKeys[dispatch.selection_reason])}</span>
+          <span>{reasonLabel(dispatch.selection_reason, t)}</span>
           <span>{t('trace.hop', { count: formatNumber(dispatch.hop, language) })}</span>
           <span>{t('trace.tokenCount', { count: formatNumber(dispatch.total_tokens, language) })}</span>
           {node.issue ? (

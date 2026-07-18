@@ -10,6 +10,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
       save: '保存',
       saving: '正在保存…',
       cancel: '取消',
+      close: '关闭',
       clear: '清除',
       edit: '编辑',
       delete: '删除',
@@ -22,6 +23,19 @@ export const zhCN: TranslationShape<typeof enUS> = {
     },
     state: { loading: '加载中…', unavailable: '不可用', noMatches: '无匹配项。' },
     errors: { unexpected: '出现问题，请重试。' },
+    wireLabels: {
+      unknownAction: '操作：{{value}}',
+      unknownDispatchStatus: '状态：{{value}}',
+      unknownSelectionReason: '原因：{{value}}',
+      unknownRepositoryState: '仓库状态：{{value}}',
+    },
+    workspaceOperations: {
+      deletePathError: '删除路径失败：{{message}}',
+      discardGitError: '丢弃 Git 更改失败：{{message}}',
+      deleteBranchError: '删除分支失败：{{message}}',
+      selectedCount_one: '已选 {{formattedCount}} 项',
+      selectedCount_other: '已选 {{formattedCount}} 项',
+    },
     status: {
       active: '启用',
       inactive: '停用',

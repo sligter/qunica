@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceFilesTab } from '@/components/chat/WorkspaceFilesTab'
 import { workspaceFilesQueryKey } from '@/hooks/useGroupFiles'
 import i18n from '@/i18n'
+import { formatNumber } from '@/lib/format'
 import type { GroupWorkspaceFilePreview, GroupWorkspaceFileRead } from '@/types/api'
 
 const rawFile: GroupWorkspaceFileRead = {
@@ -44,7 +45,10 @@ describe('WorkspaceFilesTab i18n', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
   })
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
 
   it('renders English file actions while preserving the file name', () => {
     renderTab()
@@ -64,8 +68,53 @@ describe('WorkspaceFilesTab i18n', () => {
 
     fireEvent.click(screen.getByText('README_RAW_原文.md'))
     expect(screen.getByRole('dialog')).toBeVisible()
+    expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'raw dir/README_RAW_原文.md' })).toBeVisible()
     expect(screen.getByText('预览由服务器限制，大文件可能会被截断。')).toBeVisible()
     expect(document.querySelector('pre')?.textContent).toBe('CONTENT_RAW_原文\nline 2')
+  })
+
+  it('shows localized English delete failure framing with the raw Error message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('DELETE_RAW_ERROR')))
+    renderTab()
+
+    fireEvent.click(screen.getByLabelText('Delete README_RAW_原文.md'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to delete path: DELETE_RAW_ERROR',
+    )
+  })
+
+  it('shows localized Chinese delete failure framing with a raw non-Error rejection', async () => {
+    await i18n.changeLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue('DELETE_RAW_NON_ERROR'))
+    renderTab()
+
+    fireEvent.click(screen.getByLabelText('删除 README_RAW_原文.md'))
+    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '删除路径失败：DELETE_RAW_NON_ERROR',
+    )
+  })
+
+  it('uses the locale helper for selected-count display while keeping numeric plural input', async () => {
+    const count = 12345
+
+    expect(
+      i18n.t('common:workspaceOperations.selectedCount', {
+        count,
+        formattedCount: formatNumber(count, 'en-US'),
+      }),
+    ).toBe('12,345 selected')
+
+    await i18n.changeLanguage('zh-CN')
+    expect(
+      i18n.t('common:workspaceOperations.selectedCount', {
+        count,
+        formattedCount: formatNumber(count, 'zh-CN'),
+      }),
+    ).toBe('已选 12,345 项')
   })
 })

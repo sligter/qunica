@@ -4,6 +4,7 @@ export const enUS = {
       save: 'Save',
       saving: 'Saving…',
       cancel: 'Cancel',
+      close: 'Close',
       clear: 'Clear',
       edit: 'Edit',
       delete: 'Delete',
@@ -20,6 +21,19 @@ export const enUS = {
       noMatches: 'No matches.',
     },
     errors: { unexpected: 'Something went wrong. Try again.' },
+    wireLabels: {
+      unknownAction: 'Action: {{value}}',
+      unknownDispatchStatus: 'Status: {{value}}',
+      unknownSelectionReason: 'Reason: {{value}}',
+      unknownRepositoryState: 'Repository state: {{value}}',
+    },
+    workspaceOperations: {
+      deletePathError: 'Failed to delete path: {{message}}',
+      discardGitError: 'Failed to discard Git changes: {{message}}',
+      deleteBranchError: 'Failed to delete branch: {{message}}',
+      selectedCount_one: '{{formattedCount}} selected',
+      selectedCount_other: '{{formattedCount}} selected',
+    },
     status: {
       active: 'Active',
       inactive: 'Inactive',

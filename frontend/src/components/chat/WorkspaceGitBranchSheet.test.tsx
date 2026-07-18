@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceGitBranchSheet } from '@/components/chat/WorkspaceGitBranchSheet'
@@ -41,7 +41,10 @@ describe('WorkspaceGitBranchSheet i18n', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
   })
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
 
   it('renders English branch controls and preserves the branch name', () => {
     renderSheet()
@@ -60,5 +63,31 @@ describe('WorkspaceGitBranchSheet i18n', () => {
     expect(screen.getByText('feature/RAW_原文')).toBeVisible()
     expect(screen.getByLabelText('重命名 feature/RAW_原文')).toBeVisible()
     expect(screen.getByLabelText('删除 feature/RAW_原文')).toBeVisible()
+    expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
+  })
+
+  it('shows localized English branch-delete failure framing with the raw Error message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('BRANCH_DELETE_RAW_ERROR')))
+    renderSheet()
+
+    fireEvent.click(screen.getByLabelText('Delete feature/RAW_原文'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete branch' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to delete branch: BRANCH_DELETE_RAW_ERROR',
+    )
+  })
+
+  it('shows localized Chinese branch-delete framing with a raw non-Error rejection', async () => {
+    await i18n.changeLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue('BRANCH_DELETE_RAW_NON_ERROR'))
+    renderSheet()
+
+    fireEvent.click(screen.getByLabelText('删除 feature/RAW_原文'))
+    fireEvent.click(screen.getByRole('button', { name: '删除分支' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '删除分支失败：BRANCH_DELETE_RAW_NON_ERROR',
+    )
   })
 })

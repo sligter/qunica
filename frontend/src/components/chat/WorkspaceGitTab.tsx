@@ -57,7 +57,11 @@ import { normalizeLanguage } from '@/i18n'
 import { ApiError } from '@/lib/api-v2/client'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { GroupWorkspaceGitCommitSummary, GroupWorkspaceGitFileStatus } from '@/types/api'
+import type {
+  GroupWorkspaceGitCommitSummary,
+  GroupWorkspaceGitFileStatus,
+  GroupWorkspaceGitStatus,
+} from '@/types/api'
 
 interface WorkspaceGitTabProps {
   groupId: string | undefined
@@ -66,6 +70,13 @@ interface WorkspaceGitTabProps {
 type ReviewMode = 'changes' | 'history'
 type ChangeSelection = { path: string; mode: 'worktree' | 'staged' } | null
 type RemoteOperation = (() => Promise<unknown>) | null
+type RepositoryState = NonNullable<GroupWorkspaceGitStatus['state']>
+
+const repositoryStateKeys = {
+  conflict: 'workspace.gitPanel.conflicts',
+  detached: 'workspace.gitPanel.detached',
+  initial: 'workspace.gitPanel.initial',
+} as const satisfies Record<RepositoryState, string>
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
@@ -75,15 +86,22 @@ function isMissingRemote(error: unknown) {
   return error instanceof ApiError && error.code === 'missing_remote'
 }
 
+function isRepositoryState(value: string): value is RepositoryState {
+  return Object.prototype.hasOwnProperty.call(repositoryStateKeys, value)
+}
+
 function statusSummary(
   status: ReturnType<typeof useGroupWorkspaceGitStatus>['data'],
   t: TFunction<'chat'>,
   language: 'en-US' | 'zh-CN',
 ) {
   if (!status) return t('workspace.gitPanel.workspaceGit')
-  if (status.state === 'conflict') return t('workspace.gitPanel.conflicts')
-  if (status.state === 'detached') return t('workspace.gitPanel.detached')
-  if (status.state === 'initial') return t('workspace.gitPanel.initial')
+  const repositoryState = status.state as string | null | undefined
+  if (repositoryState) {
+    return isRepositoryState(repositoryState)
+      ? t(repositoryStateKeys[repositoryState])
+      : t('common:wireLabels.unknownRepositoryState', { value: repositoryState })
+  }
   const ahead = status.ahead ? formatNumber(status.ahead, language) : null
   const behind = status.behind ? formatNumber(status.behind, language) : null
   if (ahead && behind) return t('workspace.gitPanel.aheadBehind', { ahead, behind })
@@ -351,9 +369,9 @@ export function WorkspaceGitTab({ groupId }: WorkspaceGitTabProps) {
       </> : null}
 
       <WorkspaceGitBranchSheet groupId={groupId} open={branchSheetOpen} onOpenChange={setBranchSheetOpen} onError={setGitError} onSetRemote={() => { setRemoteUrl(status.data?.remote_url ?? ''); setRemoteDialogOpen(true) }} />
-      <Dialog open={remoteDialogOpen} onOpenChange={setRemoteDialogOpen}><DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md"><DialogHeader><DialogTitle>{t('chat:workspace.gitPanel.setRemoteTitle')}</DialogTitle><DialogDescription>{t('chat:workspace.gitPanel.setRemoteDescription')}</DialogDescription></DialogHeader><Input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} placeholder={t('chat:workspace.gitPanel.remoteUrlPlaceholder')} aria-label={t('chat:workspace.gitPanel.remoteUrl')} /><DialogFooter><Button type="button" variant="outline" onClick={() => setRemoteDialogOpen(false)}>{t('common:actions.cancel')}</Button><Button type="button" disabled={!remoteUrl.trim() || setRemote.isPending} onClick={saveRemoteAndRetry}>{t('chat:workspace.gitPanel.saveRetry')}</Button></DialogFooter></DialogContent></Dialog>
-      <ConfirmDialog open={discardAllOpen} onOpenChange={setDiscardAllOpen} title={t('chat:workspace.gitPanel.discardAllTitle')} description={t('chat:workspace.gitPanel.discardAllDescription')} confirmLabel={t('chat:workspace.gitPanel.discardAll')} destructive onConfirm={async () => { await discard.mutateAsync({ paths: [], all: true }) }} />
-      <ConfirmDialog open={discardTarget !== null} onOpenChange={(open) => { if (!open) setDiscardTarget(null) }} title={t('chat:workspace.gitPanel.discardFileTitle')} description={discardTarget ? t('chat:workspace.gitPanel.discardFileDescription', { path: discardTarget.path }) : undefined} confirmLabel={t('chat:workspace.discard')} destructive onConfirm={async () => { if (discardTarget) await discard.mutateAsync({ paths: [discardTarget.path], all: false }) }} />
+      <Dialog open={remoteDialogOpen} onOpenChange={setRemoteDialogOpen}><DialogContent closeLabel={t('common:actions.close')} className="w-[calc(100vw-2rem)] sm:max-w-md"><DialogHeader><DialogTitle>{t('chat:workspace.gitPanel.setRemoteTitle')}</DialogTitle><DialogDescription>{t('chat:workspace.gitPanel.setRemoteDescription')}</DialogDescription></DialogHeader><Input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} placeholder={t('chat:workspace.gitPanel.remoteUrlPlaceholder')} aria-label={t('chat:workspace.gitPanel.remoteUrl')} /><DialogFooter><Button type="button" variant="outline" onClick={() => setRemoteDialogOpen(false)}>{t('common:actions.cancel')}</Button><Button type="button" disabled={!remoteUrl.trim() || setRemote.isPending} onClick={saveRemoteAndRetry}>{t('chat:workspace.gitPanel.saveRetry')}</Button></DialogFooter></DialogContent></Dialog>
+      <ConfirmDialog open={discardAllOpen} onOpenChange={setDiscardAllOpen} title={t('chat:workspace.gitPanel.discardAllTitle')} description={t('chat:workspace.gitPanel.discardAllDescription')} confirmLabel={t('chat:workspace.gitPanel.discardAll')} destructive onConfirm={async () => { try { await discard.mutateAsync({ paths: [], all: true }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) })) } }} />
+      <ConfirmDialog open={discardTarget !== null} onOpenChange={(open) => { if (!open) setDiscardTarget(null) }} title={t('chat:workspace.gitPanel.discardFileTitle')} description={discardTarget ? t('chat:workspace.gitPanel.discardFileDescription', { path: discardTarget.path }) : undefined} confirmLabel={t('chat:workspace.discard')} destructive onConfirm={async () => { try { if (discardTarget) await discard.mutateAsync({ paths: [discardTarget.path], all: false }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) })) } }} />
     </div>
   )
 }

@@ -266,7 +266,13 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
   }
 
   const performDelete = async (file: GroupWorkspaceFileRead) => {
-    await del.mutateAsync(file.path)
+    try {
+      await del.mutateAsync(file.path)
+    } catch (error: unknown) {
+      throw new Error(
+        t('common:workspaceOperations.deletePathError', { message: displayError(error) }),
+      )
+    }
     const deletesSelectedPath =
       selectedPath === file.path || (file.is_dir && selectedPath?.startsWith(`${file.path}/`))
     setSelectedPath((selected) => {
@@ -339,7 +345,10 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
 
       {selectedCount > 0 && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-          <span>{t('chat:workspace.selected', { count: selectedCount })}</span>
+          <span>{t('common:workspaceOperations.selectedCount', {
+            count: selectedCount,
+            formattedCount: formatNumber(selectedCount, language),
+          })}</span>
           <Button
             type="button"
             variant="outline"
@@ -471,7 +480,10 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
       )}
 
       <Dialog open={isPreviewOpen && selectedPath !== null} onOpenChange={setIsPreviewOpen}>
-        <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-0">
+        <DialogContent
+          closeLabel={t('common:actions.close')}
+          className="max-h-[85vh] max-w-3xl overflow-hidden p-0"
+        >
           <DialogHeader className="border-b border-border px-6 py-4 pr-12">
             <DialogTitle className="truncate text-base">
               {selectedPath ?? t('chat:workspace.preview')}

@@ -136,4 +136,25 @@ describe('DispatchDag', () => {
     expect(screen.getByText('SERVER_OUTCOME_RAW')).toBeVisible()
     expect(screen.getByText('FAILURE_CODE_RAW')).toBeVisible()
   })
+
+  it('frames unknown wire dispatch values without passing missing keys to i18n', async () => {
+    const item = dispatch('root', null, 'Agent_RAW')
+    item.action_kind = 'future_action' as AgentDispatchTrace['action_kind']
+    item.status = 'future_status' as AgentDispatchTrace['status']
+    item.selection_reason = 'future_reason' as AgentDispatchTrace['selection_reason']
+    item.artifact = {
+      mode: 'future_mode',
+      outcome: 'OUTCOME_RAW',
+    } as unknown as AgentDispatchTrace['artifact']
+
+    await i18n.changeLanguage('zh-CN')
+    render(<DispatchDag dispatches={[item]} />)
+
+    expect(screen.getByText('操作：future_action')).toBeVisible()
+    expect(screen.getByText('状态：future_status')).toBeVisible()
+    expect(screen.getByText('原因：future_reason')).toBeVisible()
+    expect(screen.getByText('模式')).toBeVisible()
+    expect(screen.getByText('future_mode')).toBeVisible()
+    expect(screen.getByText('OUTCOME_RAW')).toBeVisible()
+  })
 })

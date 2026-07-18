@@ -56,7 +56,7 @@ export function WorkspaceGitBranchSheet({
 
   return <>
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[min(100vw,30rem)]">
+      <SheetContent closeLabel={t('common:actions.close')} className="w-[min(100vw,30rem)]">
         <SheetHeader className="shrink-0 border-b border-border px-5 py-4 pr-14">
           <SheetTitle>{t('chat:workspace.branches')}</SheetTitle>
           <SheetDescription>{t('chat:workspace.gitPanel.branchesDescription')}</SheetDescription>
@@ -77,11 +77,11 @@ export function WorkspaceGitBranchSheet({
       </SheetContent>
     </Sheet>
     <Sheet open={renameBranch !== null} onOpenChange={(next) => { if (!next) setRenameBranch(null) }}>
-      <SheetContent className="w-[min(100vw,26rem)]">
+      <SheetContent closeLabel={t('common:actions.close')} className="w-[min(100vw,26rem)]">
         <SheetHeader className="border-b border-border px-5 py-4 pr-14"><SheetTitle>{t('chat:workspace.gitPanel.renameBranch')}</SheetTitle></SheetHeader>
         <div className="space-y-3 p-5"><Input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} aria-label={t('chat:workspace.gitPanel.newBranchName')} /><Button type="button" className="w-full" disabled={!renameValue.trim() || rename.isPending} onClick={() => run(async () => { if (renameBranch) await rename.mutateAsync({ old: renameBranch.name, new: renameValue.trim() }); setRenameBranch(null) })}>{t('chat:workspace.gitPanel.renameBranch')}</Button></div>
       </SheetContent>
     </Sheet>
-    <ConfirmDialog open={deleteBranch !== null} onOpenChange={(next) => { if (!next) setDeleteBranch(null) }} title={t('chat:workspace.gitPanel.deleteBranchTitle')} description={deleteBranch ? t('chat:workspace.gitPanel.deleteBranchDescription', { name: deleteBranch.name }) : undefined} confirmLabel={t('chat:workspace.gitPanel.deleteBranch')} destructive onConfirm={async () => { if (deleteBranch) await remove.mutateAsync({ name: deleteBranch.name, force: false }) }} />
+    <ConfirmDialog open={deleteBranch !== null} onOpenChange={(next) => { if (!next) setDeleteBranch(null) }} title={t('chat:workspace.gitPanel.deleteBranchTitle')} description={deleteBranch ? t('chat:workspace.gitPanel.deleteBranchDescription', { name: deleteBranch.name }) : undefined} confirmLabel={t('chat:workspace.gitPanel.deleteBranch')} destructive onConfirm={async () => { try { if (deleteBranch) await remove.mutateAsync({ name: deleteBranch.name, force: false }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.deleteBranchError', { message: displayError(error) })) } }} />
   </>
 }

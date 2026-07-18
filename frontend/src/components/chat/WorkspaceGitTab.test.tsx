@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceGitTab } from '@/components/chat/WorkspaceGitTab'
 import { workspaceGitDiffQueryKey, workspaceGitQueryKey } from '@/hooks/useWorkspaceGit'
@@ -48,9 +48,9 @@ const diff: GroupWorkspaceGitDiff = {
   binary_files: [],
 }
 
-function renderTab() {
+function renderTab(nextStatus: GroupWorkspaceGitStatus = status) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  queryClient.setQueryData(workspaceGitQueryKey('group-1'), status)
+  queryClient.setQueryData(workspaceGitQueryKey('group-1'), nextStatus)
   queryClient.setQueryData(workspaceGitDiffQueryKey('group-1', 'worktree'), diff)
   return render(
     <QueryClientProvider client={queryClient}>
@@ -63,7 +63,10 @@ describe('WorkspaceGitTab i18n', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
   })
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
 
   it('renders English Git framing while preserving branch, path, and diff data', () => {
     const { container } = renderTab()
@@ -84,5 +87,50 @@ describe('WorkspaceGitTab i18n', () => {
     expect(screen.getByRole('button', { name: `取消暂存 ${rawPath}` })).toBeVisible()
     expect(screen.getByRole('button', { name: `暂存 ${rawPath}` })).toBeVisible()
     expect(container.querySelector('pre')?.textContent).toBe(rawPatch)
+  })
+
+  it('frames an unknown repository state while preserving the raw wire value', async () => {
+    await i18n.changeLanguage('zh-CN')
+    renderTab({
+      ...status,
+      state: 'future_repo_state' as GroupWorkspaceGitStatus['state'],
+    })
+
+    expect(screen.getByText('仓库状态：future_repo_state')).toBeVisible()
+  })
+
+  it('shows localized Chinese discard failure framing for a raw non-Error rejection', async () => {
+    await i18n.changeLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue('DISCARD_RAW_NON_ERROR'))
+    renderTab()
+
+    fireEvent.click(screen.getByRole('button', { name: `丢弃 ${rawPath}` }))
+    fireEvent.click(screen.getByRole('button', { name: '丢弃' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '丢弃 Git 更改失败：DISCARD_RAW_NON_ERROR',
+    )
+  })
+
+  it('shows localized English discard failure framing with the raw Error message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('DISCARD_RAW_ERROR')))
+    renderTab()
+
+    fireEvent.click(screen.getByRole('button', { name: `Discard ${rawPath}` }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to discard Git changes: DISCARD_RAW_ERROR',
+    )
+  })
+
+  it('localizes the branch sheet and remote dialog close buttons in Chinese', async () => {
+    await i18n.changeLanguage('zh-CN')
+    renderTab()
+
+    fireEvent.click(screen.getByTitle('管理分支'))
+    expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '远程 URL' }))
+    expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
   })
 })
