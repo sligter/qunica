@@ -1,4 +1,8 @@
-use axum::{extract::State, http::HeaderMap, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -11,9 +15,10 @@ const DEFAULT_TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
 const DEFAULT_TAVILY_MAX_RESULTS: i64 = 5;
 const DEFAULT_TAVILY_SEARCH_DEPTH: &str = "basic";
 const DEFAULT_APPEARANCE: &str = "system";
+const DEFAULT_LANGUAGE: &str = "en-US";
 
 const SETTINGS_COLUMNS: &str =
-    "id, owner_id, appearance, group_workspace_root, web_search_provider, \
+    "id, owner_id, appearance, language, group_workspace_root, web_search_provider, \
      tavily_api_key, tavily_search_url, tavily_max_results, tavily_search_depth, \
      tavily_include_answer, tavily_include_raw_content, created_at, updated_at";
 
@@ -21,6 +26,8 @@ const SETTINGS_COLUMNS: &str =
 pub struct UpdateRequest {
     #[serde(default, deserialize_with = "double_option")]
     appearance: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    language: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     group_workspace_root: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -44,6 +51,7 @@ pub struct SettingsResponse {
     id: String,
     owner_id: String,
     appearance: String,
+    language: String,
     group_workspace_root: Option<String>,
     web_search_provider: String,
     tavily_api_key_configured: bool,
@@ -61,6 +69,7 @@ struct SettingsRow {
     id: String,
     owner_id: String,
     appearance: String,
+    language: String,
     group_workspace_root: Option<String>,
     web_search_provider: String,
     tavily_api_key: Option<String>,
@@ -79,6 +88,7 @@ impl From<SettingsRow> for SettingsResponse {
             id: row.id,
             owner_id: row.owner_id,
             appearance: row.appearance,
+            language: row.language,
             group_workspace_root: row.group_workspace_root,
             web_search_provider: row.web_search_provider,
             tavily_api_key_configured: row
@@ -116,6 +126,10 @@ pub async fn update(
     let appearance = match body.appearance {
         Some(ref value) => normalize_appearance(value.as_deref())?,
         None => existing.appearance.clone(),
+    };
+    let language = match body.language {
+        Some(ref value) => normalize_language(value.as_deref())?,
+        None => existing.language.clone(),
     };
     let group_workspace_root = match body.group_workspace_root {
         Some(ref value) => normalize_root(value.as_deref())?,
@@ -155,12 +169,13 @@ pub async fn update(
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE system_settings SET \
-         appearance = ?, group_workspace_root = ?, web_search_provider = ?, tavily_api_key = ?, \
+         appearance = ?, language = ?, group_workspace_root = ?, web_search_provider = ?, tavily_api_key = ?, \
          tavily_search_url = ?, tavily_max_results = ?, tavily_search_depth = ?, \
          tavily_include_answer = ?, tavily_include_raw_content = ?, updated_at = ? \
          WHERE owner_id = ?",
     )
     .bind(&appearance)
+    .bind(&language)
     .bind(&group_workspace_root)
     .bind(&web_search_provider)
     .bind(&tavily_api_key)
@@ -194,14 +209,15 @@ async fn get_or_create(pool: &SqlitePool, owner_id: &str) -> Result<SettingsRow,
     let now = now_rfc3339();
     sqlx::query(
         "INSERT OR IGNORE INTO system_settings \
-         (id, owner_id, appearance, group_workspace_root, web_search_provider, tavily_api_key, \
+         (id, owner_id, appearance, language, group_workspace_root, web_search_provider, tavily_api_key, \
           tavily_search_url, tavily_max_results, tavily_search_depth, \
           tavily_include_answer, tavily_include_raw_content, created_at, updated_at) \
-         VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, ?, 1, 0, ?, ?)",
+         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, 1, 0, ?, ?)",
     )
     .bind(&id)
     .bind(owner_id)
     .bind(DEFAULT_APPEARANCE)
+    .bind(DEFAULT_LANGUAGE)
     .bind(DEFAULT_WEB_SEARCH_PROVIDER)
     .bind(DEFAULT_TAVILY_SEARCH_URL)
     .bind(DEFAULT_TAVILY_MAX_RESULTS)
@@ -254,6 +270,21 @@ fn normalize_appearance(raw: Option<&str>) -> Result<String, ApiError> {
         "light" | "dark" | "system" => Ok(appearance),
         _ => Err(ApiError::invalid_input(
             "appearance must be 'light', 'dark', or 'system'",
+        )),
+    }
+}
+
+fn normalize_language(raw: Option<&str>) -> Result<String, ApiError> {
+    let language = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_LANGUAGE);
+    match language {
+        "zh-CN" | "en-US" => Ok(language.to_string()),
+        _ => Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "language must be 'zh-CN' or 'en-US'",
         )),
     }
 }

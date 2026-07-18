@@ -1049,6 +1049,71 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
 }
 
 #[tokio::test]
+async fn providers_settings_system_settings_language_is_owner_scoped_and_validated() {
+    let app = app().await;
+    let token = register_and_login(&app, "settings-language@example.com").await;
+
+    let (status, created) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["language"], "en-US");
+
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"language": "zh-CN"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["language"], "zh-CN");
+
+    let (status, reloaded) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reloaded["language"], "zh-CN");
+
+    let other_token = register_and_login(&app, "settings-language-other@example.com").await;
+    let (status, other_account) =
+        send(&app, authed("GET", "/api/v2/settings/system", &other_token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(other_account["language"], "en-US");
+
+    let invalid = app
+        .clone()
+        .oneshot(authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"language": "fr-FR"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let invalid_json: Value = serde_json::from_slice(
+        &axum::body::to_bytes(invalid.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(invalid_json["error"]["code"], "invalid_input");
+
+    let (status, reset) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"language": Value::Null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reset["language"], "en-US");
+}
+
+#[tokio::test]
 async fn providers_settings_system_settings_concurrent_get_or_create_is_idempotent() {
     let app = app().await;
     let token = register_and_login(&app, "settings-race@example.com").await;

@@ -1,10 +1,11 @@
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
+import type { Language } from '../types/api'
 import { enUS } from './resources/en-US'
 import { zhCN } from './resources/zh-CN'
 
-export type Language = 'zh-CN' | 'en-US'
+export type { Language }
 export const SUPPORTED_LANGUAGES: readonly Language[] = ['zh-CN', 'en-US']
 export const LANGUAGE_MIRROR_KEY = 'ag-swarmer:language'
 
