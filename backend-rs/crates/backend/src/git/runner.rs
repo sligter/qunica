@@ -30,6 +30,14 @@ pub(super) async fn run_git_command(
     root: &Path,
     args: &[String],
 ) -> Result<GitCommandOutput, GitCommandError> {
+    run_git_command_with_output_limit(root, args, MAX_GIT_OUTPUT_CHARS).await
+}
+
+pub(super) async fn run_git_command_with_output_limit(
+    root: &Path,
+    args: &[String],
+    max_output_chars: usize,
+) -> Result<GitCommandOutput, GitCommandError> {
     let mut child = git_command(root, args).spawn().map_err(|err| {
         if err.kind() == io::ErrorKind::NotFound {
             GitCommandError::MissingGit
@@ -58,8 +66,8 @@ pub(super) async fn run_git_command(
             let status = status?;
             Ok(GitCommandOutput {
                 success: status.success(),
-                stdout: truncate_git_output(&String::from_utf8_lossy(&stdout_buf)),
-                stderr: truncate_git_output(&String::from_utf8_lossy(&stderr_buf)),
+                stdout: truncate_git_output(&String::from_utf8_lossy(&stdout_buf), max_output_chars),
+                stderr: truncate_git_output(&String::from_utf8_lossy(&stderr_buf), max_output_chars),
             })
         }
         Err(_) => {
@@ -107,10 +115,10 @@ pub(super) fn format_git_failure(context: &str, output: &GitCommandOutput) -> St
     format!("{context}: {details}")
 }
 
-fn truncate_git_output(output: &str) -> String {
-    if output.chars().count() <= MAX_GIT_OUTPUT_CHARS {
+fn truncate_git_output(output: &str, max_output_chars: usize) -> String {
+    if output.chars().count() <= max_output_chars {
         return output.to_string();
     }
-    let truncated: String = output.chars().take(MAX_GIT_OUTPUT_CHARS).collect();
+    let truncated: String = output.chars().take(max_output_chars).collect();
     format!("{truncated}\n[output truncated]")
 }

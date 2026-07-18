@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     ops::GitOperationError,
     runner::{
-        format_git_failure, git_command_error_message, run_git_command_with_output_limit,
+        format_git_failure, git_command_error_message, run_git_command,
+        run_git_command_with_output_limit,
     },
 };
 

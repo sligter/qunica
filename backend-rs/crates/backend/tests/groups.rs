@@ -2654,7 +2654,7 @@ async fn workspace_git_diff_marks_large_patch_as_truncated() {
     let group_id = group["id"].as_str().unwrap();
     init_git_repo(root.path());
 
-    std::fs::write(root.path().join("tracked.txt"), "changed\n".repeat(10_000)).unwrap();
+    std::fs::write(root.path().join("tracked.txt"), "changed\n".repeat(30_000)).unwrap();
     let (status, body) = send(
         &app,
         authed(
