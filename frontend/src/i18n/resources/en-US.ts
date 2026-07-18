@@ -40,6 +40,8 @@ export const enUS = {
     },
     errors: {
       invalidCredentials: 'Email or password is incorrect.',
+      userExists: 'An account with this email already exists.',
+      generic: 'Unable to complete the request.',
       network: 'Unable to reach the server.',
     },
   },
@@ -70,6 +72,7 @@ export const enUS = {
     acpRuntime: 'ACP runtime',
   },
   groups: {
+    pageTitle: 'AG Swarmer',
     loadError: 'Failed to load groups.',
     empty: 'No groups yet. Click New group to start one.',
     homeSubtitle: 'Start a conversation with your agents, or pick up where you left off.',

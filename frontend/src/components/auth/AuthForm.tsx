@@ -57,10 +57,14 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
       setUser(me)
       onSuccess()
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setSubmitError(t('errors.invalidCredentials'))
-      } else if (err instanceof ApiError) {
-        setSubmitError(err.message)
+      if (err instanceof ApiError) {
+        if (mode === 'login' && (err.status === 401 || err.status === 403)) {
+          setSubmitError(t('errors.invalidCredentials'))
+        } else if (mode === 'register' && err.status === 409) {
+          setSubmitError(t('errors.userExists'))
+        } else {
+          setSubmitError(t('errors.generic'))
+        }
       } else {
         setSubmitError(t('errors.network'))
       }

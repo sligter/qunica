@@ -42,6 +42,8 @@ export const zhCN: TranslationShape<typeof enUS> = {
     },
     errors: {
       invalidCredentials: '邮箱或密码不正确。',
+      userExists: '该邮箱已注册。',
+      generic: '无法完成请求。',
       network: '无法连接服务器。',
     },
   },
@@ -72,6 +74,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     acpRuntime: 'ACP 运行时',
   },
   groups: {
+    pageTitle: 'AG Swarmer',
     loadError: '无法加载群组。',
     empty: '暂无群组。点击“新建群组”即可开始。',
     homeSubtitle: '与 Agent 开始对话，或继续上次的交流。',

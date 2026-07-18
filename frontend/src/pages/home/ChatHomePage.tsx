@@ -19,10 +19,11 @@ export function ChatHomePage() {
   const [dialogOpen, setDialogOpen] = useState(false)
 
   const recent = (groups.data ?? []).slice(0, 5)
+  const pageTitle = t('groups:pageTitle')
 
   useEffect(() => {
-    document.title = 'AG Swarmer'
-  }, [])
+    document.title = pageTitle
+  }, [pageTitle])
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto bg-background p-6">
