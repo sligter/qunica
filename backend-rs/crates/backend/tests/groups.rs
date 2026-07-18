@@ -2554,6 +2554,122 @@ async fn workspace_git_status_stage_unstage_and_commit() {
 }
 
 #[tokio::test]
+async fn workspace_git_diff_returns_worktree_staged_branch_and_validates_path() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-diff@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), b"changed\n").unwrap();
+
+    let (status, worktree) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "{}?mode=worktree&path=tracked.txt",
+                workspace_git_url(group_id, "diff")
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(worktree["mode"], "worktree");
+    assert_eq!(worktree["path"], "tracked.txt");
+    assert!(worktree["patch"].as_str().unwrap().contains("+changed"));
+    assert_eq!(worktree["truncated"], false);
+
+    let (status, staged_empty) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=staged", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(staged_empty["patch"], "");
+
+    run_git(root.path(), &["add", "tracked.txt"]);
+    let (status, staged) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=staged", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(staged["mode"], "staged");
+    assert!(staged["patch"].as_str().unwrap().contains("+changed"));
+
+    run_git(root.path(), &["commit", "-m", "change"]);
+    let (status, branch) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=branch", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(branch["mode"], "branch");
+    assert_eq!(branch["head_ref"], "HEAD");
+    assert!(branch["patch"].as_str().unwrap().contains("+changed"));
+
+    let (status, invalid_path) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "{}?mode=worktree&path=..%2Fsecret.txt",
+                workspace_git_url(group_id, "diff")
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid_path["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn workspace_git_diff_marks_large_patch_as_truncated() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-diff-large@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), "changed\n".repeat(10_000)).unwrap();
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=worktree", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["truncated"], true);
+    assert!(body["patch"].as_str().unwrap().contains("[diff truncated]"));
+}
+
+#[tokio::test]
 async fn workspace_git_commit_message_generates_from_staged_diff() {
     if !git_available() {
         return;

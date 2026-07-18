@@ -22,6 +22,14 @@ impl fmt::Display for GitOperationError {
 
 impl std::error::Error for GitOperationError {}
 
+impl GitOperationError {
+    pub(super) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
 pub async fn status(root: &Path) -> WorkspaceGitStatus {
     let args = git_args(&[
         "--no-optional-locks",

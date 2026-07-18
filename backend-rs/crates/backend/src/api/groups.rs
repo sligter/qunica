@@ -17,7 +17,7 @@ use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
-use crate::git::{self as workspace_git, WorkspaceGitStatus};
+use crate::git::{self as workspace_git, DiffMode, WorkspaceGitDiff, WorkspaceGitStatus};
 use crate::llm::{
     build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
 };
@@ -54,6 +54,13 @@ const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
 const MAX_COMMIT_DIFF_PROMPT_CHARS: usize = 20_000;
 const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitDiffQuery {
+    mode: DiffMode,
+    #[serde(default)]
+    path: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -1389,6 +1396,27 @@ pub async fn get_group_workspace_git_status(
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     Ok(Json(workspace_git::status(&root).await))
+}
+
+pub async fn get_group_workspace_git_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceGitDiffQuery>,
+) -> Result<Json<WorkspaceGitDiff>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let path = match query.path {
+        Some(path) => validate_git_paths(&root, &[path])?.into_iter().next(),
+        None => None,
+    };
+    let diff = workspace_git::diff(&root, query.mode, path.as_deref())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(diff))
 }
 
 pub async fn stage_group_workspace_git_paths(

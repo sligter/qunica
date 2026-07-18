@@ -186,6 +186,10 @@ pub fn router(state: AppState) -> Router {
             get(groups::get_group_workspace_git_status),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-git/diff",
+            get(groups::get_group_workspace_git_diff),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-git/stage",
             axum::routing::post(groups::stage_group_workspace_git_paths),
         )
