@@ -66,8 +66,14 @@ pub(super) async fn run_git_command_with_output_limit(
             let status = status?;
             Ok(GitCommandOutput {
                 success: status.success(),
-                stdout: truncate_git_output(&String::from_utf8_lossy(&stdout_buf), max_output_chars),
-                stderr: truncate_git_output(&String::from_utf8_lossy(&stderr_buf), max_output_chars),
+                stdout: truncate_git_output(
+                    &String::from_utf8_lossy(&stdout_buf),
+                    max_output_chars,
+                ),
+                stderr: truncate_git_output(
+                    &String::from_utf8_lossy(&stderr_buf),
+                    max_output_chars,
+                ),
             })
         }
         Err(_) => {

@@ -186,6 +186,51 @@ pub fn router(state: AppState) -> Router {
             get(groups::get_group_workspace_git_status),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-git/branches",
+            get(groups::get_group_workspace_git_branches)
+                .post(groups::create_group_workspace_git_branch),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/branches/switch",
+            axum::routing::post(groups::switch_group_workspace_git_branch),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/branches/rename",
+            axum::routing::post(groups::rename_group_workspace_git_branch),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/branches/delete",
+            axum::routing::post(groups::delete_group_workspace_git_branch),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/init",
+            axum::routing::post(groups::init_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/fetch",
+            axum::routing::post(groups::fetch_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/set-remote",
+            axum::routing::post(groups::set_group_workspace_git_remote),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/discard",
+            axum::routing::post(groups::discard_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/ignore",
+            axum::routing::post(groups::ignore_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/stash/push",
+            axum::routing::post(groups::stash_push_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/stash/pop",
+            axum::routing::post(groups::stash_pop_group_workspace_git),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-git/diff",
             get(groups::get_group_workspace_git_diff),
         )

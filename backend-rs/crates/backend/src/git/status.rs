@@ -324,10 +324,7 @@ mod tests {
         assert!(status.files[0].staged);
         assert!(!status.files[0].unstaged);
         assert_eq!(status.files[1].path, "copied name.txt");
-        assert_eq!(
-            status.files[1].old_path.as_deref(),
-            Some("source name.txt")
-        );
+        assert_eq!(status.files[1].old_path.as_deref(), Some("source name.txt"));
         assert_eq!(status.files[1].status, "C ");
         assert_eq!(status.files[2].path, "staged.txt");
         assert_eq!(status.files[2].old_path, None);

@@ -93,7 +93,9 @@ pub async fn commit_details(
     .await?;
     let fields = metadata.stdout.split('\0').collect::<Vec<_>>();
     if fields.len() < 7 {
-        return Err(GitOperationError::new("git show returned an invalid commit record"));
+        return Err(GitOperationError::new(
+            "git show returned an invalid commit record",
+        ));
     }
 
     let files_output = run_git(
@@ -179,11 +181,17 @@ pub fn pagination_is_valid(limit: usize, skip: usize) -> bool {
 
 async fn resolve_commit(root: &Path, sha: &str) -> Result<String, GitOperationError> {
     if !is_strict_sha(sha) {
-        return Err(GitOperationError::new("commit sha must be a full hexadecimal object id"));
+        return Err(GitOperationError::new(
+            "commit sha must be a full hexadecimal object id",
+        ));
     }
     let output = run_git(
         root,
-        vec!["rev-parse".to_string(), "--verify".to_string(), format!("{sha}^{{commit}}")],
+        vec![
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            format!("{sha}^{{commit}}"),
+        ],
         "git commit lookup failed",
     )
     .await?;
@@ -200,7 +208,11 @@ async fn validate_branch(root: &Path, branch: &str) -> Result<(), GitOperationEr
     }
     run_git(
         root,
-        vec!["check-ref-format".to_string(), "--branch".to_string(), branch.to_string()],
+        vec![
+            "check-ref-format".to_string(),
+            "--branch".to_string(),
+            branch.to_string(),
+        ],
         "git branch validation failed",
     )
     .await?;
@@ -258,7 +270,9 @@ fn parse_summaries(stdout: &str) -> Result<Vec<WorkspaceGitCommitSummary>, GitOp
         .filter(|field| !field.is_empty())
         .collect::<Vec<_>>();
     if fields.len() % 6 != 0 {
-        return Err(GitOperationError::new("git log returned an invalid commit record"));
+        return Err(GitOperationError::new(
+            "git log returned an invalid commit record",
+        ));
     }
     Ok(fields
         .chunks_exact(6)
@@ -275,13 +289,18 @@ fn parse_summaries(stdout: &str) -> Result<Vec<WorkspaceGitCommitSummary>, GitOp
 }
 
 fn parse_files(stdout: &str) -> Vec<WorkspaceGitCommitFile> {
-    let fields = stdout.split('\0').filter(|field| !field.is_empty()).collect::<Vec<_>>();
+    let fields = stdout
+        .split('\0')
+        .filter(|field| !field.is_empty())
+        .collect::<Vec<_>>();
     let mut files = Vec::new();
     let mut index = 0;
     while let Some(status) = fields.get(index) {
         index += 1;
         let is_rename = status.starts_with('R') || status.starts_with('C');
-        let Some(first_path) = fields.get(index) else { break };
+        let Some(first_path) = fields.get(index) else {
+            break;
+        };
         index += 1;
         let (path, old_path) = if is_rename {
             let Some(path) = fields.get(index) else { break };
@@ -300,12 +319,20 @@ fn parse_files(stdout: &str) -> Vec<WorkspaceGitCommitFile> {
 }
 
 fn parse_numstat(stdout: &str) -> (usize, usize) {
-    stdout.split('\0').fold((0, 0), |(insertions, deletions), record| {
-        let mut fields = record.split('\t');
-        let additions = fields.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
-        let removals = fields.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
-        (insertions + additions, deletions + removals)
-    })
+    stdout
+        .split('\0')
+        .fold((0, 0), |(insertions, deletions), record| {
+            let mut fields = record.split('\t');
+            let additions = fields
+                .next()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            let removals = fields
+                .next()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            (insertions + additions, deletions + removals)
+        })
 }
 
 async fn run_git(
