@@ -16,6 +16,7 @@ import {
   readRememberedPrefix,
   saveRememberedPrefix,
 } from '@/lib/folderPicker'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
 const PICKER_SCOPE = 'workspace-management-root'
 
@@ -25,7 +26,7 @@ export function WorkspaceCreatePage() {
   const createWorkspace = useCreateWorkspace()
   const [name, setName] = useState('')
   const [localPath, setLocalPath] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LocalizedError | null>(null)
 
   const trimmedName = name.trim()
   const trimmedPath = localPath.trim()
@@ -59,16 +60,16 @@ export function WorkspaceCreatePage() {
     }
     if (result.kind === 'cancelled') return
     if (result.kind === 'fallback') {
-      setError(t('validation.pickerUnavailable'))
+      setError(translatedError('validation.pickerUnavailable'))
       return
     }
-    setError(result.message)
+    setError(messageError(result.message))
   }
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!looksAbsolute(trimmedPath)) {
-      setError(t('validation.enterAbsolutePath'))
+      setError(translatedError('validation.enterAbsolutePath'))
       return
     }
     setError(null)
@@ -83,7 +84,7 @@ export function WorkspaceCreatePage() {
           void navigate(`/workspaces/${created.id}`)
         },
         onError: (err) => {
-          setError(err instanceof ApiError ? err.message : t('errors.create'))
+          setError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.create'))
         },
       },
     )
@@ -129,9 +130,9 @@ export function WorkspaceCreatePage() {
             </p>
           ) : null}
         </div>
-        {error ? (
+        {localizedErrorText(error, t) ? (
           <p className="text-sm text-destructive" role="alert">
-            {error}
+            {localizedErrorText(error, t)}
           </p>
         ) : null}
         <Button type="submit" disabled={!canCreate}>

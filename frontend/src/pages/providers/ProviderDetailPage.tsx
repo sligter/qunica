@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useDeleteProvider, useProvider } from '@/hooks/useProviders'
 import { formatNumber } from '@/lib/format'
 import type { Language } from '@/i18n'
+import { formatResourceStatus } from '@/i18n/resourceStatus'
 
 export function ProviderDetailPage() {
   const { t, i18n } = useTranslation(['providers', 'common'])
@@ -95,7 +96,7 @@ export function ProviderDetailPage() {
           <Field label={t('providers:fields.apiKey')} value={p.api_key_masked} mono />
           <Field label={t('providers:fields.status')}>
             <Badge variant={p.status === 'active' ? 'default' : 'secondary'}>
-              {p.status}
+              {formatResourceStatus(p.status, t)}
             </Badge>
           </Field>
         </section>

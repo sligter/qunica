@@ -21,6 +21,7 @@ import type {
   AcpRuntimePresetRead,
   AcpRuntimeProfile,
 } from '@/types/api'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
 interface ExternalRuntimeFieldsProps {
   presets?: AcpRuntimePresetRead[]
@@ -85,7 +86,7 @@ export function ExternalRuntimeFields({
 }: ExternalRuntimeFieldsProps) {
   const { t } = useTranslation(['agents', 'common'])
   const [packageSpec, setPackageSpec] = useState('')
-  const [installError, setInstallError] = useState<string | null>(null)
+  const [installError, setInstallError] = useState<LocalizedError | null>(null)
   const runtimeVersions = useAcpRuntimeVersions()
   const installRuntime = useInstallAcpRuntimeVersion()
   const selectedPreset =
@@ -131,7 +132,7 @@ export function ExternalRuntimeFields({
       })
       setPackageSpec('')
     } catch (error) {
-      setInstallError(error instanceof Error ? error.message : t('agents:runtime.installationFailed'))
+      setInstallError(error instanceof Error ? messageError(error.message) : translatedError('agents:runtime.installationFailed'))
     }
   }
 
@@ -273,7 +274,7 @@ export function ExternalRuntimeFields({
                 {t('agents:runtime.customInstall')}
               </Button>
             </div>
-            {installError && <p className="text-xs text-destructive">{installError}</p>}
+            {localizedErrorText(installError, t) && <p className="text-xs text-destructive">{localizedErrorText(installError, t)}</p>}
           </div>
         </details>
       )}

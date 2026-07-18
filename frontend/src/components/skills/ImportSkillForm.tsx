@@ -13,6 +13,12 @@ import {
   useImportSkillPackage,
 } from '@/hooks/useSkills'
 import { ApiError } from '@/lib/api-v2/client'
+import {
+  localizedErrorText,
+  messageError,
+  translatedError,
+  type LocalizedError,
+} from '@/i18n/localizedError'
 
 interface ImportSkillFormProps {
   onCreated?: (newSkillId: string) => void
@@ -24,7 +30,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
   const importPackage = useImportSkillPackage()
   const importGithub = useImportSkillFromGithub()
   const [raw, setRaw] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LocalizedError | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [githubUrl, setGithubUrl] = useState('')
   const [githubBranch, setGithubBranch] = useState('main')
@@ -35,7 +41,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     e.preventDefault()
     setError(null)
     if (!raw.trim()) {
-      setError(t('errors.markdownRequired'))
+      setError(translatedError('errors.markdownRequired'))
       return
     }
     try {
@@ -43,7 +49,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       setRaw('')
       onCreated?.(created.id)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t('errors.network'))
+      setError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.network'))
     }
   }
 
@@ -51,7 +57,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     e.preventDefault()
     setError(null)
     if (!selectedFile) {
-      setError(t('errors.packageRequired'))
+      setError(translatedError('errors.packageRequired'))
       return
     }
     try {
@@ -60,7 +66,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       if (fileInputRef.current) fileInputRef.current.value = ''
       onCreated?.(created.id)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t('errors.network'))
+      setError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.network'))
     }
   }
 
@@ -68,7 +74,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
     e.preventDefault()
     setError(null)
     if (!githubUrl.trim()) {
-      setError(t('errors.githubRequired'))
+      setError(translatedError('errors.githubRequired'))
       return
     }
     try {
@@ -82,7 +88,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       setGithubPath('')
       onCreated?.(created.id)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t('errors.network'))
+      setError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.network'))
     }
   }
 
@@ -93,11 +99,12 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
       setSelectedFile(file)
       setError(null)
     } else {
-      setError(t('errors.zipOnly'))
+      setError(translatedError('errors.zipOnly'))
     }
   }
 
   const isPending = importSkill.isPending || importPackage.isPending || importGithub.isPending
+  const visibleError = localizedErrorText(error, t)
 
   return (
     <Tabs defaultValue="package" className="space-y-4">
@@ -151,9 +158,9 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
           <p className="text-[11px] text-muted-foreground">
             {t('form.packageHint')}
           </p>
-          {error && (
+          {visibleError && (
             <p className="text-sm text-destructive" role="alert">
-              {error}
+              {visibleError}
             </p>
           )}
           <Button type="submit" disabled={isPending || !selectedFile}>
@@ -196,9 +203,9 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
           <p className="text-[11px] text-muted-foreground">
             {t('form.repositoryHint')}
           </p>
-          {error && (
+          {visibleError && (
             <p className="text-sm text-destructive" role="alert">
-              {error}
+              {visibleError}
             </p>
           )}
           <Button type="submit" disabled={isPending || !githubUrl.trim()}>
@@ -224,9 +231,9 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
               {t('form.markdownHint')}
             </p>
           </div>
-          {error && (
+          {visibleError && (
             <p className="text-sm text-destructive" role="alert">
-              {error}
+              {visibleError}
             </p>
           )}
           <Button type="submit" disabled={isPending}>

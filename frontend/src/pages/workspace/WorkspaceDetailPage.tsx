@@ -25,12 +25,10 @@ import {
   saveRememberedPrefix,
 } from '@/lib/folderPicker'
 import type { WorkspaceRead, WorkspaceUpdate } from '@/types/api'
+import { formatResourceStatus } from '@/i18n/resourceStatus'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
 const PICKER_SCOPE = 'workspace-management-root'
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof ApiError ? error.message : fallback
-}
 
 export function WorkspaceDetailPage() {
   const { t } = useTranslation('workspaces')
@@ -75,7 +73,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
   const [name, setName] = useState(workspace.name)
   const [localPath, setLocalPath] = useState(workspace.local_path ?? '')
   const [sandboxRef, setSandboxRef] = useState(workspace.sandbox_ref ?? '')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LocalizedError | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   useEffect(() => {
@@ -120,10 +118,10 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     }
     if (result.kind === 'cancelled') return
     if (result.kind === 'fallback') {
-      setError(t('workspaces:validation.pickerUnavailable'))
+      setError(translatedError('workspaces:validation.pickerUnavailable'))
       return
     }
-    setError(result.message)
+    setError(messageError(result.message))
   }
 
   const onSave = () => {
@@ -136,7 +134,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     setError(null)
     updateWorkspace.mutate(payload, {
       onError: (err) => {
-        setError(errorMessage(err, t('workspaces:errors.update')))
+        setError(err instanceof ApiError ? messageError(err.message) : translatedError('workspaces:errors.update'))
       },
     })
   }
@@ -148,7 +146,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
         <>
           <Badge variant="outline">{workspace.backend_type}</Badge>
           <Badge variant={workspace.status === 'active' ? 'default' : 'secondary'}>
-            {workspace.status}
+            {formatResourceStatus(workspace.status, t)}
           </Badge>
         </>
       }
@@ -218,9 +216,9 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
               />
             </SettingsRow>
           )}
-          {error ? (
+          {localizedErrorText(error, t) ? (
             <p className="py-2 text-sm text-destructive" role="alert">
-              {error}
+              {localizedErrorText(error, t)}
             </p>
           ) : null}
         </SettingsSection>

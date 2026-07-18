@@ -11,6 +11,7 @@ import { useAgent } from '@/hooks/useAgents'
 import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
+import { formatResourceStatus } from '@/i18n/resourceStatus'
 
 export function AgentDetailPage() {
   const { t } = useTranslation(['agents', 'common'])
@@ -101,7 +102,7 @@ export function AgentDetailPage() {
               variant={a.status === 'active' ? 'default' : 'secondary'}
               className="mt-1"
             >
-              {a.status}
+              {formatResourceStatus(a.status, t)}
             </Badge>
           </div>
         </section>

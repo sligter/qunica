@@ -16,6 +16,7 @@ import {
 } from '@/lib/folderPicker'
 import { cn } from '@/lib/utils'
 import type { WorkspaceBackendType } from '@/types/api'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
 interface WorkspaceFieldProps {
   value: string
@@ -51,7 +52,7 @@ export function WorkspaceField({
   const [showCreate, setShowCreate] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [localPath, setLocalPath] = useState('')
-  const [createError, setCreateError] = useState<string | null>(null)
+  const [createError, setCreateError] = useState<LocalizedError | null>(null)
 
   const selected = (workspaces.data ?? []).find((workspace) => workspace.id === value)
   const selectedBackendType: WorkspaceBackendType = selected?.backend_type ?? 'local'
@@ -91,7 +92,7 @@ export function WorkspaceField({
       return
     }
     if (result.kind === 'error') {
-      setCreateError(result.message)
+      setCreateError(messageError(result.message))
       return
     }
     fallbackInputRef.current?.click()
@@ -111,9 +112,7 @@ export function WorkspaceField({
 
   const onCreate = async () => {
     if (!localPathLooksAbsolute(localPath)) {
-      setCreateError(
-        t('agents:workspacePicker.absolutePath'),
-      )
+      setCreateError(translatedError('agents:workspacePicker.absolutePath'))
       return
     }
     setCreateError(null)
@@ -128,7 +127,7 @@ export function WorkspaceField({
       setLocalPath('')
       setShowCreate(false)
     } catch (err) {
-      setCreateError(err instanceof ApiError ? err.message : t('agents:errors.network'))
+      setCreateError(err instanceof ApiError ? messageError(err.message) : translatedError('agents:errors.network'))
     }
   }
 
@@ -229,7 +228,7 @@ export function WorkspaceField({
               onChange={onFallbackChange}
             />
           </div>
-          {createError && <p className="text-xs text-destructive">{createError}</p>}
+          {localizedErrorText(createError, t) && <p className="text-xs text-destructive">{localizedErrorText(createError, t)}</p>}
           <Button
             type="button"
             size="sm"

@@ -12,6 +12,7 @@ import {
 import { ApiError } from '@/lib/api-v2/client'
 import { cn } from '@/lib/utils'
 import type { SkillRead } from '@/types/api'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
 interface SkillResourcesPanelProps {
   skill: SkillRead
@@ -24,7 +25,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
   const selected = useSkillResource(skill.id, selectedPath)
   const update = useUpdateSkillResource(skill.id, selectedPath)
   const [draft, setDraft] = useState('')
-  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<LocalizedError | null>(null)
 
   const resourceRows = resources.data ?? skill.files?.map((file) => ({
     ...file,
@@ -61,7 +62,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
     try {
       await update.mutateAsync(draft)
     } catch (err) {
-      setSaveError(err instanceof ApiError ? err.message : t('resources.saveError'))
+      setSaveError(err instanceof ApiError ? messageError(err.message) : translatedError('resources.saveError'))
     }
   }
 
@@ -162,9 +163,9 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                       className="h-64 w-full resize-y rounded-md border border-input bg-background p-3 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
                       spellCheck={false}
                     />
-                    {saveError && (
+                    {localizedErrorText(saveError, t) && (
                       <p className="text-xs text-destructive" role="alert">
-                        {saveError}
+                        {localizedErrorText(saveError, t)}
                       </p>
                     )}
                     <Button size="sm" onClick={onSave} disabled={update.isPending || !canEditSelected}>

@@ -217,6 +217,19 @@ describe('agent runtime capabilities', () => {
     expect(screen.getByText('工作区为必填项。')).toBeInTheDocument()
   })
 
+  it('retranslates visible validation errors when the mounted locale changes', async () => {
+    const user = userEvent.setup()
+    renderForm(<CreateAgentForm />)
+
+    await user.click(screen.getByRole('button', { name: 'Create agent' }))
+    expect(await screen.findByText('Agent name is required.')).toBeInTheDocument()
+
+    await i18n.changeLanguage('zh-CN')
+
+    expect(await screen.findByText('Agent 名称为必填项。')).toBeInTheDocument()
+    expect(screen.queryByText('Agent name is required.')).not.toBeInTheDocument()
+  })
+
   it('auto-probes ACP on open and model commit while keeping command edits stale until refresh', async () => {
     const user = userEvent.setup()
     renderForm(

@@ -13,6 +13,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { useDeleteSkill, useSkill, useUpdateSkill } from '@/hooks/useSkills'
 import { ApiError } from '@/lib/api-v2/client'
 import type { SkillRead } from '@/types/api'
+import { formatResourceStatus } from '@/i18n/resourceStatus'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
 export function SkillDetailPage() {
   const { t } = useTranslation(['skills', 'common'])
@@ -67,7 +69,7 @@ export function SkillDetailPage() {
             variant={s.status === 'active' ? 'default' : 'secondary'}
             className="text-[10px]"
           >
-            {s.status}
+            {formatResourceStatus(s.status, t)}
           </Badge>
         </>
       }
@@ -126,7 +128,7 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
   const update = useUpdateSkill(skill.id)
   const [name, setName] = useState(skill.name)
   const [description, setDescription] = useState(skill.description ?? '')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LocalizedError | null>(null)
 
   useEffect(() => {
     setName(skill.name)
@@ -150,7 +152,7 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
       {
         onSuccess: () => onSaved(),
         onError: (err) => {
-          setError(err instanceof ApiError ? err.message : t('errors.update'))
+          setError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.update'))
         },
       },
     )
@@ -178,9 +180,9 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
           className="max-w-xl"
         />
       </div>
-      {error && (
+      {localizedErrorText(error, t) && (
         <p className="text-sm text-destructive" role="alert">
-          {error}
+          {localizedErrorText(error, t)}
         </p>
       )}
       <Button type="submit" disabled={!canSave}>

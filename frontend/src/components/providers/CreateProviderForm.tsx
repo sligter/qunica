@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useCreateProvider } from '@/hooks/useProviders'
 import { ApiError } from '@/lib/api-v2/client'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
 import type { ProviderKind } from '@/types/api'
 
@@ -47,10 +48,11 @@ function baseUrlPlaceholder(kind: ProviderKind): string {
 }
 
 export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) {
-  const { t } = useTranslation('providers')
+  const { t, i18n } = useTranslation('providers')
   const create = useCreateProvider()
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
+  const validationLanguage = useRef(i18n.resolvedLanguage)
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -66,6 +68,14 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
       reasoning_passback: false,
     },
   })
+
+  useEffect(() => {
+    if (validationLanguage.current === i18n.resolvedLanguage) return
+    validationLanguage.current = i18n.resolvedLanguage
+    if (Object.keys(form.formState.errors).length > 0) {
+      void form.trigger()
+    }
+  }, [form, i18n.resolvedLanguage])
 
   const kind = form.watch('kind')
 
@@ -86,7 +96,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
       form.reset()
       onCreated?.(created.id)
     } catch (err) {
-      setSubmitError(err instanceof ApiError ? err.message : t('errors.network'))
+      setSubmitError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.network'))
     }
   })
 
@@ -220,9 +230,9 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         />
       </div>
 
-      {submitError && (
+      {localizedErrorText(submitError, t) && (
         <p className="text-sm text-destructive" role="alert">
-          {submitError}
+          {localizedErrorText(submitError, t)}
         </p>
       )}
       <Button type="submit" disabled={create.isPending}>

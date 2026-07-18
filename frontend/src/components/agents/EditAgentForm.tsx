@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDown, ChevronRight } from 'lucide-react'
@@ -39,6 +39,7 @@ import { useSkills } from '@/hooks/useSkills'
 import { useUpdateAgent } from '@/hooks/useUpdateAgent'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
+import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
 import type {
   AcpPermissionPolicy,
@@ -99,7 +100,7 @@ interface EditAgentFormProps {
 }
 
 export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
-  const { t } = useTranslation(['agents', 'common'])
+  const { t, i18n } = useTranslation(['agents', 'common'])
   const update = useUpdateAgent(agent.id)
   const providers = useProviders()
   const skills = useSkills()
@@ -107,12 +108,13 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const builtinTools = useBuiltinTools()
   const agents = useAgents()
   const acpRuntimePresets = useAcpRuntimePresets()
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
   const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(agent.tool_config)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const savedThinkingLevel = agent.llm_config?.reasoning_effort
   const savedContextReserveRatio = agent.llm_config?.context_output_reserve_ratio
+  const validationLanguage = useRef(i18n.resolvedLanguage)
   const schema = useMemo(
     () => createSchema(t('agents:validation.nameRequired'), t('agents:validation.systemPromptRequired'), t('agents:validation.workspaceRequired'), t('agents:validation.temperatureIncrement')),
     [t],
@@ -152,6 +154,14 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           : undefined,
     },
   })
+
+  useEffect(() => {
+    if (validationLanguage.current === i18n.resolvedLanguage) return
+    validationLanguage.current = i18n.resolvedLanguage
+    if (Object.keys(form.formState.errors).length > 0) {
+      void form.trigger()
+    }
+  }, [form, i18n.resolvedLanguage])
 
   const runtimeKind = form.watch('runtime_kind')
   const acpPresets = acpRuntimePresets.data?.presets ?? []
@@ -261,7 +271,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       })
       onSaved?.()
     } catch (err) {
-      setSubmitError(err instanceof ApiError ? err.message : t('agents:errors.network'))
+      setSubmitError(err instanceof ApiError ? messageError(err.message) : translatedError('agents:errors.network'))
     }
   })
 
@@ -592,9 +602,9 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         )}
       </section>
 
-      {submitError && (
+      {localizedErrorText(submitError, t) && (
         <p className="text-sm text-destructive" role="alert">
-          {submitError}
+          {localizedErrorText(submitError, t)}
         </p>
       )}
       <Button type="submit" disabled={update.isPending}>
