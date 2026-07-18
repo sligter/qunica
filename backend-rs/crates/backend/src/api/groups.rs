@@ -17,7 +17,10 @@ use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
-use crate::git::{self as workspace_git, WorkspaceGitStatus};
+use crate::git::{
+    self as workspace_git, DiffMode, WorkspaceGitBranches, WorkspaceGitCommitDetails,
+    WorkspaceGitDiff, WorkspaceGitLog, WorkspaceGitStatus,
+};
 use crate::llm::{
     build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
 };
@@ -54,6 +57,31 @@ const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
 const MAX_COMMIT_DIFF_PROMPT_CHARS: usize = 20_000;
 const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
+
+fn default_workspace_git_log_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitDiffQuery {
+    mode: DiffMode,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitLogQuery {
+    #[serde(default = "default_workspace_git_log_limit")]
+    limit: usize,
+    #[serde(default)]
+    skip: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitCommitDiffQuery {
+    #[serde(default)]
+    path: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -233,6 +261,54 @@ pub struct GroupWorkspaceFileRenameRequest {
 pub struct GroupWorkspaceGitPathsRequest {
     #[serde(default)]
     paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitBranchCreateRequest {
+    name: String,
+    #[serde(default)]
+    start_point: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitBranchSwitchRequest {
+    name: String,
+    #[serde(default)]
+    kind: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitBranchRenameRequest {
+    old: String,
+    new: String,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitBranchDeleteRequest {
+    name: String,
+    #[serde(default)]
+    force: bool,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitInitRequest {
+    #[serde(default)]
+    branch: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitRemoteRequest {
+    remote_url: String,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitDiscardRequest {
+    #[serde(default)]
+    paths: Vec<String>,
+    all: bool,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitIgnoreRequest {
+    path: String,
+}
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitStashPushRequest {
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1391,6 +1467,287 @@ pub async fn get_group_workspace_git_status(
     Ok(Json(workspace_git::status(&root).await))
 }
 
+async fn workspace_git_root(
+    state: &AppState,
+    headers: &HeaderMap,
+    group_id: &str,
+) -> Result<PathBuf, ApiError> {
+    let owner_id = current_user_id(headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    group_files_workspace_root(state.db.pool(), &group, &owner_id).await
+}
+
+pub async fn get_group_workspace_git_branches(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<WorkspaceGitBranches>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    Ok(Json(
+        workspace_git::branches(&root)
+            .await
+            .map_err(workspace_git_error)?,
+    ))
+}
+pub async fn create_group_workspace_git_branch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitBranchCreateRequest>,
+) -> Result<Json<WorkspaceGitBranches>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::create_branch(
+        &root,
+        body.name.trim(),
+        body.start_point.as_deref().map(str::trim),
+    )
+    .await
+    .map_err(workspace_git_error)?;
+    Ok(Json(
+        workspace_git::branches(&root)
+            .await
+            .map_err(workspace_git_error)?,
+    ))
+}
+pub async fn switch_group_workspace_git_branch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitBranchSwitchRequest>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    if !matches!(body.kind.as_deref(), None | Some("local") | Some("remote")) {
+        return Err(ApiError::invalid_input(
+            "branch kind must be local or remote",
+        ));
+    }
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::switch_branch(&root, body.name.trim(), body.kind.as_deref())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn rename_group_workspace_git_branch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitBranchRenameRequest>,
+) -> Result<Json<WorkspaceGitBranches>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::rename_branch(&root, body.old.trim(), body.new.trim())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(
+        workspace_git::branches(&root)
+            .await
+            .map_err(workspace_git_error)?,
+    ))
+}
+pub async fn delete_group_workspace_git_branch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitBranchDeleteRequest>,
+) -> Result<Json<WorkspaceGitBranches>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::delete_branch(&root, body.name.trim(), body.force)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(
+        workspace_git::branches(&root)
+            .await
+            .map_err(workspace_git_error)?,
+    ))
+}
+pub async fn init_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitInitRequest>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::init(&root, body.branch.as_deref().map(str::trim))
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn fetch_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::fetch(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn set_group_workspace_git_remote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitRemoteRequest>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::set_remote(&root, &body.remote_url)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn discard_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitDiscardRequest>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    if (body.all && !body.paths.is_empty()) || (!body.all && body.paths.is_empty()) {
+        return Err(ApiError::invalid_input(
+            "discard requires either all: true with no paths or one or more paths with all: false",
+        ));
+    }
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    let paths = validate_git_paths(&root, &body.paths)?;
+    workspace_git::discard(&root, &paths)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn ignore_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitIgnoreRequest>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    let path = validate_git_paths(&root, &[body.path])?
+        .into_iter()
+        .next()
+        .expect("single path");
+    workspace_git::ignore(&root, &path)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn stash_push_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupWorkspaceGitStashPushRequest>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::stash_push(&root, body.message.as_deref())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+pub async fn stash_pop_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::stash_pop(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceGitCreateBranchRequest {
+    name: String,
+}
+
+pub async fn get_group_workspace_git_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceGitDiffQuery>,
+) -> Result<Json<WorkspaceGitDiff>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let path = match query.path {
+        Some(path) => validate_git_paths(&root, &[path])?.into_iter().next(),
+        None => None,
+    };
+    let diff = workspace_git::diff(&root, query.mode, path.as_deref())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(diff))
+}
+
+pub async fn get_group_workspace_git_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceGitLogQuery>,
+) -> Result<Json<WorkspaceGitLog>, ApiError> {
+    if !workspace_git::pagination_is_valid(query.limit, query.skip) {
+        return Err(ApiError::invalid_input("log pagination is out of bounds"));
+    }
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let log = workspace_git::log(&root, query.limit, query.skip)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(log))
+}
+
+pub async fn get_group_workspace_git_commit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, sha)): Path<(String, String)>,
+) -> Result<Json<WorkspaceGitCommitDetails>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let details = workspace_git::commit_details(&root, &sha)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(details))
+}
+
+pub async fn get_group_workspace_git_commit_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, sha)): Path<(String, String)>,
+    Query(query): Query<GroupWorkspaceGitCommitDiffQuery>,
+) -> Result<Json<WorkspaceGitDiff>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let path = match query.path {
+        Some(path) => validate_git_paths(&root, &[path])?.into_iter().next(),
+        None => None,
+    };
+    let diff = workspace_git::commit_diff(&root, &sha, path.as_deref())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(diff))
+}
+
+pub async fn create_group_workspace_git_branch_from_commit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, sha)): Path<(String, String)>,
+    Json(body): Json<GroupWorkspaceGitCreateBranchRequest>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    workspace_git::create_branch_from_commit(&root, &sha, body.name.trim())
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn stage_group_workspace_git_paths(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2481,7 +2838,15 @@ fn validate_git_paths(root: &FsPath, raw_paths: &[String]) -> Result<Vec<String>
 }
 
 fn workspace_git_error(err: workspace_git::GitOperationError) -> ApiError {
-    ApiError::invalid_input(err.to_string())
+    if err.code() == Some("missing_remote") {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing_remote",
+            "git remote is not configured; set a remote URL before fetch, pull, or push",
+        )
+    } else {
+        ApiError::invalid_input(err.to_string())
+    }
 }
 
 async fn load_group_commit_message_provider(

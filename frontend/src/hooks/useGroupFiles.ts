@@ -4,15 +4,19 @@ import { ApiError, fetchFormData, fetchJson } from '@/lib/api-v2/client'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
-import type {
-  GroupWorkspaceGitCommitMessageResponse,
-  GroupWorkspaceGitCommitRequest,
-  GroupWorkspaceGitPathsRequest,
-  GroupWorkspaceGitStatus,
-  GroupWorkspaceFilePreview,
-  GroupWorkspaceFileRead,
-  GroupWorkspaceRoot,
-} from '@/types/api'
+import { workspaceGitQueryKey } from '@/hooks/useWorkspaceGit'
+import type { GroupWorkspaceFilePreview, GroupWorkspaceFileRead, GroupWorkspaceRoot } from '@/types/api'
+
+export {
+  useCommitGroupWorkspaceGit,
+  useGenerateGroupWorkspaceGitCommitMessage,
+  useGroupWorkspaceGitStatus,
+  usePullGroupWorkspaceGit,
+  usePushGroupWorkspaceGit,
+  useStageGroupWorkspaceGit,
+  useUnstageGroupWorkspaceGit,
+  workspaceGitQueryKey,
+} from '@/hooks/useWorkspaceGit'
 
 export class WorkspaceUploadManyError extends Error {
   uploaded: GroupWorkspaceFileRead[]
@@ -27,10 +31,6 @@ export class WorkspaceUploadManyError extends Error {
 
 export function workspaceFilesQueryKey(groupId: string | undefined, path = '') {
   return ['groups', groupId, 'workspace-files', path] as const
-}
-
-export function workspaceGitQueryKey(groupId: string | undefined) {
-  return ['groups', groupId, 'workspace-git'] as const
 }
 
 function withPath(path: string) {
@@ -187,78 +187,6 @@ export function useRenameGroupWorkspaceFile(groupId: string | undefined) {
       void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
     },
   })
-}
-
-export function useGroupWorkspaceGitStatus(groupId: string | undefined) {
-  const token = useAuthStore((s) => s.token)
-  return useQuery({
-    queryKey: workspaceGitQueryKey(groupId),
-    queryFn: () =>
-      fetchJson<GroupWorkspaceGitStatus>(`/groups/${groupId}/workspace-git/status`, { token }),
-    enabled: token !== null && !!groupId,
-    refetchInterval: 10_000,
-  })
-}
-
-function useWorkspaceGitMutation<TBody>(
-  groupId: string | undefined,
-  action: 'stage' | 'unstage' | 'commit' | 'pull' | 'push',
-  invalidateFiles = false,
-) {
-  const token = useAuthStore((s) => s.token)
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (body: TBody) => {
-      if (!groupId) throw new Error('Group is required for workspace Git operations')
-      return fetchJson<GroupWorkspaceGitStatus>(`/groups/${groupId}/workspace-git/${action}`, {
-        token,
-        method: 'POST',
-        body,
-      })
-    },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
-      if (invalidateFiles) {
-        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
-      }
-    },
-  })
-}
-
-export function useStageGroupWorkspaceGit(groupId: string | undefined) {
-  return useWorkspaceGitMutation<GroupWorkspaceGitPathsRequest>(groupId, 'stage')
-}
-
-export function useUnstageGroupWorkspaceGit(groupId: string | undefined) {
-  return useWorkspaceGitMutation<GroupWorkspaceGitPathsRequest>(groupId, 'unstage')
-}
-
-export function useCommitGroupWorkspaceGit(groupId: string | undefined) {
-  return useWorkspaceGitMutation<GroupWorkspaceGitCommitRequest>(groupId, 'commit')
-}
-
-export function useGenerateGroupWorkspaceGitCommitMessage(groupId: string | undefined) {
-  const token = useAuthStore((s) => s.token)
-  return useMutation({
-    mutationFn: () => {
-      if (!groupId) throw new Error('Group is required for workspace Git operations')
-      return fetchJson<GroupWorkspaceGitCommitMessageResponse>(
-        `/groups/${groupId}/workspace-git/commit-message`,
-        {
-          token,
-          method: 'POST',
-        },
-      )
-    },
-  })
-}
-
-export function usePullGroupWorkspaceGit(groupId: string | undefined) {
-  return useWorkspaceGitMutation<Record<string, never>>(groupId, 'pull', true)
-}
-
-export function usePushGroupWorkspaceGit(groupId: string | undefined) {
-  return useWorkspaceGitMutation<Record<string, never>>(groupId, 'push')
 }
 
 export function useDeleteGroupWorkspaceFile(groupId: string | undefined) {

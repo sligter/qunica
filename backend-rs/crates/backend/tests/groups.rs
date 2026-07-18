@@ -2464,16 +2464,27 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(git_status["available"], true);
+    assert_eq!(git_status["status"], "ready");
     assert_eq!(git_status["clean"], false);
     assert!(git_status["branch"].as_str().is_some());
+    assert_eq!(git_status["stash_count"], 0);
+    assert_eq!(git_status["dirty_counts"]["staged"], 0);
+    assert_eq!(git_status["dirty_counts"]["unstaged"], 1);
+    assert_eq!(git_status["dirty_counts"]["untracked"], 1);
+    assert_eq!(git_status["dirty_counts"]["conflicted"], 0);
     let tracked = git_status_file(&git_status, "tracked.txt");
     assert_eq!(tracked["status"], " M");
     assert_eq!(tracked["staged"], false);
     assert_eq!(tracked["unstaged"], true);
+    assert_eq!(tracked["untracked"], false);
+    assert_eq!(tracked["conflicted"], false);
+    assert!(tracked["old_path"].is_null());
     let new_file = git_status_file(&git_status, "new.txt");
     assert_eq!(new_file["status"], "??");
     assert_eq!(new_file["staged"], false);
     assert_eq!(new_file["unstaged"], true);
+    assert_eq!(new_file["untracked"], true);
+    assert_eq!(new_file["conflicted"], false);
 
     let (status, staged) = send(
         &app,
@@ -2533,8 +2544,481 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(committed["available"], true);
+    assert_eq!(committed["status"], "ready");
     assert_eq!(committed["clean"], true);
     assert_eq!(committed["files"].as_array().unwrap().len(), 0);
+    assert_eq!(committed["dirty_counts"]["staged"], 0);
+    assert_eq!(committed["dirty_counts"]["unstaged"], 0);
+    assert_eq!(committed["dirty_counts"]["untracked"], 0);
+    assert_eq!(committed["dirty_counts"]["conflicted"], 0);
+}
+
+#[tokio::test]
+async fn workspace_git_branch_and_repository_operations() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-operations@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git Ops").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, initialized) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "init"),
+            &token,
+            json!({"branch":"main"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{initialized:?}");
+    assert_eq!(initialized["status"], "ready");
+    run_git(root.path(), &["config", "user.email", "tests@example.com"]);
+    run_git(root.path(), &["config", "user.name", "Tests"]);
+    std::fs::write(root.path().join("tracked.txt"), b"initial").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+    run_git(root.path(), &["commit", "-m", "initial"]);
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "branches"),
+            &token,
+            json!({"name":"review","start_point":"main"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created:?}");
+    assert!(created["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|branch| branch["name"] == "review" && branch["kind"] == "local"));
+    let (status, switched) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "branches/switch"),
+            &token,
+            json!({"name":"review","kind":"local"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{switched:?}");
+    assert_eq!(switched["branch"], "review");
+    let (status, renamed) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "branches/rename"),
+            &token,
+            json!({"old":"review","new":"review-renamed"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed:?}");
+    run_git(root.path(), &["switch", "main"]);
+    let (status, deleted) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "branches/delete"),
+            &token,
+            json!({"name":"review-renamed"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{deleted:?}");
+    assert!(!deleted["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|branch| branch["name"] == "review-renamed"));
+
+    std::fs::write(root.path().join("tracked.txt"), b"changed").unwrap();
+    std::fs::write(root.path().join("untracked.txt"), b"untracked").unwrap();
+    let (status, discarded) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "discard"),
+            &token,
+            json!({"paths":["tracked.txt"],"all":false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{discarded:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("tracked.txt")).unwrap(),
+        b"initial"
+    );
+    let (status, ambiguous) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "discard"),
+            &token,
+            json!({"paths":[],"all":false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(ambiguous["error"]["code"], "invalid_input");
+    let (status, ignored) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "ignore"),
+            &token,
+            json!({"path":"untracked.txt"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{ignored:?}");
+    let _ = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "ignore"),
+            &token,
+            json!({"path":"untracked.txt"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(root.path().join(".gitignore"))
+            .unwrap()
+            .matches("untracked.txt")
+            .count(),
+        1
+    );
+
+    std::fs::write(root.path().join("stash.txt"), b"stash").unwrap();
+    let (status, stashed) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "stash/push"),
+            &token,
+            json!({"message":"save"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{stashed:?}");
+    assert_eq!(stashed["stash_count"], 1);
+    let (status, popped) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "stash/pop"),
+            &token,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{popped:?}");
+    assert!(root.path().join("stash.txt").exists());
+
+    let (status, missing_remote) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "fetch"),
+            &token,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing_remote["error"]["code"], "missing_remote");
+    assert_eq!(
+        missing_remote["error"]["message"],
+        "git remote is not configured; set a remote URL before fetch, pull, or push"
+    );
+    let (status, remote) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "set-remote"),
+            &token,
+            json!({"remote_url":"https://example.invalid/repo.git"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{remote:?}");
+    assert_eq!(remote["remote_name"], "origin");
+}
+
+#[tokio::test]
+async fn workspace_git_diff_returns_worktree_staged_branch_and_validates_path() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-diff@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), b"changed\n").unwrap();
+
+    let (status, worktree) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "{}?mode=worktree&path=tracked.txt",
+                workspace_git_url(group_id, "diff")
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(worktree["mode"], "worktree");
+    assert_eq!(worktree["path"], "tracked.txt");
+    assert!(worktree["patch"].as_str().unwrap().contains("+changed"));
+    assert_eq!(worktree["truncated"], false);
+
+    let (status, staged_empty) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=staged", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(staged_empty["patch"], "");
+
+    run_git(root.path(), &["add", "tracked.txt"]);
+    let (status, staged) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=staged", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(staged["mode"], "staged");
+    assert!(staged["patch"].as_str().unwrap().contains("+changed"));
+
+    run_git(root.path(), &["commit", "-m", "change"]);
+    let (status, branch) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=branch", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(branch["mode"], "branch");
+    assert_eq!(branch["head_ref"], "HEAD");
+    assert!(branch["patch"].as_str().unwrap().contains("+changed"));
+
+    let (status, invalid_path) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "{}?mode=worktree&path=..%2Fsecret.txt",
+                workspace_git_url(group_id, "diff")
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid_path["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn workspace_git_diff_marks_large_patch_as_truncated() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-diff-large@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), "changed\n".repeat(30_000)).unwrap();
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?mode=worktree", workspace_git_url(group_id, "diff")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["truncated"], true);
+    assert!(body["patch"].as_str().unwrap().contains("[diff truncated]"));
+}
+
+#[tokio::test]
+async fn workspace_git_log_returns_newest_commits_with_pagination() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-log@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+    std::fs::write(root.path().join("tracked.txt"), b"second").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+    run_git(root.path(), &["commit", "-m", "second commit"]);
+
+    let (status, first_page) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?limit=1&skip=0", workspace_git_url(group_id, "log")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {first_page:?}");
+    assert_eq!(first_page["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(first_page["commits"][0]["subject"], "second commit");
+    assert_eq!(first_page["has_more"], true);
+    assert_eq!(first_page["commits"][0]["sha"].as_str().unwrap().len(), 40);
+
+    let (status, second_page) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?limit=1&skip=1", workspace_git_url(group_id, "log")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {second_page:?}");
+    assert_eq!(second_page["commits"][0]["subject"], "initial");
+    assert_eq!(second_page["has_more"], false);
+
+    let (status, invalid) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("{}?limit=101", workspace_git_url(group_id, "log")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn workspace_git_commit_details_diff_and_branch_creation_validate_inputs() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-commit@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+    std::fs::write(root.path().join("tracked.txt"), b"changed\n").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+    run_git(root.path(), &["commit", "-m", "change tracked file"]);
+    let sha = Command::new("git")
+        .arg("rev-parse")
+        .arg("HEAD")
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8(sha.stdout).unwrap().trim().to_string();
+
+    let (status, details) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_git_url(group_id, &format!("commits/{sha}")),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {details:?}");
+    assert_eq!(details["sha"], sha);
+    assert_eq!(details["subject"], "change tracked file");
+    assert_eq!(details["files"][0]["path"], "tracked.txt");
+    assert_eq!(details["insertions"], 1);
+    assert_eq!(details["deletions"], 1);
+
+    let (status, diff) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "{}?path=tracked.txt",
+                workspace_git_url(group_id, &format!("commits/{sha}/diff"))
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {diff:?}");
+    assert_eq!(diff["mode"], "commit");
+    assert!(diff["patch"].as_str().unwrap().contains("+changed"));
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, &format!("commits/{sha}/create-branch")),
+            &token,
+            json!({"name": "review/commit"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {created:?}");
+    let branch = Command::new("git")
+        .args(["rev-parse", "review/commit"])
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    assert!(branch.status.success());
+
+    for (url, body) in [
+        (workspace_git_url(group_id, "commits/HEAD"), None),
+        (
+            workspace_git_url(
+                group_id,
+                &format!("commits/{sha}/diff?path=..%2Fsecret.txt"),
+            ),
+            None,
+        ),
+        (
+            workspace_git_url(group_id, &format!("commits/{sha}/create-branch")),
+            Some(json!({"name": "-bad"})),
+        ),
+    ] {
+        let request = match body {
+            Some(body) => authed_json("POST", &url, &token, body),
+            None => authed("GET", &url, &token),
+        };
+        let (status, response) = send(&app, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response:?}");
+        assert_eq!(response["error"]["code"], "invalid_input");
+    }
 }
 
 #[tokio::test]
@@ -2656,7 +3140,13 @@ async fn workspace_git_reports_non_repo_failures_and_rejects_unsafe_paths() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(non_repo["available"], false);
+    assert_eq!(non_repo["status"], "not_repo");
     assert_eq!(non_repo["clean"], true);
+    assert_eq!(non_repo["stash_count"], 0);
+    assert_eq!(non_repo["dirty_counts"]["staged"], 0);
+    assert_eq!(non_repo["dirty_counts"]["unstaged"], 0);
+    assert_eq!(non_repo["dirty_counts"]["untracked"], 0);
+    assert_eq!(non_repo["dirty_counts"]["conflicted"], 0);
     assert!(non_repo["message"]
         .as_str()
         .unwrap()
@@ -2718,11 +3208,11 @@ async fn workspace_git_reports_non_repo_failures_and_rejects_unsafe_paths() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(body["error"]["code"], "missing_remote");
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("git push failed"));
+        .contains("set a remote URL"));
 }
 
 #[tokio::test]
