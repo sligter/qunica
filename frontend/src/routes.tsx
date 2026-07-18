@@ -49,7 +49,7 @@ export const router = createBrowserRouter([
             path: '/agents',
             element: (
               <EntityLayout
-                title="Agents"
+                titleKey="agents"
                 list={<AgentsListColumn width={ENTITY_LIST_WIDTH} />}
               />
             ),
@@ -63,7 +63,7 @@ export const router = createBrowserRouter([
             path: '/providers',
             element: (
               <EntityLayout
-                title="Providers"
+                titleKey="providers"
                 list={<ProvidersListColumn width={ENTITY_LIST_WIDTH} />}
               />
             ),
@@ -77,7 +77,7 @@ export const router = createBrowserRouter([
             path: '/skills',
             element: (
               <EntityLayout
-                title="Skills"
+                titleKey="skills"
                 list={<SkillsListColumn width={ENTITY_LIST_WIDTH} />}
               />
             ),
@@ -91,7 +91,7 @@ export const router = createBrowserRouter([
             path: '/workspaces',
             element: (
               <EntityLayout
-                title="Workspaces"
+                titleKey="workspaces"
                 list={<WorkspacesListColumn width={ENTITY_LIST_WIDTH} />}
               />
             ),

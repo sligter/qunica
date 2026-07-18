@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import {
   AlertDialog,
@@ -32,11 +33,12 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   destructive = false,
   onConfirm,
 }: ConfirmDialogProps) {
+  const { t } = useTranslation('common')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -53,7 +55,7 @@ export function ConfirmDialog({
       await onConfirm()
       onOpenChange(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Try again.')
+      setError(err instanceof Error ? err.message : t('errors.unexpected'))
     } finally {
       setPending(false)
     }
@@ -74,13 +76,15 @@ export function ConfirmDialog({
           </p>
         ) : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending}>
+            {cancelLabel ?? t('actions.cancel')}
+          </AlertDialogCancel>
           <Button
             variant={destructive ? 'destructive' : 'default'}
             onClick={() => void handleConfirm()}
             disabled={pending}
           >
-            {pending ? 'Working…' : confirmLabel}
+            {pending ? t('actions.working') : (confirmLabel ?? t('actions.confirm'))}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

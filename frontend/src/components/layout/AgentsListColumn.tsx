@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 import { ListColumn } from '@/components/layout/ListColumn'
 import { useAgents } from '@/hooks/useAgents'
 import { avatarColorClass } from '@/lib/avatarColor'
@@ -7,18 +9,19 @@ interface AgentsListColumnProps {
 }
 
 export function AgentsListColumn({ width }: AgentsListColumnProps) {
+  const { t } = useTranslation('agents')
   const agents = useAgents()
 
   return (
     <ListColumn
-      title="Agents"
+      title={t('title')}
       newTo="/agents/new"
-      newLabel="New agent"
-      searchPlaceholder="Search agents"
+      newLabel={t('new')}
+      searchPlaceholder={t('search')}
       isLoading={agents.isLoading}
       loadError={!!agents.error}
-      errorText="Failed to load agents."
-      emptyText="No agents yet. Click + to create one."
+      errorText={t('loadError')}
+      emptyText={t('empty')}
       width={width}
       items={(agents.data ?? []).map((a) => ({
         id: a.id,
@@ -26,7 +29,7 @@ export function AgentsListColumn({ width }: AgentsListColumnProps) {
         name: a.name,
         summary:
           a.runtime_kind === 'acp'
-            ? 'ACP runtime'
+            ? t('acpRuntime')
             : a.description || a.system_prompt,
         avatarClass: avatarColorClass(a.id),
         avatarInitial: a.name.slice(0, 1).toUpperCase(),

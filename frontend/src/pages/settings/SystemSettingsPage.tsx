@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
@@ -10,8 +11,10 @@ import {
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
+import { writeLanguageMirror } from '@/i18n'
 import type {
   Appearance,
+  Language,
   SystemSettingsUpdate,
   TavilySearchDepth,
 } from '@/types/api'
@@ -24,18 +27,17 @@ import {
 } from '@/lib/folderPicker'
 
 const PICKER_SCOPE = 'group-workspace-root'
-const APPEARANCE_OPTIONS: Array<{ value: Appearance; label: string }> = [
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-  { value: 'system', label: 'System' },
-]
+const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
+const LANGUAGE_OPTIONS: Language[] = ['zh-CN', 'en-US']
 
 export function SystemSettingsPage() {
+  const { t, i18n } = useTranslation('settings')
   const settings = useSystemSettings()
   const update = useUpdateSystemSettings()
   const fallbackInputRef = useRef<HTMLInputElement | null>(null)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [appearance, setAppearance] = useState<Appearance>('system')
+  const [language, setLanguage] = useState<Language>('en-US')
   const [root, setRoot] = useState('')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [tavilySearchUrl, setTavilySearchUrl] = useState('')
@@ -47,11 +49,13 @@ export function SystemSettingsPage() {
   const [rootError, setRootError] = useState<string | null>(null)
   const [tavilyError, setTavilyError] = useState<string | null>(null)
   const [appearanceError, setAppearanceError] = useState<string | null>(null)
+  const [languageError, setLanguageError] = useState<string | null>(null)
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
   const loaded = settings.data !== undefined
   const serverAppearance = settings.data?.appearance
+  const serverLanguage = settings.data?.language
   const serverRoot = settings.data?.group_workspace_root ?? ''
   const serverTavilyUrl = settings.data?.tavily_search_url ?? 'https://api.tavily.com/search'
   const serverTavilyMaxResults = settings.data?.tavily_max_results ?? 5
@@ -62,6 +66,9 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (serverAppearance !== undefined) setAppearance(serverAppearance)
   }, [serverAppearance])
+  useEffect(() => {
+    if (serverLanguage !== undefined) setLanguage(serverLanguage)
+  }, [serverLanguage])
   useEffect(() => {
     if (loaded) setRoot(serverRoot)
   }, [loaded, serverRoot])
@@ -80,6 +87,9 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (loaded) setTavilyIncludeRawContent(serverTavilyIncludeRawContent)
   }, [loaded, serverTavilyIncludeRawContent])
+  useEffect(() => {
+    document.title = t('title')
+  }, [i18n.resolvedLanguage, t])
 
   const errorMessage = (err: unknown, fallback: string): string =>
     err instanceof ApiError ? err.message : fallback
@@ -93,7 +103,24 @@ export function SystemSettingsPage() {
       await update.mutateAsync({ appearance: next })
     } catch (err) {
       setAppearance(previous)
-      setAppearanceError(errorMessage(err, 'Appearance update failed'))
+      setAppearanceError(errorMessage(err, t('errors.appearance')))
+    }
+  }
+
+  const onLanguageChange = async (next: Language) => {
+    if (next === language || update.isPending) return
+    const previous = language
+    setLanguage(next)
+    setLanguageError(null)
+    await i18n.changeLanguage(next)
+    try {
+      await update.mutateAsync({ language: next })
+      writeLanguageMirror(next)
+    } catch (err) {
+      setLanguage(previous)
+      await i18n.changeLanguage(previous)
+      writeLanguageMirror(previous)
+      setLanguageError(errorMessage(err, t('errors.language')))
     }
   }
 
@@ -151,7 +178,7 @@ export function SystemSettingsPage() {
       await update.mutateAsync({ group_workspace_root: value })
       if (value) saveRememberedPrefix(PICKER_SCOPE, value)
     } catch (err) {
-      setRootError(errorMessage(err, 'Network error'))
+      setRootError(errorMessage(err, t('errors.network')))
     }
   }
 
@@ -161,7 +188,7 @@ export function SystemSettingsPage() {
       await update.mutateAsync({ group_workspace_root: null })
       setRoot('')
     } catch (err) {
-      setRootError(errorMessage(err, 'Network error'))
+      setRootError(errorMessage(err, t('errors.network')))
     }
   }
 
@@ -186,7 +213,7 @@ export function SystemSettingsPage() {
       setTavilyApiKey('')
       setClearTavilyKey(false)
     } catch (err) {
-      setTavilyError(errorMessage(err, 'Network error'))
+      setTavilyError(errorMessage(err, t('errors.network')))
     }
   }
 
@@ -196,7 +223,7 @@ export function SystemSettingsPage() {
       await update.mutateAsync({ web_search_provider: 'tavily', ...patch })
     } catch (err) {
       revert()
-      setTavilyError(errorMessage(err, 'Network error'))
+      setTavilyError(errorMessage(err, t('errors.network')))
     }
   }
 
@@ -227,33 +254,33 @@ export function SystemSettingsPage() {
 
   return (
     <DetailShell
-      title="System settings"
-      subtitle="Account-level preferences and integrations."
+      title={t('title')}
+      subtitle={t('subtitle')}
     >
       <div className="space-y-10">
-        <SettingsSection title="Appearance">
+        <SettingsSection title={t('appearance')}>
           <SettingsRow
-            label="Theme"
-            description="Choose the app theme for this account. Saved instantly."
+            label={t('theme')}
+            description={t('themeDescription')}
           >
             <div
               className="inline-flex rounded-md border border-border bg-background p-1"
               role="radiogroup"
-              aria-label="Appearance"
+              aria-label={t('appearance')}
             >
               {APPEARANCE_OPTIONS.map((option) => (
                 <Button
-                  key={option.value}
+                  key={option}
                   type="button"
-                  variant={appearance === option.value ? 'default' : 'ghost'}
+                  variant={appearance === option ? 'default' : 'ghost'}
                   size="sm"
                   className="min-w-20"
                   role="radio"
-                  aria-checked={appearance === option.value}
+                  aria-checked={appearance === option}
                   disabled={update.isPending || settings.isLoading}
-                  onClick={() => void onAppearanceChange(option.value)}
+                  onClick={() => void onAppearanceChange(option)}
                 >
-                  {option.label}
+                  {t(option)}
                 </Button>
               ))}
             </div>
@@ -263,23 +290,54 @@ export function SystemSettingsPage() {
               {appearanceError}
             </p>
           ) : null}
+          <SettingsRow
+            label={t('language')}
+            description={t('languageDescription')}
+          >
+            <div
+              className="inline-flex rounded-md border border-border bg-background p-1"
+              role="radiogroup"
+              aria-label={t('language')}
+            >
+              {LANGUAGE_OPTIONS.map((option) => (
+                <Button
+                  key={option}
+                  type="button"
+                  variant={language === option ? 'default' : 'ghost'}
+                  size="sm"
+                  className="min-w-20"
+                  role="radio"
+                  aria-checked={language === option}
+                  disabled={update.isPending || settings.isLoading}
+                  onClick={() => void onLanguageChange(option)}
+                >
+                  {t(option === 'zh-CN' ? 'chinese' : 'english')}
+                </Button>
+              ))}
+            </div>
+          </SettingsRow>
+          {languageError ? (
+            <p className="py-2 text-sm text-destructive" role="alert">
+              {languageError}
+            </p>
+          ) : null}
         </SettingsSection>
 
         <SettingsSection
-          title="Group workspace root"
+          title={t('workspaceRoot.title')}
           aside={
             <Button
               size="sm"
               onClick={() => void onSaveRoot()}
               disabled={!rootDirty || update.isPending}
             >
-              {update.isPending ? 'Saving…' : 'Save'}
+              {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           }
         >
           <SettingsRow
-            label="Local directory"
-            description="Group workspaces are created under this folder on the backend host."
+            label={t('workspaceRoot.directory')}
+            description={t('workspaceRoot.description')}
             htmlFor="ss-root"
             stacked
           >
@@ -289,7 +347,7 @@ export function SystemSettingsPage() {
                 ref={pathInputRef}
                 value={root}
                 onChange={(event) => onRootChange(event.target.value)}
-                placeholder="D:/workspaces/groups"
+                placeholder={t('workspaceRoot.placeholder')}
                 className="max-w-xl"
               />
               <Button
@@ -297,7 +355,7 @@ export function SystemSettingsPage() {
                 variant="outline"
                 onClick={() => void onPickFolder()}
               >
-                Pick folder
+                {t('workspaceRoot.pickFolder')}
               </Button>
               <Button
                 type="button"
@@ -305,7 +363,7 @@ export function SystemSettingsPage() {
                 onClick={() => void onClearRoot()}
                 disabled={update.isPending || (!root.trim() && !serverRoot)}
               >
-                Clear
+                {t('common:actions.clear')}
               </Button>
             </div>
             <input
@@ -328,26 +386,26 @@ export function SystemSettingsPage() {
         </SettingsSection>
 
         <SettingsSection
-          title="WebSearch (Tavily)"
-          description="Bind the built-in WebSearch tool to Tavily for live web results."
+          title={t('tavily.title')}
+          description={t('tavily.description')}
           aside={
             <Button
               size="sm"
               onClick={() => void onSaveTavily()}
               disabled={!tavilyDirty || update.isPending}
             >
-              {update.isPending ? 'Saving…' : 'Save'}
+              {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           }
         >
           <SettingsRow
-            label="API key"
+            label={t('tavily.apiKey')}
             description={
               clearTavilyKey
-                ? 'The saved API key will be cleared on save.'
+                ? t('tavily.keyWillClear')
                 : settings.data?.tavily_api_key_configured
-                  ? 'API key is configured.'
-                  : 'No Tavily API key saved.'
+                  ? t('tavily.keyConfigured')
+                  : t('tavily.keyMissing')
             }
             htmlFor="ss-tavily-key"
           >
@@ -361,7 +419,7 @@ export function SystemSettingsPage() {
               }}
               placeholder={
                 settings.data?.tavily_api_key_configured
-                  ? 'Configured; enter a new key to replace'
+                  ? t('tavily.configuredPlaceholder')
                   : 'tvly-...'
               }
               className="w-72"
@@ -376,13 +434,13 @@ export function SystemSettingsPage() {
               }}
               disabled={!settings.data?.tavily_api_key_configured || update.isPending}
             >
-              Clear key
+              {t('tavily.clearKey')}
             </Button>
           </SettingsRow>
 
           <SettingsRow
-            label="Service URL"
-            description="Endpoint used for Tavily search requests."
+            label={t('tavily.serviceUrl')}
+            description={t('tavily.serviceUrlDescription')}
             htmlFor="ss-tavily-url"
           >
             <Input
@@ -395,8 +453,8 @@ export function SystemSettingsPage() {
           </SettingsRow>
 
           <SettingsRow
-            label="Max results"
-            description="Number of search results per query (1-20)."
+            label={t('tavily.maxResults')}
+            description={t('tavily.maxResultsDescription')}
             htmlFor="ss-tavily-max-results"
           >
             <Input
@@ -411,8 +469,8 @@ export function SystemSettingsPage() {
           </SettingsRow>
 
           <SettingsRow
-            label="Search depth"
-            description="Advanced depth returns richer results but is slower. Saved instantly."
+            label={t('tavily.searchDepth')}
+            description={t('tavily.searchDepthDescription')}
             htmlFor="ss-tavily-depth"
           >
             <select
@@ -422,32 +480,32 @@ export function SystemSettingsPage() {
               disabled={update.isPending}
               onChange={(event) => onTavilyDepthChange(event.target.value)}
             >
-              <option value="basic">Basic</option>
-              <option value="advanced">Advanced</option>
+              <option value="basic">{t('tavily.basic')}</option>
+              <option value="advanced">{t('tavily.advanced')}</option>
             </select>
           </SettingsRow>
 
           <SettingsRow
-            label="Include answer"
-            description="Ask Tavily to synthesize a short answer with the results. Saved instantly."
+            label={t('tavily.includeAnswer')}
+            description={t('tavily.includeAnswerDescription')}
           >
             <Switch
               checked={tavilyIncludeAnswer}
               onCheckedChange={onTavilyIncludeAnswerChange}
               disabled={update.isPending}
-              aria-label="Include answer"
+              aria-label={t('tavily.includeAnswer')}
             />
           </SettingsRow>
 
           <SettingsRow
-            label="Include raw content"
-            description="Attach raw page content to each result. Saved instantly."
+            label={t('tavily.includeRawContent')}
+            description={t('tavily.includeRawContentDescription')}
           >
             <Switch
               checked={tavilyIncludeRawContent}
               onCheckedChange={onTavilyIncludeRawContentChange}
               disabled={update.isPending}
-              aria-label="Include raw content"
+              aria-label={t('tavily.includeRawContent')}
             />
           </SettingsRow>
 

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { MessageSquarePlus } from 'lucide-react'
 
@@ -13,10 +14,15 @@ import { Button } from '@/components/ui/button'
  * selected — serif greeting, New group button, and a few recent groups.
  */
 export function ChatHomePage() {
+  const { t } = useTranslation(['groups', 'navigation'])
   const groups = useGroups()
   const [dialogOpen, setDialogOpen] = useState(false)
 
   const recent = (groups.data ?? []).slice(0, 5)
+
+  useEffect(() => {
+    document.title = 'AG Swarmer'
+  }, [])
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto bg-background p-6">
@@ -26,23 +32,23 @@ export function ChatHomePage() {
           AG Swarmer
         </h1>
         <p className="text-center text-sm text-muted-foreground">
-          Start a conversation with your agents, or pick up where you left off.
+          {t('groups:homeSubtitle')}
         </p>
         <Button size="lg" className="gap-2 rounded-lg" onClick={() => setDialogOpen(true)}>
           <MessageSquarePlus className="h-4 w-4" />
-          New group
+          {t('navigation:newGroup')}
         </Button>
 
         {groups.isLoading && (
-          <p className="text-xs text-muted-foreground">Loading recent groups…</p>
+          <p className="text-xs text-muted-foreground">{t('groups:loadingRecent')}</p>
         )}
         {groups.error && (
-          <p className="text-xs text-destructive">Failed to load recent groups.</p>
+          <p className="text-xs text-destructive">{t('groups:recentLoadError')}</p>
         )}
         {recent.length > 0 && (
           <div className="w-full">
             <p className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Recent groups
+              {t('groups:recent')}
             </p>
             <ul className="space-y-1.5">
               {recent.map((g) => (
@@ -59,7 +65,7 @@ export function ChatHomePage() {
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{g.name}</p>
                       <p className="line-clamp-1 text-xs text-muted-foreground">
-                        {g.description || 'No description.'}
+                        {g.description || t('groups:noDescription')}
                       </p>
                     </div>
                   </Link>

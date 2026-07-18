@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Bot,
@@ -15,7 +16,9 @@ import {
 } from 'lucide-react'
 
 import { avatarColorClass } from '@/lib/avatarColor'
+import { formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { normalizeLanguage } from '@/i18n'
 import { useGroups } from '@/hooks/useGroups'
 import { useAuthStore } from '@/stores/authStore'
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
@@ -28,15 +31,15 @@ const COLLAPSED_KEY = 'ag-swarmer:layout:sidebar-collapsed'
 
 interface LibraryItem {
   to: string
-  label: string
+  key: 'agents' | 'providers' | 'skills' | 'workspaces'
   icon: typeof Bot
 }
 
 const libraryItems: LibraryItem[] = [
-  { to: '/agents', label: 'Agents', icon: Bot },
-  { to: '/providers', label: 'Providers', icon: Plug },
-  { to: '/skills', label: 'Skills', icon: Sparkles },
-  { to: '/workspaces', label: 'Workspaces', icon: Folder },
+  { to: '/agents', key: 'agents', icon: Bot },
+  { to: '/providers', key: 'providers', icon: Plug },
+  { to: '/skills', key: 'skills', icon: Sparkles },
+  { to: '/workspaces', key: 'workspaces', icon: Folder },
 ]
 
 function readCollapsed(): boolean {
@@ -55,16 +58,6 @@ function storeCollapsed(value: boolean): void {
   }
 }
 
-function relativeTime(iso: string): string {
-  const d = new Date(iso).getTime()
-  const diff = Date.now() - d
-  if (diff < 60_000) return 'now'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d`
-  return new Date(iso).toLocaleDateString()
-}
-
 function initials(name: string | undefined): string {
   if (!name) return '?'
   const parts = name.trim().split(/\s+/)
@@ -79,6 +72,7 @@ function initials(name: string | undefined): string {
  * narrow icon strip; the collapsed state persists in localStorage.
  */
 export function AppSidebar() {
+  const { t, i18n } = useTranslation(['navigation', 'groups', 'common'])
   const [collapsed, setCollapsed] = useState(readCollapsed)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -130,7 +124,7 @@ export function AppSidebar() {
           variant="ghost"
           size="icon"
           onClick={toggleCollapsed}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={t(collapsed ? 'navigation:expandSidebar' : 'navigation:collapseSidebar')}
         >
           {collapsed ? (
             <PanelLeft className="h-4 w-4" />
@@ -148,12 +142,12 @@ export function AppSidebar() {
               <Button
                 size="icon"
                 onClick={() => setDialogOpen(true)}
-                aria-label="New group"
+                aria-label={t('navigation:newGroup')}
               >
                 <MessageSquarePlus className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="right">New group</TooltipContent>
+            <TooltipContent side="right">{t('navigation:newGroup')}</TooltipContent>
           </Tooltip>
         ) : (
           <Button
@@ -161,7 +155,7 @@ export function AppSidebar() {
             onClick={() => setDialogOpen(true)}
           >
             <MessageSquarePlus className="h-4 w-4" />
-            New group
+            {t('navigation:newGroup')}
           </Button>
         )}
       </div>
@@ -173,33 +167,33 @@ export function AppSidebar() {
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="shrink-0 px-3 pt-2">
             <p className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Groups
+              {t('navigation:groups')}
             </p>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search groups"
-                aria-label="Search groups"
+                placeholder={t('navigation:searchGroups')}
+                aria-label={t('navigation:searchGroups')}
                 className="h-8 pl-8 text-xs"
               />
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
             {groups.isLoading && (
-              <p className="px-2 text-xs text-muted-foreground">Loading…</p>
+              <p className="px-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
             )}
             {groups.error && (
-              <p className="px-2 text-xs text-destructive">Failed to load groups.</p>
+              <p className="px-2 text-xs text-destructive">{t('groups:loadError')}</p>
             )}
             {groups.data && groups.data.length === 0 && (
               <p className="px-2 text-xs text-muted-foreground">
-                No groups yet. Click New group to start one.
+                {t('groups:empty')}
               </p>
             )}
             {groups.data && groups.data.length > 0 && filteredGroups.length === 0 && (
-              <p className="px-2 text-xs text-muted-foreground">No matches.</p>
+              <p className="px-2 text-xs text-muted-foreground">{t('common:state.noMatches')}</p>
             )}
             <ul className="space-y-0.5">
               {filteredGroups.map((g) => (
@@ -229,7 +223,10 @@ export function AppSidebar() {
                           {g.name}
                         </span>
                         <span className="shrink-0 text-[10px] text-muted-foreground">
-                          {relativeTime(g.created_at)}
+                          {formatRelativeTime(
+                            g.created_at,
+                            normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US',
+                          )}
                         </span>
                       </>
                     )}
@@ -250,11 +247,12 @@ export function AppSidebar() {
       >
         {!collapsed && (
           <p className="px-3 pb-1.5 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Library
+            {t('navigation:library')}
           </p>
         )}
-        {libraryItems.map(({ to, label, icon: Icon }) =>
-          collapsed ? (
+        {libraryItems.map(({ to, key, icon: Icon }) => {
+          const label = t(`navigation:${key}`)
+          return collapsed ? (
             <Tooltip key={to}>
               <TooltipTrigger asChild>
                 <NavLink
@@ -290,8 +288,8 @@ export function AppSidebar() {
               <Icon className="h-4 w-4" />
               {label}
             </NavLink>
-          ),
-        )}
+          )
+        })}
       </nav>
 
       {/* Bottom: Settings + user menu */}
@@ -306,7 +304,7 @@ export function AppSidebar() {
             <TooltipTrigger asChild>
               <NavLink
                 to="/settings"
-                aria-label="Settings"
+                aria-label={t('navigation:settings')}
                 className={({ isActive }) =>
                   cn(
                     'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
@@ -319,7 +317,7 @@ export function AppSidebar() {
                 <Settings className="h-4 w-4" />
               </NavLink>
             </TooltipTrigger>
-            <TooltipContent side="right">Settings</TooltipContent>
+            <TooltipContent side="right">{t('navigation:settings')}</TooltipContent>
           </Tooltip>
         ) : (
           <NavLink
@@ -334,7 +332,7 @@ export function AppSidebar() {
             }
           >
             <Settings className="h-4 w-4" />
-            Settings
+            {t('navigation:settings')}
           </NavLink>
         )}
         <SidebarUserMenu collapsed={collapsed} />
@@ -348,6 +346,7 @@ interface SidebarUserMenuProps {
 }
 
 function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
+  const { t } = useTranslation('navigation')
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const qc = useQueryClient()
@@ -375,7 +374,7 @@ function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
             : 'w-full gap-2.5 px-2.5 py-1.5 text-left',
           open && 'bg-card-hover',
         )}
-        aria-label="User menu"
+        aria-label={t('userMenu')}
       >
         <Avatar className="h-7 w-7 shrink-0">
           <AvatarFallback className="bg-primary text-xs text-primary-foreground">
@@ -412,7 +411,7 @@ function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
               onClick={onLogout}
             >
               <LogOut className="h-4 w-4" />
-              Logout
+              {t('logout')}
             </Button>
           </div>
         </>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { Plus, Search } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -48,6 +49,7 @@ export function ListColumn({
   width,
   className,
 }: ListColumnProps) {
+  const { t } = useTranslation('common')
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
   const filtered = q
@@ -89,13 +91,15 @@ export function ListColumn({
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">
-        {isLoading && <p className="px-4 text-xs text-muted-foreground">Loading…</p>}
+        {isLoading && (
+          <p className="px-4 text-xs text-muted-foreground">{t('state.loading')}</p>
+        )}
         {loadError && <p className="px-4 text-xs text-destructive">{errorText}</p>}
         {!isLoading && !loadError && items.length === 0 && (
           <p className="px-4 text-xs text-muted-foreground">{emptyText}</p>
         )}
         {!isLoading && !loadError && items.length > 0 && filtered.length === 0 && (
-          <p className="px-4 text-xs text-muted-foreground">No matches.</p>
+          <p className="px-4 text-xs text-muted-foreground">{t('state.noMatches')}</p>
         )}
         <ul className="space-y-0.5 px-2">
           {filtered.map((item) => (

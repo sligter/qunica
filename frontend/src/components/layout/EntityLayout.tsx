@@ -1,12 +1,13 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Outlet, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 
 interface EntityLayoutProps {
-  /** Serif area heading, e.g. "Agents". */
-  title: string
+  /** Navigation resource key for the area heading. */
+  titleKey: 'agents' | 'providers' | 'skills' | 'workspaces'
   /** The searchable entity list column rendered left of the detail Outlet. */
   list: ReactNode
 }
@@ -16,8 +17,14 @@ interface EntityLayoutProps {
  * Workspaces): a header row with a back-to-chat button plus the serif area
  * title, and below it the entity list column next to the detail/create Outlet.
  */
-export function EntityLayout({ title, list }: EntityLayoutProps) {
+export function EntityLayout({ titleKey, list }: EntityLayoutProps) {
+  const { t } = useTranslation('navigation')
   const navigate = useNavigate()
+  const title = t(titleKey)
+
+  useEffect(() => {
+    document.title = title
+  }, [title])
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -26,7 +33,7 @@ export function EntityLayout({ title, list }: EntityLayoutProps) {
           variant="ghost"
           size="icon"
           onClick={() => void navigate('/')}
-          aria-label="Back to chat"
+          aria-label={t('backToChat')}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>

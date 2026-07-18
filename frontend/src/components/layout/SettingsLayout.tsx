@@ -1,5 +1,6 @@
 import { Outlet, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 
@@ -9,6 +10,7 @@ import { Button } from '@/components/ui/button'
  * (Agents, Providers, ...) live at top-level routes with their own EntityLayout.
  */
 export function SettingsLayout() {
+  const { t } = useTranslation('navigation')
   const navigate = useNavigate()
 
   return (
@@ -18,11 +20,13 @@ export function SettingsLayout() {
           variant="ghost"
           size="icon"
           onClick={() => void navigate('/')}
-          aria-label="Back to chat"
+          aria-label={t('backToChat')}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="font-serif text-base font-semibold tracking-tight">Settings</h1>
+        <h1 className="font-serif text-base font-semibold tracking-tight">
+          {t('settings')}
+        </h1>
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Outlet />

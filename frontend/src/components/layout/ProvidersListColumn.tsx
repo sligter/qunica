@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 import { ListColumn } from '@/components/layout/ListColumn'
 import { useProviders } from '@/hooks/useProviders'
 import type { ProviderKind } from '@/types/api'
@@ -21,18 +23,19 @@ function kindInitial(kind: ProviderKind, name: string): string {
 }
 
 export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
+  const { t } = useTranslation('providers')
   const providers = useProviders()
 
   return (
     <ListColumn
-      title="Providers"
+      title={t('title')}
       newTo="/providers/new"
-      newLabel="New provider"
-      searchPlaceholder="Search providers"
+      newLabel={t('new')}
+      searchPlaceholder={t('search')}
       isLoading={providers.isLoading}
       loadError={!!providers.error}
-      errorText="Failed to load providers."
-      emptyText="No providers yet. Click + to register one."
+      errorText={t('loadError')}
+      emptyText={t('empty')}
       width={width}
       items={(providers.data ?? []).map((p) => ({
         id: p.id,
