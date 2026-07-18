@@ -1,5 +1,6 @@
 import { CheckCircle2, SendHorizontal } from 'lucide-react'
 import { useId, useState, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,7 @@ export function HumanInputRequestForm({
   className,
   compact = false,
 }: HumanInputRequestFormProps) {
+  const { t } = useTranslation('chat')
   const inputId = useId()
   const [value, setValue] = useState('')
   const [selectedChoice, setSelectedChoice] = useState('')
@@ -54,14 +56,14 @@ export function HumanInputRequestForm({
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs font-semibold text-warning-foreground">Input requested</div>
+          <div className="text-xs font-semibold text-warning-foreground">{t('stream.inputRequested')}</div>
           <div className="mt-1 text-sm leading-6 text-foreground">
             <MarkdownMessage content={request.question} />
           </div>
         </div>
         {request.required === false ? (
           <span className="shrink-0 rounded-full border border-warning bg-background px-2 py-0.5 text-[10px] font-medium text-warning-foreground">
-            Optional
+            {t('stream.optional')}
           </span>
         ) : null}
       </div>
@@ -69,7 +71,7 @@ export function HumanInputRequestForm({
       <div className="mt-3 flex flex-col gap-3">
         {choices.length > 0 ? (
           <div className="grid gap-1.5">
-            <div className="text-xs font-medium text-muted-foreground">Choose an option</div>
+            <div className="text-xs font-medium text-muted-foreground">{t('stream.chooseOption')}</div>
             <div className="flex flex-wrap gap-1.5">
               {choices.map((choice) => {
                 const selected = choice === selectedChoice
@@ -97,13 +99,13 @@ export function HumanInputRequestForm({
         ) : null}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <label className="sr-only" htmlFor={inputId}>
-            {hasChoices ? 'Additional details' : 'Response'}
+            {hasChoices ? t('stream.additionalDetails') : t('stream.response')}
           </label>
           <Textarea
             id={inputId}
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder={hasChoices ? 'Add details (optional)...' : 'Type your response...'}
+            placeholder={hasChoices ? t('stream.addDetails') : t('stream.typeResponse')}
             rows={compact ? 2 : 3}
             disabled={submitted || !onSubmitResponse}
             className="min-h-0 resize-none bg-background"
@@ -114,7 +116,7 @@ export function HumanInputRequestForm({
             ) : (
               <SendHorizontal className="h-3.5 w-3.5" />
             )}
-            {submitted ? 'Sent' : 'Submit'}
+            {submitted ? t('stream.sent') : t('stream.submit')}
           </Button>
         </div>
       </div>

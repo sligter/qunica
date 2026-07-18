@@ -1,8 +1,11 @@
 import type { ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { formatNumber, formatTime } from '@/lib/format'
+import { normalizeLanguage } from '@/i18n'
 import type { ContextUsage } from '@/types/api'
 
 type AvatarKind = 'agent' | 'user' | 'system'
@@ -50,41 +53,40 @@ function usageColor(ratio: number): string {
   return 'var(--color-success)'
 }
 
-function formatTokens(value: number | null | undefined): string {
-  return typeof value === 'number' ? value.toLocaleString() : '—'
+function formatTokens(value: number | null | undefined, language: 'en-US' | 'zh-CN'): string {
+  return typeof value === 'number' ? formatNumber(value, language) : '—'
 }
 
-function usageSourceLabel(source: string | null | undefined): string {
-  switch (source) {
-    case 'provider':
-      return 'Reported by provider'
-    case 'previous_provider_delta':
-      return 'Previous provider + estimate'
-    case 'fallback_tokenizer':
-      return 'Estimated (tokenizer)'
-    default:
-      return source ? source : 'Source unknown'
-  }
-}
-
-function formatUpdatedAt(value: string | null | undefined): string | null {
+function formatUpdatedAt(
+  value: string | null | undefined,
+  language: 'en-US' | 'zh-CN',
+): string | null {
   if (!value) return null
   const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return null
-  return parsed.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return Number.isNaN(parsed.getTime()) ? null : formatTime(parsed, language)
 }
 
 /** Rich hover card describing one agent's context-window usage. */
 function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
+  const { t, i18n } = useTranslation('chat')
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const ratio =
     usage.ratio !== null && usage.ratio !== undefined
       ? Math.max(0, Math.min(1, usage.ratio))
       : null
   const dotColor = ratio !== null ? usageColor(ratio) : 'var(--color-muted-foreground)'
-  const percentLabel = ratio !== null ? `${Math.round(ratio * 100)}%` : 'Usage unknown'
+  const percentLabel = ratio !== null
+    ? `${formatNumber(Math.round(ratio * 100), language)}%`
+    : t('messages.context.usageUnknown')
   const hasOutput =
     typeof usage.output_tokens === 'number' || typeof usage.total_tokens === 'number'
-  const updatedLabel = formatUpdatedAt(usage.updated_at)
+  const updatedLabel = formatUpdatedAt(usage.updated_at, language)
+  const sourceLabels: Record<string, string> = {
+    provider: t('messages.context.provider'),
+    previous_provider_delta: t('messages.context.previousProvider'),
+    fallback_tokenizer: t('messages.context.estimated'),
+  }
+  const sourceLabel = usage.source ? (sourceLabels[usage.source] ?? usage.source) : t('messages.context.sourceUnknown')
 
   return (
     <div className="flex min-w-[11rem] flex-col gap-1.5">
@@ -94,24 +96,24 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
           className="inline-block h-2 w-2 shrink-0 rounded-full"
           style={{ background: dotColor }}
         />
-        <span>Context {percentLabel}</span>
+        <span>{t('messages.context.title', { usage: percentLabel })}</span>
       </div>
       <div className="text-muted-foreground">
-        <span className="font-medium text-foreground">{formatTokens(usage.input_tokens)}</span>
+        <span className="font-medium text-foreground">{formatTokens(usage.input_tokens, language)}</span>
         {' / '}
-        {formatTokens(usage.context_window_tokens)} tokens
+        {t('messages.context.tokens', { count: formatTokens(usage.context_window_tokens, language) })}
       </div>
       {hasOutput && (
         <div className="text-muted-foreground">
-          Output {formatTokens(usage.output_tokens)} · Total {formatTokens(usage.total_tokens)}
+          {t('messages.context.outputTotal', { output: formatTokens(usage.output_tokens, language), total: formatTokens(usage.total_tokens, language) })}
         </div>
       )}
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
-        <span>{usageSourceLabel(usage.source)}</span>
+        <span>{sourceLabel}</span>
         {updatedLabel && (
           <>
             <span aria-hidden="true">·</span>
-            <span>Updated {updatedLabel}</span>
+            <span>{t('messages.context.updated', { time: updatedLabel })}</span>
           </>
         )}
       </div>

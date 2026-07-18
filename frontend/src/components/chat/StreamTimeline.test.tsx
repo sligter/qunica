@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { StreamTimeline } from '@/components/chat/StreamTimeline'
+import i18n from '@/i18n'
 import type { StreamRun, StreamTimelineEvent } from '@/stores/messageStore'
 
 vi.mock('@/hooks/useGroupAgents', () => ({
@@ -33,9 +34,46 @@ function run(events: StreamTimelineEvent[], status: StreamRun['status'] = 'compl
   }
 }
 
-afterEach(cleanup)
+afterEach(async () => {
+  cleanup()
+  await i18n.changeLanguage('en-US')
+})
 
 describe('StreamTimeline activity rendering', () => {
+  it('localizes an empty active stream state', async () => {
+    await i18n.changeLanguage('en-US')
+    render(<StreamTimeline run={run([], 'active')} />)
+    expect(screen.getByText('Waiting for agents to start…')).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    render(<StreamTimeline run={run([], 'active')} />)
+    expect(screen.getByText('等待 Agent 开始…')).toBeVisible()
+  })
+
+  it('localizes known tool activity statuses', async () => {
+    const setupRequired = event({
+      id: 'tool-1',
+      stream_id: 'stream-1',
+      type: 'tool',
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      tool_call_id: 'call-1',
+      tool_name: 'Configure',
+      status: 'setup_required',
+      created_at: '2026-07-16T10:00:02Z',
+    })
+
+    await i18n.changeLanguage('en-US')
+    render(<StreamTimeline run={run([setupRequired])} />)
+    expect(screen.getByText('setup required')).toBeInTheDocument()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    render(<StreamTimeline run={run([setupRequired])} />)
+    expect(screen.getByText('需要设置')).toBeInTheDocument()
+  })
+
   it('folds live reasoning and tool calls into one activity bubble', async () => {
     const user = userEvent.setup()
     render(

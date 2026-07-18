@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
+import i18n from '@/i18n'
 import type { GroupTurnTraceResponse } from '@/lib/api-v2/types'
 
 class ResizeObserverMock {
@@ -63,12 +64,32 @@ describe('TurnTraceDrawer', () => {
     mocks.cancel = { isPending: false, isError: false, error: null, mutate: mocks.mutate }
   })
 
-  afterEach(cleanup)
+  afterEach(async () => {
+    cleanup()
+    await i18n.changeLanguage('en-US')
+  })
+
+  it('localizes trace metrics without changing raw diagnostic detail', async () => {
+    mocks.trace = { ...mocks.trace, data: traceFixture() }
+    await i18n.changeLanguage('en-US')
+    renderDrawer()
+    expect(screen.getByText('Turn details')).toBeVisible()
+    expect(screen.getByLabelText('Turn usage')).toHaveTextContent('Steps2')
+    expect(screen.getByLabelText('Turn usage')).toHaveTextContent('Hops2')
+    expect(screen.getByLabelText('Turn usage')).toHaveTextContent('Tokens1,234')
+
+    cleanup()
+    mocks.trace = { ...mocks.trace, isError: true, error: new Error('RAW_BACKEND_DETAIL') }
+    await i18n.changeLanguage('zh-CN')
+    renderDrawer()
+    expect(screen.getByText('回合详情')).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('RAW_BACKEND_DETAIL')
+  })
 
   it('shows a loading state', () => {
     mocks.trace = { ...mocks.trace, isLoading: true }
     renderDrawer()
-    expect(screen.getByRole('status')).toHaveTextContent('Loading trace...')
+    expect(screen.getByRole('status')).toHaveTextContent('Loading trace…')
   })
 
   it('shows an error and retries the query', async () => {

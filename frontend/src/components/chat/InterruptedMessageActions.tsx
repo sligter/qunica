@@ -1,4 +1,5 @@
 import { Play } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { useResumeStream } from '@/hooks/useResumeStream'
@@ -14,6 +15,7 @@ export function InterruptedMessageActions({
   threadId,
   messageId,
 }: InterruptedMessageActionsProps) {
+  const { t } = useTranslation('chat')
   const { resume, isStreaming, error } = useResumeStream(groupId, threadId, messageId)
   return (
     <div className="flex items-center gap-2 text-xs">
@@ -25,9 +27,9 @@ export function InterruptedMessageActions({
         className="h-7 gap-1.5"
       >
         <Play className="h-3 w-3" />
-        Continue
+        {t('messages.continue')}
       </Button>
-      {error && <span className="text-destructive">Resume failed: {error}</span>}
+      {error && <span className="text-destructive">{t('messages.resumeFailed', { message: error })}</span>}
     </div>
   )
 }

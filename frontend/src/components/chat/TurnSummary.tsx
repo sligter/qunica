@@ -1,5 +1,7 @@
 import { Activity, AlertTriangle, Ban, ChevronRight, CircleCheck, Clock3 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
+import '@/i18n'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { GroupTurnStatus } from '@/lib/api-v2/types'
@@ -18,18 +20,18 @@ interface TurnSummaryProps {
   className?: string
 }
 
-const statusLabels: Record<GroupTurnStatus, string> = {
-  pending: 'Scheduled',
-  running: 'Running',
-  waiting_for_user: 'Waiting for input',
-  completed: 'Completed',
-  silence: 'Completed silently',
-  budget_exhausted: 'Step budget reached',
-  failure_budget_exhausted: 'Failure budget reached',
-  cancelled: 'Cancelled',
-  superseded: 'Superseded',
-  failed: 'Failed',
-}
+const turnStatusKeys = {
+  pending: 'trace.statuses.pending',
+  running: 'trace.statuses.running',
+  waiting_for_user: 'trace.statuses.waiting_for_user',
+  completed: 'trace.statuses.completed',
+  silence: 'trace.statuses.silence',
+  budget_exhausted: 'trace.statuses.budget_exhausted',
+  failure_budget_exhausted: 'trace.statuses.failure_budget_exhausted',
+  cancelled: 'trace.statuses.cancelled',
+  superseded: 'trace.statuses.superseded',
+  failed: 'trace.statuses.failed',
+} as const satisfies Record<GroupTurnStatus, string>
 
 function statusIcon(status: GroupTurnStatus) {
   if (status === 'completed' || status === 'silence') return CircleCheck
@@ -55,11 +57,12 @@ export function TurnSummary({
   onViewTrace,
   className,
 }: TurnSummaryProps) {
+  const { t } = useTranslation('chat')
   const StatusIcon = statusIcon(status)
 
   return (
     <section
-      aria-label="Scheduler turn summary"
+      aria-label={t('trace.summary')}
       className={cn('mx-4 my-1 border-l-2 border-border py-1 pl-3', className)}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -69,7 +72,7 @@ export function TurnSummary({
           className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs font-medium', statusClasses(status))}
         >
           <StatusIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span>{statusLabels[status]}</span>
+          <span>{t(turnStatusKeys[status])}</span>
         </span>
         {summaries.slice(-2).map((summary) => (
           <span
@@ -91,7 +94,7 @@ export function TurnSummary({
           className="ml-auto h-7 shrink-0 px-2"
           onClick={(event) => onViewTrace(turnId, event.currentTarget)}
         >
-          View trace
+          {t('trace.view')}
           <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
       </div>

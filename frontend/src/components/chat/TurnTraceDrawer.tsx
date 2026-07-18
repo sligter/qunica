@@ -1,5 +1,6 @@
 import type { RefObject } from 'react'
 import { AlertTriangle, Ban, CircleDollarSign, Coins, Footprints, RefreshCcw, Route } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { DispatchDag } from '@/components/chat/DispatchDag'
 import { Button } from '@/components/ui/button'
@@ -7,6 +8,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { useCancelGroupTurn, useGroupTurnTrace } from '@/hooks/useGroupTurnTrace'
 import { cn } from '@/lib/utils'
+import { formatNumber } from '@/lib/format'
+import { normalizeLanguage } from '@/i18n'
 import type { GroupTurnStatus } from '@/lib/api-v2/types'
 
 interface TurnTraceDrawerProps {
@@ -18,6 +21,19 @@ interface TurnTraceDrawerProps {
 }
 
 const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running', 'waiting_for_user'])
+
+const turnStatusKeys = {
+  pending: 'trace.statuses.pending',
+  running: 'trace.statuses.running',
+  waiting_for_user: 'trace.statuses.waiting_for_user',
+  completed: 'trace.statuses.completed',
+  silence: 'trace.statuses.silence',
+  budget_exhausted: 'trace.statuses.budget_exhausted',
+  failure_budget_exhausted: 'trace.statuses.failure_budget_exhausted',
+  cancelled: 'trace.statuses.cancelled',
+  superseded: 'trace.statuses.superseded',
+  failed: 'trace.statuses.failed',
+} as const satisfies Record<GroupTurnStatus, string>
 
 function humanize(value: string): string {
   return value.replace(/_/g, ' ')
@@ -42,6 +58,8 @@ export function TurnTraceDrawer({
   onOpenChange,
   returnFocusRef,
 }: TurnTraceDrawerProps) {
+  const { t, i18n } = useTranslation('chat')
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const trace = useGroupTurnTrace(groupId, turnId)
   const cancelTurn = useCancelGroupTurn()
   const data = trace.data
@@ -57,27 +75,27 @@ export function TurnTraceDrawer({
         }}
       >
         <SheetHeader className="shrink-0 border-b border-border px-5 py-4 pr-14">
-          <SheetTitle>Scheduler trace</SheetTitle>
+          <SheetTitle>{t('trace.title')}</SheetTitle>
           <SheetDescription>
-            Durable routing and budget details for this turn.
+            {t('trace.description')}
           </SheetDescription>
         </SheetHeader>
 
         {trace.isLoading ? (
           <div className="flex flex-1 items-center justify-center" role="status">
             <RefreshCcw className="mr-2 h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
-            <span className="text-sm text-muted-foreground">Loading trace...</span>
+            <span className="text-sm text-muted-foreground">{t('trace.loading')}</span>
           </div>
         ) : trace.isError ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
             <AlertTriangle className="h-6 w-6 text-destructive" aria-hidden="true" />
             <div>
-              <p className="text-sm font-medium">Trace unavailable</p>
+              <p className="text-sm font-medium">{t('trace.unavailable')}</p>
               <p className="mt-1 max-w-sm text-xs text-muted-foreground">{trace.error.message}</p>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => void trace.refetch()}>
               <RefreshCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry
+              {t('trace.retry')}
             </Button>
           </div>
         ) : data ? (
@@ -88,7 +106,7 @@ export function TurnTraceDrawer({
                   'rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium capitalize',
                   data.turn.status === 'failed' && 'border-destructive/30 bg-destructive/10 text-destructive',
                 )}>
-                  {humanize(data.turn.status)}
+                  {t(turnStatusKeys[data.turn.status])}
                 </span>
                 {data.turn.termination_reason ? <span className="text-xs text-muted-foreground">{humanize(data.turn.termination_reason)}</span> : null}
                 {canCancel ? (
@@ -103,20 +121,20 @@ export function TurnTraceDrawer({
                     }}
                   >
                     <Ban className="h-3.5 w-3.5" aria-hidden="true" />
-                    {cancelTurn.isPending ? 'Stopping...' : 'Stop turn'}
+                    {cancelTurn.isPending ? t('trace.stopping') : t('trace.stop')}
                   </Button>
                 ) : null}
               </div>
               {cancelTurn.isError ? <p className="text-xs text-destructive" role="alert">{cancelTurn.error.message}</p> : null}
 
-              <div className="grid grid-cols-2 gap-x-3 gap-y-4 border-y border-border py-3 sm:grid-cols-4" aria-label="Turn usage">
-                <Metric icon={Footprints} label="Steps" value={data.budget.agent_steps.toLocaleString()} />
-                <Metric icon={Route} label="Hops" value={maxHop.toLocaleString()} />
-                <Metric icon={Coins} label="Tokens" value={data.budget.total_tokens.toLocaleString()} />
+              <div className="grid grid-cols-2 gap-x-3 gap-y-4 border-y border-border py-3 sm:grid-cols-4" aria-label={t('trace.usage')}>
+                <Metric icon={Footprints} label={t('trace.steps')} value={formatNumber(data.budget.agent_steps, language)} />
+                <Metric icon={Route} label={t('trace.hops')} value={formatNumber(maxHop, language)} />
+                <Metric icon={Coins} label={t('trace.tokens')} value={formatNumber(data.budget.total_tokens, language)} />
                 <Metric
                   icon={CircleDollarSign}
-                  label="Cost"
-                  value={data.estimated_cost ? `${data.estimated_cost.amount} ${data.estimated_cost.currency}` : 'Cost unavailable'}
+                  label={t('trace.cost')}
+                  value={data.estimated_cost ? `${data.estimated_cost.amount} ${data.estimated_cost.currency}` : t('trace.costUnavailable')}
                 />
               </div>
 

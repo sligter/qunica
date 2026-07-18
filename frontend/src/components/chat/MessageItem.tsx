@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
@@ -8,6 +9,8 @@ import { MessageActions } from '@/components/chat/MessageActions'
 import { PersistedTurnDetails } from '@/components/chat/PersistedTurnDetails'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
+import { formatTime } from '@/lib/format'
+import { normalizeLanguage } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
@@ -26,6 +29,8 @@ export function MessageItem({
   isStreaming,
   onSubmitHumanInput,
 }: MessageItemProps) {
+  const { t, i18n } = useTranslation('chat')
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const groupAgents = useGroupAgents(groupId)
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
@@ -36,14 +41,14 @@ export function MessageItem({
 
   const senderName = useMemo(() => {
     if (message.sender_type === 'user') {
-      if (currentUser && message.sender_id === currentUser.id) return 'You'
-      return 'User'
+      if (currentUser && message.sender_id === currentUser.id) return t('messages.you')
+      return t('messages.user')
     }
     if (message.sender_type === 'agent') {
-      return groupAgent?.display_name ?? 'Agent'
+      return groupAgent?.display_name ?? t('messages.agent')
     }
-    return 'System'
-  }, [currentUser, groupAgent?.display_name, message.sender_id, message.sender_type])
+    return t('messages.system')
+  }, [currentUser, groupAgent?.display_name, message.sender_id, message.sender_type, t])
 
   if (message.sender_type === 'system') {
     return (
@@ -57,10 +62,7 @@ export function MessageItem({
   const inputRequest = !isUser ? humanInputRequestFromText(message.content) : null
   const isInterrupted = message.status === 'interrupted'
   const showStreamingDot = isStreaming || isResuming
-  const time = new Date(message.created_at).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  const time = formatTime(message.created_at, language)
 
   return (
     <div
@@ -88,13 +90,13 @@ export function MessageItem({
           {showStreamingDot && (
             <span className="inline-flex items-center gap-1 text-warning-foreground">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-              streaming
+              {t('messages.streaming')}
             </span>
           )}
           {isInterrupted && !isResuming && (
             <span className="inline-flex items-center gap-1 text-warning-foreground">
               <span className="h-1.5 w-1.5 rounded-full bg-warning-foreground" />
-              interrupted
+              {t('messages.interrupted')}
             </span>
           )}
           {message.content && !showStreamingDot && (

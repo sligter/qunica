@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageList } from '@/components/chat/MessageList'
+import i18n from '@/i18n'
 import { useMessageStore, type StreamRun } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
@@ -47,7 +48,7 @@ function setMessageState(run?: StreamRun) {
   })
 }
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
   sessionStorage.clear()
   useMessageStore.setState({
@@ -56,9 +57,23 @@ afterEach(() => {
     streamRunsByGroup: {},
     streamRunIdByUserMessageIdByGroup: {},
   })
+  await i18n.changeLanguage('en-US')
 })
 
 describe('MessageList scheduler summary integration', () => {
+  it('localizes older-message loading while preserving Agent-authored content', async () => {
+    setMessageState()
+    await i18n.changeLanguage('en-US')
+    render(<MessageList groupId="group-1" hasOlderMessages isLoadingOlderMessages />)
+    expect(screen.getByRole('button', { name: 'Loading older messages…' })).toBeDisabled()
+    expect(screen.getByText('Run the group')).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    render(<MessageList groupId="group-1" hasOlderMessages isLoadingOlderMessages />)
+    expect(screen.getByRole('button', { name: '正在加载更早的消息…' })).toBeDisabled()
+    expect(screen.getByText('Run the group')).toBeVisible()
+  })
   it('keeps the message column shrinkable and clips page-level horizontal overflow', () => {
     setMessageState()
 

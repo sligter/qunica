@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { useGroupWorkspaceRoot } from '@/hooks/useGroupFiles'
@@ -35,6 +36,7 @@ function extractText(node: unknown): string {
 }
 
 function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
+  const { t } = useTranslation('chat')
   const [copied, setCopied] = useState(false)
   const language = /language-(\w+)/.exec(className ?? '')?.[1]
   const code = extractText(children).replace(/\n$/, '')
@@ -48,17 +50,17 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
   return (
     <div className="my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-code text-code-foreground shadow-sm">
       <div className="flex items-center justify-between border-b border-code-foreground/10 bg-code-foreground/10 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-code-foreground/70">
-        <span>{language ?? 'code'}</span>
+        <span>{language ?? t('messages.code')}</span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-[11px] text-code-foreground/80 hover:bg-code-foreground/15 hover:text-code-foreground"
           onClick={() => void copyCode()}
-          aria-label="Copy code block"
+          aria-label={t('messages.copyCode')}
         >
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          {copied ? 'Copied' : 'Copy'}
+          {copied ? t('messages.copied') : t('messages.copy')}
         </Button>
       </div>
       <pre className="max-w-full overflow-x-auto p-3 text-xs leading-relaxed">

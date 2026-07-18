@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Composer } from '@/components/chat/Composer'
+import i18n from '@/i18n'
 import type { GroupAgentRead } from '@/types/api'
 
 vi.mock('@/hooks/useGroupFiles', () => ({
@@ -31,7 +32,23 @@ const groupAgents: GroupAgentRead[] = [
 ]
 
 describe('Composer mentions', () => {
-  afterEach(cleanup)
+  afterEach(async () => {
+    cleanup()
+    await i18n.changeLanguage('en-US')
+  })
+
+  it('localizes the composer placeholder and stream cancellation action', async () => {
+    await i18n.changeLanguage('en-US')
+    render(<Composer onSend={vi.fn()} onCancel={vi.fn()} isStreaming />)
+    expect(screen.getByPlaceholderText('Message your agents…')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Stop generating' })).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    render(<Composer onSend={vi.fn()} onCancel={vi.fn()} isStreaming />)
+    expect(screen.getByPlaceholderText('给你的 Agent 发消息…')).toBeVisible()
+    expect(screen.getByRole('button', { name: '停止生成' })).toBeVisible()
+  })
 
   it.each([
     ['Tab', '{Tab}'],

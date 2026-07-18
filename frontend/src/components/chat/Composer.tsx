@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, ChevronDown, Paperclip, Square } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
 import { Button } from '@/components/ui/button'
@@ -36,6 +37,7 @@ export function Composer({
   groupId,
   onRegisterWorkspacePathInserter,
 }: ComposerProps) {
+  const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [mentionQuery, setMentionQuery] = useState('')
@@ -219,9 +221,9 @@ export function Composer({
             onKeyDown={onKeyDown}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
-            placeholder="Type a message… @ to mention an agent, Shift+Enter for newline"
+            placeholder={t('composer.placeholder')}
             rows={1}
-            aria-label="Message"
+            aria-label={t('composer.message')}
             className={cn(
               'block max-h-52 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-3.5',
               'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
@@ -234,7 +236,7 @@ export function Composer({
               multiple
               className="sr-only"
               onChange={(event) => uploadFiles(event.target.files)}
-              aria-label="Upload files to workspace uploads"
+              aria-label={t('composer.upload')}
             />
             <Button
               type="button"
@@ -243,8 +245,8 @@ export function Composer({
               className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
               onClick={() => fileInputRef.current?.click()}
               disabled={!groupId || uploadWorkspaceFiles.isPending}
-              aria-label="Upload files to workspace uploads"
-              title="Upload files to uploads/"
+              aria-label={t('composer.upload')}
+              title={t('composer.uploadTitle')}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -264,7 +266,7 @@ export function Composer({
                       className="h-6 shrink-0 gap-0.5 px-1 text-[11px]"
                       onClick={() => setAgentSummaryOpen((open) => !open)}
                       aria-expanded={agentSummaryOpen}
-                      aria-label={`Show ${groupAgents.length - 3} more agents`}
+                      aria-label={t('composer.showMore', { count: groupAgents.length - 3 })}
                     >
                       +{groupAgents.length - 3}
                       <ChevronDown className="h-3 w-3" />
@@ -276,7 +278,7 @@ export function Composer({
                     <button
                       type="button"
                       className="fixed inset-0 z-40 cursor-default"
-                      aria-label="Close agent list"
+                      aria-label={t('composer.closeAgents')}
                       onClick={() => setAgentSummaryOpen(false)}
                     />
                     <div className="absolute bottom-full left-0 z-50 mb-2 max-h-48 w-64 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md">
@@ -303,8 +305,8 @@ export function Composer({
                 size="icon"
                 className="h-8 w-8 shrink-0 rounded-full"
                 onClick={onCancel}
-                aria-label="Stop all streams"
-                title="Stop all"
+                aria-label={t('composer.stop')}
+                title={t('composer.stopTitle')}
               >
                 <Square className="h-3.5 w-3.5" />
               </Button>
@@ -315,8 +317,8 @@ export function Composer({
                 size="icon"
                 className="h-8 w-8 shrink-0 rounded-full"
                 onClick={onCancel}
-                aria-label="Stop all streams"
-                title="Stop all"
+                aria-label={t('composer.stop')}
+                title={t('composer.stopTitle')}
               >
                 <Square className="h-3.5 w-3.5" />
               </Button>
@@ -327,8 +329,8 @@ export function Composer({
                 className="h-8 w-8 shrink-0 rounded-full"
                 onClick={send}
                 disabled={!hasText}
-                aria-label="Send message"
-                title="Send (Enter)"
+                aria-label={t('composer.send')}
+                title={t('composer.sendTitle')}
               >
                 <ArrowUp className="h-4 w-4" />
               </Button>

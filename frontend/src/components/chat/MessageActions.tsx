@@ -1,5 +1,6 @@
 import { Check, Copy, Share2, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -35,6 +36,7 @@ export function MessageActions({
   timeLabel,
   groupId,
 }: MessageActionsProps) {
+  const { t } = useTranslation(['chat', 'common'])
   const [copiedAction, setCopiedAction] = useState<CopiedAction>(null)
   const [shareOpen, setShareOpen] = useState(false)
   const [shareError, setShareError] = useState<string | null>(null)
@@ -57,7 +59,7 @@ export function MessageActions({
       await sendGroupMessage.mutateAsync({ groupId: targetGroupId, content: shareContent })
       setShareOpen(false)
     } catch (error) {
-      setShareError(error instanceof Error ? error.message : 'Share failed')
+      setShareError(error instanceof Error ? error.message : t('messages.shareFailed', { ns: 'chat' }))
     }
   }
 
@@ -66,7 +68,7 @@ export function MessageActions({
     try {
       await deleteGroupMessage.mutateAsync({ messageId })
     } catch (error) {
-      setDeleteError(error instanceof ApiError ? error.message : 'Delete failed')
+      setDeleteError(error instanceof ApiError ? error.message : t('messages.deleteFailed', { ns: 'chat' }))
     }
   }
 
@@ -80,7 +82,7 @@ export function MessageActions({
             size="icon"
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
             onClick={() => void copy('message', content)}
-            aria-label="Copy message"
+            aria-label={t('messages.copyMessage', { ns: 'chat' })}
           >
             {copiedAction === 'message' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           </Button>
@@ -90,7 +92,7 @@ export function MessageActions({
             size="icon"
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
             onClick={() => setShareOpen(true)}
-            aria-label="Share message to group"
+            aria-label={t('messages.share', { ns: 'chat' })}
           >
             <Share2 className="h-3.5 w-3.5" />
           </Button>
@@ -101,7 +103,7 @@ export function MessageActions({
             className="h-7 w-7 text-muted-foreground hover:text-destructive"
             disabled={deleteGroupMessage.isPending}
             onClick={() => void deleteMessage()}
-            aria-label="Delete message"
+            aria-label={t('messages.delete', { ns: 'chat' })}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
@@ -114,14 +116,14 @@ export function MessageActions({
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Share to group chat</DialogTitle>
-            <DialogDescription>Choose another group to receive this message.</DialogDescription>
+            <DialogTitle>{t('messages.shareTitle', { ns: 'chat' })}</DialogTitle>
+            <DialogDescription>{t('messages.shareDescription', { ns: 'chat' })}</DialogDescription>
           </DialogHeader>
 
           <div className="max-h-72 space-y-2 overflow-y-auto">
-            {groups.isLoading ? <p className="text-sm text-muted-foreground">Loading groups…</p> : null}
+            {groups.isLoading ? <p className="text-sm text-muted-foreground">{t('messages.loadingGroups', { ns: 'chat' })}</p> : null}
             {!groups.isLoading && targetGroups.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No other groups available.</p>
+              <p className="text-sm text-muted-foreground">{t('messages.noOtherGroups', { ns: 'chat' })}</p>
             ) : null}
             {targetGroups.map((group) => (
               <Button
@@ -146,7 +148,7 @@ export function MessageActions({
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setShareOpen(false)}>
-              Cancel
+              {t('actions.cancel', { ns: 'common' })}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MessageItem } from '@/components/chat/MessageItem'
@@ -66,6 +67,7 @@ export function MessageList({
   onSubmitHumanInput,
   onViewTurnTrace,
 }: MessageListProps) {
+  const { t } = useTranslation('chat')
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
   const warnings = useMessageStore(
     (s) => s.warningsByGroup[groupId] ?? EMPTY_WARNINGS,
@@ -166,7 +168,7 @@ export function MessageList({
       <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
         {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
           <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
-            No messages yet. Try sending <code>@AgentName hello</code> to start.
+            {t('messages.empty')} {t('messages.emptyHint')}
           </div>
         )}
         {hasOlderMessages && (
@@ -177,7 +179,7 @@ export function MessageList({
               disabled={isLoadingOlderMessages}
               onClick={onLoadOlderMessages}
             >
-              {isLoadingOlderMessages ? 'Loading earlier messages...' : 'Load earlier messages'}
+              {isLoadingOlderMessages ? t('messages.loadingOlder') : t('messages.loadOlder')}
             </button>
           </div>
         )}
@@ -231,7 +233,7 @@ export function MessageList({
             className="rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted"
             onClick={jumpToLatest}
           >
-            Jump to latest
+            {t('messages.jumpLatest')}
           </button>
         </div>
       )}

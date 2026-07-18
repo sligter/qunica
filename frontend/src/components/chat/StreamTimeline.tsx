@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { GitBranch, PauseCircle, XCircle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import {
@@ -16,6 +17,8 @@ import {
   type HumanInputRequest,
 } from '@/lib/humanInput'
 import { cn } from '@/lib/utils'
+import { formatTime } from '@/lib/format'
+import { normalizeLanguage } from '@/i18n'
 import type {
   StreamExternalRunEvent,
   StreamNoticeEvent,
@@ -30,13 +33,6 @@ import type { ContextUsage } from '@/types/api'
 interface StreamTimelineProps {
   run: StreamRun
   onSubmitHumanInput?: (content: string) => void
-}
-
-function timeLabel(value: string): string {
-  return new Date(value).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function inputRequestKey(request: HumanInputRequest): string {
@@ -202,7 +198,7 @@ function eventContextUsage(event: StreamTimelineEvent): ContextUsage | null | un
   return undefined
 }
 
-function buildBlocks(events: StreamTimelineEvent[]): RenderBlock[] {
+function buildBlocks(events: StreamTimelineEvent[], fallbackDisplayName: string): RenderBlock[] {
   const blocks: RenderBlock[] = []
   for (const event of events) {
     const agentId = eventAgentId(event)
@@ -211,7 +207,7 @@ function buildBlocks(events: StreamTimelineEvent[]): RenderBlock[] {
       blocks.push({ kind: 'notice', event: event as StreamNoticeEvent })
       continue
     }
-    const displayName = 'display_name' in event ? event.display_name : 'Agent'
+    const displayName = 'display_name' in event ? event.display_name : fallbackDisplayName
     const contextUsage = eventContextUsage(event)
     const last = blocks[blocks.length - 1]
     if (last && last.kind === 'agent' && last.agentId === agentId) {
@@ -223,7 +219,7 @@ function buildBlocks(events: StreamTimelineEvent[]): RenderBlock[] {
       blocks.push({
         kind: 'agent',
         agentId,
-        displayName: displayName || 'Agent',
+        displayName: displayName || fallbackDisplayName,
         contextUsage,
         events: [event],
         lastAt: eventTime(event),
@@ -279,6 +275,8 @@ function AgentBlockView({
   onSubmitHumanInput?: (content: string) => void
   renderedInputRequests: Set<string>
 }) {
+  const { t, i18n } = useTranslation('chat')
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const waiting = runStatus === 'active' && blockIsWaiting(block)
   const streaming = blockIsStreaming(block) || waiting
   const reasoning: ActivityReasoningSegment[] = block.events.flatMap((event) =>
@@ -333,16 +331,16 @@ function AgentBlockView({
         ]
       }
       if (event.type === 'external_run') {
-        const exitCode = event.exit_code === undefined ? null : `exit ${event.exit_code}`
+        const exitCode = event.exit_code === undefined ? null : t('stream.exitCode', { code: event.exit_code })
         return [
           {
             id: event.id,
-            name: event.adapter ? `External CLI: ${event.adapter}` : 'External CLI',
+            name: event.adapter ? t('stream.externalCliNamed', { adapter: event.adapter }) : t('stream.externalCli'),
             status: event.status ?? exitCode ?? 'running',
             argsSummary: event.cwd,
             resultSummary: event.summary,
-            argsLabel: 'Working directory',
-            resultLabel: 'Summary',
+            argsLabel: t('tools.workingDirectory'),
+            resultLabel: t('tools.summary'),
             defaultOpen:
               event.status === 'running' ||
               (event.status === undefined && event.exit_code === undefined),
@@ -400,14 +398,14 @@ function AgentBlockView({
           {streaming ? (
             <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-              streaming
+              {t('stream.streaming')}
             </span>
           ) : (
-            <span>{timeLabel(block.lastAt)}</span>
+            <span>{formatTime(block.lastAt, language)}</span>
           )}
         </div>
         <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
-          {waiting ? <WaitingHint label="Preparing response..." /> : null}
+          {waiting ? <WaitingHint label={t('stream.preparing')} /> : null}
           <AgentActivityBubble reasoning={reasoning} tools={tools} active={activityActive} />
           {visibleEvents.map(renderEvent)}
         </div>
@@ -417,6 +415,7 @@ function AgentBlockView({
 }
 
 export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps) {
+  const { t } = useTranslation('chat')
   const groupAgents = useGroupAgents(run.group_id)
   // Last-known usage per group-agent. The live `agent_start` events don't carry
   // context_usage (it's computed only after the LLM responds), so without this
@@ -428,21 +427,21 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
     }
     return map
   }, [groupAgents.data])
-  const blocks = buildBlocks(run.events)
+  const blocks = buildBlocks(run.events, t('messages.agent'))
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
     return (
       <div className="flex min-w-0 w-full gap-2 px-3 py-2.5">
-        <AgentAvatar name="Assistant" className="mt-0.5" />
+        <AgentAvatar name={t('stream.assistant')} className="mt-0.5" />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">Assistant</span>
+            <span className="font-medium text-foreground">{t('stream.assistant')}</span>
             <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-              starting
+              {t('stream.running')}
             </span>
           </div>
-          <WaitingHint label="Waiting for agents to start..." />
+          <WaitingHint label={t('stream.waitingAgents')} />
         </div>
       </div>
     )
