@@ -41,6 +41,26 @@ fn authed(method: &str, uri: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
+async fn stream_events(app: &Router, uri: &str, token: &str, body: Value) -> Vec<Value> {
+    let response = app
+        .clone()
+        .oneshot(request("POST", uri, Some(token), body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    text.split("\n\n")
+        .filter_map(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+        .map(|raw| serde_json::from_str(raw).unwrap())
+        .collect()
+}
+
 async fn register(app: &Router, email: &str) -> String {
     let (status, _) = send(
         app,
@@ -291,4 +311,178 @@ async fn direct_chat_titles_validate_and_follow_account_language() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
         assert_eq!(body["error"]["code"], "invalid_input");
     }
+}
+
+#[tokio::test]
+async fn direct_message_endpoints_are_kind_safe_and_preserve_unavailable_history() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-messages@example.com").await;
+    let workspace_id = create_workspace(&app, &token).await;
+    let agent_id = create_agent(&app, &token, &workspace_id, "Solo").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let (status, initial_messages) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(initial_messages, json!([]));
+
+    let (status, sent) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            Some(&token),
+            json!({"content":"hello direct"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {sent:?}");
+    assert_eq!(sent["user_message"]["content"], "hello direct");
+
+    let (status, body) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{chat_id}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+
+    let (status, group) = send(
+        &app,
+        request(
+            "POST",
+            "/api/v2/groups",
+            Some(&token),
+            json!({"name":"ordinary", "workspace_id":workspace_id}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group_id = group["id"].as_str().unwrap();
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{group_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+
+    sqlx::query("UPDATE agents SET status = 'deleted' WHERE id = ?")
+        .bind(&agent_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let (status, history) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(history.as_array().unwrap()[0]["content"], "hello direct");
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            Some(&token),
+            json!({"content":"blocked"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn direct_stream_generates_first_title_and_replays_conversation_update() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-title-stream@example.com").await;
+    let workspace_id = create_workspace(&app, &token).await;
+    let agent_id = create_agent(&app, &token, &workspace_id, "Solo").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+    let content = "   12345678901234567890123456789012 extra   spaces  ";
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/direct-chats/{chat_id}/messages/stream"),
+        &token,
+        json!({"content": content}),
+    )
+    .await;
+    let update = events
+        .iter()
+        .find(|event| event["kind"] == "conversation_updated")
+        .expect("conversation update event");
+    assert_eq!(
+        update["payload"]["title"],
+        "12345678901234567890123456789012"
+    );
+    assert_eq!(update["payload"]["title_source"], "automatic");
+    let user_event_id = events
+        .iter()
+        .find(|event| event["kind"] == "user_message")
+        .and_then(|event| event["event_id"].as_str())
+        .expect("user message event id")
+        .to_owned();
+
+    let (status, renamed) = send(
+        &app,
+        request(
+            "PATCH",
+            &format!("/api/v2/direct-chats/{chat_id}"),
+            Some(&token),
+            json!({"title":"Pinned title"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(renamed["title_source"], "manual");
+    let second = stream_events(
+        &app,
+        &format!("/api/v2/direct-chats/{chat_id}/messages/stream"),
+        &token,
+        json!({"content":"another message"}),
+    )
+    .await;
+    let second_update = second
+        .iter()
+        .find(|event| event["kind"] == "conversation_updated")
+        .unwrap();
+    assert_eq!(second_update["payload"]["title"], "Pinned title");
+    assert_eq!(second_update["payload"]["title_source"], "manual");
+
+    let replay = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v2/direct-chats/{chat_id}/messages/stream"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .header("last-event-id", user_event_id)
+        .body(Body::from(json!({"content":"must not start"}).to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(replay).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let replay_text = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(replay_text.contains("conversation_updated"));
 }

@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::{
     api::{
         auth::current_user_id,
+        conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
         sse_replay::{
             event_kind_from_wire, fetch_replay_events_for_group, last_event_id, parse_replay_cursor,
@@ -190,11 +191,30 @@ impl From<MessageRow> for MessageResponse {
     }
 }
 
-pub async fn list(
+pub async fn list_group(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Query(query): Query<ListMessagesQuery>,
+) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+    list_for_kind(state, headers, group_id, query, ConversationKind::Group).await
+}
+
+pub async fn list_direct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<ListMessagesQuery>,
+) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+    list_for_kind(state, headers, group_id, query, ConversationKind::Direct).await
+}
+
+async fn list_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    query: ListMessagesQuery,
+    expected: ConversationKind,
 ) -> Result<Json<Vec<MessageResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
@@ -205,7 +225,7 @@ pub async fn list(
         .map(|raw| validate_uuid(raw, "before message id"))
         .transpose()?;
 
-    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
 
     let before_cursor = match before_id {
         Some(before_id) => {
@@ -219,15 +239,32 @@ pub async fn list(
     Ok(Json(rows.into_iter().map(MessageResponse::from).collect()))
 }
 
-pub async fn clear(
+pub async fn clear_group(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<ClearMessagesResponse>, ApiError> {
+    clear_for_kind(state, headers, group_id, ConversationKind::Group).await
+}
+
+pub async fn clear_direct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<ClearMessagesResponse>, ApiError> {
+    clear_for_kind(state, headers, group_id, ConversationKind::Direct).await
+}
+
+async fn clear_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    expected: ConversationKind,
+) -> Result<Json<ClearMessagesResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
 
     let _guard = state.write_lock.lock().await;
     let now = now_rfc3339();
@@ -276,16 +313,48 @@ pub async fn clear(
     Ok(Json(ClearMessagesResponse { cleared_count }))
 }
 
-pub async fn delete(
+pub async fn delete_group(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((group_id, message_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    delete_for_kind(
+        state,
+        headers,
+        group_id,
+        message_id,
+        ConversationKind::Group,
+    )
+    .await
+}
+
+pub async fn delete_direct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, message_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    delete_for_kind(
+        state,
+        headers,
+        group_id,
+        message_id,
+        ConversationKind::Direct,
+    )
+    .await
+}
+
+async fn delete_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    message_id: String,
+    expected: ConversationKind,
 ) -> Result<StatusCode, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let message_id = validate_uuid(&message_id, "message id")?;
 
-    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
 
     let _guard = state.write_lock.lock().await;
     let now = now_rfc3339();
@@ -352,11 +421,30 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn send(
+pub async fn send_group(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<SendRequest>,
+) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
+    send_for_kind(state, headers, group_id, body, ConversationKind::Group).await
+}
+
+pub async fn send_direct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<SendRequest>,
+) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
+    send_for_kind(state, headers, group_id, body, ConversationKind::Direct).await
+}
+
+async fn send_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    body: SendRequest,
+    expected: ConversationKind,
 ) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
@@ -366,7 +454,10 @@ pub async fn send(
         return Err(ApiError::invalid_input("content must not be empty"));
     }
 
-    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
+    if expected == ConversationKind::Direct {
+        ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
+    }
 
     let (tx, mut rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
@@ -499,11 +590,30 @@ pub async fn send(
     ))
 }
 
-pub async fn stream(
+pub async fn stream_group(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<StreamRequest>,
+) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
+    stream_for_kind(state, headers, group_id, body, ConversationKind::Group).await
+}
+
+pub async fn stream_direct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<StreamRequest>,
+) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
+    stream_for_kind(state, headers, group_id, body, ConversationKind::Direct).await
+}
+
+async fn stream_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    body: StreamRequest,
+    expected: ConversationKind,
 ) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
@@ -513,7 +623,10 @@ pub async fn stream(
         return Err(ApiError::invalid_input("content must not be empty"));
     }
 
-    ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
+    if expected == ConversationKind::Direct {
+        ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
+    }
 
     if let Some(cursor) = last_event_id(&headers)? {
         let cursor = parse_replay_cursor(&cursor)?;
@@ -660,27 +773,25 @@ async fn fetch_message_page(
     rows.map_err(|_| ApiError::internal("database error"))
 }
 
-/// Confirm the group exists, is active, and belongs to the caller.
-async fn ensure_active_owned_group(
+async fn ensure_direct_agent_available(
     pool: &sqlx::SqlitePool,
     group_id: &str,
     owner_id: &str,
 ) -> Result<(), ApiError> {
-    let row =
-        sqlx::query_as::<_, (String, String)>("SELECT owner_id, status FROM groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|_| ApiError::internal("database error"))?;
-
-    match row {
-        None => Err(ApiError::not_found("group not found")),
-        Some((_, status)) if status == "deleted" => Err(ApiError::not_found("group not found")),
-        Some((owner, _)) if owner != owner_id => {
-            Err(ApiError::permission_denied("group belongs to another user"))
-        }
-        Some(_) => Ok(()),
-    }
+    let active: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM groups g JOIN agents a ON a.id = g.direct_agent_id \
+         WHERE g.id = ? AND g.owner_id = ? AND g.conversation_kind = 'direct' \
+           AND a.owner_id = ? AND a.status = 'active' LIMIT 1",
+    )
+    .bind(group_id)
+    .bind(owner_id)
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    active
+        .map(|_| ())
+        .ok_or_else(|| ApiError::conflict("direct chat agent is unavailable"))
 }
 
 fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {

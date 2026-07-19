@@ -510,6 +510,19 @@ async fn run_inner(
             .await
     );
 
+    if let Some(update) =
+        match touch_direct_conversation_after_user_message(services, &req.group_id).await {
+            Ok(update) => update,
+            Err(error) => return ctx.fail(&error.to_string()).await,
+        }
+    {
+        step!(
+            ctx,
+            ctx.emit_durable_event(StreamEventKind::ConversationUpdated, update)
+                .await
+        );
+    }
+
     if group.scheduler_enabled {
         return run_scheduled_turn(services, req, ctx, &group, &user_message.id).await;
     }
@@ -3869,6 +3882,78 @@ async fn load_group_runtime_config(
         moderator_model: row.moderator_model,
         muted_agent_ids: parse_string_set(row.muted_agent_ids_json.as_deref()),
     })
+}
+
+async fn touch_direct_conversation_after_user_message(
+    services: &RuntimeServices,
+    group_id: &str,
+) -> anyhow::Result<Option<Value>> {
+    let _guard = services.write_lock.lock().await;
+    let mut tx = services.pool.begin().await?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT conversation_kind, title_source FROM groups WHERE id = ? AND status = 'active'",
+    )
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((kind, title_source)) = row else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    if kind != "direct" {
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    let user_message_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'user'",
+    )
+    .bind(group_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let normalized_first_message: Option<String> = if user_message_count == 1 {
+        sqlx::query_scalar(
+            "SELECT content FROM messages WHERE group_id = ? AND sender_type = 'user' \
+             ORDER BY seq ASC, id ASC LIMIT 1",
+        )
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|content: String| content.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|content| !content.is_empty())
+    } else {
+        None
+    };
+    let generated_title = normalized_first_message
+        .filter(|_| title_source == "automatic")
+        .map(|content| content.chars().take(32).collect::<String>());
+    let now = now_rfc3339();
+    if let Some(title) = generated_title {
+        sqlx::query("UPDATE groups SET name = ?, updated_at = ? WHERE id = ?")
+            .bind(title)
+            .bind(&now)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query("UPDATE groups SET updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    let (title, title_source, updated_at): (String, String, String) =
+        sqlx::query_as("SELECT name, title_source, updated_at FROM groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(Some(json!({
+        "conversation_id": group_id,
+        "title": title,
+        "title_source": title_source,
+        "updated_at": updated_at,
+    })))
 }
 
 #[derive(sqlx::FromRow)]

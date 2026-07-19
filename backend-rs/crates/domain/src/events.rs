@@ -5,6 +5,7 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum StreamEventKind {
     UserMessage,
+    ConversationUpdated,
     AgentStart,
     Token,
     Reasoning,

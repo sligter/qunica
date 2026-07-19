@@ -332,19 +332,35 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups/:group_id/messages",
-            axum::routing::post(messages::send).get(messages::list),
+            axum::routing::post(messages::send_group).get(messages::list_group),
         )
         .route(
             "/api/v2/groups/:group_id/messages/clear",
-            axum::routing::post(messages::clear),
+            axum::routing::post(messages::clear_group),
         )
         .route(
             "/api/v2/groups/:group_id/messages/:message_id",
-            axum::routing::delete(messages::delete),
+            axum::routing::delete(messages::delete_group),
         )
         .route(
             "/api/v2/groups/:group_id/messages/stream",
-            axum::routing::post(messages::stream),
+            axum::routing::post(messages::stream_group),
+        )
+        .route(
+            "/api/v2/direct-chats/:group_id/messages",
+            axum::routing::post(messages::send_direct).get(messages::list_direct),
+        )
+        .route(
+            "/api/v2/direct-chats/:group_id/messages/clear",
+            axum::routing::post(messages::clear_direct),
+        )
+        .route(
+            "/api/v2/direct-chats/:group_id/messages/:message_id",
+            axum::routing::delete(messages::delete_direct),
+        )
+        .route(
+            "/api/v2/direct-chats/:group_id/messages/stream",
+            axum::routing::post(messages::stream_direct),
         )
         .route("/api/v2/threads/:thread_id", get(threads::get))
         .route(
