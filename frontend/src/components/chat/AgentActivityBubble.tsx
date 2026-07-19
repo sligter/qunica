@@ -87,7 +87,9 @@ function ToolRow({ tool }: { tool: ActivityToolItem }) {
   const status = tool.status ?? 'unknown'
   const label = isKnownToolStatus(status)
     ? t(toolStatusKeys[status])
-    : tool.status ?? t('tools.statuses.unknown')
+    : tool.status
+      ? t('tools.statuses.unknownDetail', { value: tool.status })
+      : t('tools.statuses.unknown')
 
   return (
     <details open={tool.defaultOpen} className="group/tool min-w-0">

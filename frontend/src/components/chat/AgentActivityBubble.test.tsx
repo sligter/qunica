@@ -3,8 +3,12 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { AgentActivityBubble } from '@/components/chat/AgentActivityBubble'
+import i18n from '@/i18n'
 
-afterEach(cleanup)
+afterEach(async () => {
+  cleanup()
+  await i18n.changeLanguage('en-US')
+})
 
 describe('AgentActivityBubble', () => {
   it('collapses all reasoning and tools into one disclosure by default', async () => {
@@ -92,5 +96,16 @@ describe('AgentActivityBubble', () => {
   it('renders nothing when both activity categories are empty', () => {
     const { container } = render(<AgentActivityBubble reasoning={[]} tools={[]} />)
     expect(container).toBeEmptyDOMElement()
+  })
+
+  it('frames an unknown tool status while preserving its raw value after a locale switch', async () => {
+    const user = userEvent.setup()
+    render(<AgentActivityBubble reasoning={[]} tools={[{ id: 'tool-1', name: 'Read', status: 'future_status' }]} />)
+    const activity = screen.getByRole('group', { name: 'Activity: 1 tool' })
+    await user.click(activity.querySelector(':scope > summary') as HTMLElement)
+    expect(screen.getByText('Status: future_status')).toBeVisible()
+
+    await i18n.changeLanguage('zh-CN')
+    expect(await screen.findByText('状态：future_status')).toBeVisible()
   })
 })

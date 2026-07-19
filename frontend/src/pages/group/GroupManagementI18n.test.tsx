@@ -249,6 +249,10 @@ describe('group management i18n', () => {
     expect(screen.getByText('原样 Group 42')).toBeVisible()
     expect(screen.getByRole('tab', { name: '成员' })).toBeVisible()
     expect(screen.getByRole('tab', { name: '笔记' })).toBeVisible()
+    expect(document.title).toBe('原样 Group 42 · 管理 · AG Swarmer')
+
+    await setLanguage('en-US')
+    expect(document.title).toBe('原样 Group 42 · Manage · AG Swarmer')
   })
 
   it('localizes member empty and action framing', async () => {

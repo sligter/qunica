@@ -86,7 +86,9 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
     previous_provider_delta: t('messages.context.previousProvider'),
     fallback_tokenizer: t('messages.context.estimated'),
   }
-  const sourceLabel = usage.source ? (sourceLabels[usage.source] ?? usage.source) : t('messages.context.sourceUnknown')
+  const sourceLabel = usage.source
+    ? (sourceLabels[usage.source] ?? t('messages.context.sourceUnknownDetail', { value: usage.source }))
+    : t('messages.context.sourceUnknown')
 
   return (
     <div className="flex min-w-[11rem] flex-col gap-1.5">

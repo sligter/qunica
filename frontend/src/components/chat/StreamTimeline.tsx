@@ -188,6 +188,8 @@ function knownStreamNoticeKey(event: StreamNoticeEvent): string | null {
   if (event.type === 'warning') {
     if (event.message === 'No one replied') return 'messages.warnings.noReply'
     if (event.message === 'Stream warning') return 'messages.warnings.streamWarning'
+    if (event.message === 'No visible reply') return 'messages.warnings.noVisibleReply'
+    if (event.message === 'Stream cancelled') return 'messages.warnings.streamCancelled'
   }
   if (event.type === 'agent_error' && event.message === 'Stream failed') {
     return 'messages.warnings.streamFailed'
@@ -335,7 +337,7 @@ function AgentBlockView({
         return [
           {
             id: event.id,
-            name: event.tool_name,
+            name: event.tool_name === 'Unknown tool' ? t('messages.unknownTool') : event.tool_name,
             status: event.status,
             argsSummary: event.args_summary,
             resultSummary: event.result_summary,

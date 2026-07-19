@@ -91,6 +91,20 @@ describe('StreamTimeline activity rendering', () => {
         created_at: '2026-07-16T10:00:02Z',
       }),
       event({
+        id: 'visible-reply-1',
+        stream_id: 'stream-1',
+        type: 'warning',
+        message: 'No visible reply',
+        created_at: '2026-07-16T10:00:02Z',
+      }),
+      event({
+        id: 'cancelled-1',
+        stream_id: 'stream-1',
+        type: 'warning',
+        message: 'Stream cancelled',
+        created_at: '2026-07-16T10:00:02Z',
+      }),
+      event({
         id: 'error-1',
         stream_id: 'stream-1',
         type: 'agent_error',
@@ -117,6 +131,8 @@ describe('StreamTimeline activity rendering', () => {
     render(<StreamTimeline run={run(notices)} />)
     expect(screen.getByText('No one replied.')).toBeVisible()
     expect(screen.getByText('Stream warning')).toBeVisible()
+    expect(screen.getByText('No visible reply')).toBeVisible()
+    expect(screen.getByText('Stream cancelled')).toBeVisible()
     expect(screen.getByText('Stream failed')).toBeVisible()
     expect(screen.getByText('Waiting for your input')).toBeVisible()
     expect(screen.getByText('RAW_STREAM_NOTICE')).toBeVisible()
@@ -124,9 +140,28 @@ describe('StreamTimeline activity rendering', () => {
     await i18n.changeLanguage('zh-CN')
     expect(await screen.findByText('无人回复。')).toBeVisible()
     expect(screen.getByText('流警告')).toBeVisible()
+    expect(screen.getByText('没有可见回复')).toBeVisible()
+    expect(screen.getByText('流已取消')).toBeVisible()
     expect(screen.getByText('流失败')).toBeVisible()
     expect(screen.getByText('等待你的输入')).toBeVisible()
     expect(screen.getByText('RAW_STREAM_NOTICE')).toBeVisible()
+  })
+
+  it('retranslates the locally generated unknown tool name without changing other tool names', async () => {
+    const user = userEvent.setup()
+    const unknownTool = event({
+      id: 'tool-unknown', stream_id: 'stream-1', type: 'tool', agent_id: 'agent-1',
+      display_name: 'Researcher', tool_call_id: 'call-unknown', tool_name: 'Unknown tool',
+      status: 'completed', created_at: '2026-07-16T10:00:02Z',
+    })
+    await i18n.changeLanguage('en-US')
+    render(<StreamTimeline run={run([unknownTool])} />)
+    const activity = screen.getByRole('group', { name: 'Activity: 1 tool' })
+    await user.click(activity.querySelector(':scope > summary') as HTMLElement)
+    expect(screen.getByText('Unknown tool')).toBeVisible()
+
+    await i18n.changeLanguage('zh-CN')
+    expect(await screen.findByText('未知工具')).toBeVisible()
   })
 
   it('folds live reasoning and tool calls into one activity bubble', async () => {

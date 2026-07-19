@@ -85,6 +85,7 @@ export function TurnTraceDrawer({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
+        closeLabel={t('common:actions.close')}
         onCloseAutoFocus={(event) => {
           event.preventDefault()
           returnFocusRef?.current?.focus()
@@ -128,7 +129,9 @@ export function TurnTraceDrawer({
                   <span className="text-xs text-muted-foreground">
                     {isKnownTerminationReason(data.turn.termination_reason)
                       ? t(terminationReasonKeys[data.turn.termination_reason])
-                      : data.turn.termination_reason}
+                      : t('common:wireLabels.unknownSelectionReason', {
+                          value: data.turn.termination_reason,
+                        })}
                   </span>
                 ) : null}
                 {canCancel ? (

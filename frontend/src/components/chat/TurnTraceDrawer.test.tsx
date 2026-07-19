@@ -107,7 +107,8 @@ describe('TurnTraceDrawer', () => {
       'RAW_TERMINATION_DETAIL'
     mocks.trace = { ...mocks.trace, data: unknown }
     renderDrawer()
-    expect(screen.getByText('RAW_TERMINATION_DETAIL')).toBeVisible()
+    expect(screen.getByText('原因：RAW_TERMINATION_DETAIL')).toBeVisible()
+    expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
   })
 
   it('shows a loading state', () => {

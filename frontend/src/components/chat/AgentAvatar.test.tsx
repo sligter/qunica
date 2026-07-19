@@ -1,0 +1,41 @@
+import { cleanup, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import i18n from '@/i18n'
+
+afterEach(async () => {
+  cleanup()
+  await i18n.changeLanguage('en-US')
+})
+
+describe('AgentAvatar', () => {
+  it('frames an unknown context source while preserving its raw value after a locale switch', async () => {
+    const user = userEvent.setup()
+    await i18n.changeLanguage('en-US')
+    render(
+      <TooltipProvider delayDuration={0}>
+        <AgentAvatar
+          name="Researcher"
+          contextUsage={{
+            input_tokens: 10,
+            output_tokens: null,
+            total_tokens: null,
+            context_window_tokens: 100,
+            output_reserve_tokens: null,
+            ratio: 0.1,
+            source: 'future_context_source',
+          }}
+        />
+      </TooltipProvider>,
+    )
+
+    await user.hover(screen.getByText('R'))
+    expect((await screen.findAllByText('Source: future_context_source'))[0]).toBeVisible()
+
+    await i18n.changeLanguage('zh-CN')
+    expect((await screen.findAllByText('来源：future_context_source'))[0]).toBeVisible()
+  })
+})

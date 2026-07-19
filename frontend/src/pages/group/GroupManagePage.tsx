@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -22,6 +23,14 @@ export function GroupManagePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = parseTab(searchParams.get('tab'))
   const group = useGroup(groupId)
+
+  useEffect(() => {
+    const previousTitle = document.title
+    document.title = t('manage.documentTitle', { name: group.data?.name ?? t('manage.title') })
+    return () => {
+      document.title = previousTitle
+    }
+  }, [group.data?.name, t])
 
   if (!groupId) {
     return <div className="p-6 text-sm text-muted-foreground">{t('noGroupSelected')}</div>

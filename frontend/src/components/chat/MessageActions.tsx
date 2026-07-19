@@ -119,7 +119,7 @@ export function MessageActions({
       </div>
 
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent closeLabel={t('actions.close', { ns: 'common' })} className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{t('messages.shareTitle', { ns: 'chat' })}</DialogTitle>
             <DialogDescription>{t('messages.shareDescription', { ns: 'chat' })}</DialogDescription>
