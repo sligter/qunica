@@ -39,6 +39,41 @@ function errorDetail(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function formatSize(size: number) {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function PendingAttachmentRow({
+  attachment,
+  onRemove,
+  onRetry,
+}: {
+  attachment: PendingAttachment
+  onRemove: () => void
+  onRetry: () => void
+}) {
+  const { t } = useTranslation('chat')
+  const isImage = attachment.file.type.startsWith('image/')
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!isImage || attachment.file.size === 0) return
+    const objectUrl = URL.createObjectURL(attachment.file)
+    setPreviewUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [attachment.file, isImage])
+
+  return <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs">
+    {previewUrl ? <img src={previewUrl} alt="" className="h-7 w-7 shrink-0 rounded object-cover" /> : isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
+    <div className="min-w-0 flex-1"><div className="truncate">{attachment.file.name}</div><div className="truncate text-[11px] text-muted-foreground">{attachment.file.type || t('attachments.unknownType')} · {formatSize(attachment.file.size)}</div></div>
+    <span className={cn('shrink-0 text-muted-foreground', attachment.status === 'failed' && 'text-destructive')}>{attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
+    {attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRetry} aria-label={t('attachments.retryNamed', { name: attachment.file.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
+    <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRemove} aria-label={t('attachments.removeNamed', { name: attachment.file.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
+  </div>
+}
+
 export function Composer({
   onSend,
   onCancel,
@@ -281,14 +316,7 @@ export function Composer({
           {attachments.length > 0 ? (
             <div className="space-y-1 px-3 pb-1">
               {attachments.map((attachment) => {
-                const isImage = attachment.file.type.startsWith('image/')
-                return <div key={attachment.localId} className="flex min-w-0 items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs">
-                  {isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
-                  <span className="min-w-0 flex-1 truncate">{attachment.file.name}</span>
-                  <span className={cn('shrink-0 text-muted-foreground', attachment.status === 'failed' && 'text-destructive')}>{attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
-                  {attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => retryAttachment(attachment)} aria-label={t('attachments.retryNamed', { name: attachment.file.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
-                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setAttachments((current) => current.filter((item) => item.localId !== attachment.localId))} aria-label={t('attachments.removeNamed', { name: attachment.file.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
-                </div>
+                return <PendingAttachmentRow key={attachment.localId} attachment={attachment} onRetry={() => retryAttachment(attachment)} onRemove={() => setAttachments((current) => current.filter((item) => item.localId !== attachment.localId))} />
               })}
             </div>
           ) : null}
