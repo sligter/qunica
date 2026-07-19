@@ -12,6 +12,10 @@ static MIGRATOR: Migrator = sqlx::migrate!("./src/db/migrations");
 const APPEARANCE_MIGRATION_VERSION: i64 = 2;
 const APPEARANCE_MIGRATION_DESCRIPTION: &str = "system settings appearance";
 const LEGACY_APPEARANCE_MIGRATION_DESCRIPTION: &str = "system_settings_appearance";
+const INITIAL_MIGRATION_VERSION: i64 = 1;
+const INITIAL_MIGRATION_DESCRIPTION: &str = "initial";
+const SCHEDULER_MIGRATION_VERSION: i64 = 3;
+const SCHEDULER_MIGRATION_DESCRIPTION: &str = "bounded group scheduler";
 
 #[derive(Clone)]
 pub struct Db {
@@ -59,10 +63,92 @@ impl Db {
     }
 
     pub async fn migrate(&self) -> Result<(), DbError> {
+        reconcile_legacy_initial_migration_checksum(&self.pool).await?;
         reconcile_legacy_appearance_migration_checksum(&self.pool).await?;
+        reconcile_legacy_scheduler_migration_checksum(&self.pool).await?;
         MIGRATOR.run(&self.pool).await?;
         Ok(())
     }
+}
+
+async fn reconcile_legacy_scheduler_migration_checksum(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::Error> {
+    reconcile_checksum_when_schema_matches(
+        pool,
+        SCHEDULER_MIGRATION_VERSION,
+        SCHEDULER_MIGRATION_DESCRIPTION,
+        scheduler_schema_matches_target,
+    )
+    .await
+}
+
+async fn reconcile_checksum_when_schema_matches(
+    pool: &SqlitePool,
+    version: i64,
+    description: &str,
+    schema_matches: fn(&SqlitePool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, sqlx::Error>> + Send + '_>>,
+) -> Result<(), sqlx::Error> {
+    let Some(migration) = migration_by_version(version, description) else {
+        return Ok(());
+    };
+    if !table_exists(pool, "_sqlx_migrations").await? {
+        return Ok(());
+    }
+    let applied: Option<(Vec<u8>, bool)> = sqlx::query_as(
+        "SELECT checksum, success FROM _sqlx_migrations WHERE version = ?1",
+    )
+    .bind(version)
+    .fetch_optional(pool)
+    .await?;
+    let Some((checksum, success)) = applied else {
+        return Ok(());
+    };
+    if !success || checksum == migration.checksum.as_ref() || !schema_matches(pool).await? {
+        return Ok(());
+    }
+    tracing::warn!(version, description, "repairing legacy checksum for already-applied alpha migration");
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = ?1 WHERE version = ?2")
+        .bind(migration.checksum.as_ref())
+        .bind(version)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn reconcile_legacy_initial_migration_checksum(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let Some(migration) = migration_by_version(INITIAL_MIGRATION_VERSION, INITIAL_MIGRATION_DESCRIPTION)
+    else {
+        return Ok(());
+    };
+    if !table_exists(pool, "_sqlx_migrations").await? {
+        return Ok(());
+    }
+
+    let applied: Option<(Vec<u8>, bool)> = sqlx::query_as(
+        "SELECT checksum, success FROM _sqlx_migrations WHERE version = ?1",
+    )
+    .bind(INITIAL_MIGRATION_VERSION)
+    .fetch_optional(pool)
+    .await?;
+    let Some((checksum, success)) = applied else {
+        return Ok(());
+    };
+    if !success || checksum == migration.checksum.as_ref() || !initial_schema_matches_target(pool).await? {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        version = INITIAL_MIGRATION_VERSION,
+        description = INITIAL_MIGRATION_DESCRIPTION,
+        "repairing legacy checksum for already-applied alpha initial migration"
+    );
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = ?1 WHERE version = ?2")
+        .bind(migration.checksum.as_ref())
+        .bind(INITIAL_MIGRATION_VERSION)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 async fn reconcile_legacy_appearance_migration_checksum(
@@ -153,12 +239,73 @@ async fn appearance_column_matches_target_schema(pool: &SqlitePool) -> Result<bo
         }))
 }
 
+async fn initial_schema_matches_target(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let required = [
+        ("llm_providers", "context_window_tokens"),
+        ("llm_providers", "context_output_reserve_ratio"),
+        ("llm_providers", "description"),
+        ("skills", "source"),
+        ("system_settings", "id"),
+        ("system_settings", "tavily_api_key"),
+        ("system_settings", "tavily_search_url"),
+        ("groups", "announcement"),
+        ("groups", "communication_mode"),
+        ("group_agents", "topology_role"),
+        ("group_agents", "response_mode"),
+    ];
+    for (table, column) in required {
+        if !column_exists(pool, table, column).await? {
+            return Ok(false);
+        }
+    }
+    if !table_exists(pool, "group_notes").await? {
+        return Ok(false);
+    }
+    table_exists(pool, "group_files").await
+}
+
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> Result<bool, sqlx::Error> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+fn scheduler_schema_matches_target(
+    pool: &SqlitePool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, sqlx::Error>> + Send + '_>> {
+    Box::pin(async move {
+        let required = [
+            ("groups", "scheduler_enabled"),
+            ("groups", "agent_mention_policy"),
+            ("groups", "max_agent_steps"),
+            ("groups", "turn_timeout_seconds"),
+            ("groups", "moderator_model"),
+            ("messages", "turn_id"),
+            ("messages", "dispatch_id"),
+            ("messages", "reply_to_message_id"),
+        ];
+        for (table, column) in required {
+            if !column_exists(pool, table, column).await? {
+                return Ok(false);
+            }
+        }
+        Ok(table_exists(pool, "group_turns").await? && table_exists(pool, "agent_dispatches").await?)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         appearance_column_matches_target_schema, migration_by_version,
-        reconcile_legacy_appearance_migration_checksum, Db, APPEARANCE_MIGRATION_DESCRIPTION,
-        APPEARANCE_MIGRATION_VERSION,
+        reconcile_legacy_appearance_migration_checksum,
+        reconcile_legacy_scheduler_migration_checksum, scheduler_schema_matches_target, Db,
+        APPEARANCE_MIGRATION_DESCRIPTION, APPEARANCE_MIGRATION_VERSION,
+        SCHEDULER_MIGRATION_DESCRIPTION, SCHEDULER_MIGRATION_VERSION,
     };
     use sqlx::SqlitePool;
 
@@ -222,6 +369,36 @@ mod tests {
         assert!(!appearance_column_matches_target_schema(&pool)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn repairs_legacy_scheduler_checksum_when_schema_matches() {
+        let pool = scheduler_migration_pool(true).await;
+        reconcile_legacy_scheduler_migration_checksum(&pool)
+            .await
+            .unwrap();
+
+        let expected_checksum = migration_by_version(
+            SCHEDULER_MIGRATION_VERSION,
+            SCHEDULER_MIGRATION_DESCRIPTION,
+        )
+        .unwrap()
+        .checksum
+        .as_ref()
+        .to_vec();
+        assert_eq!(scheduler_checksum(&pool).await, expected_checksum);
+    }
+
+    #[tokio::test]
+    async fn leaves_legacy_scheduler_checksum_when_schema_does_not_match() {
+        let pool = scheduler_migration_pool(false).await;
+        let old_checksum = scheduler_checksum(&pool).await;
+        reconcile_legacy_scheduler_migration_checksum(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(scheduler_checksum(&pool).await, old_checksum);
+        assert!(!scheduler_schema_matches_target(&pool).await.unwrap());
     }
 
     async fn legacy_migration_pool(with_appearance_column: bool) -> SqlitePool {
@@ -290,6 +467,64 @@ mod tests {
     async fn applied_checksum(pool: &SqlitePool) -> Vec<u8> {
         sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?1")
             .bind(APPEARANCE_MIGRATION_VERSION)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn scheduler_migration_pool(with_complete_schema: bool) -> SqlitePool {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let pool = db.pool().clone();
+        sqlx::query(
+            r#"
+            CREATE TABLE _sqlx_migrations (
+                version BIGINT PRIMARY KEY,
+                description TEXT NOT NULL,
+                installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                success BOOLEAN NOT NULL,
+                checksum BLOB NOT NULL,
+                execution_time BIGINT NOT NULL
+            );
+            CREATE TABLE groups (
+                scheduler_enabled INTEGER,
+                agent_mention_policy TEXT,
+                max_agent_steps INTEGER,
+                turn_timeout_seconds INTEGER,
+                moderator_model TEXT
+            );
+            CREATE TABLE messages (
+                turn_id TEXT,
+                dispatch_id TEXT,
+                reply_to_message_id TEXT
+            );
+            CREATE TABLE group_turns (id TEXT);
+            CREATE TABLE agent_dispatches (id TEXT);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        if !with_complete_schema {
+            sqlx::query("DROP TABLE agent_dispatches")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?1, ?2, TRUE, ?3, 0)",
+        )
+        .bind(SCHEDULER_MIGRATION_VERSION)
+        .bind(SCHEDULER_MIGRATION_DESCRIPTION)
+        .bind(vec![4_u8, 5, 6])
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn scheduler_checksum(pool: &SqlitePool) -> Vec<u8> {
+        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?1")
+            .bind(SCHEDULER_MIGRATION_VERSION)
             .fetch_one(pool)
             .await
             .unwrap()
