@@ -2162,6 +2162,25 @@ async fn workspace_files_upload_writes_uploads_and_rejects_bad_inputs() {
         b"uploaded"
     );
 
+    let (status, uploaded) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/workspace-files/upload?unique_name=true"),
+            &token,
+            "file",
+            "plan.txt",
+            Some("text/plain"),
+            b"second file",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(uploaded["path"], "uploads/plan (1).txt");
+    assert_eq!(
+        std::fs::read(group_upload_file(root.path(), "plan (1).txt")).unwrap(),
+        b"second file"
+    );
+
     let (status, body) = send(
         &app,
         authed_multipart_file(

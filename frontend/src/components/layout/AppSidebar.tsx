@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bot,
   Folder,
@@ -13,6 +13,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Trash2,
 } from 'lucide-react'
 
 import { avatarColorClass } from '@/lib/avatarColor'
@@ -20,7 +21,8 @@ import { formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { normalizeLanguage } from '@/i18n'
 import { useGroups } from '@/hooks/useGroups'
-import { useDirectChats } from '@/hooks/useDirectChats'
+import { useDeleteDirectChat, useDirectChats } from '@/hooks/useDirectChats'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useAuthStore } from '@/stores/authStore'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
@@ -79,8 +81,12 @@ export function AppSidebar() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [directDialogOpen, setDirectDialogOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [pendingDeleteChat, setPendingDeleteChat] = useState<{ id: string; title: string } | null>(null)
+  const navigate = useNavigate()
+  const location = useLocation()
   const groups = useGroups()
   const directChats = useDirectChats()
+  const deleteDirectChat = useDeleteDirectChat(pendingDeleteChat?.id ?? '')
 
   const toggleCollapsed = () => {
     setCollapsed((current) => {
@@ -113,6 +119,21 @@ export function AppSidebar() {
     >
       <GroupFormDialog open={dialogOpen} onOpenChange={setDialogOpen} />
       <DirectChatPickerDialog open={directDialogOpen} onOpenChange={setDirectDialogOpen} />
+      <ConfirmDialog
+        open={pendingDeleteChat !== null}
+        onOpenChange={(open) => { if (!open) setPendingDeleteChat(null) }}
+        title={t('chat:direct.deleteTitle')}
+        description={pendingDeleteChat ? t('chat:direct.deleteDescription', { title: pendingDeleteChat.title }) : undefined}
+        confirmLabel={t('common:actions.delete')}
+        destructive
+        onConfirm={async () => {
+          const chat = pendingDeleteChat
+          if (!chat) return
+          await deleteDirectChat.mutateAsync()
+          if (location.pathname === `/chats/${chat.id}`) navigate('/', { replace: true })
+          setPendingDeleteChat(null)
+        }}
+      />
 
       {/* Header: product name + collapse toggle */}
       <div
@@ -213,12 +234,12 @@ export function AppSidebar() {
             ) : null}
             <ul className="mb-3 space-y-0.5">
               {filteredDirectChats.map((chat) => (
-                <li key={chat.id}>
+                <li key={chat.id} className="group flex items-center gap-0.5">
                   <NavLink
                     to={`/chats/${chat.id}`}
                     className={({ isActive }) =>
                       cn(
-                        'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
+                        'flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
                         isActive ? 'bg-primary/10' : 'hover:bg-card-hover',
                       )
                     }
@@ -247,6 +268,21 @@ export function AppSidebar() {
                       </>
                     )}
                   </NavLink>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 opacity-0 transition-opacity hover:text-destructive focus:opacity-100 group-hover:opacity-100"
+                        aria-label={t('chat:direct.deleteNamed', { title: chat.title })}
+                        onClick={() => setPendingDeleteChat({ id: chat.id, title: chat.title })}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('common:actions.delete')}</TooltipContent>
+                  </Tooltip>
                 </li>
               ))}
             </ul>

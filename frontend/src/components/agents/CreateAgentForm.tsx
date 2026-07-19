@@ -144,7 +144,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       acp_thinking_effort: '',
       llm_provider_id: '',
       model: '',
-      vision: false,
+      vision: true,
       workspace_id: '',
       temperature: DEFAULT_AGENT_TEMPERATURE,
       top_p: 1,

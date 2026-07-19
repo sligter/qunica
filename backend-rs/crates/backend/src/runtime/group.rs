@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 use crate::acp::{
     canonicalize_codex_acp_runtime, normalize_acp_runtime, run_acp_agent_stream, AcpEventKind,
-    AcpRunRequest,
+    AcpImage, AcpRunRequest,
 };
 use crate::llm::{
     build_provider, model_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest,
@@ -2679,7 +2679,7 @@ async fn run_acp_agent_turn(
     let invocation = build_invocation_context(&services.pool, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
-    let cwd = invocation.workspace_root.ok_or_else(|| {
+    let cwd = invocation.workspace_root.clone().ok_or_else(|| {
         StepErr::Db(anyhow::anyhow!(
             "ACP agent requires an active local workspace context"
         ))
@@ -2689,6 +2689,13 @@ async fn run_acp_agent_turn(
         &ctx.thread_id,
         &invocation.system_prompt,
         &agent.agent_id,
+    )
+    .await
+    .map_err(StepErr::Db)?;
+    let (prompt_images, prompt_has_image_attachments) = build_acp_prompt_images(
+        &services.pool,
+        &ctx.thread_id,
+        invocation.workspace_root.as_deref(),
     )
     .await
     .map_err(StepErr::Db)?;
@@ -2714,6 +2721,10 @@ async fn run_acp_agent_turn(
                 config,
                 cwd,
                 prompt,
+                incremental_prompt_images: prompt_images.clone(),
+                incremental_prompt_has_image_attachments: prompt_has_image_attachments,
+                prompt_images,
+                prompt_has_image_attachments,
                 incremental_prompt: Some(incremental_prompt),
                 context_hash: Some(context_hash),
             },
@@ -4974,6 +4985,58 @@ async fn build_acp_incremental_prompt(
     Ok(to_acp_incremental_prompt(current_agent_id, &rows))
 }
 
+/// Build native image content only for the latest human message. ACP sessions
+/// retain prior turns, so replaying historical image bytes would duplicate them.
+async fn build_acp_prompt_images(
+    pool: &SqlitePool,
+    thread_id: &str,
+    workspace_root: Option<&std::path::Path>,
+) -> anyhow::Result<(Vec<AcpImage>, bool)> {
+
+    let rows = load_conversation(pool, thread_id).await?;
+    let Some(row) = rows.last().filter(|row| {
+        matches!(
+            row.actor,
+            crate::runtime::conversation_context::ConversationActor::Human { .. }
+        )
+    }) else {
+        return Ok((Vec::new(), false));
+    };
+    let Some(root) = workspace_root else {
+        return Ok((Vec::new(), false));
+    };
+
+    let has_image_attachments = row
+        .attachments
+        .iter()
+        .any(|attachment| native_image_mime_type(&attachment.mime_type));
+
+    let mut images = Vec::new();
+    let mut image_bytes = 0_u64;
+    for attachment in &row.attachments {
+        if !native_image_mime_type(&attachment.mime_type)
+            || images.len() >= MAX_NATIVE_IMAGES_PER_REQUEST
+        {
+            continue;
+        }
+        let Ok(path) = crate::tools::resolve_workspace_path(root, &attachment.path) else {
+            continue;
+        };
+        let Ok(bytes) = read_native_image_bytes(&path) else {
+            continue;
+        };
+        if image_bytes.saturating_add(bytes.len() as u64) > MAX_NATIVE_IMAGE_TOTAL_BYTES {
+            continue;
+        }
+        image_bytes += bytes.len() as u64;
+        images.push(AcpImage {
+            mime_type: attachment.mime_type.clone(),
+            data_base64: STANDARD.encode(bytes),
+        });
+    }
+    Ok((images, has_image_attachments))
+}
+
 fn acp_context_hash(system_prompt: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -5075,7 +5138,9 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::conversation_context::{ConversationActor, ConversationMessage};
+    use crate::runtime::conversation_context::{
+        ConversationActor, ConversationAttachment, ConversationMessage,
+    };
 
     #[test]
     fn candidate_reload_errors_skip_only_expected_ineligible_state() {
@@ -5240,5 +5305,23 @@ internal reminder
         assert!(!prompt.contains("<conversation untrusted"));
         assert!(!prompt.contains("<agent-brief>"));
         assert_eq!(prompt.matches("</current-message>").count(), 1);
+    }
+
+    #[test]
+    fn acp_image_attachment_metadata_does_not_instruct_tool_based_ocr() {
+        let mut message = human_message("human-1", "Ada", "Extract the text.");
+        message.attachments.push(ConversationAttachment {
+            id: "attachment-1".to_string(),
+            path: "uploads/sample.png".to_string(),
+            name: "sample.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 42,
+        });
+
+        let prompt = to_acp_prompt("Agent brief", "agent-1", &[message]);
+
+        assert!(prompt.contains("Image pixels are not represented by this metadata"));
+        assert!(prompt.contains("never infer image content from its name, path, or metadata"));
+        assert!(!prompt.contains("Use workspace tools to read this file"));
     }
 }

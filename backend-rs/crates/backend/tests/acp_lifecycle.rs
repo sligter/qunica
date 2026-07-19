@@ -9,9 +9,10 @@
 
 use ag_swarmer_backend::acp::{
     normalize_acp_runtime, probe_acp_runtime_capabilities, run_acp_agent_stream,
-    shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpEventKind, AcpRunAudit,
-    AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy,
-    BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS, MAX_TIMEOUT_SECONDS,
+    shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpEventKind, AcpImage,
+    AcpRunAudit, AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile,
+    PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
+    MAX_TIMEOUT_SECONDS,
 };
 use ag_swarmer_backend::db::Db;
 use serde_json::{json, Value};
@@ -474,7 +475,11 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: None,
         },
     )
@@ -558,7 +563,11 @@ async fn acp_lifecycle_timeout_kills_child_and_persists_failed_status() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: None,
         },
     )
@@ -618,7 +627,11 @@ async fn acp_lifecycle_failed_child_exit_code_is_persisted() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: None,
         },
     )
@@ -652,7 +665,11 @@ async fn acp_lifecycle_stream_cancel_kills_child_and_persists_cancelled_status()
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: None,
         },
     )
@@ -704,7 +721,11 @@ async fn assert_child_env_is_isolated_for_profile(
             config,
             cwd: cwd.to_path_buf(),
             prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: None,
         },
     )
@@ -808,7 +829,11 @@ async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: None,
         },
     )
@@ -878,7 +903,11 @@ async fn acp_lifecycle_reuses_keyed_session_and_sends_incremental_prompt() {
             config: config.clone(),
             cwd: cwd.path().to_path_buf(),
             prompt: "FULL_CONTEXT_ONE".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: Some("INCREMENT_ONE".to_string()),
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: Some("ctx-a".to_string()),
         },
     )
@@ -893,7 +922,11 @@ async fn acp_lifecycle_reuses_keyed_session_and_sends_incremental_prompt() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "FULL_CONTEXT_TWO".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: Some("INCREMENT_TWO".to_string()),
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: Some("ctx-a".to_string()),
         },
     )
@@ -908,6 +941,127 @@ async fn acp_lifecycle_reuses_keyed_session_and_sends_incremental_prompt() {
     assert_eq!(second_payload["prompt_count"], json!(2));
     assert_eq!(second_payload["prompt"], json!("INCREMENT_TWO"));
     shutdown_reusable_acp_sessions().await;
+}
+
+#[tokio::test]
+async fn acp_lifecycle_sends_images_as_standard_prompt_blocks() {
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config("images", "codex", json!({ "timeout_seconds": 30 }));
+
+    let response = run_and_collect_tokens(
+        pool,
+        AcpRunRequest {
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "Describe the attached image.".to_string(),
+            prompt_images: vec![AcpImage {
+                mime_type: "image/png".to_string(),
+                data_base64: "AQIDBA==".to_string(),
+            }],
+            prompt_has_image_attachments: true,
+            incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: None,
+        },
+    )
+    .await;
+
+    let blocks: Value = serde_json::from_str(&response).expect("prompt blocks json");
+    assert_eq!(blocks[0]["type"], "text");
+    assert!(blocks[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Describe the attached image."));
+    assert!(blocks[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("report only details visible in those image pixels"));
+    assert_eq!(
+        blocks[1],
+        json!({ "type": "image", "data": "AQIDBA==", "mimeType": "image/png" })
+    );
+}
+
+#[tokio::test]
+async fn acp_lifecycle_omits_images_when_agent_does_not_advertise_support() {
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config(
+        "images_unsupported",
+        "custom",
+        json!({ "timeout_seconds": 30 }),
+    );
+
+    let response = run_and_collect_tokens(
+        pool,
+        AcpRunRequest {
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "Describe the attached image.".to_string(),
+            prompt_images: vec![AcpImage {
+                mime_type: "image/png".to_string(),
+                data_base64: "AQIDBA==".to_string(),
+            }],
+            prompt_has_image_attachments: true,
+            incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: None,
+        },
+    )
+    .await;
+
+    let blocks: Value = serde_json::from_str(&response).expect("prompt blocks json");
+    assert_eq!(blocks.as_array().unwrap().len(), 1);
+    assert_eq!(blocks[0]["type"], "text");
+    assert!(blocks[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("native image input is unavailable"));
+}
+
+#[tokio::test]
+async fn acp_lifecycle_blocks_visual_claims_when_attachment_bytes_are_unavailable() {
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config("images", "codex", json!({ "timeout_seconds": 30 }));
+
+    let response = run_and_collect_tokens(
+        pool,
+        AcpRunRequest {
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "Extract the text from the attachment.".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: true,
+            incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: None,
+        },
+    )
+    .await;
+
+    let blocks: Value = serde_json::from_str(&response).expect("prompt blocks json");
+    assert_eq!(blocks.as_array().unwrap().len(), 1);
+    assert!(blocks[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("native image input is unavailable"));
 }
 
 #[tokio::test]
@@ -926,7 +1080,11 @@ async fn acp_lifecycle_context_hash_change_restarts_keyed_session() {
             config: config.clone(),
             cwd: cwd.path().to_path_buf(),
             prompt: "FULL_CONTEXT_ONE".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: Some("INCREMENT_ONE".to_string()),
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: Some("ctx-a".to_string()),
         },
     )
@@ -941,7 +1099,11 @@ async fn acp_lifecycle_context_hash_change_restarts_keyed_session() {
             config,
             cwd: cwd.path().to_path_buf(),
             prompt: "FULL_CONTEXT_TWO".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
             incremental_prompt: Some("INCREMENT_TWO".to_string()),
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
             context_hash: Some("ctx-b".to_string()),
         },
     )
@@ -1383,6 +1545,16 @@ fn run_fake_child(mode: &str) {
                         &rpc_error(&id, -32602, &format!("rejected {secret}")),
                     );
                 }
+                "images" => write_line(
+                    &stdout,
+                    &rpc_result(
+                        &id,
+                        json!({
+                            "protocolVersion": 1,
+                            "agentCapabilities": { "promptCapabilities": { "image": true } },
+                        }),
+                    ),
+                ),
                 _ => write_line(&stdout, &rpc_result(&id, json!({ "protocolVersion": 1 }))),
             },
             "session/new" => {
@@ -1583,6 +1755,20 @@ fn run_fake_child(mode: &str) {
                         &session_update(json!({
                             "sessionUpdate": "agent_message_chunk",
                             "content": { "type": "text", "text": summary },
+                        })),
+                    );
+                    write_line(
+                        &stdout,
+                        &rpc_result(&id, json!({ "stopReason": "end_turn" })),
+                    );
+                }
+                "images" | "images_unsupported" => {
+                    let prompt = params.get("prompt").cloned().unwrap_or(Value::Null);
+                    write_line(
+                        &stdout,
+                        &session_update(json!({
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": { "type": "text", "text": prompt.to_string() },
                         })),
                     );
                     write_line(

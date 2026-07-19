@@ -127,7 +127,7 @@ export function useUploadGroupWorkspaceFiles(groupId: string | undefined) {
         fd.append('file', file)
         try {
           const result = await fetchFormData<GroupWorkspaceFileRead>(
-            `/groups/${groupId}/workspace-files/upload`,
+            `/groups/${groupId}/workspace-files/upload?unique_name=true`,
             fd,
             { token },
           )

@@ -140,7 +140,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       acp_thinking_effort: agent.acp_runtime?.thinking_effort ?? '',
       llm_provider_id: agent.llm_provider_id ?? '',
       model: typeof agent.llm_config?.model === 'string' ? agent.llm_config.model : '',
-      vision: agent.llm_config?.vision === true,
+      vision: agent.llm_config?.vision !== false,
       workspace_id: agent.workspace_id ?? '',
       temperature: (agent.llm_config?.temperature as number) ?? DEFAULT_AGENT_TEMPERATURE,
       top_p: (agent.llm_config?.top_p as number) ?? 1,

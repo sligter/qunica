@@ -167,14 +167,30 @@ pub struct AcpRunRequest {
     pub cwd: PathBuf,
     /// The user prompt text for this turn.
     pub prompt: String,
+    /// Images sent alongside the full prompt using ACP `image` content blocks.
+    pub prompt_images: Vec<AcpImage>,
+    /// Whether the full prompt has image attachments, including images that
+    /// could not be read into `prompt_images`.
+    pub prompt_has_image_attachments: bool,
     /// Incremental prompt to use when a matching live ACP session is reused.
     ///
     /// If no reusable session is available this is ignored and `prompt` is sent
     /// as the first full-context prompt.
     pub incremental_prompt: Option<String>,
+    /// Images sent alongside an incremental prompt when a session is reused.
+    pub incremental_prompt_images: Vec<AcpImage>,
+    /// Whether the incremental prompt has image attachments.
+    pub incremental_prompt_has_image_attachments: bool,
     /// Optional hash of host-side context that should invalidate a reusable ACP
     /// session when it changes.
     pub context_hash: Option<String>,
+}
+
+/// A base64-encoded image for an ACP `session/prompt` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpImage {
+    pub mime_type: String,
+    pub data_base64: String,
 }
 
 /// A cancellation handle for an in-flight ACP run.
@@ -291,7 +307,11 @@ pub async fn run_acp_agent_stream(
         cwd,
         cwd_display,
         prompt: request.prompt,
+        prompt_images: request.prompt_images,
+        prompt_has_image_attachments: request.prompt_has_image_attachments,
         incremental_prompt: request.incremental_prompt,
+        incremental_prompt_images: request.incremental_prompt_images,
+        incremental_prompt_has_image_attachments: request.incremental_prompt_has_image_attachments,
         context_hash: request.context_hash,
         events_tx,
         cancelled: control.cancelled.clone(),
@@ -341,7 +361,11 @@ struct DriveTask {
     cwd: PathBuf,
     cwd_display: String,
     prompt: String,
+    prompt_images: Vec<AcpImage>,
+    prompt_has_image_attachments: bool,
     incremental_prompt: Option<String>,
+    incremental_prompt_images: Vec<AcpImage>,
+    incremental_prompt_has_image_attachments: bool,
     context_hash: Option<String>,
     events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
     cancelled: Arc<AtomicBool>,
@@ -361,7 +385,11 @@ async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
         cwd,
         cwd_display,
         prompt,
+        prompt_images,
+        prompt_has_image_attachments,
         incremental_prompt,
+        incremental_prompt_images,
+        incremental_prompt_has_image_attachments,
         context_hash,
         events_tx,
         cancelled,
@@ -377,7 +405,11 @@ async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
             config: config.clone(),
             cwd: cwd.clone(),
             full_prompt: prompt,
+            full_prompt_images: prompt_images,
+            full_prompt_has_image_attachments: prompt_has_image_attachments,
             incremental_prompt,
+            incremental_prompt_images,
+            incremental_prompt_has_image_attachments,
             context_hash,
             events_tx: events_tx.clone(),
             cancelled: cancelled.clone(),
@@ -385,7 +417,17 @@ async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
         })
         .await
     } else {
-        run_one_shot_turn(&config, &cwd, &prompt, &events_tx, &cancelled, &notify).await
+        run_one_shot_turn(
+            &config,
+            &cwd,
+            &prompt,
+            &prompt_images,
+            prompt_has_image_attachments,
+            &events_tx,
+            &cancelled,
+            &notify,
+        )
+        .await
     };
 
     if outcome.status == TurnStatus::Failed {
@@ -451,6 +493,8 @@ async fn run_one_shot_turn(
     config: &AcpRuntimeConfig,
     cwd: &Path,
     prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
     events_tx: &mpsc::UnboundedSender<AcpAgentEvent>,
     cancelled: &Arc<AtomicBool>,
     notify: &Arc<Notify>,
@@ -464,6 +508,8 @@ async fn run_one_shot_turn(
         session.conn(),
         &cwd_string,
         prompt,
+        prompt_images,
+        prompt_has_image_attachments,
         config,
         cancelled,
         notify,
@@ -503,7 +549,11 @@ struct ReusableTurn {
     config: AcpRuntimeConfig,
     cwd: PathBuf,
     full_prompt: String,
+    full_prompt_images: Vec<AcpImage>,
+    full_prompt_has_image_attachments: bool,
     incremental_prompt: Option<String>,
+    incremental_prompt_images: Vec<AcpImage>,
+    incremental_prompt_has_image_attachments: bool,
     context_hash: Option<String>,
     events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
     cancelled: Arc<AtomicBool>,
@@ -635,12 +685,20 @@ async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
 
     let was_initialized = managed.initialized;
     let cwd_string = turn.cwd.to_string_lossy().to_string();
-    let prompt = if was_initialized {
-        turn.incremental_prompt
-            .as_deref()
-            .unwrap_or(&turn.full_prompt)
+    let (prompt, prompt_images, prompt_has_image_attachments) = if was_initialized {
+        (
+            turn.incremental_prompt
+                .as_deref()
+                .unwrap_or(&turn.full_prompt),
+            turn.incremental_prompt_images.as_slice(),
+            turn.incremental_prompt_has_image_attachments,
+        )
     } else {
-        turn.full_prompt.as_str()
+        (
+            turn.full_prompt.as_str(),
+            turn.full_prompt_images.as_slice(),
+            turn.full_prompt_has_image_attachments,
+        )
     };
     let phase = {
         let session = managed.session.as_mut().expect("managed session present");
@@ -649,6 +707,9 @@ async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
                 session.conn(),
                 &session.session_id,
                 prompt,
+                prompt_images,
+                prompt_has_image_attachments,
+                session.supports_prompt_images,
                 &turn.config,
                 &turn.cancelled,
                 &turn.notify,
@@ -659,6 +720,8 @@ async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
                 session.conn(),
                 &cwd_string,
                 prompt,
+                prompt_images,
+                prompt_has_image_attachments,
                 &turn.config,
                 &turn.cancelled,
                 &turn.notify,
@@ -672,6 +735,7 @@ async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
                 if let Some(session_id) = &outcome.session_id {
                     if let Some(session) = managed.session.as_mut() {
                         session.session_id = session_id.clone();
+                        session.supports_prompt_images = outcome.supports_prompt_images;
                     }
                 }
                 managed.initialized = true;
@@ -716,6 +780,7 @@ struct LiveAcpSession {
     stderr_task: Option<JoinHandle<String>>,
     home: Option<tempfile::TempDir>,
     session_id: String,
+    supports_prompt_images: bool,
 }
 
 impl LiveAcpSession {
@@ -756,6 +821,7 @@ impl LiveAcpSession {
             stderr_task: Some(stderr_task),
             home: Some(home),
             session_id: String::new(),
+            supports_prompt_images: false,
         })
     }
 
@@ -889,6 +955,7 @@ async fn finish_session(
 struct PromptOutcome {
     stop_reason: String,
     session_id: Option<String>,
+    supports_prompt_images: bool,
 }
 
 /// Resolve once cancellation has been requested. Uses the documented
@@ -915,17 +982,26 @@ async fn new_session_prompt(
     conn: &AcpConnection,
     cwd: &str,
     prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
     config: &AcpRuntimeConfig,
 ) -> Result<PromptOutcome, ProtocolError> {
-    conn.request(
-        METHOD_INITIALIZE,
-        json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "clientCapabilities": {},
-            "clientInfo": { "name": "ag-swarmer", "title": "AG Swarmer", "version": "0.1.0" },
-        }),
-    )
-    .await?;
+    let initialization = conn
+        .request(
+            METHOD_INITIALIZE,
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "clientCapabilities": {},
+                "clientInfo": { "name": "ag-swarmer", "title": "AG Swarmer", "version": "0.1.0" },
+            }),
+        )
+        .await?;
+    let supports_prompt_images = initialization
+        .get("agentCapabilities")
+        .and_then(|capabilities| capabilities.get("promptCapabilities"))
+        .and_then(|capabilities| capabilities.get("image"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut new_params = json!({ "cwd": cwd, "mcpServers": [] });
     if let Some(meta) = new_session_meta(config) {
@@ -945,7 +1021,14 @@ async fn new_session_prompt(
             METHOD_SESSION_PROMPT,
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": prompt }],
+                "prompt": acp_prompt_blocks(
+                    &prompt_with_image_evidence_rules(
+                        prompt,
+                        prompt_has_image_attachments,
+                        supports_prompt_images && !prompt_images.is_empty(),
+                    ),
+                    supports_prompt_images.then_some(prompt_images).unwrap_or_default(),
+                ),
                 "messageId": Uuid::new_v4().to_string(),
             }),
         )
@@ -958,6 +1041,7 @@ async fn new_session_prompt(
     Ok(PromptOutcome {
         stop_reason,
         session_id: Some(session_id),
+        supports_prompt_images,
     })
 }
 
@@ -965,12 +1049,22 @@ async fn drive_existing_session_prompt(
     conn: &AcpConnection,
     session_id: &str,
     prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
+    supports_prompt_images: bool,
     config: &AcpRuntimeConfig,
     cancelled: &Arc<AtomicBool>,
     notify: &Arc<Notify>,
 ) -> Phase {
     let cancel_fut = wait_for_cancel(cancelled, notify);
-    let session = prompt_existing_session(conn, session_id, prompt);
+    let session = prompt_existing_session(
+        conn,
+        session_id,
+        prompt,
+        prompt_images,
+        prompt_has_image_attachments,
+        supports_prompt_images,
+    );
     let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
     tokio::pin!(session);
     tokio::select! {
@@ -987,12 +1081,21 @@ async fn drive_new_session_prompt(
     conn: &AcpConnection,
     cwd: &str,
     prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
     config: &AcpRuntimeConfig,
     cancelled: &Arc<AtomicBool>,
     notify: &Arc<Notify>,
 ) -> Phase {
     let cancel_fut = wait_for_cancel(cancelled, notify);
-    let session = new_session_prompt(conn, cwd, prompt, config);
+    let session = new_session_prompt(
+        conn,
+        cwd,
+        prompt,
+        prompt_images,
+        prompt_has_image_attachments,
+        config,
+    );
     let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
     tokio::pin!(session);
     tokio::select! {
@@ -1009,13 +1112,23 @@ async fn prompt_existing_session(
     conn: &AcpConnection,
     session_id: &str,
     prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
+    supports_prompt_images: bool,
 ) -> Result<PromptOutcome, ProtocolError> {
     let response = conn
         .request(
             METHOD_SESSION_PROMPT,
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": prompt }],
+                "prompt": acp_prompt_blocks(
+                    &prompt_with_image_evidence_rules(
+                        prompt,
+                        prompt_has_image_attachments,
+                        supports_prompt_images && !prompt_images.is_empty(),
+                    ),
+                    supports_prompt_images.then_some(prompt_images).unwrap_or_default(),
+                ),
                 "messageId": Uuid::new_v4().to_string(),
             }),
         )
@@ -1028,7 +1141,38 @@ async fn prompt_existing_session(
     Ok(PromptOutcome {
         stop_reason,
         session_id: None,
+        supports_prompt_images: false,
     })
+}
+
+fn prompt_with_image_evidence_rules(
+    prompt: &str,
+    images_requested: bool,
+    images_delivered: bool,
+) -> String {
+    if !images_requested {
+        return prompt.to_string();
+    }
+
+    let rule = if images_delivered {
+        "<host-image-input>Image data is attached natively to this request. For visual descriptions and OCR, report only details visible in those image pixels. Do not infer, autocomplete, or substitute text from filenames, paths, prior messages, examples, or tool output. If text is too small, obscured, or uncertain, say that it is unreadable or provide only the characters you can see. Do not use workspace image-view tools as a substitute for this attached input.</host-image-input>"
+    } else {
+        "<host-image-input>Image attachments were requested but native image input is unavailable for this ACP runtime. Do not claim to have viewed, described, or transcribed the image. State that image input is unavailable instead of inferring its contents from filenames, paths, metadata, prior messages, examples, or tool output.</host-image-input>"
+    };
+    format!("{prompt}\n{rule}\n")
+}
+
+fn acp_prompt_blocks(prompt: &str, images: &[AcpImage]) -> Vec<Value> {
+    let mut blocks = Vec::with_capacity(images.len() + 1);
+    blocks.push(json!({ "type": "text", "text": prompt }));
+    blocks.extend(images.iter().map(|image| {
+        json!({
+            "type": "image",
+            "data": image.data_base64,
+            "mimeType": image.mime_type,
+        })
+    }));
+    blocks
 }
 
 /// Build the `session/new` `_meta`, mirroring Python `_new_session_meta`: for

@@ -3,6 +3,7 @@ import { FileText, Image as ImageIcon, Paperclip } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { ImageLightbox } from '@/components/chat/ImageLightbox'
 import { downloadGroupWorkspaceFile } from '@/hooks/useGroupFiles'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
@@ -18,6 +19,7 @@ function ImagePreview({ groupId, attachment }: { groupId: string; attachment: Me
   const token = useAuthStore((state) => state.token)
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
   useEffect(() => {
     let active = true
     let objectUrl: string | null = null
@@ -32,7 +34,18 @@ function ImagePreview({ groupId, attachment }: { groupId: string; attachment: Me
       .catch(() => { if (active) setFailed(true) })
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [attachment.path, groupId, token])
-  return !failed && url ? <img src={url} alt={attachment.name} className="max-h-52 max-w-full rounded object-contain" onError={() => setFailed(true)} /> : null
+  if (failed || !url) return null
+  return <>
+    <button
+      type="button"
+      className="block max-w-full rounded focus:outline-none focus:ring-2 focus:ring-ring"
+      onClick={() => setPreviewOpen(true)}
+      aria-label={`Preview ${attachment.name}`}
+    >
+      <img src={url} alt={attachment.name} className="max-h-52 max-w-full rounded object-contain" onError={() => setFailed(true)} />
+    </button>
+    <ImageLightbox open={previewOpen} onOpenChange={setPreviewOpen} src={url} alt={attachment.name} />
+  </>
 }
 
 export function MessageAttachments({ groupId, attachments }: { groupId: string; attachments: MessageAttachment[] }) {

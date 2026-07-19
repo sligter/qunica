@@ -253,6 +253,12 @@ pub struct GroupWorkspaceFilePathQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceUploadQuery {
+    #[serde(default)]
+    unique_name: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct GroupWorkspaceFileRenameRequest {
     new_path: String,
 }
@@ -1326,6 +1332,7 @@ pub async fn upload_group_workspace_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceUploadQuery>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
@@ -1334,7 +1341,11 @@ pub async fn upload_group_workspace_file(
     let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let upload = read_group_workspace_file_part(multipart).await?;
-    let filename = validate_group_file_name(&upload.filename)?;
+    let filename = unique_group_upload_filename(
+        &root,
+        validate_group_file_name(&upload.filename)?,
+        query.unique_name,
+    )?;
     let path = prepare_group_upload_path(&root, &filename)?;
     write_new_group_upload_file(&path, &upload.bytes)?;
     let path = fs::canonicalize(&path)
@@ -3939,6 +3950,33 @@ fn prepare_group_upload_path(root: &FsPath, filename: &str) -> Result<PathBuf, A
     let path = group_upload_path(root, filename)?;
     inspect_group_upload_file(root, filename)?;
     Ok(path)
+}
+
+fn unique_group_upload_filename(
+    root: &FsPath,
+    filename: String,
+    allow_duplicate_name: bool,
+) -> Result<String, ApiError> {
+    if !allow_duplicate_name || !group_upload_literal_path(root, &filename).exists() {
+        return Ok(filename);
+    }
+
+    let path = FsPath::new(&filename);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&filename);
+    let extension = path.extension().and_then(|value| value.to_str());
+    for index in 1..=10_000 {
+        let candidate = match extension {
+            Some(extension) => format!("{stem} ({index}).{extension}"),
+            None => format!("{stem} ({index})"),
+        };
+        if !group_upload_literal_path(root, &candidate).exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(ApiError::conflict("could not allocate a unique upload filename"))
 }
 
 fn write_new_group_upload_file(path: &FsPath, bytes: &[u8]) -> Result<(), ApiError> {

@@ -258,10 +258,21 @@ fn render_attachment_references(attachments: &[ConversationAttachment]) -> Strin
     if attachments.is_empty() {
         return String::new();
     }
-    let entries = attachments.iter().map(|attachment| format!(
-        "<workspace-attachment name=\"{}\" mime_type=\"{}\" size=\"{}\" path=\"{}\">Use workspace tools to read this file. Native image input may be available separately.</workspace-attachment>",
-        escape_xml(&attachment.name), escape_xml(&attachment.mime_type), attachment.size, escape_xml(&attachment.path)
-    )).collect::<Vec<_>>().join("\n");
+    let entries = attachments
+        .iter()
+        .map(|attachment| {
+            let instruction = if attachment.mime_type.starts_with("image/") {
+                "Image pixels are not represented by this metadata. Make visual or OCR claims only from a separately supplied native image input; never infer image content from its name, path, or metadata."
+            } else {
+                "Use workspace tools to read this file when its contents are needed."
+            };
+            format!(
+                "<workspace-attachment name=\"{}\" mime_type=\"{}\" size=\"{}\" path=\"{}\">{instruction}</workspace-attachment>",
+                escape_xml(&attachment.name), escape_xml(&attachment.mime_type), attachment.size, escape_xml(&attachment.path)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     format!("\n<workspace-attachments>\n{entries}\n</workspace-attachments>")
 }
 

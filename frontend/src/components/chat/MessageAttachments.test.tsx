@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageAttachments } from '@/components/chat/MessageAttachments'
@@ -28,5 +29,18 @@ describe('MessageAttachments', () => {
     expect(screen.queryByRole('img', { name: 'report.pdf' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open photo.png' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open report.pdf' })).toBeVisible()
+  })
+
+  it('opens an image lightbox when a message image is clicked', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(['image'])) }))
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:photo'), revokeObjectURL: vi.fn() })
+    render(<MessageAttachments groupId="group-1" attachments={attachments} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Preview photo.png' }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeVisible()
+    expect(screen.getByRole('img', { name: 'photo.png' })).toBeVisible()
   })
 })

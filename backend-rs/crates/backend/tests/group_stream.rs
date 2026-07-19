@@ -1264,7 +1264,7 @@ async fn conversation_identity_resume_keeps_peer_and_human_content_untrusted() {
 }
 
 #[tokio::test]
-async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
+async fn vision_attachment_png_is_native_by_default_and_can_be_disabled() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "vision-attachment@example.com").await;
     let owner = owner_id(&state, "vision-attachment@example.com").await;
@@ -1307,7 +1307,7 @@ async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
     .execute(state.db.pool())
     .await
     .unwrap();
-    seed_agent(
+    let text_agent = seed_agent(
         &state,
         &owner,
         &group,
@@ -1316,6 +1316,7 @@ async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
         "2024-01-02T00:00:00Z",
     )
     .await;
+    set_agent_model_config(&state, &text_agent, json!({"vision": false})).await;
 
     let attachment = json!({
         "id": "attachment-1",

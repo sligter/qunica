@@ -376,13 +376,13 @@ describe('agent runtime capabilities', () => {
     )
   })
 
-  it('starts the create form image input control unchecked', async () => {
+  it('starts the create form image input control enabled', async () => {
     const user = userEvent.setup()
     renderForm(<CreateAgentForm />)
 
     await user.click(screen.getByRole('button', { name: 'Model Parameters' }))
 
-    expect(screen.getByRole('switch', { name: 'Enable image input' })).not.toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Enable image input' })).toBeChecked()
   })
 
   it('hydrates the edit form image input control from llm configuration', async () => {
@@ -410,7 +410,7 @@ describe('agent runtime capabilities', () => {
     await user.type(screen.getByLabelText('Name'), 'Vision agent')
     await user.selectOptions(screen.getByLabelText('Workspace'), 'workspace-1')
     await user.click(screen.getByRole('button', { name: 'Model Parameters' }))
-    await user.click(screen.getByRole('switch', { name: 'Enable image input' }))
+    expect(screen.getByRole('switch', { name: 'Enable image input' })).toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Create agent' }))
 
     await waitFor(() => expect(mocks.createMutate).toHaveBeenCalledOnce())

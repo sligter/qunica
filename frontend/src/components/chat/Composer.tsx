@@ -3,6 +3,7 @@ import { ArrowUp, ChevronDown, FileText, Image, Paperclip, RotateCw, Square, X }
 import { useTranslation } from 'react-i18next'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
+import { ImageLightbox } from '@/components/chat/ImageLightbox'
 import { Button } from '@/components/ui/button'
 import { getGroupWorkspaceFile, useUploadGroupWorkspaceFiles } from '@/hooks/useGroupFiles'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,7 @@ function PendingAttachmentRow({
   const { t } = useTranslation('chat')
   const isImage = attachment.file.type.startsWith('image/')
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   useEffect(() => {
     if (!isImage || attachment.file.size === 0) return
@@ -66,11 +68,21 @@ function PendingAttachmentRow({
   }, [attachment.file, isImage])
 
   return <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs">
-    {previewUrl ? <img src={previewUrl} alt="" className="h-7 w-7 shrink-0 rounded object-cover" /> : isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
+    {previewUrl ? (
+      <button
+        type="button"
+        className="shrink-0 rounded focus:outline-none focus:ring-2 focus:ring-ring"
+        onClick={() => setPreviewOpen(true)}
+        aria-label={`Preview ${attachment.file.name}`}
+      >
+        <img src={previewUrl} alt="" className="h-7 w-7 rounded object-cover" />
+      </button>
+    ) : isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
     <div className="min-w-0 flex-1"><div className="truncate">{attachment.file.name}</div><div className="truncate text-[11px] text-muted-foreground">{attachment.file.type || t('attachments.unknownType')} · {formatSize(attachment.file.size)}</div></div>
     <span className={cn('shrink-0 text-muted-foreground', attachment.status === 'failed' && 'text-destructive')}>{attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
     {attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRetry} aria-label={t('attachments.retryNamed', { name: attachment.file.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
     <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRemove} aria-label={t('attachments.removeNamed', { name: attachment.file.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
+    <ImageLightbox open={previewOpen} onOpenChange={setPreviewOpen} src={previewUrl} alt={attachment.file.name} />
   </div>
 }
 

@@ -130,6 +130,23 @@ describe('Composer mentions', () => {
     expect(onSend).toHaveBeenCalledWith({ content: '', attachments: [{ path: 'uploads/photo.png' }] })
   })
 
+  it('opens a preview when a pasted image attachment thumbnail is clicked', async () => {
+    const user = userEvent.setup()
+    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/paste.png' }])
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:paste'), revokeObjectURL: vi.fn() })
+    render(<Composer groupId="group-1" onSend={vi.fn()} />)
+
+    const file = new File(['png'], 'paste.png', { type: 'image/png' })
+    await user.upload(
+      screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
+      file,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Preview paste.png' }))
+
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(screen.getByRole('img', { name: 'paste.png' })).toHaveAttribute('src', 'blob:paste')
+  })
+
   it('uploads files dropped from the operating system', async () => {
     const onSend = vi.fn()
     mocks.upload.mockResolvedValueOnce([{ path: 'uploads/drop.png' }])
