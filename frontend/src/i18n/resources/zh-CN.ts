@@ -134,9 +134,9 @@ export const zhCN: TranslationShape<typeof enUS> = {
     },
     form: {
       createTitle: '新建 Agent', createSubtitle: '设置 Agent 的名称、系统提示词和可选模型参数。', namePlaceholder: 'Echo', descriptionPlaceholder: '此 Agent 的用途', systemPromptPlaceholder: '你是一名简洁的助手。输入 @ 可插入 Agent 或团队上下文。', runtimeDescription: '选择此 Agent 的执行引擎。', workspaceDescription: '将此 Agent 绑定到后端可见的项目文件夹。',
-      noWorkspaceWarning: '此 Agent 尚未绑定工作区，请在保存前选择一个。', noProviders: '尚未注册服务商。请前往“服务商”添加，或保留“默认”。', skillsDescription: '启用的技能会通过 skill_ids 挂载到提示词中。', noSkillsCreate: '暂无技能。请前往“技能”导入 SKILL.md。', noSkillsEdit: '没有可用技能。请在“技能”中导入。', toolsDescription: '选择要加入 Agent 上下文的工具权限。', created: '已创建 Agent：{{name}}',
+      noWorkspaceWarning: '此 Agent 尚未绑定工作区，请在保存前选择一个。', noProviders: '尚未注册服务商。请前往“服务商”添加，或保留“默认”。', skillsDescription: '启用的技能会通过 skill_ids 挂载到提示词中。', noSkillsCreate: '暂无技能。请前往“技能”导入 SKILL.md。', noSkillsEdit: '没有可用技能。请在“技能”中导入。', toolsDescription: '选择要加入 Agent 上下文的工具权限。', visionDescription: '允许此 Agent 接收图片输入。', created: '已创建 Agent：{{name}}',
     },
-    fields: { name: '名称', descriptionOptional: '描述（可选）', systemPrompt: '系统提示词', runtime: '运行时', workspace: '工作区', provider: 'LLM 服务商', model: '模型', mode: '模式', thinking: '思考', modelParameters: '模型参数', temperature: '温度', topP: 'Top P', thinkingLevel: '思考级别', contextWindowOverride: '上下文窗口覆盖值', outputReserveOverride: '输出预留比例覆盖值', builtInTools: '内置工具', skills: '技能' },
+    fields: { name: '名称', descriptionOptional: '描述（可选）', systemPrompt: '系统提示词', runtime: '运行时', workspace: '工作区', provider: 'LLM 服务商', model: '模型', mode: '模式', thinking: '思考', modelParameters: '模型参数', temperature: '温度', topP: 'Top P', thinkingLevel: '思考级别', contextWindowOverride: '上下文窗口覆盖值', outputReserveOverride: '输出预留比例覆盖值', vision: '启用图片输入', builtInTools: '内置工具', skills: '技能' },
     actions: { create: '创建 Agent', creating: '正在创建...', showOptions: '显示{{label}}选项', valueOptions: '{{label}}选项', refreshValues: '刷新可用值' },
     states: { defaultProvider: '默认（环境设置）', providerDefault: '服务商默认值', inheritProvider: '继承服务商设置', backendLocal: '本地', backendSandbox: '沙箱', loadingTools: '正在加载工具...', loadingSkills: '正在加载...', loadingValues: '正在加载可用值…', staleValues: '运行时设置已更改。请刷新可用值。' },
     validation: { nameRequired: 'Agent 名称为必填项。', systemPromptRequired: '系统提示词为必填项。', workspaceRequired: '工作区为必填项。', temperatureIncrement: '必须以 0.05 为增量。' },

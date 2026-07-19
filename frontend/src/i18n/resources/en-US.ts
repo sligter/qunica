@@ -152,11 +152,11 @@ export const enUS = {
       systemPromptPlaceholder: 'You are a concise assistant. Type @ to insert Agent or Team context.', runtimeDescription: 'Choose the execution engine for this agent.', workspaceDescription: 'Bind this agent to a backend-visible project folder.',
       noWorkspaceWarning: 'This existing agent has no workspace yet. Select one before saving.', noProviders: 'No providers registered. Go to Providers to add one, or leave this as Default.',
       skillsDescription: 'Enabled skills are mounted into the prompt through skill_ids.', noSkillsCreate: 'No skills yet. Go to Skills to import a SKILL.md.', noSkillsEdit: 'No skills available. Import one in Skills.',
-      toolsDescription: 'Select tool permissions to include in the agent context.', created: 'Created agent: {{name}}',
+      toolsDescription: 'Select tool permissions to include in the agent context.', visionDescription: 'Allow this agent to receive image input.', created: 'Created agent: {{name}}',
     },
     fields: {
       name: 'Name', descriptionOptional: 'Description (optional)', systemPrompt: 'System prompt', runtime: 'Runtime', workspace: 'Workspace', provider: 'LLM provider', model: 'Model', mode: 'Mode', thinking: 'Thinking',
-      modelParameters: 'Model Parameters', temperature: 'Temperature', topP: 'Top P', thinkingLevel: 'Thinking level', contextWindowOverride: 'Context window override', outputReserveOverride: 'Output reserve % override', builtInTools: 'Built-in tools', skills: 'Skills',
+      modelParameters: 'Model Parameters', temperature: 'Temperature', topP: 'Top P', thinkingLevel: 'Thinking level', contextWindowOverride: 'Context window override', outputReserveOverride: 'Output reserve % override', vision: 'Enable image input', builtInTools: 'Built-in tools', skills: 'Skills',
     },
     actions: { create: 'Create agent', creating: 'Creating...', showOptions: 'Show {{label}} options', valueOptions: '{{label}} options', refreshValues: 'Refresh available values' },
     states: { defaultProvider: 'Default (env settings)', providerDefault: 'Provider default', inheritProvider: 'Inherit provider', backendLocal: 'local', backendSandbox: 'sandbox', loadingTools: 'Loading tools...', loadingSkills: 'Loading...', loadingValues: 'Loading available values...', staleValues: 'Runtime settings changed. Refresh available values.' },

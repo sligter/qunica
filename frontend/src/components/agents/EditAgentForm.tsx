@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
@@ -67,6 +68,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
   model: z.string().optional(),
+  vision: z.boolean(),
   workspace_id: z.string().min(1, workspaceRequired),
   temperature: z
     .number()
@@ -138,6 +140,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       acp_thinking_effort: agent.acp_runtime?.thinking_effort ?? '',
       llm_provider_id: agent.llm_provider_id ?? '',
       model: typeof agent.llm_config?.model === 'string' ? agent.llm_config.model : '',
+      vision: agent.llm_config?.vision === true,
       workspace_id: agent.workspace_id ?? '',
       temperature: (agent.llm_config?.temperature as number) ?? DEFAULT_AGENT_TEMPERATURE,
       top_p: (agent.llm_config?.top_p as number) ?? 1,
@@ -226,6 +229,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       const llm_config: Record<string, unknown> = {}
       const model = values.model?.trim()
       if (model) llm_config.model = model
+      if (values.vision) llm_config.vision = true
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
@@ -470,6 +474,20 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
             </button>
             {showAdvanced && (
               <div className="space-y-4 rounded-md border border-border bg-card p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="ea-vision">{t('agents:fields.vision')}</Label>
+                    <p className="text-xs text-muted-foreground">
+                      {t('agents:form.visionDescription')}
+                    </p>
+                  </div>
+                  <Switch
+                    id="ea-vision"
+                    aria-label="Enable image input"
+                    checked={form.watch('vision')}
+                    onCheckedChange={(value) => form.setValue('vision', value)}
+                  />
+                </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label>{t('agents:fields.temperature')}</Label>

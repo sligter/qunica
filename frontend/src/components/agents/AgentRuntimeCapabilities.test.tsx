@@ -181,8 +181,17 @@ function renderForm(element: ReactElement) {
   )
 }
 
+class ResizeObserverMock {
+  observe() {}
+
+  unobserve() {}
+
+  disconnect() {}
+}
+
 describe('agent runtime capabilities', () => {
   beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock)
     mocks.capabilityHook.mockReset()
     mocks.capabilityRefetch.mockReset()
     mocks.capabilityRefetch.mockResolvedValue(undefined)
@@ -363,6 +372,52 @@ describe('agent runtime capabilities', () => {
         runtime_kind: 'llm_chat',
         llm_provider_id: 'provider-1',
         llm_config: expect.objectContaining({ model: 'create-only-model' }),
+      }),
+    )
+  })
+
+  it('starts the create form image input control unchecked', async () => {
+    const user = userEvent.setup()
+    renderForm(<CreateAgentForm />)
+
+    await user.click(screen.getByRole('button', { name: 'Model Parameters' }))
+
+    expect(screen.getByRole('switch', { name: 'Enable image input' })).not.toBeChecked()
+  })
+
+  it('hydrates the edit form image input control from llm configuration', async () => {
+    const user = userEvent.setup()
+    renderForm(
+      <EditAgentForm
+        agent={agent({
+          llm_config: { model: 'vision-model', vision: true },
+        })}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Model Parameters' }))
+
+    expect(screen.getByRole('switch', { name: 'Enable image input' })).toBeChecked()
+  })
+
+  it('persists enabled image input as vision in LLM configuration', async () => {
+    const user = userEvent.setup()
+    mocks.createMutate.mockResolvedValue(
+      agent({ id: 'created-agent', name: 'Vision agent' }),
+    )
+    renderForm(<CreateAgentForm />)
+
+    await user.type(screen.getByLabelText('Name'), 'Vision agent')
+    await user.selectOptions(screen.getByLabelText('Workspace'), 'workspace-1')
+    await user.click(screen.getByRole('button', { name: 'Model Parameters' }))
+    await user.click(screen.getByRole('switch', { name: 'Enable image input' }))
+    await user.click(screen.getByRole('button', { name: 'Create agent' }))
+
+    await waitFor(() => expect(mocks.createMutate).toHaveBeenCalledOnce())
+    expect(mocks.createMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtime_kind: 'llm_chat',
+        llm_config: expect.objectContaining({ vision: true }),
       }),
     )
   })

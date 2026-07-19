@@ -32,6 +32,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
@@ -67,6 +68,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
   model: z.string().optional(),
+  vision: z.boolean(),
   workspace_id: z.string().min(1, workspaceRequired),
   temperature: z
     .number()
@@ -142,6 +144,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       acp_thinking_effort: '',
       llm_provider_id: '',
       model: '',
+      vision: false,
       workspace_id: '',
       temperature: DEFAULT_AGENT_TEMPERATURE,
       top_p: 1,
@@ -238,6 +241,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       const llm_config: Record<string, unknown> = {}
       const model = values.model?.trim()
       if (model) llm_config.model = model
+      if (values.vision) llm_config.vision = true
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
@@ -491,6 +495,20 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
             </button>
             {showAdvanced && (
               <div className="space-y-4 rounded-md border border-border bg-card p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="agent-vision">{t('agents:fields.vision')}</Label>
+                    <p className="text-xs text-muted-foreground">
+                      {t('agents:form.visionDescription')}
+                    </p>
+                  </div>
+                  <Switch
+                    id="agent-vision"
+                    aria-label="Enable image input"
+                    checked={form.watch('vision')}
+                    onCheckedChange={(value) => form.setValue('vision', value)}
+                  />
+                </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label>{t('agents:fields.temperature')}</Label>
