@@ -26,7 +26,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::{collections::HashSet, future::Future, path::PathBuf, time::Duration};
+use std::{collections::HashSet, future::Future, io::Read, path::PathBuf, time::Duration};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -1970,7 +1970,7 @@ async fn run_resume_inner(
         Ok(group) => group,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
-    let workspace_root = match resolve_workspace_root(&services.pool, &agent, &group).await {
+    let workspace_root = match resolve_group_workspace_root(&services.pool, &group).await {
         Ok(root) => root,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
@@ -2401,12 +2401,15 @@ async fn run_agent_turn(
     let invocation = build_invocation_context(&services.pool, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
+    let conversation_workspace_root = resolve_group_workspace_root(&services.pool, group)
+        .await
+        .map_err(StepErr::Db)?;
     let (mut messages, image_warnings) = build_vision_messages(
         &services.pool,
         &ctx.thread_id,
         &invocation.system_prompt,
         &agent.agent_id,
-        invocation.workspace_root.as_deref(),
+        conversation_workspace_root.as_deref(),
         vision_enabled(agent.model_config_json.as_deref()),
     )
     .await
@@ -4467,6 +4470,31 @@ async fn resolve_workspace_root(
     Ok(local_path.map(PathBuf::from))
 }
 
+/// Resolve the group workspace that owns persisted conversation attachments.
+/// This deliberately does not follow an agent's private workspace selection.
+async fn resolve_group_workspace_root(
+    pool: &SqlitePool,
+    group: &GroupRuntimeConfig,
+) -> anyhow::Result<Option<PathBuf>> {
+    let Some(workspace_id) = group.workspace_id.as_deref() else {
+        return Ok(None);
+    };
+    let row: Option<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT backend_type, local_path, status FROM workspaces WHERE id = ? AND owner_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(&group.owner_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((backend_type, local_path, status)) = row else {
+        return Ok(None);
+    };
+    if status != "active" || backend_type != "local" {
+        return Ok(None);
+    }
+    Ok(local_path.map(PathBuf::from))
+}
+
 async fn load_mounted_skills(
     pool: &SqlitePool,
     agent: &Candidate,
@@ -4825,9 +4853,6 @@ fn vision_messages_from_rows(
         return (messages, Vec::new());
     }
 
-    let Some(root) = workspace_root else {
-        return (messages, Vec::new());
-    };
     let mut image_count = 0;
     let mut image_bytes = 0_u64;
     let mut warnings = Vec::new();
@@ -4843,6 +4868,13 @@ fn vision_messages_from_rows(
             if !native_image_mime_type(&attachment.mime_type) {
                 continue;
             }
+            let Some(root) = workspace_root else {
+                warnings.push(
+                    "Attachment image could not be read from the conversation workspace."
+                        .to_string(),
+                );
+                continue;
+            };
             if image_count >= MAX_NATIVE_IMAGES_PER_REQUEST {
                 warnings.push(
                     "Attachment image was not sent because the request image limit was reached."
@@ -4858,36 +4890,35 @@ fn vision_messages_from_rows(
                     continue;
                 }
             };
-            let metadata = match std::fs::metadata(&path) {
-                Ok(metadata) if metadata.is_file() => metadata,
-                _ => {
+            let bytes = match read_native_image_bytes(&path) {
+                Ok(bytes) => bytes,
+                Err(NativeImageReadError::Unreadable) => {
                     warnings
                         .push("Attachment image could not be read from the workspace.".to_string());
                     continue;
                 }
+                Err(NativeImageReadError::TooLarge) => {
+                    warnings.push(
+                        "Attachment image was not sent because it exceeds the request size limit."
+                            .to_string(),
+                    );
+                    continue;
+                }
             };
-            let size = metadata.len();
-            if size > MAX_NATIVE_IMAGE_BYTES
-                || image_bytes.saturating_add(size) > MAX_NATIVE_IMAGE_TOTAL_BYTES
-            {
+            let actual_size = bytes.len() as u64;
+            if image_bytes.saturating_add(actual_size) > MAX_NATIVE_IMAGE_TOTAL_BYTES {
                 warnings.push(
                     "Attachment image was not sent because it exceeds the request size limit."
                         .to_string(),
                 );
                 continue;
             }
-            match std::fs::read(&path) {
-                Ok(bytes) => {
-                    image_count += 1;
-                    image_bytes += size;
-                    parts.push(ag_swarmer_domain::runtime::ChatContentPart::image(
-                        attachment.mime_type.clone(),
-                        STANDARD.encode(bytes),
-                    ));
-                }
-                Err(_) => warnings
-                    .push("Attachment image could not be read from the workspace.".to_string()),
-            }
+            image_count += 1;
+            image_bytes += actual_size;
+            parts.push(ag_swarmer_domain::runtime::ChatContentPart::image(
+                attachment.mime_type.clone(),
+                STANDARD.encode(bytes),
+            ));
         }
         if !parts.is_empty() {
             let text = messages[index + 1].content.clone();
@@ -4898,6 +4929,23 @@ fn vision_messages_from_rows(
     }
     warnings.truncate(8);
     (messages, warnings)
+}
+
+enum NativeImageReadError {
+    Unreadable,
+    TooLarge,
+}
+
+fn read_native_image_bytes(path: &std::path::Path) -> Result<Vec<u8>, NativeImageReadError> {
+    let file = std::fs::File::open(path).map_err(|_| NativeImageReadError::Unreadable)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_NATIVE_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| NativeImageReadError::Unreadable)?;
+    if bytes.len() as u64 > MAX_NATIVE_IMAGE_BYTES {
+        return Err(NativeImageReadError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 fn native_image_mime_type(mime_type: &str) -> bool {

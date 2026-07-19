@@ -363,6 +363,7 @@ async fn run_turn(
         owner_id: owner_id.to_string(),
         thread_id: None,
         content: content.to_string(),
+        attachments: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(64);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -993,6 +994,7 @@ mod agent_as_tool {
             owner_id: owner.clone(),
             thread_id: None,
             content: "@Caller delegate".to_string(),
+            attachments: Vec::new(),
         };
         let (tx, mut rx) = mpsc::channel(1);
         let handle = tokio::spawn(run_group_turn(services, request, tx));

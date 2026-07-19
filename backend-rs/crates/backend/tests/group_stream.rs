@@ -1286,6 +1286,27 @@ async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
     )
     .await;
     set_agent_model_config(&state, &vision_agent, json!({"vision": true})).await;
+    let (private_root, private_workspace) = create_local_workspace(&app, &token).await;
+    std::fs::create_dir(private_root.path().join("uploads")).unwrap();
+    std::fs::write(
+        private_root.path().join("uploads/diagram.png"),
+        [9_u8, 9, 9, 9],
+    )
+    .unwrap();
+    sqlx::query("UPDATE agents SET workspace_id = ? WHERE id = ?")
+        .bind(&private_workspace)
+        .bind(&vision_agent)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE group_agents SET context_scope_json = '{}' WHERE group_id = ? AND agent_id = ?",
+    )
+    .bind(&group)
+    .bind(&vision_agent)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
     seed_agent(
         &state,
         &owner,
@@ -1321,6 +1342,10 @@ async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
         .as_str()
         .unwrap()
         .contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" path=\"uploads/diagram.png\">"));
+    assert!(vision_content[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("</workspace-attachments></conversation-message>"));
     assert_eq!(vision_content[1]["type"], "image_url");
     assert_eq!(
         vision_content[1]["image_url"]["url"],
@@ -1337,11 +1362,12 @@ async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
 }
 
 #[tokio::test]
-async fn vision_attachment_unsupported_or_missing_files_are_reference_only_with_warning() {
+async fn vision_attachment_unsupported_or_unavailable_workspace_files_are_reference_only_with_warning(
+) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "vision-attachment-fallback@example.com").await;
     let owner = owner_id(&state, "vision-attachment-fallback@example.com").await;
-    let (_root, workspace) = create_local_workspace(&app, &token).await;
+    let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
     let (provider_url, requests) =
         recording_fake_provider_sequence(vec![text_body("fallback reply")]).await;

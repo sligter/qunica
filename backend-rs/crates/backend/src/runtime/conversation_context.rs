@@ -247,7 +247,7 @@ fn render_untrusted_message(row: &ConversationMessage) -> String {
 
     let attachment_references = render_attachment_references(&row.attachments);
     format!(
-        "<conversation-message actor_type=\"{actor_type}\" actor_id=\"{}\" display_name=\"{}\">{}</conversation-message>{attachment_references}",
+        "<conversation-message actor_type=\"{actor_type}\" actor_id=\"{}\" display_name=\"{}\">{}{attachment_references}</conversation-message>",
         escape_xml(actor_id),
         escape_xml(display_name),
         escape_xml(&row.content),
