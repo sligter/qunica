@@ -350,6 +350,29 @@ export interface GroupRead extends GroupSchedulerConfig {
   created_at: string
 }
 
+export type DirectChatTitleSource = 'automatic' | 'manual'
+
+export interface DirectChatRead {
+  id: string
+  title: string
+  title_source: DirectChatTitleSource
+  agent_id: string | null
+  agent_name: string | null
+  agent_status: string | null
+  workspace_id: string | null
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DirectChatCreate {
+  agent_id: string
+}
+
+export interface DirectChatUpdate {
+  title: string
+}
+
 export interface GroupCreate extends Partial<GroupSchedulerConfig> {
   name: string
   workspace_id?: string | null

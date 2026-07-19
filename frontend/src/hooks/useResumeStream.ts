@@ -210,6 +210,7 @@ export function useResumeStream(
               return
             }
             case 'user_message':
+            case 'conversation_updated':
             case 'agent_start':
             case 'reasoning':
             case 'tool_call_start':

@@ -1,5 +1,6 @@
 export type LegacyStreamEventKind =
   | 'user_message'
+  | 'conversation_updated'
   | 'agent_start'
   | 'token'
   | 'reasoning'
@@ -26,6 +27,13 @@ export type SchedulerStreamEventKind =
   | 'turn_completed'
 
 export type StreamEventKind = LegacyStreamEventKind | SchedulerStreamEventKind
+
+export interface ConversationUpdatedPayload {
+  conversation_id: string
+  title: string
+  title_source: 'automatic' | 'manual'
+  updated_at: string
+}
 
 export interface StreamEvent<
   TPayload = unknown,

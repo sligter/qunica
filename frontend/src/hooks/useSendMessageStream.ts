@@ -722,6 +722,8 @@ export function useSendMessageStream(
                 })
                 return
               }
+              case 'conversation_updated':
+                return
               case 'error': {
                 const message = messageFromPayload(event.payload, 'Stream failed')
                 setError(message)

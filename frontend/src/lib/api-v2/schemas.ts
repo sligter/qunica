@@ -3,11 +3,35 @@ import { z } from 'zod'
 import type {
   GroupSchedulerConfig,
   GroupTurnTraceResponse,
+  ConversationUpdatedPayload,
   SchedulerStreamEventKind,
   SchedulerStreamUpdate,
   StreamEvent,
   StreamEventKind,
 } from './types'
+
+const conversationUpdatedEventSchema = z
+  .object({
+    stream_id: z.string(),
+    seq: z.number().int().nonnegative(),
+    event_id: z.string(),
+    kind: z.literal('conversation_updated'),
+    payload: z
+      .object({
+        conversation_id: z.string(),
+        title: z.string(),
+        title_source: z.enum(['automatic', 'manual']),
+        updated_at: z.string(),
+      })
+      .strict(),
+  })
+  .strict()
+
+export function parseConversationUpdatedEvent(
+  event: StreamEvent<unknown, StreamEventKind>,
+): StreamEvent<ConversationUpdatedPayload, 'conversation_updated'> {
+  return conversationUpdatedEventSchema.parse(event)
+}
 
 export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.object({
   scheduler_enabled: z.boolean(),

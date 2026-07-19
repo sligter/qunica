@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { parseGroupTurnTrace, parseSchedulerStreamEvent } from './schemas'
+import {
+  parseConversationUpdatedEvent,
+  parseGroupTurnTrace,
+  parseSchedulerStreamEvent,
+} from './schemas'
 import type { StreamEvent, StreamEventKind } from './types'
 import type { Message } from '@/types/api'
 
@@ -251,6 +255,36 @@ describe('parseSchedulerStreamEvent', () => {
       warning.mockRestore()
     },
   )
+})
+
+describe('parseConversationUpdatedEvent', () => {
+  it('parses the strict direct-chat metadata payload', () => {
+    expect(
+      parseConversationUpdatedEvent(
+        schedulerEvent('conversation_updated', {
+          conversation_id: 'chat-1',
+          title: 'Launch plan',
+          title_source: 'automatic',
+          updated_at: '2026-07-19T00:00:00Z',
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'conversation_updated',
+      payload: { conversation_id: 'chat-1', title_source: 'automatic' },
+    })
+  })
+
+  it('rejects incomplete conversation updates', () => {
+    expect(() =>
+      parseConversationUpdatedEvent(
+        schedulerEvent('conversation_updated', {
+          conversation_id: 'chat-1',
+          title: 'Launch plan',
+          title_source: 'automatic',
+        }),
+      ),
+    ).toThrow()
+  })
 })
 
 describe('parseGroupTurnTrace', () => {
