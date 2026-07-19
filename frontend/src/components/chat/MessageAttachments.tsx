@@ -24,7 +24,11 @@ function ImagePreview({ groupId, attachment }: { groupId: string; attachment: Me
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined
     void fetch(apiUrl(`/api/v2/groups/${groupId}/workspace-files/download?path=${encodeURIComponent(attachment.path)}`), { headers })
       .then((response) => response.ok ? response.blob() : Promise.reject(new Error('preview failed')))
-      .then((blob) => { objectUrl = URL.createObjectURL(blob); if (active) setUrl(objectUrl) })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob)
+        if (active) setUrl(objectUrl)
+        else URL.revokeObjectURL(objectUrl)
+      })
       .catch(() => { if (active) setFailed(true) })
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [attachment.path, groupId, token])
