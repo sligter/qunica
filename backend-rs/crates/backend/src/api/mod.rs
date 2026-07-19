@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod auth;
+pub mod conversations;
 pub mod error;
 pub mod group_turns;
 pub mod groups;

@@ -950,7 +950,7 @@ pub async fn list(
 
     let sql = format!(
         "SELECT {GROUP_COLUMNS} FROM groups \
-         WHERE owner_id = ? AND status = 'active' \
+         WHERE owner_id = ? AND status = 'active' AND conversation_kind = 'group' \
          ORDER BY created_at DESC, id DESC"
     );
     let rows = sqlx::query_as::<_, GroupRow>(&sql)
@@ -1220,7 +1220,7 @@ pub async fn get_group_workspace_root(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     Ok(Json(GroupWorkspaceRootResponse {
         root: root.to_string_lossy().to_string(),
@@ -1237,7 +1237,7 @@ pub async fn list_group_workspace_files(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let directory = resolve_group_workspace_file_path(&root, &query.path)?;
     if !directory.is_dir() {
@@ -1271,7 +1271,7 @@ pub async fn preview_group_workspace_file(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let file_path = resolve_group_workspace_file_path(&root, &query.path)?;
     if !file_path.is_file() {
@@ -1331,7 +1331,7 @@ pub async fn upload_group_workspace_file(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let upload = read_group_workspace_file_part(multipart).await?;
     let filename = validate_group_file_name(&upload.filename)?;
@@ -1355,7 +1355,7 @@ pub async fn download_group_workspace_file(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let file_path = resolve_group_workspace_file_path(&root, &query.path)?;
     if !file_path.is_file() {
@@ -1391,7 +1391,7 @@ pub async fn rename_group_workspace_file(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let source = resolve_group_workspace_file_path(&root, &query.path)?;
     if source == root {
@@ -1429,7 +1429,7 @@ pub async fn delete_group_workspace_file(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let target = resolve_group_workspace_file_path(&root, &query.path)?;
     if target == root {
@@ -1462,7 +1462,7 @@ pub async fn get_group_workspace_git_status(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     Ok(Json(workspace_git::status(&root).await))
 }
@@ -1474,7 +1474,7 @@ async fn workspace_git_root(
 ) -> Result<PathBuf, ApiError> {
     let owner_id = current_user_id(headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(group_id, "group id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     group_files_workspace_root(state.db.pool(), &group, &owner_id).await
 }
 
@@ -1666,7 +1666,7 @@ pub async fn get_group_workspace_git_diff(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let path = match query.path {
         Some(path) => validate_git_paths(&root, &[path])?.into_iter().next(),
@@ -1689,7 +1689,7 @@ pub async fn get_group_workspace_git_log(
     }
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let log = workspace_git::log(&root, query.limit, query.skip)
         .await
@@ -1704,7 +1704,7 @@ pub async fn get_group_workspace_git_commit(
 ) -> Result<Json<WorkspaceGitCommitDetails>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let details = workspace_git::commit_details(&root, &sha)
         .await
@@ -1720,7 +1720,7 @@ pub async fn get_group_workspace_git_commit_diff(
 ) -> Result<Json<WorkspaceGitDiff>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let path = match query.path {
         Some(path) => validate_git_paths(&root, &[path])?.into_iter().next(),
@@ -1740,7 +1740,7 @@ pub async fn create_group_workspace_git_branch_from_commit(
 ) -> Result<StatusCode, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     workspace_git::create_branch_from_commit(&root, &sha, body.name.trim())
         .await
@@ -1757,7 +1757,7 @@ pub async fn stage_group_workspace_git_paths(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let paths = validate_git_paths(&root, &body.paths)?;
     workspace_git::stage(&root, &paths)
@@ -1775,7 +1775,7 @@ pub async fn unstage_group_workspace_git_paths(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let paths = validate_git_paths(&root, &body.paths)?;
     workspace_git::unstage(&root, &paths)
@@ -1792,7 +1792,7 @@ pub async fn generate_group_workspace_git_commit_message(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     let diff = workspace_git::staged_diff(&root)
         .await
@@ -1859,7 +1859,7 @@ pub async fn commit_group_workspace_git(
     let group_id = validate_uuid(&group_id, "group id")?;
     let message = validate_git_commit_message(&body.message)?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     workspace_git::commit(&root, message)
         .await
@@ -1875,7 +1875,7 @@ pub async fn pull_group_workspace_git(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     workspace_git::pull(&root)
         .await
@@ -1891,7 +1891,7 @@ pub async fn push_group_workspace_git(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     workspace_git::push(&root)
         .await
@@ -2554,8 +2554,35 @@ async fn load_active_owned(
     Ok(row)
 }
 
+async fn load_active_owned_workspace(
+    pool: &SqlitePool,
+    group_id: &str,
+    owner_id: &str,
+) -> Result<GroupRow, ApiError> {
+    let sql = format!(
+        "SELECT {GROUP_COLUMNS} FROM groups \
+         WHERE id = ? AND conversation_kind IN ('group', 'direct')"
+    );
+    let row = sqlx::query_as::<_, GroupRow>(&sql)
+        .bind(group_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))?
+        .ok_or_else(|| ApiError::not_found("conversation not found"))?;
+    if row.status != "active" {
+        return Err(ApiError::not_found("conversation not found"));
+    }
+    if row.owner_id != owner_id {
+        return Err(ApiError::permission_denied(
+            "conversation belongs to another user",
+        ));
+    }
+    Ok(row)
+}
+
 async fn fetch_row(pool: &SqlitePool, group_id: &str) -> Result<Option<GroupRow>, ApiError> {
-    let sql = format!("SELECT {GROUP_COLUMNS} FROM groups WHERE id = ?");
+    let sql =
+        format!("SELECT {GROUP_COLUMNS} FROM groups WHERE id = ? AND conversation_kind = 'group'");
     sqlx::query_as::<_, GroupRow>(&sql)
         .bind(group_id)
         .fetch_optional(pool)

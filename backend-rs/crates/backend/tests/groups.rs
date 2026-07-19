@@ -4218,6 +4218,51 @@ async fn group_list_is_owner_scoped() {
 }
 
 #[tokio::test]
+async fn direct_container_is_isolated_from_group_endpoints() {
+    let (app, state) = app_with_state().await;
+    let email = "direct-container-owner@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner_id = owner_id(&state, email).await;
+    let direct_id = Uuid::new_v4().to_string();
+    let now = "2026-07-19T00:00:00Z";
+
+    sqlx::query(
+        "INSERT INTO groups (id, owner_id, name, conversation_kind, title_source, status, created_at, updated_at) \
+         VALUES (?, ?, 'Direct container', 'direct', 'automatic', 'active', ?, ?)",
+    )
+    .bind(&direct_id)
+    .bind(&owner_id)
+    .bind(now)
+    .bind(now)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let (status, group_list) = send(&app, authed("GET", "/api/v2/groups", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(group_list
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|group| group["id"] != direct_id));
+
+    for request in [
+        authed("GET", &format!("/api/v2/groups/{direct_id}"), &token),
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{direct_id}"),
+            &token,
+            json!({"name": "Must not update"}),
+        ),
+        authed("DELETE", &format!("/api/v2/groups/{direct_id}"), &token),
+    ] {
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
+        assert_eq!(body["error"]["code"], "not_found");
+    }
+}
+
+#[tokio::test]
 async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
     let app = app().await;
     let token = register_and_login(&app, "scheduler-config@example.com").await;
