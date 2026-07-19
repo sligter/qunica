@@ -80,6 +80,14 @@ pub fn model_from_config(model_config_json: &Option<String>, default_model: &str
         .unwrap_or_else(|| default_model.to_string())
 }
 
+/// Whether an agent explicitly opts into provider-native image input.
+pub fn vision_enabled(model_config_json: Option<&str>) -> bool {
+    model_config_json
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("vision").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
 /// Accumulates the fragments of a single streamed tool call.
 ///
 /// Provider deltas deliver a tool call's id, name and JSON arguments across

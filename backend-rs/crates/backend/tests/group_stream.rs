@@ -459,6 +459,15 @@ async fn seed_agent(
     agent_id
 }
 
+async fn set_agent_model_config(state: &AppState, agent_id: &str, config: Value) {
+    sqlx::query("UPDATE agents SET model_config_json = ? WHERE id = ?")
+        .bind(config.to_string())
+        .bind(agent_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+}
+
 async fn seed_acp_agent(
     state: &AppState,
     owner_id: &str,
@@ -1252,6 +1261,151 @@ async fn conversation_identity_resume_keeps_peer_and_human_content_untrusted() {
         messages[4]["content"],
         "Continue from where you left off. Do not repeat completed text; append only the continuation."
     );
+}
+
+#[tokio::test]
+async fn vision_attachment_png_is_native_only_for_vision_enabled_agents() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "vision-attachment@example.com").await;
+    let owner = owner_id(&state, "vision-attachment@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::create_dir(root.path().join("uploads")).unwrap();
+    std::fs::write(root.path().join("uploads/diagram.png"), [1_u8, 2, 3, 4]).unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) =
+        recording_fake_provider_sequence(vec![text_body("vision reply"), text_body("text reply")])
+            .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let vision_agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Vision",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(&state, &vision_agent, json!({"vision": true})).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Text",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let attachment = json!({
+        "id": "attachment-1",
+        "path": "uploads/diagram.png",
+        "name": "diagram.png",
+        "mime_type": "image/png",
+        "size": 4,
+        "kind": "image"
+    });
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "Please inspect this.", "attachments": [attachment]}),
+    )
+    .await;
+    assert_eq!(events.last().unwrap()["kind"], "done");
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    let vision_content = &requests[0]["messages"][1]["content"];
+    assert_eq!(vision_content[0]["type"], "text");
+    assert!(vision_content[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" path=\"uploads/diagram.png\">"));
+    assert_eq!(vision_content[1]["type"], "image_url");
+    assert_eq!(
+        vision_content[1]["image_url"]["url"],
+        "data:image/png;base64,AQIDBA=="
+    );
+
+    let text_content = &requests[1]["messages"][1]["content"];
+    assert!(text_content
+        .as_str()
+        .unwrap()
+        .contains("workspace-attachment"));
+    assert!(!text_content.to_string().contains("image_url"));
+    assert!(!text_content.to_string().contains("AQIDBA=="));
+}
+
+#[tokio::test]
+async fn vision_attachment_unsupported_or_missing_files_are_reference_only_with_warning() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "vision-attachment-fallback@example.com").await;
+    let owner = owner_id(&state, "vision-attachment-fallback@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) =
+        recording_fake_provider_sequence(vec![text_body("fallback reply")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Vision",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(&state, &agent, json!({"vision": true})).await;
+
+    let thread = seed_thread(&state, &group, "active").await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "Inspect the files.",
+        Some(json!({
+            "version": 1,
+            "attachments": [
+                {"id":"missing","path":"uploads/missing.png","name":"missing.png","mime_type":"image/png","size":4,"kind":"image"},
+                {"id":"svg","path":"uploads/diagram.svg","name":"diagram.svg","mime_type":"image/svg+xml","size":4,"kind":"image"},
+                {"id":"pdf","path":"uploads/spec.pdf","name":"spec.pdf","mime_type":"application/pdf","size":4,"kind":"file"}
+            ]
+        })),
+    )
+    .await;
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let (tx, mut rx) = mpsc::channel(32);
+    let outcome = run_group_turn(
+        services,
+        TurnRequest {
+            group_id: group.clone(),
+            owner_id: owner.clone(),
+            thread_id: Some(thread),
+            content: "Continue.".to_string(),
+            attachments: Vec::new(),
+        },
+        tx,
+    )
+    .await;
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let mut saw_warning = false;
+    while let Some(event) = rx.recv().await {
+        saw_warning |= event.kind == StreamEventKind::Warning;
+    }
+    assert!(saw_warning);
+
+    let requests = requests.lock().await;
+    let content = &requests[0]["messages"][1]["content"];
+    let text = content.as_str().unwrap();
+    assert!(text.contains("missing.png"));
+    assert!(text.contains("diagram.svg"));
+    assert!(text.contains("spec.pdf"));
+    assert!(!text.contains("data:image"));
+    assert!(!content.to_string().contains("image_url"));
 }
 
 #[tokio::test]
@@ -3582,6 +3736,7 @@ async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
         owner_id: owner,
         thread_id: None,
         content: "cancel while moderator is selecting".to_owned(),
+        attachments: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(128);
     let moderator_started = started.notified();
@@ -4822,6 +4977,7 @@ async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_onc
         owner_id: owner,
         thread_id: None,
         content: "@Caller start".to_string(),
+        attachments: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(128);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -5627,6 +5783,7 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
         owner_id: owner.clone(),
         thread_id: None,
         content: "hi".to_string(),
+        attachments: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -5722,6 +5879,7 @@ async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal
         owner_id: owner.clone(),
         thread_id: None,
         content: "hi".to_string(),
+        attachments: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -5798,6 +5956,7 @@ async fn bounded_stream_client_disconnect_runs_to_replayable_scheduler_terminal_
         owner_id: owner,
         thread_id: None,
         content: "hi".to_string(),
+        attachments: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));

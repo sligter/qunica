@@ -5,7 +5,17 @@
 //! current agent's own history is represented as assistant output.
 
 use crate::llm::ChatMessage;
+use serde::Deserialize;
 use sqlx::SqlitePool;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConversationAttachment {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationActor {
@@ -21,6 +31,7 @@ pub struct ConversationMessage {
     pub turn_id: Option<String>,
     pub dispatch_id: Option<String>,
     pub reply_to_message_id: Option<String>,
+    pub attachments: Vec<ConversationAttachment>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -35,6 +46,7 @@ struct ConversationRow {
     turn_id: Option<String>,
     dispatch_id: Option<String>,
     reply_to_message_id: Option<String>,
+    content_json: Option<String>,
 }
 
 /// Load visible transcript rows in their durable per-thread sequence order.
@@ -63,7 +75,7 @@ async fn load_conversation_rows(
         "SELECT m.id, m.sender_type, m.sender_id, m.content, \
                 a.name AS agent_name, ga.display_name AS group_agent_display_name, \
                 u.name AS human_display_name, m.turn_id, m.dispatch_id, \
-                m.reply_to_message_id \
+                m.reply_to_message_id, m.content_json \
          FROM messages m \
          LEFT JOIN agents a \
            ON m.sender_type = 'agent' AND a.id = m.sender_id \
@@ -84,8 +96,9 @@ async fn load_conversation_rows(
 
 impl From<ConversationRow> for ConversationMessage {
     fn from(row: ConversationRow) -> Self {
+        let is_agent = row.sender_type == "agent";
         let actor_id = row.sender_id.unwrap_or_default();
-        let actor = if row.sender_type == "agent" {
+        let actor = if is_agent {
             let display_name = non_empty(row.group_agent_display_name)
                 .or_else(|| non_empty(row.agent_name))
                 .unwrap_or_else(|| fallback_display_name(&actor_id, "Unknown Agent"));
@@ -109,8 +122,25 @@ impl From<ConversationRow> for ConversationMessage {
             turn_id: row.turn_id,
             dispatch_id: row.dispatch_id,
             reply_to_message_id: row.reply_to_message_id,
+            attachments: (!is_agent)
+                .then(|| attachments_from_content_json(row.content_json.as_deref()))
+                .unwrap_or_default(),
         }
     }
+}
+
+fn attachments_from_content_json(content_json: Option<&str>) -> Vec<ConversationAttachment> {
+    #[derive(Deserialize)]
+    struct AttachmentPayload {
+        version: i64,
+        #[serde(default)]
+        attachments: Vec<ConversationAttachment>,
+    }
+    content_json
+        .and_then(|raw| serde_json::from_str::<AttachmentPayload>(raw).ok())
+        .filter(|payload| payload.version == 1)
+        .map(|payload| payload.attachments)
+        .unwrap_or_default()
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -215,12 +245,24 @@ fn render_untrusted_message(row: &ConversationMessage) -> String {
         ConversationActor::Agent { id, display_name } => ("agent", id, display_name),
     };
 
+    let attachment_references = render_attachment_references(&row.attachments);
     format!(
-        "<conversation-message actor_type=\"{actor_type}\" actor_id=\"{}\" display_name=\"{}\">{}</conversation-message>",
+        "<conversation-message actor_type=\"{actor_type}\" actor_id=\"{}\" display_name=\"{}\">{}</conversation-message>{attachment_references}",
         escape_xml(actor_id),
         escape_xml(display_name),
         escape_xml(&row.content),
     )
+}
+
+fn render_attachment_references(attachments: &[ConversationAttachment]) -> String {
+    if attachments.is_empty() {
+        return String::new();
+    }
+    let entries = attachments.iter().map(|attachment| format!(
+        "<workspace-attachment name=\"{}\" mime_type=\"{}\" size=\"{}\" path=\"{}\">Use workspace tools to read this file. Native image input may be available separately.</workspace-attachment>",
+        escape_xml(&attachment.name), escape_xml(&attachment.mime_type), attachment.size, escape_xml(&attachment.path)
+    )).collect::<Vec<_>>().join("\n");
+    format!("\n<workspace-attachments>\n{entries}\n</workspace-attachments>")
 }
 
 pub(crate) fn sanitize_acp_agent_brief(system_prompt: &str) -> String {

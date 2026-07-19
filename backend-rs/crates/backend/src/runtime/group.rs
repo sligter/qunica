@@ -29,6 +29,7 @@ use std::sync::{
 use std::{collections::HashSet, future::Future, path::PathBuf, time::Duration};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -42,8 +43,8 @@ use crate::acp::{
     AcpRunRequest,
 };
 use crate::llm::{
-    build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
-    ToolCall, ToolDefinition,
+    build_provider, model_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest,
+    ProviderConfig, ToolCall, ToolDefinition,
 };
 use crate::runtime::agent_as_tool::{
     resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AgentAsToolMode, CallerAgent,
@@ -66,6 +67,9 @@ use crate::runtime::group_scheduler::{
 use crate::tools::{MountedSkill, ToolExecutor, ToolResult, ToolStatus};
 
 const MAX_TOOL_ROUNDS: usize = 24;
+const MAX_NATIVE_IMAGES_PER_REQUEST: usize = 4;
+const MAX_NATIVE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_NATIVE_IMAGE_TOTAL_BYTES: u64 = 12 * 1024 * 1024;
 use crate::runtime::sequence::{NewMessage, SequenceAllocator};
 
 /// Schema version for the structured `content_json` payload persisted on agent
@@ -1962,18 +1966,37 @@ async fn run_resume_inner(
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
     let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
-    let messages = match build_resume_messages(
+    let group = match load_group_runtime_config(&services.pool, &req.group_id).await {
+        Ok(group) => group,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+    let workspace_root = match resolve_workspace_root(&services.pool, &agent, &group).await {
+        Ok(root) => root,
+        Err(err) => return fail_resume(ctx, &err.to_string()).await,
+    };
+    let (messages, image_warnings) = match build_resume_messages(
         &services.pool,
         &ctx.thread_id,
         &agent.system_prompt,
         &req.message_id,
         &agent.agent_id,
+        workspace_root.as_deref(),
+        vision_enabled(agent.model_config_json.as_deref()),
     )
     .await
     {
         Ok(messages) => messages,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
+    for warning in image_warnings {
+        if ctx
+            .emit(StreamEventKind::Warning, json!({ "message": warning }))
+            .await
+            .is_err()
+        {
+            return Ok(TurnOutcome::Cancelled);
+        }
+    }
     let request = ChatRequest {
         model,
         messages,
@@ -2378,14 +2401,20 @@ async fn run_agent_turn(
     let invocation = build_invocation_context(&services.pool, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
-    let mut messages = build_messages(
+    let (mut messages, image_warnings) = build_vision_messages(
         &services.pool,
         &ctx.thread_id,
         &invocation.system_prompt,
         &agent.agent_id,
+        invocation.workspace_root.as_deref(),
+        vision_enabled(agent.model_config_json.as_deref()),
     )
     .await
     .map_err(StepErr::Db)?;
+    for warning in image_warnings {
+        ctx.emit(StreamEventKind::Warning, json!({ "message": warning }))
+            .await?;
+    }
     if let Some(input) = delegated_input {
         messages.push(ChatMessage::text("user", input));
     }
@@ -4766,14 +4795,116 @@ fn augment_context_usage(
     usage
 }
 
-async fn build_messages(
+async fn build_vision_messages(
     pool: &SqlitePool,
     thread_id: &str,
     system_prompt: &str,
     current_agent_id: &str,
-) -> anyhow::Result<Vec<ChatMessage>> {
+    workspace_root: Option<&std::path::Path>,
+    use_native_images: bool,
+) -> anyhow::Result<(Vec<ChatMessage>, Vec<String>)> {
     let rows = load_conversation(pool, thread_id).await?;
-    Ok(to_llm_messages(system_prompt, current_agent_id, &rows))
+    Ok(vision_messages_from_rows(
+        system_prompt,
+        current_agent_id,
+        &rows,
+        workspace_root,
+        use_native_images,
+    ))
+}
+
+fn vision_messages_from_rows(
+    system_prompt: &str,
+    current_agent_id: &str,
+    rows: &[crate::runtime::conversation_context::ConversationMessage],
+    workspace_root: Option<&std::path::Path>,
+    use_native_images: bool,
+) -> (Vec<ChatMessage>, Vec<String>) {
+    let mut messages = to_llm_messages(system_prompt, current_agent_id, &rows);
+    if !use_native_images {
+        return (messages, Vec::new());
+    }
+
+    let Some(root) = workspace_root else {
+        return (messages, Vec::new());
+    };
+    let mut image_count = 0;
+    let mut image_bytes = 0_u64;
+    let mut warnings = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        if matches!(
+            row.actor,
+            crate::runtime::conversation_context::ConversationActor::Agent { .. }
+        ) {
+            continue;
+        }
+        let mut parts = Vec::new();
+        for attachment in &row.attachments {
+            if !native_image_mime_type(&attachment.mime_type) {
+                continue;
+            }
+            if image_count >= MAX_NATIVE_IMAGES_PER_REQUEST {
+                warnings.push(
+                    "Attachment image was not sent because the request image limit was reached."
+                        .to_string(),
+                );
+                continue;
+            }
+            let path = match crate::tools::resolve_workspace_path(root, &attachment.path) {
+                Ok(path) => path,
+                Err(_) => {
+                    warnings
+                        .push("Attachment image could not be read from the workspace.".to_string());
+                    continue;
+                }
+            };
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => metadata,
+                _ => {
+                    warnings
+                        .push("Attachment image could not be read from the workspace.".to_string());
+                    continue;
+                }
+            };
+            let size = metadata.len();
+            if size > MAX_NATIVE_IMAGE_BYTES
+                || image_bytes.saturating_add(size) > MAX_NATIVE_IMAGE_TOTAL_BYTES
+            {
+                warnings.push(
+                    "Attachment image was not sent because it exceeds the request size limit."
+                        .to_string(),
+                );
+                continue;
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    image_count += 1;
+                    image_bytes += size;
+                    parts.push(ag_swarmer_domain::runtime::ChatContentPart::image(
+                        attachment.mime_type.clone(),
+                        STANDARD.encode(bytes),
+                    ));
+                }
+                Err(_) => warnings
+                    .push("Attachment image could not be read from the workspace.".to_string()),
+            }
+        }
+        if !parts.is_empty() {
+            let text = messages[index + 1].content.clone();
+            let mut combined = vec![ag_swarmer_domain::runtime::ChatContentPart::text(text)];
+            combined.extend(parts);
+            messages[index + 1] = ChatMessage::with_parts("user", combined);
+        }
+    }
+    warnings.truncate(8);
+    (messages, warnings)
+}
+
+fn native_image_mime_type(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    )
 }
 
 async fn build_acp_prompt(
@@ -4810,14 +4941,22 @@ async fn build_resume_messages(
     system_prompt: &str,
     interrupted_message_id: &str,
     current_agent_id: &str,
-) -> anyhow::Result<Vec<ChatMessage>> {
+    workspace_root: Option<&std::path::Path>,
+    use_native_images: bool,
+) -> anyhow::Result<(Vec<ChatMessage>, Vec<String>)> {
     let rows = load_conversation_for_resume(pool, thread_id, interrupted_message_id).await?;
-    let mut messages = to_llm_messages(system_prompt, current_agent_id, &rows);
+    let (mut messages, warnings) = vision_messages_from_rows(
+        system_prompt,
+        current_agent_id,
+        &rows,
+        workspace_root,
+        use_native_images,
+    );
     messages.push(ChatMessage::text(
         "user",
         RESUME_CONTINUATION_PROMPT.to_string(),
     ));
-    Ok(messages)
+    Ok((messages, warnings))
 }
 
 /// Resolve the turn's thread: validate a supplied id, reuse the active group
@@ -4913,6 +5052,7 @@ mod tests {
             turn_id: None,
             dispatch_id: None,
             reply_to_message_id: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -4927,6 +5067,7 @@ mod tests {
             turn_id: None,
             dispatch_id: None,
             reply_to_message_id: None,
+            attachments: Vec::new(),
         }
     }
 
