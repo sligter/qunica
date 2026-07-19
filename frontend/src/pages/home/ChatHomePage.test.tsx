@@ -1,44 +1,28 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, waitFor } from '@testing-library/react'
-import i18next from 'i18next'
-import { I18nextProvider, initReactI18next } from 'react-i18next'
+import { render, screen } from '@testing-library/react'
+import { I18nextProvider } from 'react-i18next'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { enUS } from '@/i18n/resources/en-US'
-import { ChatHomePage } from '@/pages/home/ChatHomePage'
-import { useAuthStore } from '@/stores/authStore'
+import { ChatHomePage } from './ChatHomePage'
+import i18n from '@/i18n'
 
-describe('ChatHomePage document title', () => {
-  afterEach(() => {
-    cleanup()
-    document.title = ''
-    useAuthStore.setState({ token: null, user: null, hydrated: false })
+const mocks = vi.hoisted(() => ({ groups: vi.fn(), directChats: vi.fn() }))
+vi.mock('@/hooks/useGroups', () => ({ useGroups: mocks.groups }))
+vi.mock('@/hooks/useDirectChats', () => ({ useDirectChats: mocks.directChats }))
+vi.mock('@/components/groups/GroupFormDialog', () => ({ GroupFormDialog: () => null }))
+vi.mock('@/components/direct-chats/DirectChatPickerDialog', () => ({ DirectChatPickerDialog: () => null }))
+
+describe('ChatHomePage', () => {
+  beforeEach(() => {
+    mocks.groups.mockReturnValue({ isLoading: false, error: null, data: [{ id: 'group-1', name: 'Older group', description: null, created_at: '2026-07-18T00:00:00Z', updated_at: '2026-07-18T00:00:00Z' }] })
+    mocks.directChats.mockReturnValue({ isLoading: false, error: null, data: [{ id: 'chat-1', title: 'Newest direct', agent_name: 'Solo', updated_at: '2026-07-20T00:00:00Z' }] })
   })
 
-  it('sets the title through the semantic home resource', async () => {
-    const i18n = i18next.createInstance()
-    await i18n.use(initReactI18next).init({
-      lng: 'en-US',
-      resources: {
-        'en-US': {
-          ...enUS,
-          groups: { ...enUS.groups, pageTitle: 'Localized Home Title' },
-        },
-      },
-      interpolation: { escapeValue: false },
-    })
-
-    render(
-      <I18nextProvider i18n={i18n}>
-        <QueryClientProvider client={new QueryClient()}>
-          <MemoryRouter>
-            <ChatHomePage />
-          </MemoryRouter>
-        </QueryClientProvider>
-      </I18nextProvider>,
-    )
-
-    await waitFor(() => expect(document.title).toBe('Localized Home Title'))
+  it('mixes recent direct and group conversations by activity', () => {
+    render(<I18nextProvider i18n={i18n}><MemoryRouter><ChatHomePage /></MemoryRouter></I18nextProvider>)
+    expect(screen.getByRole('button', { name: 'New direct chat' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New group' })).toBeInTheDocument()
+    const links = screen.getAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/chats/chat-1', '/groups/group-1'])
   })
 })

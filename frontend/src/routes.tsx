@@ -16,6 +16,7 @@ import { AgentsIndexPage } from '@/pages/agents/AgentsIndexPage'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { GroupChatPage } from '@/pages/group/GroupChatPage'
+import { DirectChatPage } from '@/pages/chat/DirectChatPage'
 import { GroupManagePage } from '@/pages/group/GroupManagePage'
 import { ChatHomePage } from '@/pages/home/ChatHomePage'
 import { ProviderCreatePage } from '@/pages/providers/ProviderCreatePage'
@@ -44,6 +45,7 @@ export const router = createBrowserRouter([
           { path: '/groups', element: <Navigate to="/" replace /> },
           { path: '/groups/:groupId/manage', element: <GroupManagePage /> },
           { path: '/groups/:groupId', element: <GroupChatPage /> },
+          { path: '/chats/:chatId', element: <DirectChatPage /> },
           // Top-level entity areas: the sidebar Library is their only entry.
           {
             path: '/agents',

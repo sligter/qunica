@@ -100,6 +100,11 @@ export const enUS = {
       searchAgents: 'Search Agents',
       noAgents: 'No active Agents available.',
       creating: 'Creating chat…',
+      rename: 'Rename conversation',
+      titleInvalid: 'Enter a title of 1–120 characters.',
+      notFound: 'Direct chat not found.',
+      loading: 'Loading chat…',
+      agentUnavailable: 'This Agent is unavailable. History remains readable.',
     },
     composer: {
       placeholder: 'Message your agents…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', showMore: 'Show {{count}} more agents', closeAgents: 'Close agent list',

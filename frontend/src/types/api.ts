@@ -348,6 +348,7 @@ export interface GroupRead extends GroupSchedulerConfig {
   muted_member_ids: string[] | null
   status: string
   created_at: string
+  updated_at: string
 }
 
 export type DirectChatTitleSource = 'automatic' | 'manual'
