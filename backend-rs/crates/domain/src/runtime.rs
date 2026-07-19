@@ -1,9 +1,35 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChatContentPart {
+    Text {
+        text: String,
+    },
+    Image {
+        mime_type: String,
+        data_base64: String,
+    },
+}
+
+impl ChatContentPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn image(mime_type: impl Into<String>, data_base64: impl Into<String>) -> Self {
+        Self::Image {
+            mime_type: mime_type.into(),
+            data_base64: data_base64.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ChatContentPart>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -17,6 +43,25 @@ impl ChatMessage {
         Self {
             role: role.into(),
             content: content.into(),
+            parts: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            tool_name: None,
+        }
+    }
+
+    pub fn with_parts(role: impl Into<String>, parts: Vec<ChatContentPart>) -> Self {
+        let content = parts
+            .iter()
+            .filter_map(|part| match part {
+                ChatContentPart::Text { text } => Some(text.as_str()),
+                ChatContentPart::Image { .. } => None,
+            })
+            .collect::<String>();
+        Self {
+            role: role.into(),
+            content,
+            parts,
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
@@ -27,6 +72,7 @@ impl ChatMessage {
         Self {
             role: "assistant".to_string(),
             content: content.into(),
+            parts: Vec::new(),
             tool_calls,
             tool_call_id: None,
             tool_name: None,
@@ -41,6 +87,7 @@ impl ChatMessage {
         Self {
             role: "tool".to_string(),
             content: content.into(),
+            parts: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),

@@ -9,6 +9,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use super::{
     pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolAccum,
 };
+use ag_swarmer_domain::runtime::ChatContentPart;
 
 /// Streams chat completions from any endpoint that speaks the OpenAI
 /// `/chat/completions` streaming protocol.
@@ -58,10 +59,37 @@ fn to_messages(messages: &[ChatMessage]) -> Vec<Value> {
                     "content": message.content,
                 });
             }
+            if matches!(message.role.as_str(), "user" | "system")
+                && message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, ChatContentPart::Image { .. }))
+            {
+                return json!({
+                    "role": message.role,
+                    "content": openai_content_parts(&message.parts),
+                });
+            }
             json!({
                 "role": message.role,
                 "content": message.content,
             })
+        })
+        .collect()
+}
+
+fn openai_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|part| match part {
+            ChatContentPart::Text { text } => json!({ "type": "text", "text": text }),
+            ChatContentPart::Image {
+                mime_type,
+                data_base64,
+            } => json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime_type};base64,{data_base64}") },
+            }),
         })
         .collect()
 }

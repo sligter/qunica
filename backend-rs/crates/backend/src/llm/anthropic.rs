@@ -9,6 +9,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use super::{
     pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolAccum,
 };
+use ag_swarmer_domain::runtime::ChatContentPart;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: i64 = 4096;
@@ -32,8 +33,10 @@ impl AnthropicProvider {
     }
 }
 
-fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<Value>) {
+fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<Value>, Vec<Value>) {
     let mut system_parts = Vec::new();
+    let mut system_content_parts = Vec::new();
+    let mut system_has_image = false;
     let mut out = Vec::new();
 
     let mut index = 0;
@@ -42,6 +45,18 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<V
         if message.role == "system" {
             if !message.content.trim().is_empty() {
                 system_parts.push(message.content.clone());
+            }
+            let has_image = message
+                .parts
+                .iter()
+                .any(|part| matches!(part, ChatContentPart::Image { .. }));
+            if has_image {
+                system_has_image = true;
+            }
+            if has_image {
+                system_content_parts.extend(anthropic_content_parts(&message.parts));
+            } else if !message.content.trim().is_empty() {
+                system_content_parts.push(json!({ "type": "text", "text": message.content }));
             }
             index += 1;
             continue;
@@ -80,6 +95,19 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<V
             }));
             continue;
         }
+        if message.role == "user"
+            && message
+                .parts
+                .iter()
+                .any(|part| matches!(part, ChatContentPart::Image { .. }))
+        {
+            out.push(json!({
+                "role": "user",
+                "content": anthropic_content_parts(&message.parts),
+            }));
+            index += 1;
+            continue;
+        }
         out.push(json!({
             "role": message.role,
             "content": message.content,
@@ -87,8 +115,32 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<V
         index += 1;
     }
 
-    let system = (!system_parts.is_empty()).then(|| system_parts.join("\n\n"));
+    let system = if system_has_image {
+        Some(Value::Array(system_content_parts))
+    } else {
+        (!system_parts.is_empty()).then(|| Value::String(system_parts.join("\n\n")))
+    };
     (system, out)
+}
+
+fn anthropic_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|part| match part {
+            ChatContentPart::Text { text } => json!({ "type": "text", "text": text }),
+            ChatContentPart::Image {
+                mime_type,
+                data_base64,
+            } => json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": data_base64,
+                },
+            }),
+        })
+        .collect()
 }
 
 /// Cross-event parser state: tool-use blocks keyed by their content-block index.
@@ -185,7 +237,7 @@ impl LlmProvider for AnthropicProvider {
             "stream": true,
         });
         if let Some(system) = system {
-            body["system"] = Value::String(system);
+            body["system"] = system;
         }
         if request.include_empty_tools || !request.tools.is_empty() {
             body["tools"] = Value::Array(

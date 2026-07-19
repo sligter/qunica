@@ -11,6 +11,7 @@ use ag_swarmer_backend::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
     OpenAiCompatibleProvider, ToolCall,
 };
+use ag_swarmer_domain::runtime::ChatContentPart;
 use axum::{body::Body, http::header, response::IntoResponse, Router};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::Receiver;
@@ -72,6 +73,23 @@ fn request() -> ChatRequest {
     ChatRequest {
         model: "test-model".to_string(),
         messages: vec![ChatMessage::text("user", "hi")],
+        temperature: Some(0.0),
+        reasoning_passback: false,
+        include_empty_tools: false,
+        tools: Vec::new(),
+    }
+}
+
+fn image_request(role: &str) -> ChatRequest {
+    ChatRequest {
+        model: "test-model".to_string(),
+        messages: vec![ChatMessage::with_parts(
+            role,
+            vec![
+                ChatContentPart::text("describe this image"),
+                ChatContentPart::image("image/png", "AQID"),
+            ],
+        )],
         temperature: Some(0.0),
         reasoning_passback: false,
         include_empty_tools: false,
@@ -287,6 +305,43 @@ async fn llm_contract_openai_serializes_tool_continuation_messages() {
 }
 
 #[tokio::test]
+async fn llm_contract_openai_serializes_image_parts_and_preserves_text_only_shape() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(image_request("user")).await.unwrap()).await;
+    let _ = collect(provider.stream(request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(
+        captured[0]["messages"][0]["content"],
+        json!([
+            { "type": "text", "text": "describe this image" },
+            {
+                "type": "image_url",
+                "image_url": { "url": "data:image/png;base64,AQID" }
+            }
+        ])
+    );
+    assert_eq!(captured[1]["messages"][0]["content"], "hi");
+}
+
+#[tokio::test]
+async fn llm_contract_openai_serializes_system_image_parts() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(image_request("system")).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(captured[0]["messages"][0]["role"], "system");
+    assert_eq!(
+        captured[0]["messages"][0]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,AQID"
+    );
+}
+
+#[tokio::test]
 async fn llm_contract_anthropic_maps_text_and_thinking_deltas() {
     let body = "event: message_start\n\
                 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25}}}\n\
@@ -348,6 +403,45 @@ async fn llm_contract_anthropic_serializes_system_and_tool_continuation_messages
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"][0]["type"], "tool_result");
     assert_eq!(messages[2]["content"][0]["tool_use_id"], "call_1");
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_serializes_image_parts_and_preserves_text_only_shape() {
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(image_request("user")).await.unwrap()).await;
+    let _ = collect(provider.stream(request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(
+        captured[0]["messages"][0]["content"],
+        json!([
+            { "type": "text", "text": "describe this image" },
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AQID"
+                }
+            }
+        ])
+    );
+    assert_eq!(captured[1]["messages"][0]["content"], "hi");
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_serializes_system_image_parts() {
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(image_request("system")).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(captured[0]["system"][0]["type"], "text");
+    assert_eq!(captured[0]["system"][1]["source"]["type"], "base64");
+    assert_eq!(captured[0]["system"][1]["source"]["data"], "AQID");
 }
 
 #[tokio::test]
@@ -455,6 +549,46 @@ async fn llm_contract_gemini_serializes_function_response_continuation_messages(
     assert_eq!(
         contents[2]["parts"][0]["functionResponse"]["response"]["result"],
         "file body"
+    );
+}
+
+#[tokio::test]
+async fn llm_contract_gemini_serializes_image_parts_and_preserves_text_only_shape() {
+    let (url, captures) = capture_server("data: {}\n").await;
+    let provider = GeminiProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(image_request("user")).await.unwrap()).await;
+    let _ = collect(provider.stream(request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(
+        captured[0]["contents"][0]["parts"],
+        json!([
+            { "text": "describe this image" },
+            { "inlineData": { "mimeType": "image/png", "data": "AQID" } }
+        ])
+    );
+    assert_eq!(
+        captured[1]["contents"][0]["parts"],
+        json!([{ "text": "hi" }])
+    );
+}
+
+#[tokio::test]
+async fn llm_contract_gemini_serializes_system_image_parts() {
+    let (url, captures) = capture_server("data: {}\n").await;
+    let provider = GeminiProvider::new(url, "test-key");
+
+    let _ = collect(provider.stream(image_request("system")).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(
+        captured[0]["systemInstruction"]["parts"][1]["inlineData"]["mimeType"],
+        "image/png"
+    );
+    assert_eq!(
+        captured[0]["systemInstruction"]["parts"][1]["inlineData"]["data"],
+        "AQID"
     );
 }
 

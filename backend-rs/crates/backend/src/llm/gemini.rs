@@ -7,6 +7,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use super::{
     pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolCall,
 };
+use ag_swarmer_domain::runtime::ChatContentPart;
 
 /// Streams responses from the Gemini `:streamGenerateContent` endpoint.
 pub struct GeminiProvider {
@@ -52,6 +53,13 @@ fn to_contents(messages: &[ChatMessage]) -> Vec<Value> {
                     }],
                 });
             }
+            if m.role == "user"
+                && m.parts
+                    .iter()
+                    .any(|part| matches!(part, ChatContentPart::Image { .. }))
+            {
+                return json!({ "role": "user", "parts": gemini_content_parts(&m.parts) });
+            }
             let role = if m.role == "assistant" {
                 "model"
             } else {
@@ -63,6 +71,35 @@ fn to_contents(messages: &[ChatMessage]) -> Vec<Value> {
 }
 
 fn system_instruction(messages: &[ChatMessage]) -> Option<Value> {
+    let has_image = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .any(|message| {
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part, ChatContentPart::Image { .. }))
+        });
+    if has_image {
+        let parts = messages
+            .iter()
+            .filter(|message| message.role == "system")
+            .flat_map(|message| {
+                if message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, ChatContentPart::Image { .. }))
+                {
+                    gemini_content_parts(&message.parts)
+                } else if message.content.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![json!({ "text": message.content })]
+                }
+            })
+            .collect::<Vec<_>>();
+        return Some(json!({ "parts": parts }));
+    }
     let text = messages
         .iter()
         .filter(|message| message.role == "system")
@@ -71,6 +108,21 @@ fn system_instruction(messages: &[ChatMessage]) -> Option<Value> {
         .collect::<Vec<_>>()
         .join("\n\n");
     (!text.is_empty()).then(|| json!({ "parts": [{ "text": text }] }))
+}
+
+fn gemini_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|part| match part {
+            ChatContentPart::Text { text } => json!({ "text": text }),
+            ChatContentPart::Image {
+                mime_type,
+                data_base64,
+            } => json!({
+                "inlineData": { "mimeType": mime_type, "data": data_base64 },
+            }),
+        })
+        .collect()
 }
 
 /// Map a single Gemini stream chunk to zero or more [`ChatDelta`]s.
