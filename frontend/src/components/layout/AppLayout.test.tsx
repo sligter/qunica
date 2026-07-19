@@ -47,6 +47,11 @@ describe('AppLayout', () => {
   it('renders English navigation labels', async () => {
     await renderAppLayout('en-US')
 
+    const directChats = screen.getByText('Direct Chats')
+    const groups = screen.getByText('Groups')
+    expect(
+      Boolean(directChats.compareDocumentPosition(groups) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true)
     expect(screen.getByText('Groups')).toBeInTheDocument()
     expect(screen.getByText('Agents')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
@@ -55,6 +60,7 @@ describe('AppLayout', () => {
   it('renders Chinese navigation labels', async () => {
     await renderAppLayout('zh-CN')
 
+    expect(screen.getByText('私聊')).toBeInTheDocument()
     expect(screen.getByText('群组')).toBeInTheDocument()
     expect(screen.getByText('Agent')).toBeInTheDocument()
     expect(screen.getByText('设置')).toBeInTheDocument()

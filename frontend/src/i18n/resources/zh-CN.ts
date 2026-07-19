@@ -76,6 +76,9 @@ export const zhCN: TranslationShape<typeof enUS> = {
     },
   },
   navigation: {
+    directChats: '\u79c1\u804a',
+    newDirectChat: '\u65b0\u5efa\u79c1\u804a',
+    searchConversations: '\u641c\u7d22\u4f1a\u8bdd',
     groups: '群组',
     agents: 'Agent',
     providers: '服务商',
@@ -93,6 +96,13 @@ export const zhCN: TranslationShape<typeof enUS> = {
     openingWorkspace: '正在打开工作区…',
   },
   chat: {
+    direct: {
+      pickerTitle: '\u5f00\u59cb\u79c1\u804a',
+      pickerDescription: '\u9009\u62e9\u4e00\u4e2a Agent \u521b\u5efa\u72ec\u7acb\u4f1a\u8bdd\u3002',
+      searchAgents: '\u641c\u7d22 Agent',
+      noAgents: '\u6ca1\u6709\u53ef\u7528\u7684 Agent\u3002',
+      creating: '\u6b63\u5728\u521b\u5efa\u4f1a\u8bdd\u2026',
+    },
     composer: { placeholder: '给你的 Agent 发消息…', message: '消息', send: '发送消息', sendTitle: '发送（Enter）', stop: '停止生成', stopTitle: '全部停止', upload: '上传文件到工作区 uploads', uploadTitle: '上传文件到 uploads/', showMore: '再显示 {{count}} 个 Agent', closeAgents: '关闭 Agent 列表' },
     messages: { loadOlder: '加载更早的消息', loadingOlder: '正在加载更早的消息…', empty: '开始对话。', emptyHint: '试试发送 @AgentName hello。', copied: '已复制', copy: '复制', copyMessage: '复制消息', share: '分享到群聊', delete: '删除消息', shareTitle: '分享到群聊', shareDescription: '选择另一个群组接收此消息。', loadingGroups: '正在加载群组…', noOtherGroups: '没有其他可用群组。', shareFailed: '分享失败', shareFailedDetail: '分享失败：{{message}}', deleteFailed: '删除失败', deleteFailedDetail: '删除失败：{{message}}', jumpLatest: '跳到最新消息', you: '你', user: '用户', agent: 'Agent', system: '系统', streaming: '生成中', interrupted: '已中断', continue: '继续', resumeFailed: '继续失败：{{message}}', unknownTool: '未知工具', copyCode: '复制代码块', code: '代码', warnings: { noReply: '无人回复。', noVisibleReply: '没有可见回复', waitingForInput: '等待你的输入', streamWarning: '流警告', streamFailed: '流失败', streamCancelled: '流已取消' }, context: { usageUnknown: '用量未知', provider: '提供商报告', previousProvider: '先前提供商数据 + 估算', estimated: '估算（分词器）', sourceUnknown: '来源未知', sourceUnknownDetail: '来源：{{value}}', title: '上下文 {{usage}}', tokens: '{{count}} Token', outputTotal: '输出 {{output}} · 总计 {{total}}', updated: '更新于 {{time}}' } },
     stream: { reasoning: '推理', running: '运行中', streaming: '生成中', waiting: '等待你的输入', preparing: '正在准备回复…', waitingAgents: '等待 Agent 开始…', assistant: '助手', inputRequested: '需要输入', optional: '可选', chooseOption: '选择一个选项', additionalDetails: '补充说明', response: '回复', addDetails: '添加说明（可选）…', typeResponse: '输入回复…', sent: '已发送', submit: '提交', handoff: '转交给 @{{name}}', completed: '已完成', silence: '无需 Agent 回复。', warning: '流警告：{{message}}', error: '流错误：{{message}}', externalCli: '外部 CLI', externalCliNamed: '外部 CLI：{{adapter}}', exitCode: '退出代码：{{code}}' },

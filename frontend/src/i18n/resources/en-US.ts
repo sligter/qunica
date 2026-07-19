@@ -74,6 +74,9 @@ export const enUS = {
     },
   },
   navigation: {
+    directChats: 'Direct Chats',
+    newDirectChat: 'New direct chat',
+    searchConversations: 'Search conversations',
     groups: 'Groups',
     agents: 'Agents',
     providers: 'Providers',
@@ -91,6 +94,13 @@ export const enUS = {
     openingWorkspace: 'Opening workspace…',
   },
   chat: {
+    direct: {
+      pickerTitle: 'Start a direct chat',
+      pickerDescription: 'Choose an Agent for a new independent conversation.',
+      searchAgents: 'Search Agents',
+      noAgents: 'No active Agents available.',
+      creating: 'Creating chat…',
+    },
     composer: {
       placeholder: 'Message your agents…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', showMore: 'Show {{count}} more agents', closeAgents: 'Close agent list',
     },

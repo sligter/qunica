@@ -20,7 +20,9 @@ import { formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { normalizeLanguage } from '@/i18n'
 import { useGroups } from '@/hooks/useGroups'
+import { useDirectChats } from '@/hooks/useDirectChats'
 import { useAuthStore } from '@/stores/authStore'
+import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -75,8 +77,10 @@ export function AppSidebar() {
   const { t, i18n } = useTranslation(['navigation', 'groups', 'common'])
   const [collapsed, setCollapsed] = useState(readCollapsed)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [directDialogOpen, setDirectDialogOpen] = useState(false)
   const [query, setQuery] = useState('')
   const groups = useGroups()
+  const directChats = useDirectChats()
 
   const toggleCollapsed = () => {
     setCollapsed((current) => {
@@ -93,6 +97,12 @@ export function AppSidebar() {
       g.name.toLowerCase().includes(q) ||
       (g.description ?? '').toLowerCase().includes(q),
   )
+  const filteredDirectChats = (directChats.data ?? []).filter(
+    (chat) =>
+      !q ||
+      chat.title.toLowerCase().includes(q) ||
+      (chat.agent_name ?? '').toLowerCase().includes(q),
+  )
 
   return (
     <aside
@@ -102,6 +112,7 @@ export function AppSidebar() {
       )}
     >
       <GroupFormDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <DirectChatPickerDialog open={directDialogOpen} onOpenChange={setDirectDialogOpen} />
 
       {/* Header: product name + collapse toggle */}
       <div
@@ -134,53 +145,114 @@ export function AppSidebar() {
         </Button>
       </div>
 
-      {/* New group */}
+      {/* New conversations */}
       <div className={cn('shrink-0', collapsed ? 'flex justify-center pb-2' : 'px-3 pb-2')}>
         {collapsed ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 size="icon"
-                onClick={() => setDialogOpen(true)}
-                aria-label={t('navigation:newGroup')}
+                onClick={() => setDirectDialogOpen(true)}
+                aria-label={t('navigation:newDirectChat')}
               >
                 <MessageSquarePlus className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="right">{t('navigation:newGroup')}</TooltipContent>
+            <TooltipContent side="right">{t('navigation:newDirectChat')}</TooltipContent>
           </Tooltip>
         ) : (
-          <Button
-            className="w-full justify-start gap-2 rounded-lg"
-            onClick={() => setDialogOpen(true)}
-          >
-            <MessageSquarePlus className="h-4 w-4" />
-            {t('navigation:newGroup')}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              className="min-w-0 flex-1 justify-start gap-2 rounded-lg"
+              onClick={() => setDirectDialogOpen(true)}
+            >
+              <MessageSquarePlus className="h-4 w-4" />
+              {t('navigation:newDirectChat')}
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setDialogOpen(true)}
+              aria-label={t('navigation:newGroup')}
+            >
+              <MessageSquarePlus className="h-4 w-4" />
+            </Button>
+          </div>
         )}
       </div>
 
-      {/* Groups */}
+      {/* Conversations */}
       {collapsed ? (
         <div className="min-h-0 flex-1" />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="shrink-0 px-3 pt-2">
             <p className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              {t('navigation:groups')}
+              {t('navigation:searchConversations')}
             </p>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder={t('navigation:searchGroups')}
-                aria-label={t('navigation:searchGroups')}
+                placeholder={t('navigation:searchConversations')}
+                aria-label={t('navigation:searchConversations')}
                 className="h-8 pl-8 text-xs"
               />
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+            <p className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              {t('navigation:directChats')}
+            </p>
+            {directChats.isLoading ? (
+              <p className="px-2 pb-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
+            ) : null}
+            {directChats.error ? (
+              <p className="px-2 pb-2 text-xs text-destructive">{String(directChats.error)}</p>
+            ) : null}
+            <ul className="mb-3 space-y-0.5">
+              {filteredDirectChats.map((chat) => (
+                <li key={chat.id}>
+                  <NavLink
+                    to={`/chats/${chat.id}`}
+                    className={({ isActive }) =>
+                      cn(
+                        'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
+                        isActive ? 'bg-primary/10' : 'hover:bg-card-hover',
+                      )
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <Avatar className="h-7 w-7 shrink-0">
+                          <AvatarFallback className={avatarColorClass(chat.id)}>
+                            {(chat.agent_name ?? chat.title).slice(0, 1).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span
+                          className={cn(
+                            'min-w-0 flex-1 truncate text-sm',
+                            isActive ? 'font-semibold' : 'font-medium',
+                          )}
+                        >
+                          {chat.title}
+                        </span>
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {formatRelativeTime(
+                            chat.updated_at,
+                            normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US',
+                          )}
+                        </span>
+                      </>
+                    )}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+            <p className="px-1 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              {t('navigation:groups')}
+            </p>
             {groups.isLoading && (
               <p className="px-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
             )}
