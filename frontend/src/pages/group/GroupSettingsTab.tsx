@@ -456,7 +456,6 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             const detail = rawErrorDetail(err)
             setClearError(detail)
             setConfirmClearOpen(false)
-            throw new Error(t('settings.errors.clearHistory', { message: detail }))
           }
         }}
       />
@@ -476,7 +475,6 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             const detail = rawErrorDetail(err)
             setDeleteError(detail)
             setConfirmDeleteOpen(false)
-            throw new Error(t('settings.errors.delete', { message: detail }))
           }
         }}
       />

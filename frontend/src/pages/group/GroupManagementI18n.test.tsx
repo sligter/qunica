@@ -391,6 +391,14 @@ describe('group management i18n', () => {
       '清除聊天记录失败：RAW clear diagnostic',
     )
     expect(screen.queryByText(/Failed to clear chat history/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '清除记录' }))
+    expect(
+      within(screen.getByRole('alertdialog')).queryByRole('alert'),
+    ).not.toBeInTheDocument()
+    expect(
+      within(screen.getByRole('alertdialog')).queryByText(/Failed to clear chat history/),
+    ).not.toBeInTheDocument()
   })
 
   it('retranslates a delete-group non-Error while preserving its raw diagnostic', async () => {
@@ -416,6 +424,14 @@ describe('group management i18n', () => {
       '删除群组失败：RAW delete diagnostic',
     )
     expect(screen.queryByText(/Failed to delete group/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '删除群组' }))
+    expect(
+      within(screen.getByRole('alertdialog')).queryByRole('alert'),
+    ).not.toBeInTheDocument()
+    expect(
+      within(screen.getByRole('alertdialog')).queryByText(/Failed to delete group/),
+    ).not.toBeInTheDocument()
   })
 
   it('preserves an unknown communication mode from the wire', async () => {
