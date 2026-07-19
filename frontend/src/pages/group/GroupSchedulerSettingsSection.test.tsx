@@ -193,6 +193,30 @@ describe('GroupSchedulerSettingsSection', () => {
     })
   })
 
+  it('preserves and submits an unknown mention policy while editing another field', async () => {
+    const user = userEvent.setup()
+    const unknownPolicy = 'future_policy'
+    renderSection({
+      ...group,
+      agent_mention_policy: unknownPolicy,
+    } as unknown as GroupRead)
+
+    expect(
+      screen.getByRole('combobox', { name: 'Agent mention policy' }),
+    ).toHaveTextContent('Unknown mention policy: future_policy')
+    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scheduler_enabled: true,
+          agent_mention_policy: unknownPolicy,
+        }),
+      )
+    })
+  })
+
   it('requires an active provider and model when the moderator is enabled', async () => {
     const user = userEvent.setup()
     renderSection()

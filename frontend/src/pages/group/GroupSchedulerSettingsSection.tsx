@@ -25,6 +25,7 @@ import type { GroupSchedulerConfig } from '@/lib/api-v2/types'
 import type { GroupRead, GroupUpdate } from '@/types/api'
 
 const NO_SELECTION = '__none__'
+const UNKNOWN_POLICY_PREFIX = '__unknown_policy__:'
 const AUTO_MAX_AGENT_STEPS = 8
 type AgentMentionPolicy = GroupSchedulerConfig['agent_mention_policy']
 
@@ -41,7 +42,7 @@ function isAgentMentionPolicy(value: string): value is AgentMentionPolicy {
 const schedulerFormSchema = z
   .object({
     scheduler_enabled: z.boolean(),
-    agent_mention_policy: z.enum(['display_only', 'bounded_schedule']),
+    agent_mention_policy: z.string(),
     max_agent_steps_mode: z.enum(['auto', 'custom']),
     max_agent_steps_custom: z.number().int().min(1, 'minOne'),
     max_steps_per_agent: z.number().int().min(1, 'minOne'),
@@ -150,6 +151,9 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const selectedModel = form.watch('moderator_model')
   const maxAgentStepsMode = form.watch('max_agent_steps_mode')
   const mentionPolicy = form.watch('agent_mention_policy') as string
+  const mentionPolicySelectValue = isAgentMentionPolicy(mentionPolicy)
+    ? mentionPolicy
+    : `${UNKNOWN_POLICY_PREFIX}${mentionPolicy}`
   const models = useProviderModels(selectedProviderId ?? undefined)
 
   const activeProviders = useMemo(
@@ -212,7 +216,8 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
 
     const payload: GroupUpdate = {
       scheduler_enabled: values.scheduler_enabled,
-      agent_mention_policy: values.agent_mention_policy,
+      agent_mention_policy:
+        values.agent_mention_policy as GroupUpdate['agent_mention_policy'],
       max_agent_steps:
         values.max_agent_steps_mode === 'auto' ? null : values.max_agent_steps_custom,
       max_steps_per_agent: values.max_steps_per_agent,
@@ -286,7 +291,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           description={t('scheduler.mentionPolicyDescription')}
         >
           <Select
-            value={mentionPolicy}
+            value={mentionPolicySelectValue}
             onValueChange={(value) => {
               if (isAgentMentionPolicy(value)) {
                 updateValue('agent_mention_policy', value)
@@ -299,7 +304,9 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
             </SelectTrigger>
             <SelectContent>
               {!isAgentMentionPolicy(mentionPolicy) ? (
-                <SelectItem value={mentionPolicy}>{mentionPolicy}</SelectItem>
+                <SelectItem value={mentionPolicySelectValue}>
+                  {t('scheduler.unknownMentionPolicy', { value: mentionPolicy })}
+                </SelectItem>
               ) : null}
               {mentionPolicies.map((policy) => (
                 <SelectItem key={policy} value={policy}>

@@ -70,6 +70,8 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   const [commError, setCommError] = useState<string | null | undefined>(undefined)
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [clearError, setClearError] = useState<string | undefined>(undefined)
+  const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
 
   // Sync each field from its own server value. Instant saves (switches/select)
   // invalidate the group query; a whole-object effect would then wipe unsaved
@@ -104,6 +106,8 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
 
   const errorMessage = (err: unknown): string | null =>
     err instanceof ApiError ? err.message : null
+  const rawErrorDetail = (err: unknown): string =>
+    err instanceof Error ? err.message : String(err)
 
   const saveInstant = async (patch: GroupUpdate, revert: () => void) => {
     setCommError(undefined)
@@ -396,13 +400,22 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setConfirmClearOpen(true)}
+            onClick={() => {
+              setClearError(undefined)
+              setConfirmClearOpen(true)
+            }}
             disabled={clearMessages.isPending}
             className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             {clearMessages.isPending ? t('settings.clearing') : t('settings.clearHistory')}
           </Button>
         </SettingsRow>
+
+        {clearError !== undefined ? (
+          <p className="py-2 text-sm text-destructive" role="alert">
+            {t('settings.errors.clearHistory', { message: clearError })}
+          </p>
+        ) : null}
 
         <SettingsRow
           label={t('actions.delete')}
@@ -411,13 +424,22 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setConfirmDeleteOpen(true)}
+            onClick={() => {
+              setDeleteError(undefined)
+              setConfirmDeleteOpen(true)
+            }}
             disabled={del.isPending}
             className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             {del.isPending ? t('common:actions.deleting') : t('actions.delete')}
           </Button>
         </SettingsRow>
+
+        {deleteError !== undefined ? (
+          <p className="py-2 text-sm text-destructive" role="alert">
+            {t('settings.errors.delete', { message: deleteError })}
+          </p>
+        ) : null}
       </SettingsSection>
 
       <ConfirmDialog
@@ -428,7 +450,14 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         confirmLabel={t('common:actions.clear')}
         destructive
         onConfirm={async () => {
-          await clearMessages.mutateAsync()
+          try {
+            await clearMessages.mutateAsync()
+          } catch (err) {
+            const detail = rawErrorDetail(err)
+            setClearError(detail)
+            setConfirmClearOpen(false)
+            throw new Error(t('settings.errors.clearHistory', { message: detail }))
+          }
         }}
       />
 
@@ -440,8 +469,15 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         confirmLabel={t('common:actions.delete')}
         destructive
         onConfirm={async () => {
-          await del.mutateAsync(group.id)
-          void navigate('/')
+          try {
+            await del.mutateAsync(group.id)
+            void navigate('/')
+          } catch (err) {
+            const detail = rawErrorDetail(err)
+            setDeleteError(detail)
+            setConfirmDeleteOpen(false)
+            throw new Error(t('settings.errors.delete', { message: detail }))
+          }
         }}
       />
     </div>

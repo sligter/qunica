@@ -20,6 +20,7 @@ import type { AgentRead, GroupAgentRead, GroupCommunicationMode, GroupMemberRead
 
 type Filter = 'all' | 'human' | 'agent' | 'muted'
 type Entry = { kind: 'human'; member: GroupMemberRead } | { kind: 'agent'; agent: GroupAgentRead; muted: boolean }
+const NO_TOPOLOGY_ROLE = '__none__'
 
 const communicationModeKeys = {
   mesh: 'members.modes.mesh',
@@ -38,6 +39,11 @@ const topologyRoleKeys = {
   leader: 'members.leader',
   worker: 'members.worker',
 } as const satisfies Record<GroupTopologyRole, string>
+const topologyRoles = Object.keys(topologyRoleKeys) as GroupTopologyRole[]
+
+function isTopologyRole(value: string): value is GroupTopologyRole {
+  return topologyRoles.some((role) => role === value)
+}
 
 function entryKey(entry: Entry) { return `${entry.kind}:${entry.kind === 'agent' ? entry.agent.agent_id : entry.member.user_id}` }
 function entryName(entry: Entry) { return entry.kind === 'agent' ? entry.agent.display_name : entry.member.display_name }
@@ -60,8 +66,14 @@ function EntryRow({ entry, active, mode, onSelect }: { entry: Entry; active: boo
   const { t, i18n } = useTranslation('groups')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const agent = entry.kind === 'agent'
+  const topologyRole = agent ? (entry.agent.topology_role as string | null) : null
+  const hierarchicalTag = mode === 'hierarchical' && topologyRole
+    ? isTopologyRole(topologyRole)
+      ? t(topologyRoleKeys[topologyRole])
+      : t('members.unknownTopologyRole', { value: topologyRole })
+    : false
   const tags = (agent
-    ? [entry.muted && t('members.muted'), entry.agent.share_group_workspace && t('members.workspace'), mode === 'star' && entry.agent.topology_role === 'hub' && t('members.hub'), mode === 'hierarchical' && (entry.agent.topology_role === 'leader' ? t('members.leader') : t('members.worker')), mode === 'ring' && entry.agent.speaking_order !== null && `#${formatNumber(entry.agent.speaking_order, language)}`]
+    ? [entry.muted && t('members.muted'), entry.agent.share_group_workspace && t('members.workspace'), mode === 'star' && entry.agent.topology_role === 'hub' && t('members.hub'), hierarchicalTag, mode === 'ring' && entry.agent.speaking_order !== null && `#${formatNumber(entry.agent.speaking_order, language)}`]
     : [entry.member.is_muted && t('members.muted')]
   ).filter((tag): tag is string => Boolean(tag))
   const rawRole = agent ? entry.agent.role : entry.member.role
@@ -81,6 +93,7 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
   const [error, setError] = useState<{ key: string; detail?: string } | null>(null)
   const [confirm, setConfirm] = useState(false)
   const agent = entry.kind === 'agent'
+  const topologyRole = agent ? (entry.agent.topology_role as string | null) : null
   const muted = entryMuted(entry)
   const fail = (key: string) => (nextError: unknown) =>
     setError({ key, detail: nextError instanceof ApiError ? nextError.message : undefined })
@@ -148,7 +161,7 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
             <Button size="sm" variant="outline" disabled={sharing.isPending} onClick={() => sharing.mutate({ groupId, agentId: entry.agent.agent_id, shareGroupWorkspace: !entry.agent.share_group_workspace }, { onError: fail('members.errors.workspace') })}>{entry.agent.share_group_workspace ? t('members.unshare') : t('members.share')}</Button>
           </div>
           {mode === 'star' ? <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">{t('members.starTopology')}</p><p className="text-xs text-muted-foreground">{t('members.setAsHub')}</p></div><Button size="sm" variant={entry.agent.topology_role === 'hub' ? 'default' : 'outline'} disabled={topology.isPending || entry.agent.topology_role === 'hub'} onClick={() => updateTopology('hub', null)}>{entry.agent.topology_role === 'hub' ? t(topologyRoleKeys.hub) : t('members.makeHub')}</Button></div> : null}
-          {mode === 'hierarchical' ? <label className="block space-y-1.5 text-sm font-medium">{t('members.hierarchyRole')}<select className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={entry.agent.topology_role === 'leader' ? 'leader' : 'worker'} disabled={topology.isPending} onChange={(event) => updateTopology(event.target.value as GroupTopologyRole, null)}><option value="leader">{t(topologyRoleKeys.leader)}</option><option value="worker">{t(topologyRoleKeys.worker)}</option></select></label> : null}
+          {mode === 'hierarchical' ? <label className="block space-y-1.5 text-sm font-medium">{t('members.hierarchyRole')}<select className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={topologyRole ?? NO_TOPOLOGY_ROLE} disabled={topology.isPending} onChange={(event) => { const role = event.target.value; if (role === 'leader' || role === 'worker') updateTopology(role, null) }}><option value={NO_TOPOLOGY_ROLE} disabled>{t('members.noTopologyRole')}</option>{topologyRole && topologyRole !== 'leader' && topologyRole !== 'worker' ? <option value={topologyRole}>{isTopologyRole(topologyRole) ? t(topologyRoleKeys[topologyRole]) : t('members.unknownTopologyRole', { value: topologyRole })}</option> : null}<option value="leader">{t(topologyRoleKeys.leader)}</option><option value="worker">{t(topologyRoleKeys.worker)}</option></select></label> : null}
           {mode === 'ring' ? <label className="block space-y-1.5 text-sm font-medium">{t('members.speakingOrder')}<Input type="number" min={1} value={entry.agent.speaking_order ?? ''} disabled={topology.isPending} onChange={(event) => updateTopology(null, event.target.value === '' ? null : Number(event.target.value))} /></label> : null}
         </div>
       ) : null}

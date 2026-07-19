@@ -1,15 +1,19 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import i18n from '@/i18n'
-import type { GroupRead } from '@/types/api'
+import { ApiError } from '@/lib/api-v2/client'
+import type { GroupAgentRead, GroupMemberRead, GroupRead } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
   group: null as GroupRead | null,
+  groupAgents: [] as GroupAgentRead[],
+  groupMembers: [] as GroupMemberRead[],
   mutateAsync: vi.fn(),
-  navigate: vi.fn(),
+  clearMutateAsync: vi.fn(),
+  deleteMutateAsync: vi.fn(),
 }))
 
 vi.mock('@/components/agents/WorkspaceField', () => ({
@@ -51,7 +55,7 @@ vi.mock('@/hooks/useGroups', () => ({
   useUpdateGroup: () => ({ isPending: false, mutateAsync: mocks.mutateAsync }),
 }))
 vi.mock('@/hooks/useGroupAgents', () => ({
-  useGroupAgents: () => ({ data: [], error: null, isLoading: false }),
+  useGroupAgents: () => ({ data: mocks.groupAgents, error: null, isLoading: false }),
 }))
 vi.mock('@/hooks/useGroupMessages', () => ({
   useGroupMessages: () => ({
@@ -61,7 +65,7 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     isFetchingNextPage: false,
     fetchNextPage: vi.fn(),
   }),
-  useClearGroupMessages: () => ({ isPending: false, mutateAsync: mocks.mutateAsync }),
+  useClearGroupMessages: () => ({ isPending: false, mutateAsync: mocks.clearMutateAsync }),
 }))
 vi.mock('@/hooks/useSendMessageStream', () => ({
   useSendMessageStream: () => ({
@@ -83,7 +87,7 @@ vi.mock('@/hooks/usePersistentPaneWidth', () => ({
 vi.mock('@/hooks/useGroupMembers', () => ({
   useAddGroupMember: () => ({ isPending: false, mutate: vi.fn() }),
   useGroupMemberCandidates: () => ({ data: [] }),
-  useGroupMembers: () => ({ data: [], error: null, isLoading: false }),
+  useGroupMembers: () => ({ data: mocks.groupMembers, error: null, isLoading: false }),
   useMuteGroupMember: () => ({ isPending: false, mutate: vi.fn() }),
   useRemoveGroupMember: () => ({ isPending: false, mutate: vi.fn() }),
 }))
@@ -97,7 +101,7 @@ vi.mock('@/hooks/useGroupAgentActions', () => ({
   useSetGroupAgentWorkspaceSharing: () => ({ isPending: false, mutate: vi.fn() }),
 }))
 vi.mock('@/hooks/useDeleteGroup', () => ({
-  useDeleteGroup: () => ({ isPending: false, mutateAsync: mocks.mutateAsync }),
+  useDeleteGroup: () => ({ isPending: false, mutateAsync: mocks.deleteMutateAsync }),
 }))
 
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
@@ -139,6 +143,32 @@ const group: GroupRead = {
   moderator_model: null,
 }
 
+const humanMember: GroupMemberRead = {
+  id: 'member-1',
+  group_id: 'group-1',
+  user_id: 'user-1',
+  display_name: 'Human One',
+  role: 'member',
+  status: 'active',
+  is_muted: false,
+  joined_at: '2026-01-01T00:00:00Z',
+}
+
+const groupAgent: GroupAgentRead = {
+  id: 'group-agent-1',
+  group_id: 'group-1',
+  agent_id: 'agent-1',
+  display_name: 'Agent One',
+  role: 'agent',
+  topology_role: null,
+  speaking_order: null,
+  response_mode: 'default',
+  share_group_workspace: false,
+  context_usage: null,
+  status: 'active',
+  joined_at: '2026-01-01T00:00:00Z',
+}
+
 async function setLanguage(language: 'en-US' | 'zh-CN') {
   await i18n.changeLanguage(language)
 }
@@ -146,7 +176,11 @@ async function setLanguage(language: 'en-US' | 'zh-CN') {
 describe('group management i18n', () => {
   beforeEach(() => {
     mocks.group = group
+    mocks.groupAgents = []
+    mocks.groupMembers = []
     mocks.mutateAsync.mockReset()
+    mocks.clearMutateAsync.mockReset()
+    mocks.deleteMutateAsync.mockReset()
   })
 
   afterEach(async () => {
@@ -231,6 +265,69 @@ describe('group management i18n', () => {
     expect(screen.getByRole('heading', { name: '添加 Agent' })).toBeVisible()
   })
 
+  it('pluralizes the raw member count while displaying the formatted count', async () => {
+    await setLanguage('en-US')
+    mocks.groupMembers = [humanMember]
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('1 person or agent in this group.')).toBeVisible()
+
+    cleanup()
+    mocks.groupAgents = [groupAgent]
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('2 people and agents in this group.')).toBeVisible()
+  })
+
+  it('does not mislabel a null hierarchical topology role as Worker', async () => {
+    const user = userEvent.setup()
+    mocks.group = { ...group, communication_mode: 'hierarchical' }
+    mocks.groupAgents = [groupAgent]
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.queryByText('Worker')).not.toBeInTheDocument()
+    await user.click(screen.getByText('Agent One').closest('button')!)
+    expect(screen.getByRole('combobox', { name: 'Hierarchy role' })).toHaveValue(
+      '__none__',
+    )
+    expect(screen.getByRole('option', { name: 'No topology role' })).toBeVisible()
+  })
+
+  it('preserves an unknown hierarchical topology role in the row and select', async () => {
+    const user = userEvent.setup()
+    mocks.group = { ...group, communication_mode: 'hierarchical' }
+    mocks.groupAgents = [
+      { ...groupAgent, topology_role: 'future-role' } as unknown as GroupAgentRead,
+    ]
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Unknown topology role: future-role')).toBeVisible()
+    await user.click(screen.getByText('Agent One').closest('button')!)
+
+    expect(screen.getByRole('combobox', { name: 'Hierarchy role' })).toHaveValue(
+      'future-role',
+    )
+    expect(
+      screen.getByRole('option', { name: 'Unknown topology role: future-role' }),
+    ).toBeVisible()
+  })
+
   it('retranslates settings around an existing unsaved draft', async () => {
     const user = userEvent.setup()
     await setLanguage('en-US')
@@ -267,6 +364,58 @@ describe('group management i18n', () => {
 
     await user.click(screen.getByRole('switch', { name: '自由发言' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('更新群组失败')
+  })
+
+  it('retranslates a clear-history ApiError while preserving its raw diagnostic', async () => {
+    const user = userEvent.setup()
+    mocks.clearMutateAsync.mockRejectedValueOnce(
+      new ApiError(500, 'server_error', 'RAW clear diagnostic'),
+    )
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter>
+        <GroupSettingsTab group={group} />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Clear history' }))
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Clear' }),
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to clear chat history: RAW clear diagnostic',
+    )
+
+    await setLanguage('zh-CN')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      '清除聊天记录失败：RAW clear diagnostic',
+    )
+    expect(screen.queryByText(/Failed to clear chat history/)).not.toBeInTheDocument()
+  })
+
+  it('retranslates a delete-group non-Error while preserving its raw diagnostic', async () => {
+    const user = userEvent.setup()
+    mocks.deleteMutateAsync.mockRejectedValueOnce('RAW delete diagnostic')
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter>
+        <GroupSettingsTab group={group} />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete group' }))
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }),
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to delete group: RAW delete diagnostic',
+    )
+
+    await setLanguage('zh-CN')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      '删除群组失败：RAW delete diagnostic',
+    )
+    expect(screen.queryByText(/Failed to delete group/)).not.toBeInTheDocument()
   })
 
   it('preserves an unknown communication mode from the wire', async () => {
