@@ -161,9 +161,9 @@ export function AppSidebar() {
             <TooltipContent side="right">{t('navigation:newDirectChat')}</TooltipContent>
           </Tooltip>
         ) : (
-          <div className="flex gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <Button
-              className="min-w-0 flex-1 justify-start gap-2 rounded-lg"
+              className="min-w-0 justify-center gap-1.5 rounded-lg px-2 text-xs"
               onClick={() => setDirectDialogOpen(true)}
             >
               <MessageSquarePlus className="h-4 w-4" />
@@ -171,11 +171,11 @@ export function AppSidebar() {
             </Button>
             <Button
               variant="outline"
-              size="icon"
+              className="min-w-0 justify-center gap-1.5 rounded-lg px-2 text-xs"
               onClick={() => setDialogOpen(true)}
-              aria-label={t('navigation:newGroup')}
             >
               <MessageSquarePlus className="h-4 w-4" />
+              {t('navigation:newGroup')}
             </Button>
           </div>
         )}

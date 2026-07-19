@@ -47,6 +47,10 @@ describe('AppLayout', () => {
   it('renders English navigation labels', async () => {
     await renderAppLayout('en-US')
 
+    const newChat = screen.getByRole('button', { name: 'New chat' })
+    const newGroup = screen.getByRole('button', { name: 'New group' })
+    expect(newChat.className).toContain('justify-center')
+    expect(newGroup.className).toContain('justify-center')
     const directChats = screen.getByText('Chats')
     const groups = screen.getByText('Groups')
     expect(

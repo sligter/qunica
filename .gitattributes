@@ -1,0 +1,2 @@
+# SQLx hashes migration source bytes. Keep published migrations LF-only on every platform.
+backend-rs/crates/backend/src/db/migrations/*.sql text eol=lf
