@@ -410,6 +410,73 @@ async fn direct_message_endpoints_are_kind_safe_and_preserve_unavailable_history
 }
 
 #[tokio::test]
+async fn direct_sessions_keep_threads_and_group_management_boundaries_isolated() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-isolation@example.com").await;
+    let workspace_id = create_workspace(&app, &token).await;
+    let agent_id = create_agent(&app, &token, &workspace_id, "Solo").await;
+    let first = create_chat(&app, &token, &agent_id).await;
+    let second = create_chat(&app, &token, &agent_id).await;
+    let first_id = first["id"].as_str().unwrap();
+    let second_id = second["id"].as_str().unwrap();
+
+    for (chat_id, content) in [(first_id, "first session"), (second_id, "second session")] {
+        let (status, _) = send(
+            &app,
+            request(
+                "POST",
+                &format!("/api/v2/direct-chats/{chat_id}/messages"),
+                Some(&token),
+                json!({"content": content}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    let threads: Vec<(String, String)> = sqlx::query_as(
+        "SELECT group_id, id FROM threads WHERE group_id IN (?, ?) AND status = 'active' ORDER BY group_id",
+    )
+    .bind(first_id)
+    .bind(second_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(threads.len(), 2);
+    assert_ne!(threads[0].1, threads[1].1);
+
+    let (status, first_history) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{first_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        first_history.as_array().unwrap()[0]["content"],
+        "first session"
+    );
+
+    for call in [
+        authed("GET", &format!("/api/v2/groups/{first_id}/members"), &token),
+        authed("GET", &format!("/api/v2/groups/{first_id}/notes"), &token),
+        authed("GET", &format!("/api/v2/groups/{first_id}/agents"), &token),
+        request(
+            "PATCH",
+            &format!("/api/v2/groups/{first_id}"),
+            Some(&token),
+            json!({"scheduler_enabled": true}),
+        ),
+    ] {
+        let (status, body) = send(&app, call).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
+    }
+}
+
+#[tokio::test]
 async fn direct_stream_generates_first_title_and_replays_conversation_update() {
     let (app, _state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-title-stream@example.com").await;
