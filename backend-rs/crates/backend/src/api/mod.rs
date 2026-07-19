@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod auth;
 pub mod conversations;
+pub mod direct_chats;
 pub mod error;
 pub mod group_turns;
 pub mod groups;
@@ -134,6 +135,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/groups",
             axum::routing::post(groups::create).get(groups::list),
+        )
+        .route(
+            "/api/v2/direct-chats",
+            axum::routing::post(direct_chats::create).get(direct_chats::list),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id",
+            get(direct_chats::get)
+                .patch(direct_chats::update)
+                .delete(direct_chats::delete),
         )
         .route(
             "/api/v2/groups/:group_id",
