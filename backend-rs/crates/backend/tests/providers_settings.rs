@@ -1233,17 +1233,24 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
         let installed = preset["installed"].as_bool().unwrap();
         let command = preset["command"].as_str().unwrap();
         if installed {
+            let is_npx = command.ends_with("npx")
+                || command.ends_with("npx.cmd")
+                || command.ends_with("npx.exe");
+            let is_codex_adapter = command.ends_with("codex-acp")
+                || command.ends_with("codex-acp.cmd")
+                || command.ends_with("codex-acp.exe");
             assert!(
-                command.ends_with("npx")
-                    || command.ends_with("npx.cmd")
-                    || command.ends_with("npx.exe"),
-                "unexpected resolved npx command: {command}"
+                is_npx || (id == "codex" && is_codex_adapter),
+                "unexpected resolved command for {id}: {command}"
             );
         } else {
             assert_eq!(command, "npx");
         }
         assert_eq!(preset["source"], "fallback");
-        assert!(!preset["args"].as_array().unwrap().is_empty());
+        let args = preset["args"].as_array().unwrap();
+        if command.ends_with("npx") || command.ends_with("npx.cmd") || command.ends_with("npx.exe") {
+            assert!(!args.is_empty(), "npx preset {id} requires package arguments");
+        }
         assert!(!preset["mode_options"].as_array().unwrap().is_empty());
         assert!(!preset["thinking_effort_options"]
             .as_array()

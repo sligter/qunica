@@ -770,7 +770,18 @@ async fn agent_runtime_kind_acp_clears_provider_and_stores_runtime() {
     assert_eq!(agent["llm_provider_id"], Value::Null);
     assert_eq!(
         agent["acp_runtime"],
-        json!({"command": "claude-acp", "args": ["--flag"]})
+        json!({
+            "profile": "custom",
+            "command": "claude-acp",
+            "args": ["--flag"],
+            "env": {},
+            "timeout_seconds": 3600,
+            "permission_policy": "deny",
+            "model": null,
+            "mode": null,
+            "thinking_effort": null,
+            "config_options": null,
+        })
     );
 
     // Patching the same ACP agent with another provider must keep it cleared.
@@ -791,7 +802,18 @@ async fn agent_runtime_kind_acp_clears_provider_and_stores_runtime() {
     assert_eq!(updated["llm_provider_id"], Value::Null);
     assert_eq!(
         updated["acp_runtime"],
-        json!({"command": "claude-acp", "args": ["--v2"]})
+        json!({
+            "profile": "custom",
+            "command": "claude-acp",
+            "args": ["--v2"],
+            "env": {},
+            "timeout_seconds": 3600,
+            "permission_policy": "deny",
+            "model": null,
+            "mode": null,
+            "thinking_effort": null,
+            "config_options": null,
+        })
     );
 }
 
