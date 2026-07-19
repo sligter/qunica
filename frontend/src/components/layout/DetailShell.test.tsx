@@ -6,13 +6,18 @@ import { DetailShell } from '@/components/layout/DetailShell'
 describe('DetailShell', () => {
   afterEach(cleanup)
 
-  it('keeps its scroll container constrained by the parent layout', () => {
+  it('keeps long detail content in a constrained inner scroll container', () => {
     const { container } = render(
       <DetailShell title="Manage group">
         <div>Settings content</div>
       </DetailShell>,
     )
 
-    expect(container.firstElementChild).toHaveClass('h-full', 'min-h-0', 'overflow-y-auto')
+    expect(container.firstElementChild).toHaveClass('h-full', 'min-h-0', 'overflow-hidden')
+    expect(container.firstElementChild?.lastElementChild).toHaveClass(
+      'min-h-0',
+      'flex-1',
+      'overflow-y-auto',
+    )
   })
 })

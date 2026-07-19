@@ -31,8 +31,8 @@ export function DetailShell({
   children,
 }: DetailShellProps) {
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-y-auto bg-background">
-      <header className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-4 border-b border-border bg-background/95 px-8 py-4 backdrop-blur">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
+      <header className="z-10 flex shrink-0 items-center justify-between gap-4 border-b border-border bg-background/95 px-8 py-4 backdrop-blur">
         <div className="flex min-w-0 items-center gap-3">
           {leading}
           <div className="min-w-0">
@@ -50,8 +50,10 @@ export function DetailShell({
           <div className="flex shrink-0 items-center gap-2">{actions}</div>
         ) : null}
       </header>
-      <div className={cn('w-full max-w-5xl px-8 py-6 pb-10', contentClassName)}>
-        {children}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className={cn('w-full max-w-5xl px-8 py-6 pb-10', contentClassName)}>
+          {children}
+        </div>
       </div>
     </div>
   )

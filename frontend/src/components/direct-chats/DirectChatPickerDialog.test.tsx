@@ -73,6 +73,6 @@ describe('DirectChatPickerDialog', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('agent unavailable')
     expect(onOpenChange).not.toHaveBeenCalled()
-    expect(screen.getByText('Start a direct chat')).toBeInTheDocument()
+    expect(screen.getByText('Start a chat')).toBeInTheDocument()
   })
 })

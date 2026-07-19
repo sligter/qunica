@@ -47,7 +47,7 @@ describe('AppLayout', () => {
   it('renders English navigation labels', async () => {
     await renderAppLayout('en-US')
 
-    const directChats = screen.getByText('Direct Chats')
+    const directChats = screen.getByText('Chats')
     const groups = screen.getByText('Groups')
     expect(
       Boolean(directChats.compareDocumentPosition(groups) & Node.DOCUMENT_POSITION_FOLLOWING),

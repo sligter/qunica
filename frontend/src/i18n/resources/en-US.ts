@@ -74,8 +74,8 @@ export const enUS = {
     },
   },
   navigation: {
-    directChats: 'Direct Chats',
-    newDirectChat: 'New direct chat',
+    directChats: 'Chats',
+    newDirectChat: 'New chat',
     searchConversations: 'Search conversations',
     groups: 'Groups',
     agents: 'Agents',
@@ -95,14 +95,14 @@ export const enUS = {
   },
   chat: {
     direct: {
-      pickerTitle: 'Start a direct chat',
-      pickerDescription: 'Choose an Agent for a new independent conversation.',
+      pickerTitle: 'Start a chat',
+      pickerDescription: 'Choose an Agent for a new independent chat.',
       searchAgents: 'Search Agents',
       noAgents: 'No active Agents available.',
       creating: 'Creating chat…',
       rename: 'Rename conversation',
       titleInvalid: 'Enter a title of 1–120 characters.',
-      notFound: 'Direct chat not found.',
+      notFound: 'Chat not found.',
       loading: 'Loading chat…',
       agentUnavailable: 'This Agent is unavailable. History remains readable.',
     },

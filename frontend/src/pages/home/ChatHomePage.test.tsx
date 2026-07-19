@@ -20,7 +20,7 @@ describe('ChatHomePage', () => {
 
   it('mixes recent direct and group conversations by activity', () => {
     render(<I18nextProvider i18n={i18n}><MemoryRouter><ChatHomePage /></MemoryRouter></I18nextProvider>)
-    expect(screen.getByRole('button', { name: 'New direct chat' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New group' })).toBeInTheDocument()
     const links = screen.getAllByRole('link')
     expect(links.map((link) => link.getAttribute('href'))).toEqual(['/chats/chat-1', '/groups/group-1'])
