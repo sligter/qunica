@@ -1,0 +1,235 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Files, PanelRightClose } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+
+import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
+import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
+import { MessageList } from '@/components/chat/MessageList'
+import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
+import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
+import { Button } from '@/components/ui/button'
+import {
+  type ConversationScope,
+  useConversationMessages,
+} from '@/hooks/useGroupMessages'
+import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
+import { useSendMessageStream } from '@/hooks/useSendMessageStream'
+import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
+import { useFileNavStore } from '@/stores/fileNavStore'
+import { useMessageStore } from '@/stores/messageStore'
+import type { GroupAgentRead } from '@/types/api'
+
+const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-files-open:'
+
+type WorkspaceFilesOpenUpdater = boolean | ((current: boolean) => boolean)
+
+export interface ConversationChatViewProps {
+  conversationId: string
+  scope: ConversationScope
+  schedulerEnabled: boolean
+  agents: GroupAgentRead[]
+  title: React.ReactNode
+  subtitle?: React.ReactNode
+  announcement?: string | null
+  headerActions?: React.ReactNode
+  capabilities: {
+    showAnnouncement: boolean
+    showManage: boolean
+    showTurnTrace: boolean
+    showWorkspace: boolean
+    allowMentions: boolean
+  }
+  onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
+  disabledComposerReason?: string
+}
+
+function workspaceFilesOpenStorageKey(conversationId: string): string {
+  return `${WORKSPACE_FILES_OPEN_KEY_PREFIX}${conversationId}`
+}
+
+function readWorkspaceFilesOpen(conversationId: string): boolean {
+  const value = sessionStorage.getItem(workspaceFilesOpenStorageKey(conversationId))
+  return value === null ? true : value === 'true'
+}
+
+function storeWorkspaceFilesOpen(conversationId: string, value: boolean): void {
+  sessionStorage.setItem(workspaceFilesOpenStorageKey(conversationId), String(value))
+}
+
+export function ConversationChatView({
+  conversationId,
+  scope,
+  schedulerEnabled,
+  agents,
+  title,
+  subtitle,
+  announcement,
+  headerActions,
+  capabilities,
+  onConversationUpdated,
+  disabledComposerReason,
+}: ConversationChatViewProps) {
+  const { t } = useTranslation('chat')
+  const messagesQuery = useConversationMessages(scope, conversationId)
+  const stream = useSendMessageStream(conversationId, schedulerEnabled, {
+    scope,
+    onConversationUpdated,
+  })
+  const clearWarnings = useMessageStore((state) => state.clearWarnings)
+  const fileNavRequest = useFileNavStore((state) => state.request)
+  const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)
+  const traceTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
+    capabilities.showWorkspace ? readWorkspaceFilesOpen(conversationId) : false,
+  )
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
+  const workspaceFilesPane = usePersistentPaneWidth({
+    storageKey: 'ag-swarmer:layout:workspace-files-pane-width',
+    defaultWidth: 280,
+    minWidth: 240,
+    maxWidth: 560,
+  })
+
+  useEffect(() => {
+    setWorkspaceFilesOpen(
+      capabilities.showWorkspace ? readWorkspaceFilesOpen(conversationId) : false,
+    )
+    setSelectedTurnId(null)
+    clearWarnings(conversationId)
+  }, [capabilities.showWorkspace, clearWarnings, conversationId])
+
+  const setWorkspaceFilesOpenPersisted = useCallback(
+    (next: WorkspaceFilesOpenUpdater) => {
+      setWorkspaceFilesOpen((current) => {
+        const resolved = typeof next === 'function' ? next(current) : next
+        storeWorkspaceFilesOpen(conversationId, resolved)
+        return resolved
+      })
+    },
+    [conversationId],
+  )
+
+  const registerComposerPathInserter = useCallback((insert: WorkspacePathInserter | null) => {
+    composerPathInserterRef.current = insert
+  }, [])
+
+  const insertWorkspacePaths = useCallback((paths: string[]) => {
+    composerPathInserterRef.current?.(paths)
+  }, [])
+
+  const openTurnTrace = useCallback((turnId: string, trigger: HTMLButtonElement) => {
+    traceTriggerRef.current = trigger
+    setSelectedTurnId(turnId)
+  }, [])
+
+  useEffect(() => {
+    if (capabilities.showWorkspace && fileNavRequest?.groupId === conversationId) {
+      setWorkspaceFilesOpenPersisted(true)
+    }
+  }, [capabilities.showWorkspace, conversationId, fileNavRequest, setWorkspaceFilesOpenPersisted])
+
+  if (messagesQuery.error) {
+    return <div className="p-6 text-sm text-destructive">{String(messagesQuery.error)}</div>
+  }
+
+  if (messagesQuery.isLoading) {
+    return <div className="p-6 text-sm text-muted-foreground">{t('messages.loading')}</div>
+  }
+
+  const hint = agents.length === 0 ? t('composer.noAgents') : undefined
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-background px-4 lg:px-5">
+        <div className="flex min-w-0 items-baseline gap-3">
+          <h1 className="font-serif truncate text-base font-semibold tracking-tight">{title}</h1>
+          {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {capabilities.showWorkspace ? (
+            <Button
+              variant={workspaceFilesOpen ? 'secondary' : 'ghost'}
+              size="icon"
+              onClick={() => setWorkspaceFilesOpenPersisted((open) => !open)}
+              aria-label={workspaceFilesOpen ? t('workspace.hide') : t('workspace.show')}
+            >
+              {workspaceFilesOpen ? <PanelRightClose className="h-4 w-4" /> : <Files className="h-4 w-4" />}
+            </Button>
+          ) : null}
+          {capabilities.showManage ? headerActions : null}
+        </div>
+      </header>
+
+      {capabilities.showAnnouncement && announcement ? (
+        <div className="shrink-0 border-b border-border/60 bg-card px-4 py-2 text-xs text-muted-foreground lg:px-5">
+          {announcement}
+        </div>
+      ) : null}
+
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <MessageList
+            groupId={conversationId}
+            hasOlderMessages={messagesQuery.hasNextPage}
+            isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
+            onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
+            onSubmitHumanInput={stream.send}
+            onViewTurnTrace={capabilities.showTurnTrace ? openTurnTrace : undefined}
+            scope={scope}
+            agents={agents}
+          />
+
+          {stream.error ? (
+            <div className="shrink-0 px-4">
+              <div className="mx-auto w-full max-w-6xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {t('stream.error', { message: stream.error })}
+              </div>
+            </div>
+          ) : null}
+
+          <Composer
+            groupId={conversationId}
+            isStreaming={stream.isStreaming}
+            onSend={stream.send}
+            onCancel={stream.cancel}
+            hint={hint}
+            groupAgents={agents}
+            allowMentions={capabilities.allowMentions}
+            disabledReason={disabledComposerReason}
+            onRegisterWorkspacePathInserter={registerComposerPathInserter}
+          />
+        </div>
+        {capabilities.showWorkspace && workspaceFilesOpen ? (
+          <>
+            <VerticalResizeHandle
+              label={t('workspace.resize')}
+              value={workspaceFilesPane.width}
+              min={workspaceFilesPane.minWidth}
+              max={workspaceFilesPane.maxWidth}
+              increaseOnArrowRight={false}
+              onResizeStart={(event) => workspaceFilesPane.startResize(event, -1)}
+              onStep={workspaceFilesPane.resizeBy}
+            />
+            <GroupWorkspacePanel
+              groupId={conversationId}
+              width={workspaceFilesPane.width}
+              onInsertPaths={insertWorkspacePaths}
+            />
+          </>
+        ) : null}
+      </div>
+
+      {capabilities.showTurnTrace ? (
+        <TurnTraceDrawer
+          groupId={conversationId}
+          turnId={selectedTurnId}
+          open={selectedTurnId !== null}
+          returnFocusRef={traceTriggerRef}
+          onOpenChange={(open) => {
+            if (!open) setSelectedTurnId(null)
+          }}
+        />
+      ) : null}
+    </div>
+  )
+}

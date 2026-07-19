@@ -10,6 +10,14 @@ import type { ClearGroupMessagesResponse, Message, MessageSendResponse } from '@
 const MESSAGE_PAGE_SIZE = 30
 const INITIAL_PAGE_PARAM: string | undefined = undefined
 
+export type ConversationScope = 'groups' | 'direct-chats'
+
+export const conversationMessagesKey = (scope: ConversationScope, id: string | undefined) =>
+  [scope, id, 'messages'] as const
+
+export const conversationApiPath = (scope: ConversationScope, id: string | undefined) =>
+  `/${scope}/${id}`
+
 function emptyMessagePages(): InfiniteData<Message[], string | undefined> {
   return {
     // Infinite queries must keep the pages/pageParams envelope even when empty.
@@ -53,22 +61,26 @@ export function useClearGroupMessages(groupId: string | undefined) {
 }
 
 export function useDeleteGroupMessage(groupId: string) {
+  return useDeleteConversationMessage('groups', groupId)
+}
+
+export function useDeleteConversationMessage(scope: ConversationScope, groupId: string) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   const removeMessage = useMessageStore((s) => s.removeMessage)
   return useMutation({
     mutationFn: ({ messageId }: { messageId: string }) =>
-      fetchJson<void>(`/groups/${groupId}/messages/${messageId}`, {
+      fetchJson<void>(`${conversationApiPath(scope, groupId)}/messages/${messageId}`, {
         method: 'DELETE',
         token,
       }),
     onSuccess: (_, variables) => {
       qc.setQueryData<InfiniteData<Message[], string | undefined>>(
-        ['groups', groupId, 'messages'],
+        conversationMessagesKey(scope, groupId),
         (current) => removeMessageFromPages(current, variables.messageId),
       )
       removeMessage(groupId, variables.messageId)
-      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+      void qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId) })
     },
   })
 }
@@ -94,15 +106,23 @@ export function useSendGroupMessage() {
  * updates flow through the SSE hook, not through this query.
  */
 export function useGroupMessages(groupId: string | undefined) {
+  return useConversationMessages('groups', groupId)
+}
+
+/** Fetch historical messages for either supported conversation container. */
+export function useConversationMessages(scope: ConversationScope, groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   const setHistory = useMessageStore((s) => s.setHistory)
 
   const query = useInfiniteQuery({
-    queryKey: ['groups', groupId, 'messages'],
+    queryKey: conversationMessagesKey(scope, groupId),
     queryFn: ({ pageParam }: { pageParam?: string }) => {
       const params = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE) })
       if (pageParam) params.set('before', pageParam)
-      return fetchJson<Message[]>(`/groups/${groupId}/messages?${params.toString()}`, { token })
+      return fetchJson<Message[]>(
+        `${conversationApiPath(scope, groupId)}/messages?${params.toString()}`,
+        { token },
+      )
     },
     enabled: token !== null && groupId !== undefined,
     initialPageParam: INITIAL_PAGE_PARAM,

@@ -58,6 +58,13 @@ vi.mock('@/hooks/useGroupAgents', () => ({
   useGroupAgents: () => ({ data: mocks.groupAgents, error: null, isLoading: false }),
 }))
 vi.mock('@/hooks/useGroupMessages', () => ({
+  useConversationMessages: () => ({
+    error: null,
+    isLoading: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: vi.fn(),
+  }),
   useGroupMessages: () => ({
     error: null,
     isLoading: false,

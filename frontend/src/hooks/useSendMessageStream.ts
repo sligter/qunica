@@ -12,9 +12,22 @@ import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
 import { fetchJson } from '@/lib/api-v2/client'
-import { parseGroupTurnTrace, parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
+import {
+  parseConversationUpdatedEvent,
+  parseGroupTurnTrace,
+  parseSchedulerStreamEvent,
+} from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
-import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
+import type {
+  ConversationUpdatedPayload,
+  SchedulerStreamUpdate,
+  StreamEvent,
+} from '@/lib/api-v2/types'
+import {
+  conversationApiPath,
+  conversationMessagesKey,
+  type ConversationScope,
+} from '@/hooks/useGroupMessages'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
@@ -253,10 +266,18 @@ interface PendingCancellation {
   resolve: () => void
 }
 
+interface SendMessageStreamOptions {
+  scope?: ConversationScope
+  onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
+}
+
 export function useSendMessageStream(
   groupId: string | undefined,
   schedulerEnabled: boolean,
+  options: SendMessageStreamOptions = {},
 ) {
+  const scope = options.scope ?? 'groups'
+  const onConversationUpdated = options.onConversationUpdated
   const token = useAuthStore((s) => s.token)
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const appendMessage = useMessageStore((s) => s.appendMessage)
@@ -342,9 +363,9 @@ export function useSendMessageStream(
 
   const invalidate = useCallback(() => {
     if (!groupId) return
-    void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
+    void qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId) })
     void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
-  }, [groupId, qc])
+  }, [groupId, qc, scope])
 
   const invalidateTurn = useCallback(
     (turnId: string) => {
@@ -504,7 +525,7 @@ export function useSendMessageStream(
       clearToolActivity(groupId)
 
       const ctrl = openApiV2SseStream({
-        url: `/api/v2/groups/${groupId}/messages/stream`,
+        url: `/api/v2${conversationApiPath(scope, groupId)}/messages/stream`,
         body: { content },
         token,
         handlers: {
@@ -722,8 +743,11 @@ export function useSendMessageStream(
                 })
                 return
               }
-              case 'conversation_updated':
+              case 'conversation_updated': {
+                const parsed = parseConversationUpdatedEvent(event)
+                onConversationUpdated?.(parsed.payload)
                 return
+              }
               case 'error': {
                 const message = messageFromPayload(event.payload, 'Stream failed')
                 setError(message)
@@ -799,11 +823,13 @@ export function useSendMessageStream(
       pushWarning,
       qc,
       refreshActiveCount,
-      schedulerEnabled,
+    schedulerEnabled,
+    scope,
       setActiveAgent,
       setStreamAgentContextUsage,
       startStreamRun,
-      token,
+    token,
+    onConversationUpdated,
       upsertStreamExternalRun,
       upsertStreamTool,
     ],

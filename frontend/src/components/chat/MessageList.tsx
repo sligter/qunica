@@ -8,6 +8,8 @@ import { TurnSummary } from '@/components/chat/TurnSummary'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { useMessageStore, type StreamRun } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
+import type { GroupAgentRead } from '@/types/api'
+import type { ConversationScope } from '@/hooks/useGroupMessages'
 
 interface MessageListProps {
   groupId: string
@@ -16,6 +18,8 @@ interface MessageListProps {
   onLoadOlderMessages?: () => void
   onSubmitHumanInput?: (content: string) => void
   onViewTurnTrace?: (turnId: string, trigger: HTMLButtonElement) => void
+  scope?: ConversationScope
+  agents?: GroupAgentRead[]
 }
 
 const EMPTY_MESSAGES: readonly Message[] = []
@@ -77,6 +81,8 @@ export function MessageList({
   onLoadOlderMessages,
   onSubmitHumanInput,
   onViewTurnTrace,
+  scope = 'groups',
+  agents,
 }: MessageListProps) {
   const { t } = useTranslation('chat')
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
@@ -208,6 +214,8 @@ export function MessageList({
               <MessageItem
                 message={m}
                 groupId={groupId}
+                scope={scope}
+                agents={agents}
                 onSubmitHumanInput={onSubmitHumanInput}
               />
               {turnId && schedulerStatus && onViewTurnTrace ? (

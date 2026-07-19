@@ -10,6 +10,7 @@ vi.mock('@/hooks/useGroups', () => ({
 }))
 
 vi.mock('@/hooks/useGroupMessages', () => ({
+  useDeleteConversationMessage: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useDeleteGroupMessage: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useSendGroupMessage: () => ({ isPending: false, mutateAsync: vi.fn() }),
 }))

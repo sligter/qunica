@@ -12,7 +12,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useGroups } from '@/hooks/useGroups'
-import { useDeleteGroupMessage, useSendGroupMessage } from '@/hooks/useGroupMessages'
+import {
+  type ConversationScope,
+  useDeleteConversationMessage,
+  useSendGroupMessage,
+} from '@/hooks/useGroupMessages'
 
 interface MessageActionsProps {
   messageId: string
@@ -20,6 +24,7 @@ interface MessageActionsProps {
   senderName: string
   timeLabel: string
   groupId: string
+  scope?: ConversationScope
 }
 
 type CopiedAction = 'message' | null
@@ -38,6 +43,7 @@ export function MessageActions({
   senderName,
   timeLabel,
   groupId,
+  scope = 'groups',
 }: MessageActionsProps) {
   const { t } = useTranslation(['chat', 'common'])
   const [copiedAction, setCopiedAction] = useState<CopiedAction>(null)
@@ -46,7 +52,7 @@ export function MessageActions({
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const groups = useGroups()
   const sendGroupMessage = useSendGroupMessage()
-  const deleteGroupMessage = useDeleteGroupMessage(groupId)
+  const deleteGroupMessage = useDeleteConversationMessage(scope, groupId)
   const shareContent = shareText(senderName, timeLabel, content)
   const targetGroups = groups.data?.filter((group) => group.id !== groupId) ?? []
 

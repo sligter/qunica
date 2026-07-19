@@ -18,6 +18,8 @@ interface ComposerProps {
   hint?: string
   groupAgents?: GroupAgentRead[]
   groupId?: string
+  allowMentions?: boolean
+  disabledReason?: string
   onRegisterWorkspacePathInserter?: (insert: WorkspacePathInserter | null) => void
 }
 
@@ -35,6 +37,8 @@ export function Composer({
   hint,
   groupAgents = [],
   groupId,
+  allowMentions = true,
+  disabledReason,
   onRegisterWorkspacePathInserter,
 }: ComposerProps) {
   const { t } = useTranslation('chat')
@@ -191,6 +195,7 @@ export function Composer({
   }
 
   const hasText = value.trim().length > 0
+  const isDisabled = Boolean(disabledReason)
   const showStopAsPrimary = Boolean(isStreaming) && !hasText
 
   return (
@@ -201,19 +206,26 @@ export function Composer({
             {t('errors.uploadDetail', { message: uploadError })}
           </p>
         )}
+        {disabledReason ? (
+          <p className="mb-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
+            {disabledReason}
+          </p>
+        ) : null}
         <div
           className={cn(
             'relative rounded-2xl border border-border bg-card shadow-sm transition-shadow',
             'focus-within:border-ring/50 focus-within:ring-1 focus-within:ring-ring/40 focus-within:shadow-md',
           )}
         >
-          <MentionPopover
-            agents={groupAgents}
-            query={mentionQuery}
-            onSelect={handleMentionSelect}
-            onClose={() => setShowMention(false)}
-            visible={showMention}
-          />
+          {allowMentions ? (
+            <MentionPopover
+              agents={groupAgents}
+              query={mentionQuery}
+              onSelect={handleMentionSelect}
+              onClose={() => setShowMention(false)}
+              visible={showMention}
+            />
+          ) : null}
           <textarea
             ref={textareaRef}
             value={value}
@@ -224,6 +236,7 @@ export function Composer({
             placeholder={t('composer.placeholder')}
             rows={1}
             aria-label={t('composer.message')}
+            disabled={isDisabled}
             className={cn(
               'block max-h-52 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-3.5',
               'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
@@ -244,13 +257,13 @@ export function Composer({
               size="icon"
               className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
               onClick={() => fileInputRef.current?.click()}
-              disabled={!groupId || uploadWorkspaceFiles.isPending}
+              disabled={isDisabled || !groupId || uploadWorkspaceFiles.isPending}
               aria-label={t('composer.upload')}
               title={t('composer.uploadTitle')}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
-            {groupAgents.length > 0 ? (
+            {allowMentions && groupAgents.length > 0 ? (
               <div className="relative min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1 px-1 text-[11px] text-muted-foreground">
                   {groupAgents.slice(0, 3).map((agent) => (
@@ -328,7 +341,7 @@ export function Composer({
                 size="icon"
                 className="h-8 w-8 shrink-0 rounded-full"
                 onClick={send}
-                disabled={!hasText}
+                disabled={isDisabled || !hasText}
                 aria-label={t('composer.send')}
                 title={t('composer.sendTitle')}
               >

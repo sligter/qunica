@@ -15,12 +15,16 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
+import type { GroupAgentRead } from '@/types/api'
+import type { ConversationScope } from '@/hooks/useGroupMessages'
 
 interface MessageItemProps {
   message: Message
   groupId: string
   isStreaming?: boolean
   onSubmitHumanInput?: (content: string) => void
+  scope?: ConversationScope
+  agents?: GroupAgentRead[]
 }
 
 export function MessageItem({
@@ -28,16 +32,18 @@ export function MessageItem({
   groupId,
   isStreaming,
   onSubmitHumanInput,
+  scope = 'groups',
+  agents,
 }: MessageItemProps) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const groupAgents = useGroupAgents(groupId)
+  const groupAgents = useGroupAgents(scope === 'groups' ? groupId : undefined)
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
   const groupAgent = useMemo(() => {
     if (message.sender_type !== 'agent') return undefined
-    return groupAgents.data?.find((g) => g.agent_id === message.sender_id)
-  }, [groupAgents.data, message.sender_id, message.sender_type])
+    return (agents ?? groupAgents.data)?.find((g) => g.agent_id === message.sender_id)
+  }, [agents, groupAgents.data, message.sender_id, message.sender_type])
 
   const senderName = useMemo(() => {
     if (message.sender_type === 'user') {
@@ -106,6 +112,7 @@ export function MessageItem({
               senderName={senderName}
               timeLabel={time}
               groupId={groupId}
+              scope={scope}
             />
           )}
         </div>

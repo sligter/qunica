@@ -10,7 +10,11 @@ import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
-  streams: [] as Array<{ handlers: ApiV2SseHandlers; abort: ReturnType<typeof vi.fn> }>,
+  streams: [] as Array<{
+    handlers: ApiV2SseHandlers
+    url: string
+    abort: ReturnType<typeof vi.fn>
+  }>,
   fetchJson: vi.fn(),
 }))
 
@@ -20,9 +24,9 @@ vi.mock('@/lib/api-v2/client', async (importOriginal) => {
 })
 
 vi.mock('@/lib/api-v2/sse', () => ({
-  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers }) => {
+  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers; url: string }) => {
     const abort = vi.fn()
-    mocks.streams.push({ handlers: options.handlers, abort })
+    mocks.streams.push({ handlers: options.handlers, url: options.url, abort })
     return { abort } as unknown as AbortController
   },
 }))
@@ -562,5 +566,49 @@ describe('useSendMessageStream scheduler events', () => {
       'budget_exhausted',
     ])
     expect(run.criticalSummaries.every((summary) => !('dispatch_id' in summary))).toBe(true)
+  })
+})
+
+describe('useSendMessageStream direct conversations', () => {
+  beforeEach(() => {
+    mocks.streams.length = 0
+    useMessageStore.setState(initialMessages, true)
+    useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
+  })
+
+  it('streams through the direct-chat route and forwards metadata updates', () => {
+    const queryClient = new QueryClient()
+    const onConversationUpdated = vi.fn()
+    const { result } = renderHook(
+      () =>
+        useSendMessageStream('chat-1', false, {
+          scope: 'direct-chats',
+          onConversationUpdated,
+        }),
+      { wrapper: wrapper(queryClient) },
+    )
+
+    act(() => result.current.send('hello'))
+
+    expect(mocks.streams[0]?.url).toBe('/api/v2/direct-chats/chat-1/messages/stream')
+    emit(mocks.streams[0]!.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'stream-1:1',
+      kind: 'conversation_updated',
+      payload: {
+        conversation_id: 'chat-1',
+        title: 'Hello',
+        title_source: 'automatic',
+        updated_at: '2026-07-19T00:00:00Z',
+      },
+    })
+
+    expect(onConversationUpdated).toHaveBeenCalledWith({
+      conversation_id: 'chat-1',
+      title: 'Hello',
+      title_source: 'automatic',
+      updated_at: '2026-07-19T00:00:00Z',
+    })
   })
 })
