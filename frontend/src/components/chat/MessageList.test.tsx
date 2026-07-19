@@ -27,6 +27,7 @@ const userMessage: Message = {
   sender_id: 'user-1',
   message_type: 'text',
   content: 'Run the group',
+  attachments: [],
   status: 'completed',
   refs: null,
   context_usage: null,

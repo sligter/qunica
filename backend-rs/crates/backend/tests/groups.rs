@@ -2242,6 +2242,116 @@ async fn workspace_files_upload_writes_uploads_and_rejects_bad_inputs() {
 }
 
 #[tokio::test]
+async fn attachment_message_persists_workspace_image_metadata() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "attachment-message@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token, "Attachment Messages").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/workspace-files/upload"),
+            &token,
+            "file",
+            "diagram.png",
+            Some("image/png"),
+            b"PNG!",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/messages"),
+            &token,
+            json!({"content":"", "attachments":[{"path":"uploads/diagram.png"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let attachments = &body["user_message"]["attachments"];
+    assert_eq!(attachments[0]["path"], "uploads/diagram.png");
+    assert_eq!(attachments[0]["name"], "diagram.png");
+    assert_eq!(attachments[0]["mime_type"], "image/png");
+    assert_eq!(attachments[0]["size"], 4);
+    assert_eq!(attachments[0]["kind"], "image");
+
+    let event_payload: String = sqlx::query_scalar(
+        "SELECT payload_json FROM stream_events WHERE kind = 'user_message' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let event_payload: Value = serde_json::from_str(&event_payload).unwrap();
+    assert_eq!(event_payload["attachments"], *attachments);
+
+    let (status, messages) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(messages[0]["attachments"], *attachments);
+}
+
+#[tokio::test]
+async fn attachment_message_rejects_unsafe_or_duplicate_paths_without_insertion() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "attachment-message-reject@example.com").await;
+    let (_root, workspace) = create_local_workspace(&app, &token, "Attachment Messages").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_multipart_file(
+            &format!("/api/v2/groups/{group_id}/workspace-files/upload"),
+            &token,
+            "file",
+            "diagram.png",
+            Some("image/png"),
+            b"PNG!",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for attachments in [
+        json!([{"path":"../secret.txt"}]),
+        json!([{"path":"uploads/diagram.png"}, {"path":"uploads/diagram.png"}]),
+    ] {
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "POST",
+                &format!("/api/v2/groups/{group_id}/messages/stream"),
+                &token,
+                json!({"content":"", "attachments": attachments}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_input");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+            .bind(group_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[tokio::test]
 async fn workspace_files_download_returns_bytes_and_download_headers() {
     let app = app().await;
     let token = register_and_login(&app, "workspace-files-download@example.com").await;

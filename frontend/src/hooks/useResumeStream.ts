@@ -57,6 +57,7 @@ function buildAgentMessage(
     sender_id: payload.sender_id ?? payload.agent_id ?? null,
     message_type: 'text',
     content: payload.content ?? '',
+    attachments: previous?.attachments ?? [],
     status: 'visible',
     refs: previous?.refs ?? null,
     context_usage: previous?.context_usage ?? null,

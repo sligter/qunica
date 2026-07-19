@@ -31,12 +31,22 @@ import {
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
-import type { ContextUsage, Message } from '@/types/api'
+import type { ContextUsage, Message, MessageSendInput } from '@/types/api'
+
+const messageAttachmentSchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  name: z.string(),
+  mime_type: z.string(),
+  size: z.number(),
+  kind: z.enum(['image', 'file']),
+})
 
 const userMessagePayloadSchema = z.object({
   message_id: z.string(),
   thread_id: z.string().nullable().optional(),
   content: z.string().nullable().optional(),
+  attachments: z.array(messageAttachmentSchema).default([]),
 })
 
 const agentStartPayloadSchema = z.object({
@@ -205,6 +215,7 @@ function buildUserMessage(
     sender_id: senderId,
     message_type: 'text',
     content: payload.content ?? '',
+    attachments: payload.attachments,
     status: 'visible',
     refs: null,
     context_usage: null,
@@ -230,6 +241,7 @@ function buildAgentMessage(
     sender_id: payload.sender_id ?? payload.agent_id ?? null,
     message_type: 'text',
     content: payload.content ?? '',
+    attachments: [],
     status: 'visible',
     refs: null,
     context_usage: normalizeContextUsage(payload.context_usage),
@@ -509,7 +521,7 @@ export function useSendMessageStream(
   )
 
   const send = useCallback(
-    (content: string) => {
+    (input: string | MessageSendInput) => {
       if (!groupId || !token) return
       if (pendingCancellationRef.current) {
         setError('Cancellation is in progress')
@@ -523,10 +535,11 @@ export function useSendMessageStream(
       setError(null)
       clearWarnings(groupId)
       clearToolActivity(groupId)
+      const message = typeof input === 'string' ? { content: input, attachments: [] } : input
 
       const ctrl = openApiV2SseStream({
         url: `/api/v2${conversationApiPath(scope, groupId)}/messages/stream`,
-        body: { content },
+        body: message,
         token,
         handlers: {
           onEvent: (event) => {

@@ -35,6 +35,7 @@ function message(overrides: Partial<Message>): Message {
     sender_id: 'agent-1',
     message_type: 'text',
     content: 'Final answer',
+    attachments: [],
     status: 'visible',
     refs: null,
     context_usage: null,

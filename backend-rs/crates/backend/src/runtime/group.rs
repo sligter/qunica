@@ -29,6 +29,7 @@ use std::sync::{
 use std::{collections::HashSet, future::Future, path::PathBuf, time::Duration};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -121,6 +122,33 @@ pub struct TurnRequest {
     pub owner_id: String,
     pub thread_id: Option<String>,
     pub content: String,
+    pub attachments: Vec<MessageAttachment>,
+}
+
+/// Durable metadata for a workspace file referenced by a user message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageAttachment {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: i64,
+    pub kind: AttachmentKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentKind {
+    Image,
+    File,
+}
+
+pub fn user_attachment_content_json(attachments: &[MessageAttachment]) -> Option<String> {
+    if attachments.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&json!({"version": 1, "attachments": attachments})).ok()
+    }
 }
 
 /// A request to continue the latest interrupted message in a paused thread.
@@ -496,12 +524,13 @@ async fn run_inner(
         sender_id: Some(req.owner_id.clone()),
         message_type: "text".to_string(),
         content: req.content.clone(),
-        content_json: None,
+        content_json: user_attachment_content_json(&req.attachments),
     };
     let user_payload = json!({
         "message_id": user_message.id,
         "thread_id": ctx.thread_id,
         "content": req.content,
+        "attachments": req.attachments,
         "sender_type": "user",
     });
     step!(

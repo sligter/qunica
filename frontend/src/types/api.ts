@@ -486,6 +486,22 @@ export interface SystemSettingsUpdate {
 
 export type SenderType = 'user' | 'agent' | 'system'
 
+export type MessageAttachmentKind = 'image' | 'file'
+
+export interface MessageAttachment {
+  id: string
+  path: string
+  name: string
+  mime_type: string
+  size: number
+  kind: MessageAttachmentKind
+}
+
+export interface MessageSendInput {
+  content: string
+  attachments: Array<Pick<MessageAttachment, 'path'>>
+}
+
 /** One persisted tool call, mirrored from the backend `content_json` schema. */
 export interface MessageToolCall {
   tool_call_id: string | null
@@ -503,6 +519,7 @@ export interface Message {
   sender_id: string | null
   message_type: string
   content: string | null
+  attachments: MessageAttachment[]
   status: string
   refs: Record<string, unknown> | null
   context_usage: ContextUsage | null

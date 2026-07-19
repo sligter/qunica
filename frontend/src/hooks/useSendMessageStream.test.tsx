@@ -89,6 +89,7 @@ function persistedMessage(id: string, groupId = 'group-1'): Message {
     sender_id: 'user-1',
     message_type: 'text',
     content: id,
+    attachments: [],
     status: 'visible',
     refs: null,
     context_usage: null,

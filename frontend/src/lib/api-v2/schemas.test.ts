@@ -327,6 +327,7 @@ describe('legacy message causality', () => {
       sender_id: 'user-1',
       message_type: 'text',
       content: 'legacy message',
+      attachments: [],
       status: 'visible',
       refs: null,
       context_usage: null,
