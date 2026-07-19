@@ -51,6 +51,21 @@ export function useGroupWorkspaceFiles(groupId: string | undefined, path = '') {
   })
 }
 
+export async function getGroupWorkspaceFile(
+  groupId: string,
+  path: string,
+  token: string | null,
+): Promise<GroupWorkspaceFileRead | null> {
+  const normalized = path.trim().replaceAll('\\', '/')
+  if (!normalized) return null
+  const parent = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : ''
+  const files = await fetchJson<GroupWorkspaceFileRead[]>(
+    `/groups/${groupId}/workspace-files?${withPath(parent)}`,
+    { token },
+  )
+  return files.find((file) => file.path === normalized && !file.is_dir) ?? null
+}
+
 export function useGroupWorkspaceRoot(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
   return useQuery({

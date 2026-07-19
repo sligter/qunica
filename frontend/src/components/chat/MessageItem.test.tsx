@@ -26,6 +26,12 @@ vi.mock('@/components/chat/MessageActions', () => ({
   MessageActions: () => null,
 }))
 
+vi.mock('@/components/chat/MessageAttachments', () => ({
+  MessageAttachments: ({ attachments }: { attachments: Array<{ name: string }> }) => (
+    <div>{attachments.map((attachment) => attachment.name).join(', ')}</div>
+  ),
+}))
+
 function message(overrides: Partial<Message>): Message {
   return {
     id: 'message-1',
@@ -126,5 +132,19 @@ describe('MessageItem', () => {
     expect(row).toHaveClass('min-w-0', 'w-full')
     expect(contentColumn).toHaveClass('min-w-0', 'flex-1', 'ml-auto', 'max-w-[72%]', 'items-end')
     expect(bubble).toHaveClass('min-w-0', 'max-w-full')
+  })
+
+  it('renders durable attachments for a message with empty text', () => {
+    render(
+      <MessageItem
+        groupId="group-1"
+        message={message({
+          content: '',
+          attachments: [{ id: 'attachment-1', path: 'uploads/photo.png', name: 'photo.png', mime_type: 'image/png', size: 1280, kind: 'image' }],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('photo.png')).toBeVisible()
   })
 })

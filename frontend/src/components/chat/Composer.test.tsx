@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -112,5 +112,71 @@ describe('Composer mentions', () => {
 
     await user.click(screen.getByRole('button', { name: 'Close agent list' }))
     expect(screen.queryByText('@Reviewer')).not.toBeInTheDocument()
+  })
+
+  it('uploads an image and sends an attachment-only message with its workspace path', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/photo.png' }])
+    render(<Composer groupId="group-1" onSend={onSend} />)
+
+    await user.upload(
+      screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
+      new File(['png'], 'photo.png', { type: 'image/png' }),
+    )
+    await screen.findByText('photo.png')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(onSend).toHaveBeenCalledWith({ content: '', attachments: [{ path: 'uploads/photo.png' }] })
+  })
+
+  it('uploads files dropped from the operating system', async () => {
+    const onSend = vi.fn()
+    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/drop.png' }])
+    render(<Composer groupId="group-1" onSend={onSend} />)
+    const file = new File(['png'], 'drop.png', { type: 'image/png' })
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+
+    fireEvent.drop(textarea, { dataTransfer: { files: [file], types: ['Files'], getData: () => '' } })
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith([file]))
+  })
+
+  it('uploads clipboard image files without preventing ordinary text paste', async () => {
+    const onSend = vi.fn()
+    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/paste.webp' }])
+    render(<Composer groupId="group-1" onSend={onSend} />)
+    const file = new File(['webp'], 'paste.webp', { type: 'image/webp' })
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+
+    const imagePaste = fireEvent.paste(textarea, {
+      clipboardData: { items: [{ kind: 'file', getAsFile: () => file }] },
+    })
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith([file]))
+    expect(imagePaste).toBe(false)
+
+    const textPaste = fireEvent.paste(textarea, {
+      clipboardData: { items: [{ kind: 'string', getAsFile: () => null }] },
+    })
+    expect(textPaste).toBe(true)
+  })
+
+  it('keeps failed uploads removable and retryable without sending them', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    mocks.upload.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([{ path: 'uploads/retry.pdf' }])
+    render(<Composer groupId="group-1" onSend={onSend} />)
+
+    await user.upload(
+      screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
+      new File(['pdf'], 'retry.pdf', { type: 'application/pdf' }),
+    )
+    expect(await screen.findByText('offline')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Retry upload retry.pdf' }))
+    await screen.findByText('retry.pdf')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(onSend).toHaveBeenCalledWith({ content: '', attachments: [{ path: 'uploads/retry.pdf' }] })
   })
 })

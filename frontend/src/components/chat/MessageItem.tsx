@@ -6,6 +6,7 @@ import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { InterruptedMessageActions } from '@/components/chat/InterruptedMessageActions'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { MessageActions } from '@/components/chat/MessageActions'
+import { MessageAttachments } from '@/components/chat/MessageAttachments'
 import { PersistedTurnDetails } from '@/components/chat/PersistedTurnDetails'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
@@ -142,6 +143,7 @@ export function MessageItem({
           ) : (
             <MarkdownMessage content={message.content || ' '} isUser={isUser} groupId={groupId} />
           )}
+          {!inputRequest && message.attachments.length > 0 ? <MessageAttachments groupId={groupId} attachments={message.attachments} /> : null}
         </div>
         {isInterrupted && !isResuming && message.thread_id && (
           <InterruptedMessageActions

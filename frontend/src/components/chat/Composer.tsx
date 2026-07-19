@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, Paperclip, Square } from 'lucide-react'
+import { ArrowUp, ChevronDown, FileText, Image, Paperclip, RotateCw, Square, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
 import { Button } from '@/components/ui/button'
-import { useUploadGroupWorkspaceFiles, WorkspaceUploadManyError } from '@/hooks/useGroupFiles'
+import { getGroupWorkspaceFile, useUploadGroupWorkspaceFiles } from '@/hooks/useGroupFiles'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/authStore'
 import { WORKSPACE_PATHS_MIME, workspacePathsFromDataTransfer } from '@/lib/workspaceDrag'
-import type { GroupAgentRead } from '@/types/api'
+import type { GroupAgentRead, MessageSendInput } from '@/types/api'
 
 export type WorkspacePathInserter = (paths: string[]) => void
 
+type PendingAttachment = {
+  localId: string
+  file: File
+  status: 'uploading' | 'uploaded' | 'failed'
+  uploaded?: { path: string }
+  error?: string
+}
+
 interface ComposerProps {
-  onSend: (content: string) => void
+  onSend: (input: MessageSendInput) => void
   onCancel?: () => void
   isStreaming?: boolean
   hint?: string
@@ -43,6 +52,7 @@ export function Composer({
 }: ComposerProps) {
   const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [mentionQuery, setMentionQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
@@ -50,6 +60,7 @@ export function Composer({
   const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const token = useAuthStore((state) => state.token)
   const uploadWorkspaceFiles = useUploadGroupWorkspaceFiles(groupId)
 
   const resizeTextarea = useCallback(() => {
@@ -66,27 +77,25 @@ export function Composer({
   const insertWorkspacePaths = useCallback(
     (paths: string[]) => {
       const cleanPaths = paths.map((path) => path.trim()).filter((path) => path.length > 0)
-      if (cleanPaths.length === 0) return
-      const insertedText = cleanPaths.join('\n')
-      const textarea = textareaRef.current
-      const start = textarea?.selectionStart ?? value.length
-      const end = textarea?.selectionEnd ?? start
-      const before = value.slice(0, start)
-      const after = value.slice(end)
-      const leading = before.length > 0 && !before.endsWith('\n') ? '\n' : ''
-      const trailing = after.length > 0 && !after.startsWith('\n') ? '\n' : ''
-      const nextValue = `${before}${leading}${insertedText}${trailing}${after}`
-      const cursor = before.length + leading.length + insertedText.length
-      setValue(nextValue)
+      if (cleanPaths.length === 0 || !groupId) return
+      void Promise.all(cleanPaths.map((path) => getGroupWorkspaceFile(groupId, path, token)))
+        .then((files) => {
+          const resolved = files.filter((file): file is NonNullable<typeof file> => file !== null)
+          if (resolved.length === 0) return
+          setAttachments((current) => [
+            ...current,
+            ...resolved.map((file) => ({
+              localId: crypto.randomUUID(),
+              file: new File([], file.name),
+              status: 'uploaded' as const,
+              uploaded: { path: file.path },
+            })),
+          ])
+        })
+        .catch((error) => setUploadError(errorDetail(error)))
       setShowMention(false)
-      requestAnimationFrame(() => {
-        const target = textareaRef.current
-        if (!target) return
-        target.setSelectionRange(cursor, cursor)
-        target.focus()
-      })
     },
-    [value],
+    [groupId, token],
   )
 
   useEffect(() => {
@@ -95,35 +104,47 @@ export function Composer({
   }, [insertWorkspacePaths, onRegisterWorkspacePathInserter])
 
   const send = () => {
-    const trimmed = value.trim()
-    if (!trimmed) return
-    onSend(trimmed)
+    const content = value.trim()
+    const uploaded = attachments.filter((attachment) => attachment.status === 'uploaded' && attachment.uploaded)
+    if (!content && uploaded.length === 0) return
+    onSend({ content, attachments: uploaded.map((attachment) => ({ path: attachment.uploaded!.path })) })
     setValue('')
+    setAttachments((current) => current.filter((attachment) => attachment.status !== 'uploaded'))
     setShowMention(false)
   }
 
   const uploadFiles = useCallback(
-    (fileList: FileList | null) => {
+    (fileList: FileList | File[] | null) => {
       const files = Array.from(fileList ?? [])
       if (files.length === 0) return
       setUploadError(null)
-      void uploadWorkspaceFiles
-        .mutateAsync(files)
-        .then((uploaded) => {
-          insertWorkspacePaths(uploaded.map((file) => file.path))
-        })
-        .catch((error: unknown) => {
-          if (error instanceof WorkspaceUploadManyError && error.uploaded.length > 0) {
-            insertWorkspacePaths(error.uploaded.map((file) => file.path))
+      const pending = files.map((file) => ({ localId: crypto.randomUUID(), file, status: 'uploading' as const }))
+      setAttachments((current) => [...current, ...pending])
+      void (async () => {
+        for (const attachment of pending) {
+          try {
+            const [uploaded] = await uploadWorkspaceFiles.mutateAsync([attachment.file])
+            setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'uploaded', uploaded } : item))
+          } catch (error) {
+            setUploadError(errorDetail(error))
+            setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'failed', error: errorDetail(error) } : item))
           }
-          setUploadError(errorDetail(error))
-        })
-        .finally(() => {
-          if (fileInputRef.current) fileInputRef.current.value = ''
-        })
+        }
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      })()
     },
-    [insertWorkspacePaths, uploadWorkspaceFiles],
+    [uploadWorkspaceFiles],
   )
+
+  const retryAttachment = useCallback((attachment: PendingAttachment) => {
+    setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'uploading', error: undefined } : item))
+    void uploadWorkspaceFiles.mutateAsync([attachment.file]).then(([uploaded]) => {
+      setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'uploaded', uploaded } : item))
+    }).catch((error) => {
+      setUploadError(errorDetail(error))
+      setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'failed', error: errorDetail(error) } : item))
+    })
+  }, [uploadWorkspaceFiles])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value
@@ -171,6 +192,11 @@ export function Composer({
   )
 
   const handleDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (event.dataTransfer.files.length > 0) {
+      event.preventDefault()
+      uploadFiles(event.dataTransfer.files)
+      return
+    }
     const paths = workspacePathsFromDataTransfer(event.dataTransfer)
     if (paths.length === 0) return
     event.preventDefault()
@@ -179,11 +205,22 @@ export function Composer({
 
   const handleDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
     const types = Array.from(event.dataTransfer.types)
-    if (!types.includes(WORKSPACE_PATHS_MIME) && !types.includes('text/plain')) {
+    if (!types.includes('Files') && !types.includes(WORKSPACE_PATHS_MIME) && !types.includes('text/plain')) {
       return
     }
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
+    if (files.length > 0) {
+      event.preventDefault()
+      uploadFiles(files)
+    }
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -195,17 +232,15 @@ export function Composer({
   }
 
   const hasText = value.trim().length > 0
+  const hasUploading = attachments.some((attachment) => attachment.status === 'uploading')
+  const hasUploaded = attachments.some((attachment) => attachment.status === 'uploaded')
   const isDisabled = Boolean(disabledReason)
   const showStopAsPrimary = Boolean(isStreaming) && !hasText
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-1">
       <div className="mx-auto w-full max-w-6xl">
-        {uploadError && (
-          <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {t('errors.uploadDetail', { message: uploadError })}
-          </p>
-        )}
+        {uploadError ? <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: uploadError })}</p> : null}
         {disabledReason ? (
           <p className="mb-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
             {disabledReason}
@@ -233,6 +268,7 @@ export function Composer({
             onKeyDown={onKeyDown}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
+            onPaste={handlePaste}
             placeholder={t('composer.placeholder')}
             rows={1}
             aria-label={t('composer.message')}
@@ -242,6 +278,20 @@ export function Composer({
               'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
             )}
           />
+          {attachments.length > 0 ? (
+            <div className="space-y-1 px-3 pb-1">
+              {attachments.map((attachment) => {
+                const isImage = attachment.file.type.startsWith('image/')
+                return <div key={attachment.localId} className="flex min-w-0 items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs">
+                  {isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
+                  <span className="min-w-0 flex-1 truncate">{attachment.file.name}</span>
+                  <span className={cn('shrink-0 text-muted-foreground', attachment.status === 'failed' && 'text-destructive')}>{attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
+                  {attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => retryAttachment(attachment)} aria-label={t('attachments.retryNamed', { name: attachment.file.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
+                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setAttachments((current) => current.filter((item) => item.localId !== attachment.localId))} aria-label={t('attachments.removeNamed', { name: attachment.file.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
+                </div>
+              })}
+            </div>
+          ) : null}
           <div className="flex items-center gap-1.5 px-2.5 pb-2.5 pt-1">
             <input
               ref={fileInputRef}
@@ -341,7 +391,7 @@ export function Composer({
                 size="icon"
                 className="h-8 w-8 shrink-0 rounded-full"
                 onClick={send}
-                disabled={isDisabled || !hasText}
+                disabled={isDisabled || hasUploading || (!hasText && !hasUploaded)}
                 aria-label={t('composer.send')}
                 title={t('composer.sendTitle')}
               >
