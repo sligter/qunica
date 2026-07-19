@@ -1,5 +1,6 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
 import { DetailShell } from '@/components/layout/DetailShell'
@@ -16,13 +17,14 @@ function parseTab(value: string | null): ManageTab {
 }
 
 export function GroupManagePage() {
+  const { t } = useTranslation('groups')
   const { groupId } = useParams<{ groupId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = parseTab(searchParams.get('tab'))
   const group = useGroup(groupId)
 
   if (!groupId) {
-    return <div className="p-6 text-sm text-muted-foreground">No group selected.</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('noGroupSelected')}</div>
   }
 
   const onTabChange = (value: string) => {
@@ -31,10 +33,10 @@ export function GroupManagePage() {
 
   return (
     <DetailShell
-      title="Manage group"
+      title={t('manage.title')}
       subtitle={group.data?.name}
       leading={
-        <Button variant="ghost" size="icon" asChild aria-label="Back to group chat">
+        <Button variant="ghost" size="icon" asChild aria-label={t('manage.back')}>
           <Link to={`/groups/${groupId}`}>
             <ArrowLeft className="h-4 w-4" />
           </Link>
@@ -44,16 +46,16 @@ export function GroupManagePage() {
     >
       {group.error ? (
         <div className="text-sm text-destructive">
-          Failed to load group: {String(group.error)}
+          {t('manage.loadErrorDetail', { message: String(group.error) })}
         </div>
       ) : group.isLoading ? (
-        <div className="text-sm text-muted-foreground">Loading…</div>
+        <div className="text-sm text-muted-foreground">{t('manage.loading')}</div>
       ) : group.data ? (
         <Tabs value={tab} onValueChange={onTabChange} className="min-h-0 w-full">
           <TabsList>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-            <TabsTrigger value="members">Members</TabsTrigger>
-            <TabsTrigger value="notes">Notes</TabsTrigger>
+            <TabsTrigger value="settings">{t('manage.settings')}</TabsTrigger>
+            <TabsTrigger value="members">{t('manage.members')}</TabsTrigger>
+            <TabsTrigger value="notes">{t('manage.notes')}</TabsTrigger>
           </TabsList>
           <TabsContent value="settings" className="mt-6">
             <GroupSettingsTab group={group.data} />
@@ -68,7 +70,7 @@ export function GroupManagePage() {
           </TabsContent>
         </Tabs>
       ) : (
-        <div className="text-sm text-muted-foreground">Group not found.</div>
+        <div className="text-sm text-muted-foreground">{t('manage.notFound')}</div>
       )}
     </DetailShell>
   )

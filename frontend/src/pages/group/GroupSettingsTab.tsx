@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { Button } from '@/components/ui/button'
@@ -12,41 +13,34 @@ import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
 import { ApiError } from '@/lib/api-v2/client'
+import { normalizeLanguage } from '@/i18n'
+import { formatNumber } from '@/lib/format'
 import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
 import type { GroupCommunicationMode, GroupRead, GroupUpdate } from '@/types/api'
 
-const communicationModeOptions: Array<{
-  value: GroupCommunicationMode
-  label: string
-  description: string
-}> = [
-  {
-    value: 'mesh',
-    label: 'Mesh',
-    description: 'Peer collaboration for creative or dynamic work.',
+const communicationModeKeys = {
+  mesh: { label: 'settings.modes.mesh', description: 'settings.modes.meshDescription' },
+  star: { label: 'settings.modes.star', description: 'settings.modes.starDescription' },
+  hierarchical: {
+    label: 'settings.modes.hierarchical',
+    description: 'settings.modes.hierarchicalDescription',
   },
-  {
-    value: 'star',
-    label: 'Star',
-    description: 'Admin hub agents speak first, then other routed agents.',
-  },
-  {
-    value: 'hierarchical',
-    label: 'Hierarchical',
-    description: 'Admin agents lead before worker agents.',
-  },
-  {
-    value: 'ring',
-    label: 'Ring',
-    description: 'Agents take turns in a stable pipeline order.',
-  },
-]
+  ring: { label: 'settings.modes.ring', description: 'settings.modes.ringDescription' },
+} as const satisfies Record<GroupCommunicationMode, { label: string; description: string }>
+
+const communicationModes = Object.keys(communicationModeKeys) as GroupCommunicationMode[]
+
+function isCommunicationMode(value: string): value is GroupCommunicationMode {
+  return communicationModes.some((mode) => mode === value)
+}
 
 interface GroupSettingsTabProps {
   group: GroupRead
 }
 
 export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
+  const { t, i18n } = useTranslation(['groups', 'common'])
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const update = useUpdateGroup(group.id)
   const del = useDeleteGroup()
   const clearMessages = useClearGroupMessages(group.id)
@@ -70,9 +64,10 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   const [communicationMode, setCommunicationMode] = useState<GroupCommunicationMode>(
     group.communication_mode,
   )
+  const communicationModeValue = communicationMode as string
 
-  const [basicsError, setBasicsError] = useState<string | null>(null)
-  const [commError, setCommError] = useState<string | null>(null)
+  const [basicsError, setBasicsError] = useState<string | null | undefined>(undefined)
+  const [commError, setCommError] = useState<string | null | undefined>(undefined)
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
@@ -107,16 +102,16 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     setCommunicationMode(group.communication_mode)
   }, [group.communication_mode])
 
-  const errorMessage = (err: unknown, fallback: string): string =>
-    err instanceof ApiError ? err.message : fallback
+  const errorMessage = (err: unknown): string | null =>
+    err instanceof ApiError ? err.message : null
 
   const saveInstant = async (patch: GroupUpdate, revert: () => void) => {
-    setCommError(null)
+    setCommError(undefined)
     try {
       await update.mutateAsync(patch)
     } catch (err) {
       revert()
-      setCommError(errorMessage(err, 'Failed to update group'))
+      setCommError(errorMessage(err))
     }
   }
 
@@ -160,7 +155,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     announcement !== (group.announcement ?? '')
 
   const onSaveBasics = async () => {
-    setBasicsError(null)
+    setBasicsError(undefined)
     try {
       await update.mutateAsync({
         name: name.trim(),
@@ -170,7 +165,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         announcement: announcement || null,
       })
     } catch (err) {
-      setBasicsError(errorMessage(err, 'Failed to update group'))
+      setBasicsError(errorMessage(err))
     }
   }
 
@@ -179,14 +174,14 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     freeMentionMaxDispatches !== group.agent_free_mention_max_dispatches
 
   const onSaveLimits = async () => {
-    setCommError(null)
+    setCommError(undefined)
     try {
       await update.mutateAsync({
         proactive_reply_multiplier: proactiveReplyMultiplier,
         agent_free_mention_max_dispatches: freeMentionMaxDispatches,
       })
     } catch (err) {
-      setCommError(errorMessage(err, 'Failed to update group'))
+      setCommError(errorMessage(err))
     }
   }
 
@@ -203,20 +198,20 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   return (
     <div className="w-full space-y-10">
       <SettingsSection
-        title="Basic information"
-        description="Identity, shared context, and working location for this group."
+        title={t('settings.basic')}
+        description={t('settings.basicDescription')}
         className="max-w-4xl"
-        aside={<div className="flex items-center gap-2"><span className="hidden text-xs text-muted-foreground sm:inline">{basicsDirty ? 'Unsaved changes' : 'All changes saved'}</span>
+        aside={<div className="flex items-center gap-2"><span className="hidden text-xs text-muted-foreground sm:inline">{basicsDirty ? t('settings.unsaved') : t('settings.saved')}</span>
           <Button
             size="sm"
             onClick={() => void onSaveBasics()}
             disabled={!basicsDirty || update.isPending}
           >
-            {update.isPending ? 'Saving…' : 'Save'}
+            {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
           </Button>
         </div>}
       >
-        <SettingsRow label="Group name" htmlFor="gs-name" stacked className="py-5">
+        <SettingsRow label={t('settings.name')} htmlFor="gs-name" stacked className="py-5">
           <Input
             id="gs-name"
             value={name}
@@ -226,8 +221,8 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         </SettingsRow>
 
         <SettingsRow
-          label="Announcement"
-          description="Shown to agents as shared group context."
+          label={t('settings.announcement')}
+          description={t('settings.announcementDescription')}
           htmlFor="gs-announce"
           stacked
           className="py-5"
@@ -242,8 +237,8 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         </SettingsRow>
 
         <SettingsRow
-          label="Workspace"
-          description="Group files live in this workspace. Choose another existing workspace or create a local workspace to move future group file operations to that folder."
+          label={t('settings.workspace')}
+          description={t('settings.workspaceDescription')}
           stacked
           className="py-5"
         >
@@ -258,76 +253,84 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           </div>
         </SettingsRow>
 
-        {basicsError ? (
+        {basicsError !== undefined ? (
           <p className="py-2 text-sm text-destructive" role="alert">
-            {basicsError}
+            {basicsError
+              ? t('errors.updateDetail', { message: basicsError })
+              : t('errors.update')}
           </p>
         ) : null}
       </SettingsSection>
 
       <SettingsSection
-        title="Communication"
+        title={t('settings.communication')}
         aside={
           <Button
             size="sm"
             onClick={() => void onSaveLimits()}
             disabled={!limitsDirty || update.isPending}
           >
-            {update.isPending ? 'Saving…' : 'Save'}
+            {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
           </Button>
         }
       >
         <SettingsRow
-          label="Communication mode"
+          label={t('settings.mode')}
           description={
-            communicationModeOptions.find(
-              (option) => option.value === communicationMode,
-            )?.description
+            isCommunicationMode(communicationModeValue)
+              ? t(communicationModeKeys[communicationModeValue].description)
+              : communicationModeValue
           }
           htmlFor="gs-communication-mode"
         >
           <select
             id="gs-communication-mode"
-            value={communicationMode}
+            value={communicationModeValue}
             onChange={(event) => onCommunicationModeChange(event.target.value)}
             disabled={update.isPending}
             className="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           >
-            {communicationModeOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
+            {!isCommunicationMode(communicationModeValue) ? (
+              <option value={communicationModeValue}>{communicationModeValue}</option>
+            ) : null}
+            {communicationModes.map((mode) => (
+              <option key={mode} value={mode}>
+                {t(communicationModeKeys[mode].label)}
               </option>
             ))}
           </select>
         </SettingsRow>
 
         <SettingsRow
-          label="Free speech"
-          description="When enabled, all agents respond freely without needing @mention."
+          label={t('settings.freeSpeech')}
+          description={t('settings.freeSpeechDescription')}
         >
           <Switch
             checked={freeSpeech}
             onCheckedChange={onFreeSpeechChange}
             disabled={update.isPending}
-            aria-label="Free speech"
+            aria-label={t('settings.freeSpeech')}
           />
         </SettingsRow>
 
         <SettingsRow
-          label="Proactive mode"
-          description="When enabled, agents decide for themselves whether to reply (they may stay silent if they have nothing to add)."
+          label={t('settings.proactive')}
+          description={t('settings.proactiveDescription')}
         >
           <Switch
             checked={proactiveMode}
             onCheckedChange={onProactiveModeChange}
             disabled={update.isPending}
-            aria-label="Proactive mode"
+            aria-label={t('settings.proactive')}
           />
         </SettingsRow>
 
         <SettingsRow
-          label="Reply multiplier"
-          description={`Allows up to routed agents × ${proactiveReplyMultiplier} visible replies. Silent turns do not count, and the loop ends early when everyone stays silent.`}
+          label={t('settings.replyMultiplier')}
+          description={t('settings.replyMultiplierDescription', {
+            count: proactiveReplyMultiplier,
+            formattedCount: formatNumber(proactiveReplyMultiplier, language),
+          })}
           htmlFor="gs-proactive-reply-multiplier"
         >
           <Input
@@ -343,20 +346,23 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         </SettingsRow>
 
         <SettingsRow
-          label="Allow agent free @mention"
-          description="Allow agents to freely @ any group member in replies."
+          label={t('settings.freeMention')}
+          description={t('settings.freeMentionDescription')}
         >
           <Switch
             checked={allowFreeMention}
             onCheckedChange={onAllowFreeMentionChange}
             disabled={update.isPending}
-            aria-label="Allow agent free @mention"
+            aria-label={t('settings.freeMention')}
           />
         </SettingsRow>
 
         <SettingsRow
-          label="Follow-up limit"
-          description={`Allows up to ${freeMentionMaxDispatches} agent-to-agent @mention follow-up turns per send. Set 0 to disable follow-ups.`}
+          label={t('settings.followUp')}
+          description={t('settings.followUpDescription', {
+            count: freeMentionMaxDispatches,
+            formattedCount: formatNumber(freeMentionMaxDispatches, language),
+          })}
           htmlFor="gs-free-mention-max"
         >
           <Input
@@ -371,19 +377,21 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           />
         </SettingsRow>
 
-        {commError ? (
+        {commError !== undefined ? (
           <p className="py-2 text-sm text-destructive" role="alert">
-            {commError}
+            {commError
+              ? t('errors.updateDetail', { message: commError })
+              : t('errors.update')}
           </p>
         ) : null}
       </SettingsSection>
 
       <GroupSchedulerSettingsSection group={group} />
 
-      <SettingsSection title="Danger">
+      <SettingsSection title={t('settings.danger')}>
         <SettingsRow
-          label="Chat history"
-          description="Clear visible chat records for this group."
+          label={t('settings.history')}
+          description={t('settings.historyDescription')}
         >
           <Button
             variant="outline"
@@ -392,13 +400,13 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             disabled={clearMessages.isPending}
             className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
-            {clearMessages.isPending ? 'Clearing…' : 'Clear history'}
+            {clearMessages.isPending ? t('settings.clearing') : t('settings.clearHistory')}
           </Button>
         </SettingsRow>
 
         <SettingsRow
-          label="Delete group"
-          description="Soft-delete: messages and threads stay in the database, but the group disappears from your list."
+          label={t('actions.delete')}
+          description={t('settings.deleteDescription')}
         >
           <Button
             variant="outline"
@@ -407,7 +415,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             disabled={del.isPending}
             className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
-            {del.isPending ? 'Deleting…' : 'Delete group'}
+            {del.isPending ? t('common:actions.deleting') : t('actions.delete')}
           </Button>
         </SettingsRow>
       </SettingsSection>
@@ -415,9 +423,9 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
       <ConfirmDialog
         open={confirmClearOpen}
         onOpenChange={setConfirmClearOpen}
-        title="Clear chat history?"
-        description="Clear all visible chat records for this group? This cannot be undone."
-        confirmLabel="Clear"
+        title={t('settings.clearTitle')}
+        description={t('settings.clearDescription')}
+        confirmLabel={t('common:actions.clear')}
         destructive
         onConfirm={async () => {
           await clearMessages.mutateAsync()
@@ -427,9 +435,9 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
       <ConfirmDialog
         open={confirmDeleteOpen}
         onOpenChange={setConfirmDeleteOpen}
-        title={`Delete group "${group.name}"?`}
-        description="This is a soft-delete; messages and threads stay in the database but the group won't appear in your list anymore."
-        confirmLabel="Delete"
+        title={t('settings.deleteTitle', { name: group.name })}
+        description={t('settings.deleteConfirmDescription')}
+        confirmLabel={t('common:actions.delete')}
         destructive
         onConfirm={async () => {
           await del.mutateAsync(group.id)

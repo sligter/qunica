@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Files, PanelRightClose, Settings } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
@@ -13,6 +14,8 @@ import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useGroupMessages } from '@/hooks/useGroupMessages'
 import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
+import { normalizeLanguage } from '@/i18n'
+import { formatNumber } from '@/lib/format'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
 
@@ -35,6 +38,8 @@ function storeWorkspaceFilesOpen(groupId: string, value: boolean): void {
 }
 
 export function GroupChatPage() {
+  const { t, i18n } = useTranslation(['groups', 'chat'])
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const { groupId } = useParams<{ groupId: string }>()
   const group = useGroup(groupId)
   const messagesQuery = useGroupMessages(groupId)
@@ -88,6 +93,15 @@ export function GroupChatPage() {
     if (groupId) clearWarnings(groupId)
   }, [groupId, clearWarnings])
 
+  useEffect(() => {
+    if (!group.data?.name) return
+    const previousTitle = document.title
+    document.title = t('documentTitle', { name: group.data.name })
+    return () => {
+      document.title = previousTitle
+    }
+  }, [group.data?.name, t])
+
   // A chat file link wants to show a file — make sure the panel is visible.
   useEffect(() => {
     if (fileNavRequest && fileNavRequest.groupId === groupId) {
@@ -96,24 +110,24 @@ export function GroupChatPage() {
   }, [fileNavRequest, groupId, setWorkspaceFilesOpenPersisted])
 
   if (!groupId) {
-    return <div className="p-6 text-sm text-muted-foreground">No group selected.</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('noGroupSelected')}</div>
   }
 
   if (group.error || messagesQuery.error) {
     const err = group.error ?? messagesQuery.error
     return (
       <div className="p-6 text-sm text-destructive">
-        Failed to load group: {String(err)}
+        {t('manage.loadErrorDetail', { message: String(err) })}
       </div>
     )
   }
 
   if (group.isLoading || messagesQuery.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+    return <div className="p-6 text-sm text-muted-foreground">{t('manage.loading')}</div>
   }
 
   const agents = groupAgents.data ?? []
-  const hint = agents.length === 0 ? 'No agents in this group yet - add one above.' : undefined
+  const hint = agents.length === 0 ? t('emptyAgents') : undefined
 
   return (
     <div className="flex h-full flex-col">
@@ -123,7 +137,10 @@ export function GroupChatPage() {
             {group.data?.name}
           </h1>
           <span className="text-xs text-muted-foreground">
-            {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
+            {t('header.agent', {
+              count: agents.length,
+              formattedCount: formatNumber(agents.length, language),
+            })}
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -131,7 +148,7 @@ export function GroupChatPage() {
             variant={workspaceFilesOpen ? 'secondary' : 'ghost'}
             size="icon"
             onClick={() => setWorkspaceFilesOpenPersisted((open) => !open)}
-            aria-label={workspaceFilesOpen ? 'Hide workspace files' : 'Show workspace files'}
+            aria-label={workspaceFilesOpen ? t('chat:workspace.hide') : t('chat:workspace.show')}
           >
             {workspaceFilesOpen ? (
               <PanelRightClose className="h-4 w-4" />
@@ -139,7 +156,7 @@ export function GroupChatPage() {
               <Files className="h-4 w-4" />
             )}
           </Button>
-          <Button variant="ghost" size="icon" asChild aria-label="Manage group">
+          <Button variant="ghost" size="icon" asChild aria-label={t('actions.manage')}>
             <Link to={`/groups/${groupId}/manage`}>
               <Settings className="h-4 w-4" />
             </Link>
@@ -149,7 +166,7 @@ export function GroupChatPage() {
 
       {group.data?.announcement && (
         <div className="shrink-0 border-b border-border/60 bg-card px-4 py-2 text-xs text-muted-foreground lg:px-5">
-          Announcement: {group.data.announcement}
+          {t('header.announcement', { text: group.data.announcement })}
         </div>
       )}
 
@@ -167,7 +184,7 @@ export function GroupChatPage() {
           {stream.error && (
             <div className="shrink-0 px-4">
               <div className="mx-auto w-full max-w-6xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                Stream error: {stream.error}
+                {t('chat:stream.error', { message: stream.error })}
               </div>
             </div>
           )}
@@ -185,7 +202,7 @@ export function GroupChatPage() {
         {workspaceFilesOpen && (
           <>
             <VerticalResizeHandle
-              label="Resize workspace files column"
+              label={t('chat:workspace.resize')}
               value={workspaceFilesPane.width}
               min={workspaceFilesPane.minWidth}
               max={workspaceFilesPane.maxWidth}

@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/lib/api-v2/client'
+import i18n from '@/i18n'
 import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
 import type { GroupRead } from '@/types/api'
 
@@ -116,8 +117,9 @@ function renderSection(nextGroup: GroupRead = group) {
 }
 
 describe('GroupSchedulerSettingsSection', () => {
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
+    await i18n.changeLanguage('en-US')
   })
 
   beforeEach(() => {
@@ -129,6 +131,21 @@ describe('GroupSchedulerSettingsSection', () => {
       ...group,
       ...payload,
     }))
+  })
+
+  it('localizes scheduler labels and empty provider state', async () => {
+    await i18n.changeLanguage('en-US')
+    renderSection()
+    expect(screen.getByText('Bounded scheduler')).toBeVisible()
+    expect(screen.getByRole('switch', { name: 'Enable bounded scheduler' })).toBeVisible()
+    expect(screen.getAllByText('No provider')[0]).toBeVisible()
+
+    cleanup()
+    await i18n.changeLanguage('zh-CN')
+    renderSection()
+    expect(screen.getByText('有界调度器')).toBeVisible()
+    expect(screen.getByRole('switch', { name: '启用有界调度器' })).toBeVisible()
+    expect(screen.getAllByText('无提供商')[0]).toBeVisible()
   })
 
   it('renders null max_agent_steps as the Auto mode and submits null', async () => {
@@ -256,6 +273,19 @@ describe('GroupSchedulerSettingsSection', () => {
     expect(link).toHaveAttribute('href', '/groups/group-1/manage?tab=members')
   })
 
+  it('shows localized framing for an unexpected scheduler update error', async () => {
+    const user = userEvent.setup()
+    mocks.mutateAsync.mockRejectedValueOnce(new Error('offline'))
+    renderSection()
+
+    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to update scheduler settings',
+    )
+  })
+
   it('enables Save only when dirty and disables it while pending', async () => {
     const user = userEvent.setup()
     const view = renderSection()
@@ -272,7 +302,7 @@ describe('GroupSchedulerSettingsSection', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByRole('button', { name: 'Saving...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled()
   })
 
   it('does not overwrite dirty edits when the group prop refreshes', async () => {

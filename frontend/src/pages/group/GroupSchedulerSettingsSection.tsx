@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm, type Path, type PathValue } from 'react-hook-form'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
@@ -18,29 +19,42 @@ import { Switch } from '@/components/ui/switch'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { useProviderModels, useProviders } from '@/hooks/useProviders'
 import { ApiError } from '@/lib/api-v2/client'
+import { normalizeLanguage } from '@/i18n'
+import { formatNumber } from '@/lib/format'
 import type { GroupSchedulerConfig } from '@/lib/api-v2/types'
 import type { GroupRead, GroupUpdate } from '@/types/api'
 
 const NO_SELECTION = '__none__'
 const AUTO_MAX_AGENT_STEPS = 8
+type AgentMentionPolicy = GroupSchedulerConfig['agent_mention_policy']
+
+const mentionPolicies: AgentMentionPolicy[] = ['display_only', 'bounded_schedule']
+const mentionPolicyKeys = {
+  display_only: 'scheduler.displayOnly',
+  bounded_schedule: 'scheduler.boundedSchedule',
+} as const satisfies Record<AgentMentionPolicy, string>
+
+function isAgentMentionPolicy(value: string): value is AgentMentionPolicy {
+  return mentionPolicies.some((policy) => policy === value)
+}
 
 const schedulerFormSchema = z
   .object({
     scheduler_enabled: z.boolean(),
     agent_mention_policy: z.enum(['display_only', 'bounded_schedule']),
     max_agent_steps_mode: z.enum(['auto', 'custom']),
-    max_agent_steps_custom: z.number().int().min(1, 'Must be at least 1'),
-    max_steps_per_agent: z.number().int().min(1, 'Must be at least 1'),
-    max_scheduler_hops: z.number().int().min(0, 'Must be 0 or greater'),
-    max_moderator_calls: z.number().int().min(0, 'Must be 0 or greater'),
-    max_consecutive_failures: z.number().int().min(1, 'Must be at least 1'),
-    max_total_failures: z.number().int().min(1, 'Must be at least 1'),
-    max_total_tokens: z.number().int().min(1, 'Must be at least 1'),
+    max_agent_steps_custom: z.number().int().min(1, 'minOne'),
+    max_steps_per_agent: z.number().int().min(1, 'minOne'),
+    max_scheduler_hops: z.number().int().min(0, 'minZero'),
+    max_moderator_calls: z.number().int().min(0, 'minZero'),
+    max_consecutive_failures: z.number().int().min(1, 'minOne'),
+    max_total_failures: z.number().int().min(1, 'minOne'),
+    max_total_tokens: z.number().int().min(1, 'minOne'),
     turn_timeout_seconds: z
       .number()
       .int()
-      .min(1, 'Must be at least 1 second')
-      .max(3600, 'Must be 3600 seconds or less'),
+      .min(1, 'minOneSecond')
+      .max(3600, 'maxSeconds'),
     moderator_enabled: z.boolean(),
     moderator_provider_id: z.string().nullable(),
     moderator_model: z.string().nullable(),
@@ -52,14 +66,14 @@ const schedulerFormSchema = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['moderator_provider_id'],
-        message: 'Choose an active provider for the moderator',
+        message: 'provider',
       })
     }
     if (!values.moderator_model?.trim()) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['moderator_model'],
-        message: 'Choose a model for the moderator',
+        message: 'model',
       })
     }
   })
@@ -93,10 +107,6 @@ function isTopologyError(error: unknown): boolean {
   return error instanceof ApiError && /topology|hub|leader|ring/i.test(error.message)
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof ApiError ? error.message : 'Failed to update scheduler settings'
-}
-
 function numericRegistration() {
   return {
     setValueAs: (value: string) => (value === '' ? Number.NaN : Number(value)),
@@ -104,21 +114,34 @@ function numericRegistration() {
 }
 
 function FieldError({ message }: { message: string | undefined }) {
+  const { t } = useTranslation('groups')
+  const knownMessages = [
+    'minOne',
+    'minZero',
+    'minOneSecond',
+    'maxSeconds',
+    'provider',
+    'model',
+  ]
   return message ? (
     <p className="text-xs text-destructive" role="alert">
-      {message}
+      {knownMessages.includes(message)
+        ? t(`scheduler.validation.${message}`)
+        : t('scheduler.validation.detail', { message })}
     </p>
   ) : null
 }
 
 export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsSectionProps) {
+  const { t, i18n } = useTranslation(['groups', 'common'])
+  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const update = useUpdateGroup(group.id)
   const providers = useProviders()
   const form = useForm<SchedulerFormValues>({
     resolver: zodResolver(schedulerFormSchema),
     defaultValues: groupToFormValues(group),
   })
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null | undefined>(undefined)
   const [topologyError, setTopologyError] = useState(false)
 
   const schedulerEnabled = form.watch('scheduler_enabled')
@@ -126,6 +149,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const selectedProviderId = form.watch('moderator_provider_id')
   const selectedModel = form.watch('moderator_model')
   const maxAgentStepsMode = form.watch('max_agent_steps_mode')
+  const mentionPolicy = form.watch('agent_mention_policy') as string
   const models = useProviderModels(selectedProviderId ?? undefined)
 
   const activeProviders = useMemo(
@@ -141,7 +165,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
       ...activeProviders,
       {
         id: selectedProviderId,
-        name: `Saved provider (${selectedProviderId})`,
+        name: t('scheduler.savedProvider', { id: selectedProviderId }),
         kind: 'openai-compatible' as const,
         base_url: null,
         api_key_masked: '',
@@ -154,20 +178,20 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
         created_at: '',
       },
     ]
-  }, [activeProviders, selectedProviderId, selectedProviderIsActive])
+  }, [activeProviders, selectedProviderId, selectedProviderIsActive, t])
 
   const modelOptions = useMemo(() => {
     const available = models.data ?? []
     if (!selectedModel || available.some((model) => model.id === selectedModel)) return available
-    return [{ id: selectedModel, name: `Saved model (${selectedModel})` }, ...available]
-  }, [models.data, selectedModel])
+    return [{ id: selectedModel, name: t('scheduler.savedModel', { id: selectedModel }) }, ...available]
+  }, [models.data, selectedModel, t])
 
   // Query invalidation refreshes the group after other settings save. Keep this
   // independent form intact until it is pristine or this form saved successfully.
   useEffect(() => {
     if (!form.formState.isDirty) {
       form.reset(groupToFormValues(group))
-      setSubmitError(null)
+      setSubmitError(undefined)
       setTopologyError(false)
     }
   }, [form, group])
@@ -176,12 +200,12 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const moderatorControlsDisabled = schedulerControlsDisabled || !moderatorEnabled
 
   const onSubmit = form.handleSubmit(async (values) => {
-    setSubmitError(null)
+    setSubmitError(undefined)
     setTopologyError(false)
 
     if (values.moderator_enabled && !selectedProviderIsActive) {
       form.setError('moderator_provider_id', {
-        message: 'Choose an active provider for the moderator',
+        message: 'provider',
       })
       return
     }
@@ -207,7 +231,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
       const updated = await update.mutateAsync(payload)
       form.reset(groupToFormValues(updated))
     } catch (error) {
-      setSubmitError(errorMessage(error))
+      setSubmitError(error instanceof ApiError ? error.message : null)
       setTopologyError(isTopologyError(error))
     }
   })
@@ -216,7 +240,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
     field: TField,
     value: PathValue<SchedulerFormValues, TField>,
   ) => {
-    setSubmitError(null)
+    setSubmitError(undefined)
     setTopologyError(false)
     form.setValue(field, value, { shouldDirty: true, shouldValidate: true })
   }
@@ -231,11 +255,11 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
 
   return (
     <SettingsSection
-      title="Bounded scheduler"
-      description="Configure persistent, budgeted agent collaboration. Changes apply together."
+      title={t('scheduler.title')}
+      description={t('scheduler.description')}
       aside={
         <Button type="submit" size="sm" form="group-scheduler-settings" disabled={!form.formState.isDirty || update.isPending}>
-          {update.isPending ? 'Saving...' : 'Save'}
+          {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
         </Button>
       }
     >
@@ -246,43 +270,53 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
         className="divide-y divide-border"
       >
         <SettingsRow
-          label="Enable bounded scheduler"
-          description="Use the bounded scheduler for future group turns."
+          label={t('scheduler.enable')}
+          description={t('scheduler.enableDescription')}
         >
           <Switch
             checked={schedulerEnabled}
             onCheckedChange={(value) => updateValue('scheduler_enabled', value)}
             disabled={update.isPending}
-            aria-label="Enable bounded scheduler"
+            aria-label={t('scheduler.enable')}
           />
         </SettingsRow>
 
         <SettingsRow
-          label="Agent mention policy"
-          description="Controls whether agent mentions can schedule bounded follow-ups."
+          label={t('scheduler.mentionPolicy')}
+          description={t('scheduler.mentionPolicyDescription')}
         >
           <Select
-            value={form.watch('agent_mention_policy')}
+            value={mentionPolicy}
             onValueChange={(value) => {
-              if (value === 'display_only' || value === 'bounded_schedule') {
+              if (isAgentMentionPolicy(value)) {
                 updateValue('agent_mention_policy', value)
               }
             }}
             disabled={schedulerControlsDisabled}
           >
-            <SelectTrigger className="w-52" aria-label="Agent mention policy">
+            <SelectTrigger className="w-52" aria-label={t('scheduler.mentionPolicy')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="display_only">Display only</SelectItem>
-              <SelectItem value="bounded_schedule">Bounded schedule</SelectItem>
+              {!isAgentMentionPolicy(mentionPolicy) ? (
+                <SelectItem value={mentionPolicy}>{mentionPolicy}</SelectItem>
+              ) : null}
+              {mentionPolicies.map((policy) => (
+                <SelectItem key={policy} value={policy}>
+                  {t(mentionPolicyKeys[policy])}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </SettingsRow>
 
         <SettingsRow
-          label="Maximum agent steps"
-          description="Auto derives 3× the active agents, with a minimum of 8 and maximum of 24."
+          label={t('scheduler.maximumSteps')}
+          description={t('scheduler.maximumStepsDescription', {
+            factor: formatNumber(3, language),
+            minimum: formatNumber(8, language),
+            maximum: formatNumber(24, language),
+          })}
           stacked
         >
           <div className="grid gap-2 sm:grid-cols-[minmax(0,18rem)_5rem]">
@@ -295,17 +329,21 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               }}
               disabled={schedulerControlsDisabled}
             >
-              <SelectTrigger className="w-full" aria-label="Maximum agent steps mode">
+              <SelectTrigger className="w-full" aria-label={t('scheduler.maximumStepsMode')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="auto">Auto (3× agents, min 8, max 24)</SelectItem>
-                <SelectItem value="custom">Custom</SelectItem>
+                <SelectItem value="auto">{t('scheduler.autoSteps', {
+                  factor: formatNumber(3, language),
+                  minimum: formatNumber(8, language),
+                  maximum: formatNumber(24, language),
+                })}</SelectItem>
+                <SelectItem value="custom">{t('scheduler.custom')}</SelectItem>
               </SelectContent>
             </Select>
             <div className="space-y-1">
               <Input
-                aria-label="Custom maximum agent steps"
+                aria-label={t('scheduler.customMaximumSteps')}
                 type="number"
                 min={1}
                 step={1}
@@ -319,8 +357,8 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
         </SettingsRow>
 
         <SettingsRow
-          label="Steps per agent"
-          description="Maximum visible scheduler steps for one agent."
+          label={t('scheduler.stepsPerAgent')}
+          description={t('scheduler.stepsPerAgentDescription')}
           htmlFor="scheduler-max-steps-per-agent"
         >
           <div className="space-y-1">
@@ -337,7 +375,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Scheduler hops" htmlFor="scheduler-max-hops">
+        <SettingsRow label={t('scheduler.hops')} htmlFor="scheduler-max-hops">
           <div className="space-y-1">
             <Input
               id="scheduler-max-hops"
@@ -352,7 +390,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Moderator calls" htmlFor="scheduler-max-moderator-calls">
+        <SettingsRow label={t('scheduler.moderatorCalls')} htmlFor="scheduler-max-moderator-calls">
           <div className="space-y-1">
             <Input
               id="scheduler-max-moderator-calls"
@@ -367,7 +405,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Consecutive failures" htmlFor="scheduler-max-consecutive-failures">
+        <SettingsRow label={t('scheduler.consecutiveFailures')} htmlFor="scheduler-max-consecutive-failures">
           <div className="space-y-1">
             <Input
               id="scheduler-max-consecutive-failures"
@@ -382,7 +420,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Total failures" htmlFor="scheduler-max-total-failures">
+        <SettingsRow label={t('scheduler.totalFailures')} htmlFor="scheduler-max-total-failures">
           <div className="space-y-1">
             <Input
               id="scheduler-max-total-failures"
@@ -397,7 +435,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Total tokens" htmlFor="scheduler-max-total-tokens">
+        <SettingsRow label={t('scheduler.totalTokens')} htmlFor="scheduler-max-total-tokens">
           <div className="space-y-1">
             <Input
               id="scheduler-max-total-tokens"
@@ -412,7 +450,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Turn timeout" description="Seconds, from 1 to 3600." htmlFor="scheduler-turn-timeout">
+        <SettingsRow label={t('scheduler.timeout')} description={t('scheduler.timeoutDescription', { minimum: formatNumber(1, language), maximum: formatNumber(3600, language) })} htmlFor="scheduler-turn-timeout">
           <div className="space-y-1">
             <Input
               id="scheduler-turn-timeout"
@@ -428,34 +466,34 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Enable moderator" description="Ask a provider to select among legal candidates.">
+        <SettingsRow label={t('scheduler.enableModerator')} description={t('scheduler.enableModeratorDescription')}>
           <Switch
             checked={moderatorEnabled}
             onCheckedChange={(value) => updateValue('moderator_enabled', value)}
             disabled={schedulerControlsDisabled}
-            aria-label="Enable moderator"
+            aria-label={t('scheduler.enableModerator')}
           />
         </SettingsRow>
 
-        <SettingsRow label="Moderator provider" stacked>
+        <SettingsRow label={t('scheduler.moderatorProvider')} stacked>
           <div className="space-y-1">
             <Select
               value={selectedProviderId ?? NO_SELECTION}
               onValueChange={onProviderChange}
               disabled={moderatorControlsDisabled || providers.isLoading}
             >
-              <SelectTrigger className="w-full max-w-md" aria-label="Moderator provider">
-                <SelectValue placeholder={providers.isLoading ? 'Loading providers...' : 'Choose provider'} />
+              <SelectTrigger className="w-full max-w-md" aria-label={t('scheduler.moderatorProvider')}>
+                <SelectValue placeholder={providers.isLoading ? t('scheduler.loadingProviders') : t('scheduler.chooseProvider')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_SELECTION}>No provider</SelectItem>
+                <SelectItem value={NO_SELECTION}>{t('scheduler.noProvider')}</SelectItem>
                 {providerOptions.map((provider) => (
                   <SelectItem
                     key={provider.id}
                     value={provider.id}
                     disabled={provider.status !== 'active'}
                   >
-                    {provider.name} - {provider.default_model || 'unavailable'}
+                    {provider.name} - {provider.default_model || t('scheduler.unavailable')}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -464,7 +502,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        <SettingsRow label="Moderator model" stacked>
+        <SettingsRow label={t('scheduler.moderatorModel')} stacked>
           <div className="space-y-1">
             <Select
               value={selectedModel ?? NO_SELECTION}
@@ -473,11 +511,11 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               }
               disabled={moderatorControlsDisabled || !selectedProviderId || models.isLoading}
             >
-              <SelectTrigger className="w-full max-w-md" aria-label="Moderator model">
-                <SelectValue placeholder={models.isLoading ? 'Loading models...' : 'Choose model'} />
+              <SelectTrigger className="w-full max-w-md" aria-label={t('scheduler.moderatorModel')}>
+                <SelectValue placeholder={models.isLoading ? t('scheduler.loadingModels') : t('scheduler.chooseModel')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_SELECTION}>No model</SelectItem>
+                <SelectItem value={NO_SELECTION}>{t('scheduler.noModel')}</SelectItem>
                 {modelOptions.map((model) => (
                   <SelectItem key={model.id} value={model.id}>
                     {model.name}
@@ -489,12 +527,14 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           </div>
         </SettingsRow>
 
-        {submitError ? (
+        {submitError !== undefined ? (
           <p className="py-2 text-sm text-destructive" role="alert">
-            {submitError}{' '}
+            {submitError
+              ? t('errors.updateDetail', { message: submitError })
+              : t('scheduler.errors.update')}{' '}
             {topologyError ? (
               <Link className="underline" to={`/groups/${group.id}/manage?tab=members`}>
-                Review group members
+                {t('scheduler.reviewMembers')}
               </Link>
             ) : null}
           </p>

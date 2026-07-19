@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { Link, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
@@ -24,35 +25,20 @@ import { ApiError } from '@/lib/api-v2/client'
 import { cn } from '@/lib/utils'
 import type { GroupCommunicationMode } from '@/types/api'
 
-const communicationModeOptions: Array<{
-  value: GroupCommunicationMode
-  label: string
-  description: string
-}> = [
-  {
-    value: 'mesh',
-    label: 'Mesh',
-    description: 'Peer collaboration for creative or dynamic work.',
+const communicationModeKeys = {
+  mesh: { label: 'settings.modes.mesh', description: 'settings.modes.meshDescription' },
+  star: { label: 'settings.modes.star', description: 'settings.modes.starDescription' },
+  hierarchical: {
+    label: 'settings.modes.hierarchical',
+    description: 'settings.modes.hierarchicalDescription',
   },
-  {
-    value: 'star',
-    label: 'Star',
-    description: 'Admin hub speaks first, then other routed agents.',
-  },
-  {
-    value: 'hierarchical',
-    label: 'Hierarchical',
-    description: 'Admin agents lead before worker agents.',
-  },
-  {
-    value: 'ring',
-    label: 'Ring',
-    description: 'Agents take turns in a stable pipeline order.',
-  },
-]
+  ring: { label: 'settings.modes.ring', description: 'settings.modes.ringDescription' },
+} as const satisfies Record<GroupCommunicationMode, { label: string; description: string }>
+
+const communicationModes = Object.keys(communicationModeKeys) as GroupCommunicationMode[]
 
 const schema = z.object({
-  name: z.string().min(1, 'Required').max(100),
+  name: z.string().min(1, 'required').max(100, 'nameTooLong'),
   description: z.string().optional(),
   announcement: z.string().optional(),
   communication_mode: z.enum(['mesh', 'star', 'hierarchical', 'ring']),
@@ -73,13 +59,14 @@ interface GroupFormDialogProps {
  * header's gear icon — out of scope here.
  */
 export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
+  const { t } = useTranslation(['groups', 'common'])
   const navigate = useNavigate()
   const agents = useAgents()
   const settings = useSystemSettings()
   const createGroup = useCreateGroup()
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null | undefined>(undefined)
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -106,7 +93,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
       })
       setSelectedAgentIds([])
       setSelectedWorkspaceId('')
-      setSubmitError(null)
+      setSubmitError(undefined)
     }
   }, [open, form])
 
@@ -119,7 +106,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
   const rootConfigured = Boolean(settings.data?.group_workspace_root)
 
   const onSubmit = form.handleSubmit(async (values) => {
-    setSubmitError(null)
+    setSubmitError(undefined)
     try {
       const created = await createGroup.mutateAsync({
         name: values.name,
@@ -132,109 +119,105 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
       onOpenChange(false)
       void navigate(`/groups/${created.id}`)
     } catch (err) {
-      setSubmitError(err instanceof ApiError ? err.message : 'Network error')
+      setSubmitError(err instanceof ApiError ? err.message : null)
     }
   })
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-[95vw] flex-col gap-4 overflow-hidden sm:max-w-2xl">
+      <DialogContent
+        closeLabel={t('common:actions.close')}
+        className="flex max-h-[85vh] w-[95vw] flex-col gap-4 overflow-hidden sm:max-w-2xl"
+      >
         <DialogHeader className="shrink-0">
-          <DialogTitle>Create a new group</DialogTitle>
-          <DialogDescription>
-            A group is the shared context where users and agents collaborate.
-            Choose an existing workspace, create a local workspace, or let the
-            app auto-create one under your configured group workspace root.
-          </DialogDescription>
+          <DialogTitle>{t('create.title')}</DialogTitle>
+          <DialogDescription>{t('create.description')}</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col gap-4">
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <div className="space-y-1.5">
-            <Label htmlFor="gd-name">Name</Label>
+            <Label htmlFor="gd-name">{t('create.name')}</Label>
             <Input id="gd-name" {...form.register('name')} />
             {form.formState.errors.name && (
               <p className="text-xs text-destructive">
-                {form.formState.errors.name.message}
+                {t(`create.${form.formState.errors.name.message}`)}
               </p>
             )}
           </div>
 
           <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
-            <p className="font-medium">Group workspace</p>
+            <p className="font-medium">{t('create.workspace')}</p>
             <p className="mb-2 text-muted-foreground">
-              Choose an existing workspace or create a local one. Leave it empty
-              to auto-create from the system root.
+              {t('create.workspaceDescription')}
             </p>
             <WorkspaceField value={selectedWorkspaceId} onChange={setSelectedWorkspaceId} />
             {selectedWorkspaceId ? (
               <p className="mt-2 text-muted-foreground">
-                The selected workspace will be used for this group.
+                {t('create.workspaceSelected')}
               </p>
             ) : settings.isLoading ? (
-              <p className="text-muted-foreground">Loading system settings…</p>
+              <p className="text-muted-foreground">{t('create.workspaceLoading')}</p>
             ) : rootConfigured ? (
               <p className="text-muted-foreground">
-                A new dedicated workspace will be created under{' '}
+                {t('create.workspaceAutoCreate')}{' '}
                 <code>{settings.data?.group_workspace_root}</code>.
               </p>
             ) : (
               <p className="text-destructive">
-                Group workspace root is not configured.{' '}
+                {t('create.workspaceMissing')}{' '}
                 <Link
                   className="underline"
                   to="/settings"
                   onClick={() => onOpenChange(false)}
                 >
-                  Set it in system settings
+                  {t('create.workspaceSettingsLink')}
                 </Link>{' '}
-                before creating a group.
+                {t('create.workspaceMissingSuffix')}
               </p>
             )}
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="gd-description">Description (optional)</Label>
+            <Label htmlFor="gd-description">{t('create.optionalDescription')}</Label>
             <Input id="gd-description" {...form.register('description')} />
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="gd-announcement">Announcement (optional)</Label>
+            <Label htmlFor="gd-announcement">{t('create.optionalAnnouncement')}</Label>
             <Textarea
               id="gd-announcement"
               rows={2}
-              placeholder="A short statement included in every agent's system prompt."
+              placeholder={t('create.announcementPlaceholder')}
               {...form.register('announcement')}
             />
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="gd-communication-mode">Communication mode</Label>
+            <Label htmlFor="gd-communication-mode">{t('create.communicationMode')}</Label>
             <select
               id="gd-communication-mode"
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
               {...form.register('communication_mode')}
             >
-              {communicationModeOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+              {communicationModes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {t(communicationModeKeys[mode].label)}
                 </option>
               ))}
             </select>
             <p className="text-xs text-muted-foreground">
               {
-                communicationModeOptions.find(
-                  (option) => option.value === form.watch('communication_mode'),
-                )?.description
+                t(communicationModeKeys[form.watch('communication_mode')].description)
               }
             </p>
           </div>
 
           <div className="space-y-1.5">
-            <Label>Initial agents (optional)</Label>
+            <Label>{t('create.initialAgents')}</Label>
             {agents.data && agents.data.length === 0 && (
               <p className="text-xs text-muted-foreground">
-                No agents yet. Create one in the Agents tab first.
+                {t('create.noAgents')}
               </p>
             )}
             {agents.data && agents.data.length > 0 && (
@@ -262,9 +245,11 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             )}
           </div>
 
-          {submitError && (
+          {submitError !== undefined && (
             <p className="text-sm text-destructive" role="alert">
-              {submitError}
+              {submitError
+                ? t('errors.createDetail', { message: submitError })
+                : t('errors.create')}
             </p>
           )}
 
@@ -277,7 +262,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
               onClick={() => onOpenChange(false)}
               disabled={createGroup.isPending}
             >
-              Cancel
+              {t('common:actions.cancel')}
             </Button>
             <Button
               type="submit"
@@ -286,7 +271,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
                 (!selectedWorkspaceId && (settings.isLoading || !rootConfigured))
               }
             >
-              {createGroup.isPending ? 'Creating…' : 'Create group'}
+              {createGroup.isPending ? t('create.creating') : t('create.submit')}
             </Button>
           </DialogFooter>
         </form>
