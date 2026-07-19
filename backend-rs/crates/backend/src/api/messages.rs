@@ -5,7 +5,7 @@
 //! its bounded channel, then shapes a frontend-compatible response from the
 //! durable runtime events and persisted message rows.
 
-use std::{collections::HashSet, convert::Infallible, fs, path::Path as FsPath};
+use std::{collections::HashSet, convert::Infallible, fs};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use axum::{
@@ -26,6 +26,7 @@ use crate::{
         auth::current_user_id,
         conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
+        groups::workspace_file_content_type,
         sse_replay::{
             event_kind_from_wire, fetch_replay_events_for_group, last_event_id, parse_replay_cursor,
         },
@@ -907,7 +908,7 @@ async fn validate_attachments(
             .and_then(|name| name.to_str())
             .ok_or_else(|| ApiError::invalid_input("attachment path is invalid"))?
             .to_string();
-        let mime_type = attachment_content_type(FsPath::new(&path)).to_string();
+        let mime_type = workspace_file_content_type(&path).to_string();
         let kind = match mime_type.as_str() {
             "image/png" | "image/jpeg" | "image/webp" | "image/gif" => AttachmentKind::Image,
             _ => AttachmentKind::File,
@@ -922,22 +923,6 @@ async fn validate_attachments(
         });
     }
     Ok(attachments)
-}
-
-fn attachment_content_type(path: &FsPath) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("pdf") => "application/pdf",
-        _ => "application/octet-stream",
-    }
 }
 
 fn is_durable_response_event(kind: &StreamEventKind) -> bool {

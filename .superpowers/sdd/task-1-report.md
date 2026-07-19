@@ -83,3 +83,25 @@ Result: passed.
 
 - `cargo fmt --check` for the whole backend workspace reports an unrelated existing formatting delta in `backend-rs/crates/backend/tests/providers_settings.rs`. The three Rust files changed for this task were formatted with `rustfmt`, and no task-file formatting issue remains.
 - The task intentionally stops at the durable contract. Provider vision behavior and Composer attachment UI are deferred to later tasks.
+
+## Review Fix
+
+Addressed the Task 1 review findings:
+
+- Removed the duplicate attachment MIME mapping in `api/messages.rs`. Attachment metadata now reuses `api/groups.rs` `workspace_file_content_type` through crate-local visibility, so workspace downloads and attachment classification share one MIME policy.
+- Kept attachment image classification explicitly restricted to `image/png`, `image/jpeg`, `image/webp`, and `image/gif`; all other shared-helper MIME results remain `file` attachments.
+- Scoped the attachment API test's user stream-event assertion to the created user message ID and its group instead of selecting the globally newest `user_message` event.
+
+Commands and results:
+
+```text
+cargo test -p ag-swarmer-backend --test groups attachment -- --nocapture
+```
+
+Result: 2 passed, 0 failed, 68 filtered out.
+
+```text
+pnpm --dir frontend type-check
+```
+
+Result: passed (`tsc -b --noEmit`).

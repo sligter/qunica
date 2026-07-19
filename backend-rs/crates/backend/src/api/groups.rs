@@ -3829,7 +3829,7 @@ fn workspace_file_has_text_extension(path: &FsPath) -> bool {
     )
 }
 
-fn workspace_file_content_type(path: &FsPath) -> &'static str {
+pub(crate) fn workspace_file_content_type(path: &FsPath) -> &'static str {
     let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
         return "application/octet-stream";
     };

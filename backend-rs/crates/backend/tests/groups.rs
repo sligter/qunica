@@ -2281,9 +2281,18 @@ async fn attachment_message_persists_workspace_image_metadata() {
     assert_eq!(attachments[0]["size"], 4);
     assert_eq!(attachments[0]["kind"], "image");
 
+    let user_message_id = body["user_message"]["id"].as_str().unwrap();
     let event_payload: String = sqlx::query_scalar(
-        "SELECT payload_json FROM stream_events WHERE kind = 'user_message' ORDER BY created_at DESC LIMIT 1",
+        "SELECT se.payload_json FROM stream_events se \
+         JOIN messages m ON m.thread_id = se.thread_id \
+         WHERE se.kind = 'user_message' \
+           AND m.group_id = ? \
+           AND m.id = ? \
+           AND json_extract(se.payload_json, '$.message_id') = ?",
     )
+    .bind(group_id)
+    .bind(user_message_id)
+    .bind(user_message_id)
     .fetch_one(state.db.pool())
     .await
     .unwrap();
