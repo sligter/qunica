@@ -20,7 +20,7 @@ export const enUS = {
       unavailable: 'Unavailable',
       noMatches: 'No matches.',
     },
-    errors: { unexpected: 'Something went wrong. Try again.' },
+    errors: { unexpected: 'Something went wrong. Try again.', detail: 'Error: {{message}}' },
     wireLabels: {
       unknownAction: 'Action: {{value}}',
       unknownDispatchStatus: 'Status: {{value}}',
@@ -220,7 +220,7 @@ export const enUS = {
     form: { createTitle: 'Import a skill', createSubtitle: "Import a skill from a zip package, GitHub repository, or Anthropic-style SKILL.md. When mounted on an agent, the body is appended to that agent's system prompt for every invocation.", packageTab: 'Package (.zip)', githubTab: 'GitHub', markdownTab: 'Paste SKILL.md', dropPackage: 'Drop a .zip skill package here', browse: 'or click to browse', packageHint: 'The zip must contain a SKILL.md file with YAML frontmatter. Optional: scripts/, references/, assets/ directories.', importPackage: 'Import package', repository: 'GitHub repository', repositoryPlaceholder: 'https://github.com/user/repo or user/repo', branch: 'Branch', skillPath: 'Skill path', repositoryHint: 'The repository, or selected directory, must contain a SKILL.md.', fetchInstall: 'Fetch and install', paste: 'Paste SKILL.md', markdownHint: 'The file must start with YAML frontmatter (---) containing name and an optional description.', importing: 'Importing…', installing: 'Installing...', importSkill: 'Import skill', rawPlaceholder: "---\nname: my-skill\ndescription: One-line summary of what this skill does.\n---\n\n# My Skill\n\nThe body is markdown. It will be appended to the agent's system prompt\nverbatim when this skill is mounted on the agent.\n", name: 'Name', description: 'Description', descriptionPlaceholder: 'One-line summary of what this skill does.', saveChanges: 'Save changes' },
     actions: {}, states: {}, validation: {},
     errors: { network: 'Network error', markdownRequired: 'Paste a SKILL.md before submitting.', packageRequired: 'Select a .zip file first.', githubRequired: 'Enter a GitHub repository URL first.', zipOnly: 'Only .zip files are accepted.', update: 'Failed to update skill' },
-    resources: { title: 'Package resources', empty: 'This skill has no imported package resources.', file_one: '{{count}} file', file_other: '{{count}} files', metadataError: 'Failed to load resource editability. Showing package metadata only.', text: 'text', binaryUnknown: 'binary/unknown', select: 'Select a resource file.', editable: 'editable text', notEditable: 'not editable', loading: 'Loading file…', loadError: 'Failed to load file.', saveError: 'Failed to save file', saving: 'Saving…', save: 'Save file', binaryHint: 'Binary files and non-UTF-8 resources cannot be edited in the browser.' },
+    resources: { title: 'Package resources', empty: 'This skill has no imported package resources.', file_one: '{{count}} file', file_other: '{{count}} files', metadataError: 'Failed to load resource editability. Showing package metadata only.', text: 'text', binaryUnknown: 'binary/unknown', select: 'Select a resource file.', editable: 'editable text', notEditable: 'not editable', loading: 'Loading file…', loadError: 'Failed to load file.', loadErrorDetail: 'Failed to load file: {{message}}', saveError: 'Failed to save file', saveErrorDetail: 'Failed to save file: {{message}}', saving: 'Saving…', save: 'Save file', binaryHint: 'Binary files and non-UTF-8 resources cannot be edited in the browser.' },
   },
   workspaces: {
     title: 'Workspaces',

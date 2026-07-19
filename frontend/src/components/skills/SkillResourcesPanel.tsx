@@ -62,7 +62,11 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
     try {
       await update.mutateAsync(draft)
     } catch (err) {
-      setSaveError(err instanceof ApiError ? messageError(err.message) : translatedError('resources.saveError'))
+      setSaveError(
+        err instanceof ApiError
+          ? messageError(err.message, 'resources.saveErrorDetail')
+          : translatedError('resources.saveError'),
+      )
     }
   }
 
@@ -151,7 +155,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
               {selected.error && (
                 <p className="text-sm text-destructive">
                   {selected.error instanceof ApiError
-                    ? selected.error.message
+                    ? t('resources.loadErrorDetail', { message: selected.error.message })
                     : t('resources.loadError')}
                 </p>
               )}

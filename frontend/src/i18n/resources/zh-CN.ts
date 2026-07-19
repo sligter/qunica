@@ -22,7 +22,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
       working: '处理中…',
     },
     state: { loading: '加载中…', unavailable: '不可用', noMatches: '无匹配项。' },
-    errors: { unexpected: '出现问题，请重试。' },
+    errors: { unexpected: '出现问题，请重试。', detail: '错误：{{message}}' },
     wireLabels: {
       unknownAction: '操作：{{value}}',
       unknownDispatchStatus: '状态：{{value}}',
@@ -182,7 +182,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     detail: { editTitle: '编辑 {{name}}', loading: '正在加载技能…', loadError: '无法加载技能：{{error}}', notFound: '未找到技能。', source: '来源：{{source}}', body: '正文（渲染为追加的系统提示词片段）', deleteTitle: '删除技能“{{name}}”？', deleteDescription: '已挂载该技能的 Agent 将失去此系统提示词片段。' },
     form: { createTitle: '导入技能', createSubtitle: '从 zip 软件包、GitHub 仓库或 Anthropic 风格的 SKILL.md 导入技能。挂载到 Agent 后，正文会在每次调用时追加到该 Agent 的系统提示词中。', packageTab: '软件包（.zip）', githubTab: 'GitHub', markdownTab: '粘贴 SKILL.md', dropPackage: '将 .zip 技能包拖放到此处', browse: '或点击浏览', packageHint: 'zip 中必须包含带 YAML frontmatter 的 SKILL.md。可选目录：scripts/、references/、assets/。', importPackage: '导入软件包', repository: 'GitHub 仓库', repositoryPlaceholder: 'https://github.com/user/repo 或 user/repo', branch: '分支', skillPath: '技能路径', repositoryHint: '仓库或所选目录中必须包含 SKILL.md。', fetchInstall: '获取并安装', paste: '粘贴 SKILL.md', markdownHint: '文件必须以 YAML frontmatter（---）开头，其中包含 name 和可选的 description。', importing: '正在导入…', installing: '正在安装...', importSkill: '导入技能', rawPlaceholder: '---\nname: my-skill\ndescription: 用一句话概括此技能的作用。\n---\n\n# 我的技能\n\n正文采用 Markdown 格式。技能挂载到 Agent 后，正文将原样追加到\n该 Agent 的系统提示词中。\n', name: '名称', description: '描述', descriptionPlaceholder: '用一句话概括此技能的作用。', saveChanges: '保存更改' },
     actions: {}, states: {}, validation: {}, errors: { network: '网络错误', markdownRequired: '提交前请先粘贴 SKILL.md。', packageRequired: '请先选择 .zip 文件。', githubRequired: '请先输入 GitHub 仓库 URL。', zipOnly: '仅接受 .zip 文件。', update: '更新技能失败' },
-    resources: { title: '软件包资源', empty: '此技能没有导入的软件包资源。', file_one: '{{count}} 个文件', file_other: '{{count}} 个文件', metadataError: '无法加载资源可编辑性信息，仅显示软件包元数据。', text: '文本', binaryUnknown: '二进制/未知', select: '请选择资源文件。', editable: '可编辑文本', notEditable: '不可编辑', loading: '正在加载文件…', loadError: '无法加载文件。', saveError: '保存文件失败', saving: '正在保存…', save: '保存文件', binaryHint: '无法在浏览器中编辑二进制文件和非 UTF-8 资源。' },
+    resources: { title: '软件包资源', empty: '此技能没有导入的软件包资源。', file_one: '{{count}} 个文件', file_other: '{{count}} 个文件', metadataError: '无法加载资源可编辑性信息，仅显示软件包元数据。', text: '文本', binaryUnknown: '二进制/未知', select: '请选择资源文件。', editable: '可编辑文本', notEditable: '不可编辑', loading: '正在加载文件…', loadError: '无法加载文件。', loadErrorDetail: '无法加载文件：{{message}}', saveError: '保存文件失败', saveErrorDetail: '保存文件失败：{{message}}', saving: '正在保存…', save: '保存文件', binaryHint: '无法在浏览器中编辑二进制文件和非 UTF-8 资源。' },
   },
   workspaces: {
     title: '工作区',
