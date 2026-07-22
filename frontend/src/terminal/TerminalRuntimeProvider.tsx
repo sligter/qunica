@@ -51,6 +51,7 @@ export interface TerminalRuntimeContextValue {
   activeTabId: string | null
   isDockOpen: boolean
   isMaximized: boolean
+  paneHeight: number
   registerConversation(target: TerminalConversationTarget): () => void
   toggleDock(): Promise<void>
   createTab(): Promise<void>
@@ -61,9 +62,10 @@ export interface TerminalRuntimeContextValue {
   closeConversation(conversationId: string, clearMetadata: boolean): Promise<void>
   closeAll(clearMetadata: boolean): Promise<void>
   toggleMaximized(): void
+  setPaneHeight(height: number): void
   subscribeOutput(tabId: string, listener: TerminalOutputListener): () => void
   write(tabId: string, data: string): Promise<void>
-  resize(tabId: string, cols: number, rows: number): Promise<void>
+  resize(tabId: string, cols: number, rows: number): Promise<boolean>
 }
 
 interface OutputChannel {
@@ -896,11 +898,12 @@ export function TerminalRuntimeProvider({
     tabId: string,
     cols: number,
     rows: number,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const entry = runtimeRef.current.get(tabId)
-    if (entry?.sessionId === null || entry === undefined) return
+    if (entry?.sessionId === null || entry === undefined) return false
     try {
       await transport.resize(entry.conversationId, entry.sessionId, cols, rows)
+      return true
     } catch (cause) {
       const error = normalizeTerminalTransportError(
         cause,
@@ -908,12 +911,20 @@ export function TerminalRuntimeProvider({
         'Unable to resize the terminal',
       )
       console.warn('Terminal resize failed', error.code)
+      return false
     }
   }, [transport])
 
   const toggleMaximized = useCallback(() => {
     setIsMaximized((value) => !value)
   }, [])
+
+  const setPaneHeight = useCallback((height: number): void => {
+    if (!Number.isFinite(height) || height < 0) return
+    commitMetadata((draft) => {
+      draft.height = height
+    })
+  }, [commitMetadata])
 
   const value = useMemo<TerminalRuntimeContextValue>(() => {
     void runtimeVersion
@@ -932,6 +943,7 @@ export function TerminalRuntimeProvider({
       activeTabId: activeMetadata?.activeTabId ?? activeTabs[0]?.tabId ?? null,
       isDockOpen: activeMetadata?.open ?? false,
       isMaximized,
+      paneHeight: metadata.height,
       registerConversation,
       toggleDock,
       createTab,
@@ -942,6 +954,7 @@ export function TerminalRuntimeProvider({
       closeConversation,
       closeAll,
       toggleMaximized,
+      setPaneHeight,
       subscribeOutput,
       write,
       resize,
@@ -960,6 +973,7 @@ export function TerminalRuntimeProvider({
     restartTab,
     runtimeVersion,
     selectTab,
+    setPaneHeight,
     subscribeOutput,
     toggleDock,
     toggleMaximized,

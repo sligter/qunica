@@ -50,6 +50,14 @@
 @layer base {
   :root {
     color-scheme: light;
+    --terminal-background: hsl(36 15% 11%);
+    --terminal-foreground: hsl(42 18% 88%);
+    --terminal-selection: hsl(17 42% 34%);
+    --terminal-cursor: hsl(17 66% 61%);
+    --terminal-inactive-tab: hsl(35 10% 62%);
+    --terminal-border: hsl(32 10% 24%);
+    --terminal-chrome: hsl(34 13% 14%);
+    --terminal-active-tab: hsl(32 11% 19%);
   }
 
   :root[data-theme="dark"] {
@@ -88,6 +96,15 @@
     --color-avatar-7: hsl(320 26% 62%);
     --color-avatar-8: hsl(355 42% 66%);
     --color-avatar-foreground: hsl(30 25% 12%);
+
+    --terminal-background: hsl(30 12% 8%);
+    --terminal-foreground: hsl(40 18% 88%);
+    --terminal-selection: hsl(18 36% 30%);
+    --terminal-cursor: hsl(17 62% 62%);
+    --terminal-inactive-tab: hsl(35 9% 61%);
+    --terminal-border: hsl(30 8% 23%);
+    --terminal-chrome: hsl(30 10% 12%);
+    --terminal-active-tab: hsl(30 8% 18%);
   }
 
   body {
@@ -105,6 +122,25 @@
 }
 
 @layer components {
+  .terminal-dock {
+    contain: layout paint;
+    transition: height 140ms ease-out;
+  }
+
+  .terminal-dock:has(.terminal-resize-handle:active),
+  .terminal-dock[style*="height: 0"] {
+    transition: none;
+  }
+
+  .terminal-pane .xterm {
+    height: 100%;
+  }
+
+  .terminal-pane .xterm-viewport {
+    scrollbar-color: color-mix(in srgb, var(--terminal-inactive-tab) 55%, transparent) transparent;
+    scrollbar-width: thin;
+  }
+
   .chat-user-bubble {
     background-color: var(--color-primary);
     color: var(--color-primary-foreground);
@@ -113,6 +149,12 @@
   :root[data-theme="dark"] .chat-user-bubble {
     background-color: color-mix(in hsl, var(--color-primary) 58%, var(--color-background));
     color: var(--color-foreground);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-dock {
+    transition: none;
   }
 }
 

@@ -885,9 +885,9 @@ describe('TerminalRuntimeProvider', () => {
 
     await act(async () => runtime.restartTab(tabId))
     transport.resize.mockRejectedValueOnce(new Error('resize failed'))
-    await expect(runtime.resize(tabId, 100, 30)).resolves.toBeUndefined()
+    await expect(runtime.resize(tabId, 100, 30)).resolves.toBe(false)
     expect(runtime.activeTabs[0]).toMatchObject({ status: 'running', error: null })
-    await expect(runtime.resize(tabId, 101, 31)).resolves.toBeUndefined()
+    await expect(runtime.resize(tabId, 101, 31)).resolves.toBe(true)
     expect(transport.resize).toHaveBeenCalledTimes(2)
     expect(warn).toHaveBeenCalledWith('Terminal resize failed', 'terminal.resize_failed')
   })

@@ -4,6 +4,7 @@ import { AppSidebar } from '@/components/layout/AppSidebar'
 import {
   TerminalRuntimeProvider,
 } from '@/terminal/TerminalRuntimeProvider'
+import { TerminalDock } from '@/terminal/TerminalDock'
 import type { TerminalTransport } from '@/terminal/transport'
 
 export interface AppLayoutProps {
@@ -22,7 +23,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
           <div className="min-h-0 flex-1 overflow-hidden">
             <Outlet />
           </div>
-          <div data-testid="terminal-dock-host" className="shrink-0" />
+          <TerminalDock />
         </main>
       </div>
     </TerminalRuntimeProvider>
