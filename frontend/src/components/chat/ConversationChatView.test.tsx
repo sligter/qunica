@@ -17,6 +17,9 @@ vi.mock('@/components/chat/Composer', () => ({
     <div>
       composer:{String(allowMentions)}:{disabledReason ?? 'enabled'}
       <input aria-label="Message" />
+      <textarea aria-label="Message draft" />
+      <select aria-label="Message mode"><option>default</option></select>
+      <div aria-label="Rich message" contentEditable />
     </div>
   ),
 }))
@@ -129,8 +132,8 @@ describe('ConversationChatView', () => {
 
     fireEvent.keyDown(window, { key: '`', ctrlKey: true, repeat: true })
     fireEvent.keyDown(window, { key: '`', metaKey: true })
-    fireEvent.keyDown(screen.getByRole('textbox'), { key: '`' })
-    fireEvent.keyDown(screen.getByRole('textbox'), {
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: '`' })
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), {
       key: '`', ctrlKey: true, isComposing: true,
     })
     const prevented = new KeyboardEvent('keydown', {
@@ -142,6 +145,24 @@ describe('ConversationChatView', () => {
     expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
   })
 
+  it('does not capture Ctrl+` from editable controls on Windows', () => {
+    renderConversation()
+
+    for (const target of [
+      screen.getByRole('textbox', { name: 'Message' }),
+      screen.getByRole('textbox', { name: 'Message draft' }),
+      screen.getByRole('combobox', { name: 'Message mode' }),
+    ]) {
+      const event = new KeyboardEvent('keydown', {
+        key: '`', ctrlKey: true, bubbles: true, cancelable: true,
+      })
+      target.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(false)
+    }
+
+    expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
+  })
+
   it('uses Meta+` rather than Ctrl+` on macOS', () => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
     renderConversation()
@@ -150,5 +171,18 @@ describe('ConversationChatView', () => {
     expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
     fireEvent.keyDown(window, { key: '`', metaKey: true })
     expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not capture Meta+` from a contenteditable target on macOS', () => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
+    renderConversation()
+
+    const event = new KeyboardEvent('keydown', {
+      key: '`', metaKey: true, bubbles: true, cancelable: true,
+    })
+    screen.getByLabelText('Rich message').dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
   })
 })

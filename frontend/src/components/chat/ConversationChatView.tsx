@@ -59,6 +59,34 @@ function storeWorkspaceFilesOpen(conversationId: string, value: boolean): void {
   sessionStorage.setItem(workspaceFilesOpenStorageKey(conversationId), String(value))
 }
 
+function isEditableShortcutTarget(event: globalThis.KeyboardEvent): boolean {
+  const isEditableElement = (target: EventTarget): boolean => {
+    if (!(target instanceof HTMLElement)) return false
+
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target.isContentEditable ||
+      target.closest('[contenteditable=true]') !== null
+    )
+  }
+
+  const eventPath = event.composedPath?.() ?? []
+  if (eventPath.some(isEditableElement)) return true
+
+  const { target } = event
+  const isWindowLikeTarget =
+    target !== null &&
+    typeof target === 'object' &&
+    'window' in target &&
+    (target as { window?: unknown }).window === target
+  if (target === null || target === window || target === document || isWindowLikeTarget) return false
+
+  // Do not claim a shortcut from a custom or inaccessible event target.
+  return !(target instanceof HTMLElement)
+}
+
 export function ConversationChatView({
   conversationId,
   workspaceId,
@@ -120,6 +148,7 @@ export function ConversationChatView({
       ) {
         return
       }
+      if (isEditableShortcutTarget(event)) return
       event.preventDefault()
       void toggleDock().catch(() => undefined)
     }
