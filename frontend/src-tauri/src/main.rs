@@ -1,12 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[allow(dead_code)]
 mod terminal;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,6 +17,13 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
+
+use terminal::manager::TerminalManager;
+use terminal::native::NativePtySpawner;
+use terminal::process_tree::taskkill_args;
+use terminal::{
+    terminal_close, terminal_close_all, terminal_create, terminal_resize, terminal_write,
+};
 
 struct BackendShutdown(std::sync::Mutex<Option<oneshot::Sender<()>>>);
 
@@ -212,23 +219,13 @@ fn pids_listening_on_port(netstat_output: &str, port: u16) -> Vec<u32> {
     pids
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn taskkill_process_tree_args(pid: u32) -> Vec<String> {
-    vec![
-        "/PID".to_string(),
-        pid.to_string(),
-        "/F".to_string(),
-        "/T".to_string(),
-    ]
-}
-
 #[cfg(target_os = "windows")]
 fn terminate_process_tree_with_taskkill(log_dir: Option<&Path>, pid: u32) -> bool {
     append_optional_launcher_log(
         log_dir,
         format!("terminating process tree for stale backend listener PID {pid}"),
     );
-    let args = taskkill_process_tree_args(pid);
+    let args = taskkill_args(pid);
     match ProcessCommand::new("taskkill")
         .args(args.iter().map(String::as_str))
         .output()
@@ -373,6 +370,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
             TRAY_OPEN_SETTINGS_ID => open_route(app, "/settings/system"),
             TRAY_OPEN_LOGS_ID => open_logs_dir(app),
             TRAY_EXIT_ID => {
+                shutdown_terminal_sessions(app);
                 shutdown_backend(app);
                 app.exit(0);
             }
@@ -394,16 +392,44 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn shutdown_terminal_sessions(app: &tauri::AppHandle) {
+    let manager = app.state::<TerminalManager>().inner().clone();
+    let result = tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+        manager.close_all()
+    }));
+    match result {
+        Ok(Ok(())) => tracing::info!(
+            lifecycle = "close_all",
+            forced_cleanup = true,
+            "terminal sessions closed for application exit"
+        ),
+        Ok(Err(error)) => tracing::warn!(
+            lifecycle = "close_all",
+            error_code = %error.code,
+            forced_cleanup = false,
+            "terminal session cleanup failed during application exit"
+        ),
+        Err(_) => tracing::warn!(
+            lifecycle = "close_all",
+            error_code = "terminal.cleanup_join_failed",
+            forced_cleanup = false,
+            "terminal cleanup task failed during application exit"
+        ),
+    }
+}
+
 fn start_in_process_backend(
     app_data_dir: PathBuf,
     log_dir: PathBuf,
 ) -> Result<oneshot::Sender<()>, String> {
-    let config = AppConfig::for_desktop_app_data(app_data_dir, BACKEND_PORT)
-        .map_err(|err| {
-            let message = err.to_string();
-            append_launcher_log(&log_dir, format!("failed to build backend config: {message}"));
-            message
-        })?;
+    let config = AppConfig::for_desktop_app_data(app_data_dir, BACKEND_PORT).map_err(|err| {
+        let message = err.to_string();
+        append_launcher_log(
+            &log_dir,
+            format!("failed to build backend config: {message}"),
+        );
+        message
+    })?;
     if let Err(err) = telemetry::setup_tracing(&config) {
         append_launcher_log(
             &log_dir,
@@ -447,16 +473,22 @@ fn start_in_process_backend(
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(BackendShutdown(std::sync::Mutex::new(None)))
+        .manage(TerminalManager::new(Arc::new(NativePtySpawner)))
         .invoke_handler(tauri::generate_handler![
             backend_base_url,
             pick_workspace_folder,
             reveal_in_file_manager,
-            save_file
+            save_file,
+            terminal_create,
+            terminal_write,
+            terminal_resize,
+            terminal_close,
+            terminal_close_all
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
@@ -484,13 +516,19 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            shutdown_terminal_sessions(app);
+            shutdown_backend(app);
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{pids_listening_on_port, taskkill_process_tree_args};
+    use super::{pids_listening_on_port, taskkill_args};
 
     #[test]
     fn parses_windows_netstat_listeners_for_exact_port() {
@@ -507,8 +545,8 @@ mod tests {
     #[test]
     fn builds_taskkill_args_for_process_tree() {
         assert_eq!(
-            taskkill_process_tree_args(27672),
-            vec!["/PID", "27672", "/F", "/T"]
+            taskkill_args(27672),
+            ["/PID", "27672", "/T", "/F"].map(str::to_string)
         );
     }
 }
