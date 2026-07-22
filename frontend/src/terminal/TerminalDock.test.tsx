@@ -211,8 +211,53 @@ describe('TerminalDock', () => {
     }
     render(<TerminalDock />)
     expect(screen.getByText(new RegExp(message, 'i'))).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'New terminal' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'New terminal' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
   })
+
+  it.each([
+    ['desktopRequired', 'starting', 'Open the desktop app', /Starting shell/i],
+    ['workspaceRequired', 'exited', 'Bind a workspace', /Process exited/i],
+    ['pathRequired', 'error', 'valid local path', /Unable to start PowerShell/i],
+  ] as const)(
+    'prioritizes the %s unavailable state over an existing %s tab',
+    (availability, status, unavailableText, hiddenStatusText) => {
+      const error = Object.assign(new Error('Unable to start PowerShell'), { code: 'terminal.spawn_failed' })
+      const stateTab: TerminalRuntimeTab = {
+        ...firstTab,
+        status,
+        exitCode: status === 'exited' ? 7 : null,
+        error: status === 'error' ? error : null,
+      }
+      runtime = {
+        ...runtime,
+        allTabs: [stateTab, backgroundTab],
+        activeTabs: [stateTab],
+        activeTabId: stateTab.tabId,
+      }
+
+      const { rerender } = render(<TerminalDock />)
+      const pane = screen.getByTestId('mock-pane-tab-a')
+      expect(pane.parentElement).not.toHaveAttribute('hidden')
+
+      runtime = {
+        ...runtime,
+        activeConversation: { conversationId: 'chat-a', availability },
+      }
+      rerender(<TerminalDock />)
+
+      expect(screen.getByText(new RegExp(unavailableText, 'i'))).toBeInTheDocument()
+      expect(screen.queryByText(hiddenStatusText)).not.toBeInTheDocument()
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'New terminal' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Rename terminal' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Close terminal' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Restart terminal' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('mock-pane-tab-a')).toBe(pane)
+      expect(pane.parentElement).toHaveAttribute('hidden')
+    },
+  )
 
   it('shows exit and error recovery actions', () => {
     runtime = {

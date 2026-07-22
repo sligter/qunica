@@ -115,9 +115,10 @@ export function TerminalDock() {
 
   const activeTarget = runtime.activeConversation
   const chromeVisible = activeTarget !== null && runtime.isDockOpen
+  const ready = activeTarget?.availability === 'ready'
+  const runtimeChromeVisible = chromeVisible && ready
   const displayedHeight = runtime.isMaximized ? availableHeight : paneHeight.height
   const activeTab = runtime.activeTabs.find((tab) => tab.tabId === runtime.activeTabId) ?? null
-  const ready = activeTarget?.availability === 'ready'
   const separatorMin = Math.min(180, Math.max(0, availableHeight))
   const separatorMax = Math.max(
     separatorMin,
@@ -194,82 +195,91 @@ export function TerminalDock() {
           />
 
           <div className="flex h-8 min-h-8 items-center gap-1 border-b border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-1.5">
-            <div className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto" role="tablist">
-              {runtime.activeTabs.map((tab) => {
-                const selected = tab.tabId === runtime.activeTabId
-                return (
-                  <div
-                    key={tab.tabId}
-                    className={cn(
-                      'group flex h-8 min-w-[7rem] max-w-52 items-center border-b-2 px-2 text-xs',
-                      selected
-                        ? 'border-primary bg-[var(--terminal-active-tab)] text-[var(--terminal-foreground)]'
-                        : 'border-transparent text-[var(--terminal-inactive-tab)] hover:bg-[var(--terminal-active-tab)] hover:text-[var(--terminal-foreground)]',
-                    )}
-                  >
-                    <span className={cn('mr-2 h-1.5 w-1.5 shrink-0 rounded-full', statusClass(tab.status))} />
-                    {renameTabId === tab.tabId ? (
-                      <input
-                        autoFocus
-                        aria-label={t('terminal:actions.renameInput', { defaultValue: 'Terminal name' })}
-                        className="h-6 min-w-0 flex-1 rounded-sm border border-ring bg-[var(--terminal-background)] px-1.5 text-xs text-[var(--terminal-foreground)] outline-none"
-                        value={renameDraft}
-                        onChange={(event) => setRenameDraft(event.target.value)}
-                        onBlur={commitRename}
-                        onKeyDown={onRenameKeyDown}
-                      />
-                    ) : (
+            {ready ? (
+              <div className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto" role="tablist">
+                {runtime.activeTabs.map((tab) => {
+                  const selected = tab.tabId === runtime.activeTabId
+                  return (
+                    <div
+                      key={tab.tabId}
+                      className={cn(
+                        'group flex h-8 min-w-[7rem] max-w-52 items-center border-b-2 px-2 text-xs',
+                        selected
+                          ? 'border-primary bg-[var(--terminal-active-tab)] text-[var(--terminal-foreground)]'
+                          : 'border-transparent text-[var(--terminal-inactive-tab)] hover:bg-[var(--terminal-active-tab)] hover:text-[var(--terminal-foreground)]',
+                      )}
+                    >
+                      <span className={cn('mr-2 h-1.5 w-1.5 shrink-0 rounded-full', statusClass(tab.status))} />
+                      {renameTabId === tab.tabId ? (
+                        <input
+                          autoFocus
+                          aria-label={t('terminal:actions.renameInput', { defaultValue: 'Terminal name' })}
+                          className="h-6 min-w-0 flex-1 rounded-sm border border-ring bg-[var(--terminal-background)] px-1.5 text-xs text-[var(--terminal-foreground)] outline-none"
+                          value={renameDraft}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={onRenameKeyDown}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={selected}
+                          className="min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          title={tab.label}
+                          onClick={() => runtime.selectTab(tab.tabId)}
+                          onDoubleClick={() => startRename(tab)}
+                        >
+                          {tab.label}
+                        </button>
+                      )}
                       <button
                         type="button"
-                        role="tab"
-                        aria-selected={selected}
-                        className="min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        title={tab.label}
-                        onClick={() => runtime.selectTab(tab.tabId)}
-                        onDoubleClick={() => startRename(tab)}
+                        className="ml-1 grid h-6 w-6 shrink-0 place-items-center rounded-sm opacity-60 hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+                        aria-label={t('terminal:actions.closeNamed', { defaultValue: `Close ${tab.label}` })}
+                        title={t('terminal:actions.close', { defaultValue: 'Close terminal' })}
+                        onClick={() => void runtime.closeTab(tab.tabId).catch(() => undefined)}
                       >
-                        {tab.label}
+                        <X className="h-3 w-3" />
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="ml-1 grid h-6 w-6 shrink-0 place-items-center rounded-sm opacity-60 hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
-                      aria-label={t('terminal:actions.closeNamed', { defaultValue: `Close ${tab.label}` })}
-                      title={t('terminal:actions.close', { defaultValue: 'Close terminal' })}
-                      onClick={() => void runtime.closeTab(tab.tabId).catch(() => undefined)}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="min-w-0 flex-1 px-2 text-xs font-medium text-[var(--terminal-inactive-tab)]">
+                {t('terminal:title', { defaultValue: 'Terminal' })}
+              </div>
+            )}
 
             <div className="flex shrink-0 items-center border-l border-[var(--terminal-border)] pl-1">
-              <IconAction
-                label={t('terminal:actions.new', { defaultValue: 'New terminal' })}
-                icon={Plus}
-                disabled={!ready}
-                onClick={() => void runtime.createTab().catch(() => undefined)}
-              />
-              <IconAction
-                label={t('terminal:actions.rename', { defaultValue: 'Rename terminal' })}
-                icon={Pencil}
-                disabled={activeTab === null}
-                onClick={() => startRename(activeTab)}
-              />
-              <IconAction
-                label={t('terminal:actions.close', { defaultValue: 'Close terminal' })}
-                icon={X}
-                disabled={activeTab === null}
-                onClick={() => activeTab && void runtime.closeTab(activeTab.tabId).catch(() => undefined)}
-              />
-              <IconAction
-                label={t('terminal:actions.restart', { defaultValue: 'Restart terminal' })}
-                icon={RotateCw}
-                disabled={activeTab === null}
-                onClick={() => activeTab && void runtime.restartTab(activeTab.tabId).catch(() => undefined)}
-              />
+              {ready ? (
+                <>
+                  <IconAction
+                    label={t('terminal:actions.new', { defaultValue: 'New terminal' })}
+                    icon={Plus}
+                    onClick={() => void runtime.createTab().catch(() => undefined)}
+                  />
+                  <IconAction
+                    label={t('terminal:actions.rename', { defaultValue: 'Rename terminal' })}
+                    icon={Pencil}
+                    disabled={activeTab === null}
+                    onClick={() => startRename(activeTab)}
+                  />
+                  <IconAction
+                    label={t('terminal:actions.close', { defaultValue: 'Close terminal' })}
+                    icon={X}
+                    disabled={activeTab === null}
+                    onClick={() => activeTab && void runtime.closeTab(activeTab.tabId).catch(() => undefined)}
+                  />
+                  <IconAction
+                    label={t('terminal:actions.restart', { defaultValue: 'Restart terminal' })}
+                    icon={RotateCw}
+                    disabled={activeTab === null}
+                    onClick={() => activeTab && void runtime.restartTab(activeTab.tabId).catch(() => undefined)}
+                  />
+                </>
+              ) : null}
               <IconAction
                 label={runtime.isMaximized
                   ? t('terminal:actions.restore', { defaultValue: 'Restore terminal panel' })
@@ -286,7 +296,7 @@ export function TerminalDock() {
             </div>
           </div>
 
-          {!warningDismissed ? (
+          {ready && !warningDismissed ? (
             <div className="flex min-h-10 items-center gap-2 border-b border-[var(--terminal-border)] bg-warning px-3 py-1.5 text-xs text-warning-foreground">
               <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
               <p className="min-w-0 flex-1">
@@ -304,7 +314,7 @@ export function TerminalDock() {
 
       <div className="relative min-h-0 flex-1" data-testid="terminal-pane-host">
         {runtime.allTabs.map((tab) => {
-          const paneVisible = chromeVisible && ready && tab.tabId === runtime.activeTabId
+          const paneVisible = runtimeChromeVisible && tab.tabId === runtime.activeTabId
           return (
             <div
               key={tab.tabId}
@@ -324,7 +334,7 @@ export function TerminalDock() {
               <p className="text-sm text-[var(--terminal-inactive-tab)]">{unavailableMessage}</p>
             </div>
           </div>
-        ) : chromeVisible && ready && runtime.activeTabs.length === 0 ? (
+        ) : runtimeChromeVisible && runtime.activeTabs.length === 0 ? (
           <div className="absolute inset-0 grid place-items-center p-6 text-center">
             <div>
               <SquareTerminal className="mx-auto mb-3 h-7 w-7 text-[var(--terminal-inactive-tab)]" aria-hidden="true" />
@@ -339,12 +349,12 @@ export function TerminalDock() {
           </div>
         ) : null}
 
-        {chromeVisible && activeTab?.status === 'starting' ? (
+        {runtimeChromeVisible && activeTab?.status === 'starting' ? (
           <div className="pointer-events-none absolute right-3 top-2 rounded bg-[var(--terminal-chrome)] px-2 py-1 text-[11px] text-[var(--terminal-inactive-tab)]">
             {t('terminal:status.starting', { defaultValue: 'Starting shell…' })}
           </div>
         ) : null}
-        {chromeVisible && activeTab?.status === 'exited' ? (
+        {runtimeChromeVisible && activeTab?.status === 'exited' ? (
           <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
             <span className="text-[var(--terminal-inactive-tab)]">
               {activeTab.exitCode === null
@@ -357,7 +367,7 @@ export function TerminalDock() {
             </Button>
           </div>
         ) : null}
-        {chromeVisible && activeTab?.status === 'error' ? (
+        {runtimeChromeVisible && activeTab?.status === 'error' ? (
           <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 border-t border-destructive/40 bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
             <span className="min-w-0 truncate text-destructive" title={activeTab.error?.message}>
               {activeTab.error?.message ?? t('terminal:status.error', { defaultValue: 'Terminal failed' })}
