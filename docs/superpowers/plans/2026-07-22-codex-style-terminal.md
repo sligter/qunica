@@ -137,6 +137,9 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }
 ```
 
 Create `terminal/protocol.rs`:
@@ -372,7 +375,7 @@ fn output_chunks_round_trip_as_bytes() {
 }
 ```
 
-Add a `#[cfg(windows)] #[ignore = "manual Windows PTY smoke test"]` test that spawns PowerShell in a temporary directory, writes `Write-Output PTY_OK\r`, waits for `PTY_OK` through a recording sink, resizes to `100x30`, starts a long-lived descendant PowerShell process and captures its PID, then terminates the terminal and asserts that both the shell and descendant PID no longer exist. This ignored test is part of the Windows release gate command in Task 8.
+Add a `#[cfg(windows)] #[ignore = "manual Windows PTY smoke test"]` test that spawns PowerShell in a temporary directory, writes `Write-Output PTY_OK\r`, waits for `PTY_OK` through a recording sink, resizes to `100x30`, starts a long-lived descendant PowerShell process and captures its PID, then terminates the terminal and asserts that closing the Job Object removes both the shell and descendant PID. This ignored test is part of the Windows release gate command in Task 8.
 
 - [ ] **Step 2: Run the focused tests and verify they fail**
 
@@ -392,31 +395,35 @@ Expected: compilation fails because `taskkill_args`, `output_event`, and `Native
 3. Drop the slave, clone the master reader, and take the master writer once.
 4. Start a named reader thread using a `[u8; 16 * 1024]` buffer. Encode each non-empty read into `TerminalEvent::Output` without logging its content.
 5. Start a wait thread that emits `TerminalEvent::Exit` with `ExitStatus::exit_code()` and a signal string when present.
-6. Store the master, writer, cloned child killer, PID, and an `AtomicBool` exit marker in `NativePtyHandle`.
+6. On Windows, create a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assign the Shell process handle before moving the child into its wait thread. Store the Job handle in `NativePtyHandle`; descendants inherit membership.
+7. Store the master, writer, cloned child killer, PID, Job/process-group cleanup handle, and an `AtomicBool` exit marker in `NativePtyHandle`.
 
 Emit structured `tracing` lifecycle fields for create, shell kind, exit code, close reason, and forced-cleanup result. Never include `data`, encoded output, environment values, or the full command line in a trace field.
 
-Implement `write` with `write_all` plus `flush`, `resize` with `PtySize`, and `terminate` as:
+Implement `write` with `write_all` plus `flush`, `resize` with `PtySize`, and `terminate` so cleanup never returns merely because the direct Shell exited:
 
 ```rust
 fn terminate(&self) -> Result<(), TerminalCommandError> {
-    if self.exited.load(Ordering::Acquire) {
-        return Ok(());
-    }
     self.write_graceful_exit();
     for _ in 0..20 {
         if self.exited.load(Ordering::Acquire) {
-            return Ok(());
+            break;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    terminate_process_tree(self.pid)?;
-    let _ = self.killer.lock().expect("terminal killer mutex poisoned").kill();
+    self.process_tree
+        .lock()
+        .expect("terminal process-tree mutex poisoned")
+        .take()
+        .map_or(Ok(()), ProcessTreeGuard::terminate)?;
+    if !self.exited.load(Ordering::Acquire) {
+        let _ = self.killer.lock().expect("terminal killer mutex poisoned").kill();
+    }
     Ok(())
 }
 ```
 
-On Windows, `terminate_process_tree` runs `taskkill /PID <pid> /T /F` and treats “process not found” as success. On Unix, use the PTY session leader/process group and send `SIGTERM`, wait 500ms, then `SIGKILL`; keep this implementation behind `#[cfg(unix)]` so Windows remains the release gate.
+On Windows, `ProcessTreeGuard` owns the configured Job handle and closes it during `terminate`, guaranteeing that remaining descendants are killed even when the direct Shell has already exited. If Job creation or assignment fails, fail terminal creation before exposing the session; retain `taskkill /PID <pid> /T /F` only as a defensive fallback for a live root process. Reuse the argument builder already needed by stale-backend cleanup instead of duplicating it in `main.rs`. On Unix, use the PTY session leader/process group and send `SIGTERM`, wait 500ms, then `SIGKILL`; keep this implementation behind `#[cfg(unix)]` so Windows remains the release gate.
 
 - [ ] **Step 4: Add the Tauri channel sink and commands**
 
