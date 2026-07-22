@@ -86,6 +86,34 @@ function utf8CodePointSize(value: string, index: number): { bytes: number; codeU
   return { bytes: 3, codeUnits: 1 }
 }
 
+function toWellFormedUnicode(value: string): string {
+  let normalized = ''
+  let segmentStart = 0
+  let index = 0
+
+  while (index < value.length) {
+    const codeUnit = value.charCodeAt(index)
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        index += 2
+        continue
+      }
+    } else if (codeUnit < 0xdc00 || codeUnit > 0xdfff) {
+      index += 1
+      continue
+    }
+
+    normalized += `${value.slice(segmentStart, index)}\ufffd`
+    index += 1
+    segmentStart = index
+  }
+
+  return segmentStart === 0
+    ? value
+    : normalized + value.slice(segmentStart)
+}
+
 function* utf8InputChunks(value: string): Generator<string> {
   if (value.length === 0) {
     yield value
@@ -123,6 +151,42 @@ async function invokeTerminal<T>(
 }
 
 export function createTauriTerminalTransport(): TerminalTransport {
+  const writeTails = new Map<string, Promise<void>>()
+
+  async function writeInput(
+    conversationId: string,
+    sessionId: string,
+    data: string,
+  ): Promise<void> {
+    const normalized = toWellFormedUnicode(data)
+    for (const chunk of utf8InputChunks(normalized)) {
+      await invokeTerminal<void>('terminal_write', {
+        conversationId,
+        sessionId,
+        data: chunk,
+      })
+    }
+  }
+
+  function enqueueWrite(
+    conversationId: string,
+    sessionId: string,
+    data: string,
+  ): Promise<void> {
+    const previousTail = writeTails.get(sessionId)
+    const operation = previousTail === undefined
+      ? writeInput(conversationId, sessionId, data)
+      : previousTail.then(() => writeInput(conversationId, sessionId, data))
+    const storedTail = operation.catch(() => undefined)
+    writeTails.set(sessionId, storedTail)
+    void storedTail.finally(() => {
+      if (writeTails.get(sessionId) === storedTail) {
+        writeTails.delete(sessionId)
+      }
+    })
+    return operation
+  }
+
   return {
     async create(request, onEvent) {
       const onEventChannel = new Channel<WireTerminalEvent>()
@@ -133,15 +197,7 @@ export function createTauriTerminalTransport(): TerminalTransport {
       })
     },
 
-    async write(conversationId, sessionId, data) {
-      for (const chunk of utf8InputChunks(data)) {
-        await invokeTerminal<void>('terminal_write', {
-          conversationId,
-          sessionId,
-          data: chunk,
-        })
-      }
-    },
+    write: enqueueWrite,
 
     resize(conversationId, sessionId, cols, rows) {
       return invokeTerminal<void>('terminal_resize', {

@@ -163,7 +163,7 @@ describe('createTauriTerminalTransport', () => {
     }
   })
 
-  it('writes isolated high and low surrogates in ordered UTF-8-bounded chunks', async () => {
+  it('replaces isolated surrogates before writing ordered UTF-8-bounded chunks', async () => {
     let releaseFirst: (() => void) | undefined
     const firstWrite = new Promise<void>((resolve) => {
       releaseFirst = resolve
@@ -171,9 +171,9 @@ describe('createTauriTerminalTransport', () => {
     tauriMock.invoke
       .mockImplementationOnce(() => firstWrite)
       .mockResolvedValueOnce(undefined)
-    const firstChunk = `${'a'.repeat(16 * 1024 - 3)}\uD800`
-    const secondChunk = `${'b'.repeat(16 * 1024 - 4)}\uDC00c`
-    const input = firstChunk + secondChunk
+    const input = `${'a'.repeat(16 * 1024 - 3)}\uD800${'b'.repeat(16 * 1024 - 4)}\uDC00c`
+    const firstChunk = `${'a'.repeat(16 * 1024 - 3)}\ufffd`
+    const secondChunk = `${'b'.repeat(16 * 1024 - 4)}\ufffdc`
 
     const writing = createTauriTerminalTransport().write(
       'chat-1',
@@ -195,10 +195,88 @@ describe('createTauriTerminalTransport', () => {
       (call) => (call[1] as { data: string }).data,
     )
     expect(chunks).toEqual([firstChunk, secondChunk])
-    expect(chunks.join('')).toBe(input)
+    expect(chunks.join('')).toBe(firstChunk + secondChunk)
+    expect(chunks.join('')).not.toContain('\uD800')
+    expect(chunks.join('')).not.toContain('\uDC00')
     for (const chunk of chunks) {
       expect(new TextEncoder().encode(chunk).byteLength).toBeLessThanOrEqual(16 * 1024)
     }
+  })
+
+  it('serializes complete writes for the same session', async () => {
+    let releaseFirst: (() => void) | undefined
+    const firstInvoke = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    tauriMock.invoke
+      .mockImplementationOnce(() => firstInvoke)
+      .mockResolvedValue(undefined)
+    const transport = createTauriTerminalTransport()
+    const firstInput = 'a'.repeat(16 * 1024 + 1)
+
+    const firstWrite = transport.write('chat-1', 'session-1', firstInput)
+    const secondWrite = transport.write('chat-1', 'session-1', 'b')
+
+    expect(tauriMock.invoke).toHaveBeenCalledTimes(1)
+    expect(tauriMock.invoke.mock.calls[0]?.[1]).toMatchObject({
+      sessionId: 'session-1',
+      data: 'a'.repeat(16 * 1024),
+    })
+
+    releaseFirst?.()
+    await Promise.all([firstWrite, secondWrite])
+
+    expect(
+      tauriMock.invoke.mock.calls.map((call) =>
+        (call[1] as { sessionId: string; data: string }).data,
+      ),
+    ).toEqual(['a'.repeat(16 * 1024), 'a', 'b'])
+  })
+
+  it('continues the same-session queue after a failed write', async () => {
+    tauriMock.invoke
+      .mockRejectedValueOnce(new Error('first write failed'))
+      .mockResolvedValueOnce(undefined)
+    const transport = createTauriTerminalTransport()
+
+    const failedWrite = transport.write('chat-1', 'session-1', 'a')
+    const nextWrite = transport.write('chat-1', 'session-1', 'b')
+
+    await expect(failedWrite).rejects.toMatchObject({
+      code: 'terminal.command_failed',
+      message: 'first write failed',
+    })
+    await expect(nextWrite).resolves.toBeUndefined()
+    expect(
+      tauriMock.invoke.mock.calls.map((call) =>
+        (call[1] as { sessionId: string; data: string }).data,
+      ),
+    ).toEqual(['a', 'b'])
+  })
+
+  it('does not block writes to a different session', async () => {
+    let releaseFirstSession: (() => void) | undefined
+    const blockedInvoke = new Promise<void>((resolve) => {
+      releaseFirstSession = resolve
+    })
+    tauriMock.invoke.mockImplementation(
+      (_command: string, args: { sessionId?: string } | undefined) =>
+        args?.sessionId === 'session-a' ? blockedInvoke : Promise.resolve(),
+    )
+    const transport = createTauriTerminalTransport()
+
+    const firstSessionWrite = transport.write('chat-1', 'session-a', 'a')
+    const secondSessionWrite = transport.write('chat-1', 'session-b', 'b')
+
+    expect(tauriMock.invoke).toHaveBeenCalledTimes(2)
+    expect(
+      tauriMock.invoke.mock.calls.map((call) =>
+        (call[1] as { sessionId: string }).sessionId,
+      ),
+    ).toEqual(['session-a', 'session-b'])
+
+    releaseFirstSession?.()
+    await Promise.all([firstSessionWrite, secondSessionWrite])
   })
 
   it('does not send later chunks when the first write invocation fails', async () => {
