@@ -422,6 +422,30 @@ describe('TerminalRuntimeProvider', () => {
     expect(runtime.allTabs).toHaveLength(0)
   })
 
+  it('gates restart after closeTab begins with no pending start snapshot', async () => {
+    let releaseClose: (() => void) | undefined
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    const transport = new FakeTransport()
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    await toggleDock()
+    const tabId = runtime.activeTabId!
+    transport.close.mockImplementation(() => closeGate)
+
+    const closing = runtime.closeTab(tabId)
+    await waitFor(() => expect(transport.close).toHaveBeenCalledOnce())
+    await act(async () => runtime.restartTab(tabId))
+
+    expect(transport.create).toHaveBeenCalledOnce()
+    releaseClose?.()
+    await act(async () => closing)
+
+    await createTab()
+    expect(transport.create).toHaveBeenCalledTimes(2)
+    expect(runtime.activeTabs).toHaveLength(1)
+  })
+
   it('does not recreate when closeAll cancels a restart waiting on native close', async () => {
     let releaseClose: (() => void) | undefined
     const closeGate = new Promise<void>((resolve) => {
@@ -582,6 +606,91 @@ describe('TerminalRuntimeProvider', () => {
     expect(transport.close).toHaveBeenCalledWith('chat', 'conversation-orphan')
     expect(runtime.allTabs).toHaveLength(0)
     expect(storedMetadata().conversations.chat).toBeUndefined()
+  })
+
+  it('gates create and restore during conversation cleanup then permits both afterward', async () => {
+    let releaseClose: (() => void) | undefined
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    const transport = new FakeTransport()
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    await toggleDock()
+    const listener = vi.fn()
+    runtime.subscribeOutput(runtime.activeTabId!, listener)
+    transport.close.mockImplementation(() => closeGate)
+    const unhandled = vi.fn()
+    window.addEventListener('unhandledrejection', unhandled)
+
+    try {
+      const closing = runtime.closeConversation('chat', false)
+      await waitFor(() => expect(transport.close).toHaveBeenCalledOnce())
+
+      await act(async () => runtime.createTab())
+      let blockedUnregister: () => void = () => undefined
+      act(() => {
+        blockedUnregister = runtime.registerConversation(ready('chat', 'D:/workspace'))
+        transport.creates[0]?.onEvent({
+          event: 'output',
+          data: { bytes: new Uint8Array([1]) },
+        })
+      })
+      blockedUnregister()
+
+      expect(transport.create).toHaveBeenCalledOnce()
+      expect(listener).not.toHaveBeenCalled()
+
+      releaseClose?.()
+      await act(async () => closing)
+
+      let unregister: () => void = () => undefined
+      act(() => {
+        unregister = runtime.registerConversation(ready('chat', 'D:/workspace'))
+      })
+      await waitFor(() => expect(transport.create).toHaveBeenCalledTimes(2))
+      await createTab()
+
+      expect(transport.create).toHaveBeenCalledTimes(3)
+      expect(runtime.activeTabs).toHaveLength(2)
+      expect(unhandled).not.toHaveBeenCalled()
+      unregister()
+    } finally {
+      window.removeEventListener('unhandledrejection', unhandled)
+    }
+  })
+
+  it('rejects a new restore registration until an empty conversation cleanup finishes', async () => {
+    seedMetadata({
+      height: 0,
+      conversations: {
+        chat: {
+          open: true,
+          activeTabId: 'saved-tab',
+          tabs: [{ id: 'saved-tab', label: 'Shell', launchDirectory: 'D:/chat' }],
+        },
+      },
+    })
+    const transport = new FakeTransport()
+    render(<Harness transport={transport} target={ready('other', 'D:/other')} />)
+
+    const closing = runtime.closeConversation('chat', false)
+    const blockedUnregister = runtime.registerConversation(ready('chat', 'D:/chat'))
+
+    expect(runtime.activeConversation).toEqual(ready('other', 'D:/other'))
+    expect(transport.create).not.toHaveBeenCalled()
+    blockedUnregister()
+    await act(async () => closing)
+
+    let unregister: () => void = () => undefined
+    act(() => {
+      unregister = runtime.registerConversation(ready('chat', 'D:/chat'))
+    })
+    await waitFor(() => expect(transport.create).toHaveBeenCalledOnce())
+    await createTab()
+
+    expect(transport.create).toHaveBeenCalledTimes(2)
+    expect(runtime.activeTabs).toHaveLength(2)
+    unregister()
   })
 
   it('closeAll removes every runtime and metadata in finally and is concurrent-idempotent', async () => {

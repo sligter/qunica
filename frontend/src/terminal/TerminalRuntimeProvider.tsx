@@ -211,6 +211,9 @@ export function TerminalRuntimeProvider({
   const restoredConversationsRef = useRef(new Set<string>())
   const readyCwdsRef = useRef(new Map<string, string>())
   const closingTabsRef = useRef(new Map<string, Promise<void>>())
+  const closingTabScopesRef = useRef(new Set<string>())
+  const closingConversationsRef = useRef(new Map<string, Promise<void>>())
+  const closingConversationScopesRef = useRef(new Set<string>())
   const restartingTabsRef = useRef(new Map<string, Promise<void>>())
   const restartTokensRef = useRef(new Map<string, symbol>())
   const pendingStartsRef = useRef(new Set<Promise<void>>())
@@ -315,7 +318,13 @@ export function TerminalRuntimeProvider({
     requestedCwd = looksAbsolute(tab.launchDirectory) ? tab.launchDirectory : fallbackCwd,
     mayFallback = looksAbsolute(tab.launchDirectory) && tab.launchDirectory !== fallbackCwd,
   ): Promise<void> => {
-    if (isClosingAllRef.current) return Promise.resolve()
+    if (
+      isClosingAllRef.current ||
+      closingTabScopesRef.current.has(tab.id) ||
+      closingConversationScopesRef.current.has(conversationId)
+    ) {
+      return Promise.resolve()
+    }
     const generation = nextGeneration(tab.id)
     const entry: RuntimeEntry = {
       tabId: tab.id,
@@ -339,7 +348,13 @@ export function TerminalRuntimeProvider({
     publishRuntime()
 
     const onEvent = (event: TerminalEvent) => {
-      if (isClosingAllRef.current) return
+      if (
+        isClosingAllRef.current ||
+        closingTabScopesRef.current.has(tab.id) ||
+        closingConversationScopesRef.current.has(conversationId)
+      ) {
+        return
+      }
       const current = runtimeRef.current.get(tab.id)
       if (current === undefined || current.generation !== generation) return
       if (event.event === 'output') {
@@ -362,6 +377,8 @@ export function TerminalRuntimeProvider({
       let current = runtimeRef.current.get(tab.id)
       if (
         isClosingAllRef.current ||
+        closingTabScopesRef.current.has(tab.id) ||
+        closingConversationScopesRef.current.has(conversationId) ||
         current === undefined ||
         current.generation !== generation
       ) {
@@ -383,6 +400,8 @@ export function TerminalRuntimeProvider({
         current = runtimeRef.current.get(tab.id)
         if (
           isClosingAllRef.current ||
+          closingTabScopesRef.current.has(tab.id) ||
+          closingConversationScopesRef.current.has(conversationId) ||
           current === undefined ||
           current.generation !== generation
         ) {
@@ -419,6 +438,8 @@ export function TerminalRuntimeProvider({
       current = runtimeRef.current.get(tab.id)
       if (
         isClosingAllRef.current ||
+        closingTabScopesRef.current.has(tab.id) ||
+        closingConversationScopesRef.current.has(conversationId) ||
         current === undefined ||
         current.generation !== generation
       ) {
@@ -446,7 +467,12 @@ export function TerminalRuntimeProvider({
     conversationId: string,
     cwd: string,
   ): void => {
-    if (isClosingAllRef.current) return
+    if (
+      isClosingAllRef.current ||
+      closingConversationScopesRef.current.has(conversationId)
+    ) {
+      return
+    }
     if (restoredConversationsRef.current.has(conversationId)) return
     restoredConversationsRef.current.add(conversationId)
     const conversation = metadataRef.current.conversations[conversationId]
@@ -470,7 +496,12 @@ export function TerminalRuntimeProvider({
     conversationId: string,
     cwd: string,
   ): Promise<void> => {
-    if (isClosingAllRef.current) return
+    if (
+      isClosingAllRef.current ||
+      closingConversationScopesRef.current.has(conversationId)
+    ) {
+      return
+    }
     const tab: TerminalTabMetadata = {
       id: createTabId(),
       label: 'Terminal',
@@ -485,7 +516,12 @@ export function TerminalRuntimeProvider({
   }, [startRuntimeTab, updateConversationMetadata])
 
   const registerConversation = useCallback((target: TerminalConversationTarget) => {
-    if (isClosingAllRef.current) return () => undefined
+    if (
+      isClosingAllRef.current ||
+      closingConversationScopesRef.current.has(target.conversationId)
+    ) {
+      return () => undefined
+    }
     const registration: Registration = {
       id: ++nextRegistrationIdRef.current,
       target,
@@ -493,7 +529,11 @@ export function TerminalRuntimeProvider({
     registrationsRef.current.push(registration)
     activeConversationRef.current = target
     setActiveConversation(target)
-    if (target.availability === 'ready' && !isClosingAllRef.current) {
+    if (
+      target.availability === 'ready' &&
+      !isClosingAllRef.current &&
+      !closingConversationScopesRef.current.has(target.conversationId)
+    ) {
       readyCwdsRef.current.set(target.conversationId, target.cwd)
       for (const entry of runtimeRef.current.values()) {
         if (entry.conversationId === target.conversationId) entry.fallbackCwd = target.cwd
@@ -518,6 +558,7 @@ export function TerminalRuntimeProvider({
     if (isClosingAllRef.current) return
     const target = activeConversationRef.current
     if (target?.availability !== 'ready') return
+    if (closingConversationScopesRef.current.has(target.conversationId)) return
     await createTabFor(target.conversationId, target.cwd)
   }, [createTabFor])
 
@@ -525,6 +566,7 @@ export function TerminalRuntimeProvider({
     if (isClosingAllRef.current) return
     const target = activeConversationRef.current
     if (target === null) return
+    if (closingConversationScopesRef.current.has(target.conversationId)) return
     const current = metadataRef.current.conversations[target.conversationId]
     const opening = !(current?.open ?? false)
     updateConversationMetadata(target.conversationId, (conversation) => {
@@ -565,6 +607,7 @@ export function TerminalRuntimeProvider({
     tabId: string,
     removeMetadata: boolean,
   ): Promise<void> => {
+    closingTabScopesRef.current.add(tabId)
     restartTokensRef.current.delete(tabId)
     const existing = closingTabsRef.current.get(tabId)
     if (existing !== undefined) return existing
@@ -611,6 +654,7 @@ export function TerminalRuntimeProvider({
     void operation.finally(() => {
       if (closingTabsRef.current.get(tabId) === operation) {
         closingTabsRef.current.delete(tabId)
+        closingTabScopesRef.current.delete(tabId)
       }
     }).catch(() => undefined)
     return operation
@@ -625,11 +669,19 @@ export function TerminalRuntimeProvider({
   const closeTab = useCallback((tabId: string) => closeTabRuntime(tabId, true), [closeTabRuntime])
 
   const restartTab = useCallback((tabId: string): Promise<void> => {
-    if (isClosingAllRef.current) return Promise.resolve()
+    if (
+      isClosingAllRef.current ||
+      closingTabScopesRef.current.has(tabId)
+    ) {
+      return Promise.resolve()
+    }
     const existing = restartingTabsRef.current.get(tabId)
     if (existing !== undefined) return existing
     const entry = runtimeRef.current.get(tabId)
     if (entry === undefined) return Promise.resolve()
+    if (closingConversationScopesRef.current.has(entry.conversationId)) {
+      return Promise.resolve()
+    }
     const conversation = metadataRef.current.conversations[entry.conversationId]
     const tab = conversation?.tabs.find((candidate) => candidate.id === tabId)
     if (tab === undefined) return Promise.resolve()
@@ -659,6 +711,8 @@ export function TerminalRuntimeProvider({
         ?.tabs.some((candidate) => candidate.id === tabId) ?? false
       if (
         isClosingAllRef.current ||
+        closingTabScopesRef.current.has(tabId) ||
+        closingConversationScopesRef.current.has(entry.conversationId) ||
         restartTokensRef.current.get(tabId) !== restartToken ||
         runtimeRef.current.get(tabId) !== entry ||
         !savedTabStillExists
@@ -685,28 +739,46 @@ export function TerminalRuntimeProvider({
     return operation
   }, [invalidateGeneration, publishRuntime, startRuntimeTab, transport])
 
-  const closeConversation = useCallback(async (
+  const closeConversation = useCallback((
     conversationId: string,
     shouldClearMetadata: boolean,
   ): Promise<void> => {
-    const tabIds = new Set(
-      metadataRef.current.conversations[conversationId]?.tabs.map((tab) => tab.id) ?? [],
-    )
-    for (const entry of runtimeRef.current.values()) {
-      if (entry.conversationId === conversationId) tabIds.add(entry.tabId)
-    }
-    const results = await Promise.allSettled(
-      Array.from(tabIds, (tabId) => closeTabRuntime(tabId, false)),
-    )
-    restoredConversationsRef.current.delete(conversationId)
-    readyCwdsRef.current.delete(conversationId)
-    if (shouldClearMetadata) {
-      commitMetadata((draft) => {
-        delete draft.conversations[conversationId]
-      })
-    }
-    const failure = firstFailure(results)
-    if (failure !== undefined) throw failure
+    const existing = closingConversationsRef.current.get(conversationId)
+    if (existing !== undefined) return existing
+    closingConversationScopesRef.current.add(conversationId)
+    const operation = Promise.resolve().then(async () => {
+      let failure: unknown | undefined
+      const tabIds = new Set(
+        metadataRef.current.conversations[conversationId]?.tabs.map((tab) => tab.id) ?? [],
+      )
+      for (const entry of runtimeRef.current.values()) {
+        if (entry.conversationId === conversationId) tabIds.add(entry.tabId)
+      }
+      const results = await Promise.allSettled(
+        Array.from(tabIds, (tabId) => closeTabRuntime(tabId, false)),
+      )
+      failure ??= firstFailure(results)
+      restoredConversationsRef.current.delete(conversationId)
+      readyCwdsRef.current.delete(conversationId)
+      if (shouldClearMetadata) {
+        try {
+          commitMetadata((draft) => {
+            delete draft.conversations[conversationId]
+          })
+        } catch (cause) {
+          failure ??= cause
+        }
+      }
+      if (failure !== undefined) throw failure
+    })
+    closingConversationsRef.current.set(conversationId, operation)
+    void operation.finally(() => {
+      if (closingConversationsRef.current.get(conversationId) === operation) {
+        closingConversationsRef.current.delete(conversationId)
+        closingConversationScopesRef.current.delete(conversationId)
+      }
+    }).catch(() => undefined)
+    return operation
   }, [closeTabRuntime, commitMetadata])
 
   const closeAll = useCallback((shouldClearMetadata: boolean): Promise<void> => {
