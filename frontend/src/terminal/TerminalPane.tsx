@@ -34,7 +34,11 @@ export interface TerminalPaneProps {
 
 export function TerminalPane({ tab }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const sessionRef = useRef({ sessionId: tab.sessionId, status: tab.status })
+  const resetResizeRef = useRef<(() => void) | null>(null)
   const { subscribeOutput, write, resize } = useTerminalRuntime()
+
+  sessionRef.current = { sessionId: tab.sessionId, status: tab.status }
 
   useEffect(() => {
     const container = containerRef.current
@@ -54,9 +58,13 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
     terminal.open(container)
 
     let disposed = false
-    let frame: number | null = null
+    let fitFrame: number | null = null
+    let outputFrame: number | null = null
+    let outputChunks: Uint8Array[] = []
+    let outputBytes = 0
     let processingResize = false
-    let desiredSize: { cols: number; rows: number } | null = null
+    let resizeSessionEpoch = 0
+    let desiredSize: { cols: number; rows: number; epoch: number } | null = null
     let lastSuccessfulSize: { cols: number; rows: number } | null = null
 
     const processResize = async () => {
@@ -73,7 +81,9 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
             continue
           }
           const succeeded = await resize(tab.tabId, size.cols, size.rows)
-          if (succeeded && !disposed) lastSuccessfulSize = size
+          if (succeeded && !disposed && size.epoch === resizeSessionEpoch) {
+            lastSuccessfulSize = size
+          }
         }
       } finally {
         processingResize = false
@@ -81,9 +91,9 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
     }
 
     const scheduleFit = () => {
-      if (frame !== null || disposed) return
-      frame = requestAnimationFrame(() => {
-        frame = null
+      if (fitFrame !== null || disposed) return
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = null
         if (disposed) return
         try {
           fit.fit()
@@ -91,15 +101,52 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
           return
         }
         if (terminal.cols <= 0 || terminal.rows <= 0) return
-        desiredSize = { cols: terminal.cols, rows: terminal.rows }
+        desiredSize = {
+          cols: terminal.cols,
+          rows: terminal.rows,
+          epoch: resizeSessionEpoch,
+        }
         void processResize()
       })
     }
 
+    const scheduleOutput = (bytes: Uint8Array) => {
+      if (disposed) return
+      const chunk = bytes.slice()
+      outputChunks.push(chunk)
+      outputBytes += chunk.byteLength
+      if (outputFrame !== null) return
+      outputFrame = requestAnimationFrame(() => {
+        outputFrame = null
+        if (disposed || outputChunks.length === 0) return
+        const combined = new Uint8Array(outputBytes)
+        let offset = 0
+        for (const queued of outputChunks) {
+          combined.set(queued, offset)
+          offset += queued.byteLength
+        }
+        outputChunks = []
+        outputBytes = 0
+        terminal.write(combined)
+      })
+    }
+
+    resetResizeRef.current = () => {
+      resizeSessionEpoch += 1
+      lastSuccessfulSize = null
+      scheduleFit()
+    }
+
     const input = terminal.onData((data) => {
+      if (
+        sessionRef.current.status !== 'running' ||
+        sessionRef.current.sessionId === null
+      ) {
+        return
+      }
       void write(tab.tabId, data).catch(() => undefined)
     })
-    const unsubscribeOutput = subscribeOutput(tab.tabId, (bytes) => terminal.write(bytes))
+    const unsubscribeOutput = subscribeOutput(tab.tabId, scheduleOutput)
     const resizeObserver = new ResizeObserver(scheduleFit)
     resizeObserver.observe(container)
     scheduleFit()
@@ -114,15 +161,23 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
 
     return () => {
       disposed = true
+      resetResizeRef.current = null
       input.dispose()
       unsubscribeOutput()
       resizeObserver.disconnect()
       themeObserver.disconnect()
-      if (frame !== null) cancelAnimationFrame(frame)
+      if (fitFrame !== null) cancelAnimationFrame(fitFrame)
+      if (outputFrame !== null) cancelAnimationFrame(outputFrame)
+      outputChunks = []
+      outputBytes = 0
       fit.dispose()
       terminal.dispose()
     }
   }, [resize, subscribeOutput, tab.tabId, write])
+
+  useEffect(() => {
+    resetResizeRef.current?.()
+  }, [tab.sessionId])
 
   return (
     <div

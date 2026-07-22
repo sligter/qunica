@@ -123,6 +123,8 @@ describe('TerminalPane', () => {
     expect(runtime.write).toHaveBeenCalledWith('tab-a', 'pwd\r')
     const bytes = new Uint8Array([0xe4, 0xb8, 0xad])
     outputListener?.(bytes)
+    expect(terminal.write).not.toHaveBeenCalled()
+    await act(async () => frames.pop()?.(0))
     expect(terminal.write).toHaveBeenCalledWith(bytes)
 
     act(() => themeCallback([], {} as MutationObserver))
@@ -146,6 +148,59 @@ describe('TerminalPane', () => {
     act(() => resizeCallback([], {} as ResizeObserver))
     await act(async () => frames.shift()?.(16))
     expect(runtime.resize).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps xterm alive and resends an unchanged size when the session changes', async () => {
+    const { rerender } = render(<TerminalPane tab={tab} />)
+    const terminal = mocks.terminals[0]!
+
+    await act(async () => frames.shift()?.(0))
+    expect(runtime.resize).toHaveBeenLastCalledWith('tab-a', 100, 30)
+
+    rerender(<TerminalPane tab={{ ...tab, sessionId: 'session-b' }} />)
+    expect(mocks.terminals).toHaveLength(1)
+    expect(terminal.dispose).not.toHaveBeenCalled()
+    await act(async () => frames.shift()?.(16))
+
+    expect(runtime.resize).toHaveBeenCalledTimes(2)
+    expect(runtime.resize).toHaveBeenLastCalledWith('tab-a', 100, 30)
+  })
+
+  it('ignores input until the session is running without recreating xterm', () => {
+    const { rerender } = render(
+      <TerminalPane tab={{ ...tab, sessionId: null, status: 'starting' }} />,
+    )
+    const terminal = mocks.terminals[0]!
+
+    terminal.inputListener?.('too early')
+    expect(runtime.write).not.toHaveBeenCalled()
+
+    rerender(<TerminalPane tab={{ ...tab, sessionId: 'session-ready', status: 'running' }} />)
+    terminal.inputListener?.('ready\r')
+    expect(mocks.terminals).toHaveLength(1)
+    expect(runtime.write).toHaveBeenCalledWith('tab-a', 'ready\r')
+  })
+
+  it('merges ordered output chunks once per frame and cancels pending output on dispose', async () => {
+    const { rerender, unmount } = render(<TerminalPane tab={tab} />)
+    const terminal = mocks.terminals[0]!
+
+    outputListener?.(new Uint8Array([1, 2]))
+    outputListener?.(new Uint8Array([3, 4]))
+    expect(terminal.write).not.toHaveBeenCalled()
+    expect(frames).toHaveLength(2)
+    await act(async () => frames.pop()?.(0))
+    expect(terminal.write).toHaveBeenCalledTimes(1)
+    expect(terminal.write).toHaveBeenCalledWith(new Uint8Array([1, 2, 3, 4]))
+
+    rerender(<TerminalPane tab={{ ...tab, sessionId: 'session-restarted' }} />)
+    expect(runtime.subscribeOutput).toHaveBeenCalledTimes(1)
+    outputListener?.(new Uint8Array([5]))
+    const pendingOutput = frames.at(-1)
+    unmount()
+    pendingOutput?.(16)
+    expect(terminal.write).toHaveBeenCalledTimes(1)
+    expect(cancelAnimationFrame).toHaveBeenCalled()
   })
 
   it('disposes terminal resources only when the pane is removed', () => {

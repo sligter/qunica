@@ -864,16 +864,9 @@ export function TerminalRuntimeProvider({
   const write = useCallback(async (tabId: string, data: string): Promise<void> => {
     const entry = runtimeRef.current.get(tabId)
     if (entry?.sessionId === null || entry === undefined) {
-      const error = new TerminalTransportError(
-        'terminal.session_unavailable',
-        'Terminal session is not ready',
-      )
-      if (entry !== undefined) {
-        entry.status = 'error'
-        entry.error = error
-        publishRuntime()
-      }
-      throw error
+      // Input can race a create/restart render. It is safe to ignore until the
+      // replacement session is ready, and it must not turn the tab fatal.
+      return
     }
     const generation = entry.generation
     try {

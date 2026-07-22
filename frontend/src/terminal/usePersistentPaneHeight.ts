@@ -102,18 +102,22 @@ export function usePersistentPaneHeight({
     target.setPointerCapture?.(event.pointerId)
 
     const onPointerMove = (moveEvent: PointerEvent) => {
-      applyHeight(startHeight + startY - moveEvent.clientY)
+      applyHeight(startHeight + startY - moveEvent.clientY, false)
     }
     const cleanup = () => {
       window.removeEventListener('pointermove', onPointerMove)
-      window.removeEventListener('pointerup', cleanup)
-      window.removeEventListener('pointercancel', cleanup)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
       dragCleanupRef.current = null
+    }
+    const finish = () => {
+      cleanup()
+      onPersistRef.current?.(heightRef.current)
     }
     dragCleanupRef.current = cleanup
     window.addEventListener('pointermove', onPointerMove)
-    window.addEventListener('pointerup', cleanup)
-    window.addEventListener('pointercancel', cleanup)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
   }, [applyHeight])
 
   const separatorProps = useMemo(() => ({ onKeyDown, onPointerDown }), [onKeyDown, onPointerDown])

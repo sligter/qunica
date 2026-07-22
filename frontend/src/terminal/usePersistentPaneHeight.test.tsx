@@ -58,4 +58,27 @@ describe('usePersistentPaneHeight', () => {
     add.mockRestore()
     remove.mockRestore()
   })
+
+  it('updates drag height immediately but persists only when the pointer is released', () => {
+    const onPersist = vi.fn()
+    const { result } = renderHook(() => usePersistentPaneHeight({
+      availableHeight: 1000,
+      onPersist,
+    }))
+    act(() => result.current.separatorProps.onPointerDown({
+      button: 0,
+      clientY: 500,
+      pointerId: 1,
+      preventDefault: vi.fn(),
+      currentTarget: { setPointerCapture: vi.fn() },
+    } as never))
+
+    act(() => window.dispatchEvent(new PointerEvent('pointermove', { clientY: 400 })))
+    expect(result.current.height).toBe(450)
+    expect(onPersist).not.toHaveBeenCalled()
+
+    act(() => window.dispatchEvent(new PointerEvent('pointerup')))
+    expect(onPersist).toHaveBeenCalledTimes(1)
+    expect(onPersist).toHaveBeenCalledWith(450)
+  })
 })

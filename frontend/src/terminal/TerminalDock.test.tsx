@@ -91,6 +91,32 @@ describe('TerminalDock', () => {
     runtime = { ...runtime, isMaximized: true }
     rerender(<TerminalDock />)
     expect(screen.getByRole('button', { name: 'Restore terminal panel' })).toBeInTheDocument()
+    const separator = screen.getByRole('separator', { name: 'Resize terminal panel' })
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(
+      Number(separator.getAttribute('aria-valuemax')),
+    )
+    expect(separator.className).toContain('h-3')
+    expect(separator.className).not.toContain('-translate-y')
+  })
+
+  it('keeps pane instances mounted but unfocusable when collapsed or no route is registered', () => {
+    const { rerender } = render(<TerminalDock />)
+    const foregroundPane = screen.getByTestId('mock-pane-tab-a')
+    const backgroundPane = screen.getByTestId('mock-pane-tab-b')
+    expect(foregroundPane.parentElement).not.toHaveAttribute('hidden')
+    expect(backgroundPane.parentElement).toHaveAttribute('hidden')
+
+    runtime = { ...runtime, isDockOpen: false }
+    rerender(<TerminalDock />)
+    expect(screen.getByTestId('mock-pane-tab-a')).toBe(foregroundPane)
+    expect(screen.getByTestId('mock-pane-tab-b')).toBe(backgroundPane)
+    expect(foregroundPane.parentElement).toHaveAttribute('hidden')
+
+    runtime = { ...runtime, activeConversation: null }
+    rerender(<TerminalDock />)
+    expect(screen.getByTestId('mock-pane-tab-a')).toBe(foregroundPane)
+    expect(foregroundPane.parentElement).toHaveAttribute('hidden')
+    expect(screen.getByTestId('terminal-dock-host')).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('supports inline rename from the toolbar and tab double click', () => {

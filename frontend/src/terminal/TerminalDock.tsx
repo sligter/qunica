@@ -118,6 +118,12 @@ export function TerminalDock() {
   const displayedHeight = runtime.isMaximized ? availableHeight : paneHeight.height
   const activeTab = runtime.activeTabs.find((tab) => tab.tabId === runtime.activeTabId) ?? null
   const ready = activeTarget?.availability === 'ready'
+  const separatorMin = Math.min(180, Math.max(0, availableHeight))
+  const separatorMax = Math.max(
+    separatorMin,
+    runtime.isMaximized ? availableHeight : Math.round(availableHeight * 0.7),
+  )
+  const separatorNow = Math.min(separatorMax, Math.max(separatorMin, displayedHeight))
 
   const startRename = useCallback((tab: TerminalRuntimeTab | null) => {
     if (tab === null) return
@@ -178,11 +184,11 @@ export function TerminalDock() {
             role="separator"
             aria-orientation="horizontal"
             aria-label={t('terminal:actions.resize', { defaultValue: 'Resize terminal panel' })}
-            aria-valuemin={180}
-            aria-valuemax={Math.round(availableHeight * 0.7)}
-            aria-valuenow={displayedHeight}
+            aria-valuemin={separatorMin}
+            aria-valuemax={separatorMax}
+            aria-valuenow={separatorNow}
             tabIndex={0}
-            className="terminal-resize-handle absolute inset-x-0 top-0 z-10 h-2 -translate-y-1 cursor-row-resize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="terminal-resize-handle absolute inset-x-0 top-0 z-10 h-3 cursor-row-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             onDoubleClick={paneHeight.reset}
             {...paneHeight.separatorProps}
           />
@@ -293,72 +299,76 @@ export function TerminalDock() {
               </Button>
             </div>
           ) : null}
-
-          <div className="relative min-h-0 flex-1">
-            {runtime.allTabs.map((tab) => (
-              <div
-                key={tab.tabId}
-                hidden={tab.tabId !== runtime.activeTabId || !chromeVisible}
-                className="absolute inset-0 p-2"
-              >
-                <TerminalPane tab={tab} />
-              </div>
-            ))}
-
-            {unavailableMessage !== null ? (
-              <div className="absolute inset-0 grid place-items-center p-6 text-center">
-                <div className="max-w-md">
-                  <SquareTerminal className="mx-auto mb-3 h-7 w-7 text-[var(--terminal-inactive-tab)]" aria-hidden="true" />
-                  <p className="text-sm text-[var(--terminal-inactive-tab)]">{unavailableMessage}</p>
-                </div>
-              </div>
-            ) : ready && runtime.activeTabs.length === 0 ? (
-              <div className="absolute inset-0 grid place-items-center p-6 text-center">
-                <div>
-                  <SquareTerminal className="mx-auto mb-3 h-7 w-7 text-[var(--terminal-inactive-tab)]" aria-hidden="true" />
-                  <p className="mb-3 text-sm text-[var(--terminal-inactive-tab)]">
-                    {t('terminal:empty', { defaultValue: 'No terminals are open.' })}
-                  </p>
-                  <Button type="button" variant="outline" size="sm" onClick={() => void runtime.createTab().catch(() => undefined)}>
-                    <Plus className="h-3.5 w-3.5" />
-                    {t('terminal:actions.new', { defaultValue: 'New terminal' })}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {activeTab?.status === 'starting' ? (
-              <div className="pointer-events-none absolute right-3 top-2 rounded bg-[var(--terminal-chrome)] px-2 py-1 text-[11px] text-[var(--terminal-inactive-tab)]">
-                {t('terminal:status.starting', { defaultValue: 'Starting shell…' })}
-              </div>
-            ) : null}
-            {activeTab?.status === 'exited' ? (
-              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
-                <span className="text-[var(--terminal-inactive-tab)]">
-                  {activeTab.exitCode === null
-                    ? t('terminal:status.exited', { defaultValue: 'Process exited' })
-                    : t('terminal:status.exitedCode', { defaultValue: `Process exited with code ${activeTab.exitCode}` })}
-                </span>
-                <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
-                  <RotateCw className="h-3.5 w-3.5" />
-                  {t('terminal:actions.restart', { defaultValue: 'Restart terminal' })}
-                </Button>
-              </div>
-            ) : null}
-            {activeTab?.status === 'error' ? (
-              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 border-t border-destructive/40 bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
-                <span className="min-w-0 truncate text-destructive" title={activeTab.error?.message}>
-                  {activeTab.error?.message ?? t('terminal:status.error', { defaultValue: 'Terminal failed' })}
-                </span>
-                <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
-                  <RotateCw className="h-3.5 w-3.5" />
-                  {t('terminal:actions.retry', { defaultValue: 'Retry' })}
-                </Button>
-              </div>
-            ) : null}
-          </div>
         </>
       ) : null}
+
+      <div className="relative min-h-0 flex-1" data-testid="terminal-pane-host">
+        {runtime.allTabs.map((tab) => {
+          const paneVisible = chromeVisible && ready && tab.tabId === runtime.activeTabId
+          return (
+            <div
+              key={tab.tabId}
+              hidden={!paneVisible}
+              aria-hidden={!paneVisible}
+              className="absolute inset-0 p-2"
+            >
+              <TerminalPane tab={tab} />
+            </div>
+          )
+        })}
+
+        {unavailableMessage !== null ? (
+          <div className="absolute inset-0 grid place-items-center p-6 text-center">
+            <div className="max-w-md">
+              <SquareTerminal className="mx-auto mb-3 h-7 w-7 text-[var(--terminal-inactive-tab)]" aria-hidden="true" />
+              <p className="text-sm text-[var(--terminal-inactive-tab)]">{unavailableMessage}</p>
+            </div>
+          </div>
+        ) : ready && runtime.activeTabs.length === 0 ? (
+          <div className="absolute inset-0 grid place-items-center p-6 text-center">
+            <div>
+              <SquareTerminal className="mx-auto mb-3 h-7 w-7 text-[var(--terminal-inactive-tab)]" aria-hidden="true" />
+              <p className="mb-3 text-sm text-[var(--terminal-inactive-tab)]">
+                {t('terminal:empty', { defaultValue: 'No terminals are open.' })}
+              </p>
+              <Button type="button" variant="outline" size="sm" onClick={() => void runtime.createTab().catch(() => undefined)}>
+                <Plus className="h-3.5 w-3.5" />
+                {t('terminal:actions.new', { defaultValue: 'New terminal' })}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab?.status === 'starting' ? (
+          <div className="pointer-events-none absolute right-3 top-2 rounded bg-[var(--terminal-chrome)] px-2 py-1 text-[11px] text-[var(--terminal-inactive-tab)]">
+            {t('terminal:status.starting', { defaultValue: 'Starting shell…' })}
+          </div>
+        ) : null}
+        {activeTab?.status === 'exited' ? (
+          <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
+            <span className="text-[var(--terminal-inactive-tab)]">
+              {activeTab.exitCode === null
+                ? t('terminal:status.exited', { defaultValue: 'Process exited' })
+                : t('terminal:status.exitedCode', { defaultValue: `Process exited with code ${activeTab.exitCode}` })}
+            </span>
+            <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
+              <RotateCw className="h-3.5 w-3.5" />
+              {t('terminal:actions.restart', { defaultValue: 'Restart terminal' })}
+            </Button>
+          </div>
+        ) : null}
+        {activeTab?.status === 'error' ? (
+          <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 border-t border-destructive/40 bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
+            <span className="min-w-0 truncate text-destructive" title={activeTab.error?.message}>
+              {activeTab.error?.message ?? t('terminal:status.error', { defaultValue: 'Terminal failed' })}
+            </span>
+            <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
+              <RotateCw className="h-3.5 w-3.5" />
+              {t('terminal:actions.retry', { defaultValue: 'Retry' })}
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </section>
   )
 }

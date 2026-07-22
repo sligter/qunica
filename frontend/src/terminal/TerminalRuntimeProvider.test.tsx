@@ -892,6 +892,39 @@ describe('TerminalRuntimeProvider', () => {
     expect(warn).toHaveBeenCalledWith('Terminal resize failed', 'terminal.resize_failed')
   })
 
+  it('ignores input that races a starting session without marking the tab as failed', async () => {
+    const transport = new FakeTransport()
+    let releaseCreate: ((descriptor: TerminalDescriptor) => void) | undefined
+    transport.create.mockImplementationOnce((request, onEvent) => {
+      transport.creates.push({ request, onEvent })
+      return new Promise<TerminalDescriptor>((resolve) => {
+        releaseCreate = resolve
+      })
+    })
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+
+    let opening: Promise<void>
+    act(() => {
+      opening = runtime.toggleDock()
+    })
+    await waitFor(() => expect(runtime.activeTabs[0]?.status).toBe('starting'))
+    const tabId = runtime.activeTabId!
+    await expect(runtime.write(tabId, 'too early')).resolves.toBeUndefined()
+    expect(runtime.activeTabs[0]).toMatchObject({ status: 'starting', error: null })
+    expect(transport.write).not.toHaveBeenCalled()
+
+    await act(async () => {
+      releaseCreate?.({
+        sessionId: 'session-ready',
+        shellName: 'PowerShell',
+        cwd: 'D:/workspace',
+      })
+      await opening
+    })
+    await act(async () => runtime.write(tabId, 'ready\r'))
+    expect(transport.write).toHaveBeenCalledWith('chat', 'session-ready', 'ready\r')
+  })
+
   it('tracks the newest registration and cleanup never closes sessions', async () => {
     const transport = new FakeTransport()
     const registrations: Array<() => void> = []
