@@ -16,7 +16,7 @@ vi.mock('@/hooks/useDirectChats', () => ({
   useRenameDirectChat: () => ({ mutateAsync: vi.fn() }),
 }))
 vi.mock('@/components/chat/ConversationChatView', () => ({
-  ConversationChatView: ({ disabledComposerReason, capabilities, agents }: { disabledComposerReason?: string; capabilities: { showManage: boolean; showTurnTrace: boolean; allowMentions: boolean }; agents: Array<{ display_name: string }> }) => <div>agent:{agents[0]?.display_name ?? 'none'} disabled:{disabledComposerReason ?? 'no'} manage:{String(capabilities.showManage)} trace:{String(capabilities.showTurnTrace)} mentions:{String(capabilities.allowMentions)}</div>,
+  ConversationChatView: ({ workspaceId, disabledComposerReason, capabilities, agents }: { workspaceId: string | null; disabledComposerReason?: string; capabilities: { showManage: boolean; showTurnTrace: boolean; allowMentions: boolean }; agents: Array<{ display_name: string }> }) => <div>workspace:{workspaceId ?? 'none'} agent:{agents[0]?.display_name ?? 'none'} disabled:{disabledComposerReason ?? 'no'} manage:{String(capabilities.showManage)} trace:{String(capabilities.showTurnTrace)} mentions:{String(capabilities.allowMentions)}</div>,
 }))
 
 describe('DirectChatPage', () => {
@@ -30,6 +30,7 @@ describe('DirectChatPage', () => {
       </I18nextProvider>,
     )
     expect(screen.getByText(/agent:Solo/)).toHaveTextContent('disabled:This Agent is unavailable. History remains readable.')
+    expect(screen.getByText(/agent:Solo/)).toHaveTextContent('workspace:none')
     expect(screen.getByText(/agent:Solo/)).toHaveTextContent('manage:false trace:false mentions:false')
   })
 })

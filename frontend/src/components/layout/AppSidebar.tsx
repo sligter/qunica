@@ -30,6 +30,8 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
+import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 
 const COLLAPSED_KEY = 'ag-swarmer:layout:sidebar-collapsed'
 
@@ -87,6 +89,7 @@ export function AppSidebar() {
   const groups = useGroups()
   const directChats = useDirectChats()
   const deleteDirectChat = useDeleteDirectChat(pendingDeleteChat?.id ?? '')
+  const { closeConversation } = useTerminalRuntime()
 
   const toggleCollapsed = () => {
     setCollapsed((current) => {
@@ -130,6 +133,7 @@ export function AppSidebar() {
           const chat = pendingDeleteChat
           if (!chat) return
           await deleteDirectChat.mutateAsync()
+          await closeConversation(chat.id, true).catch(logTerminalCleanupError)
           if (location.pathname === `/chats/${chat.id}`) navigate('/', { replace: true })
           setPendingDeleteChat(null)
         }}
@@ -459,13 +463,22 @@ function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
   const logout = useAuthStore((s) => s.logout)
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { closeAll } = useTerminalRuntime()
   const [open, setOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
 
-  const onLogout = () => {
-    logout()
-    qc.clear()
-    setOpen(false)
-    void navigate('/login', { replace: true })
+  const onLogout = async () => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      await closeAll(true).catch(logTerminalCleanupError)
+      logout()
+      qc.clear()
+      setOpen(false)
+      void navigate('/login', { replace: true })
+    } finally {
+      setLoggingOut(false)
+    }
   }
 
   if (!user) return null
@@ -516,7 +529,8 @@ function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
               variant="ghost"
               size="sm"
               className="w-full justify-start gap-2"
-              onClick={onLogout}
+              onClick={() => void onLogout()}
+              disabled={loggingOut}
             >
               <LogOut className="h-4 w-4" />
               {t('logout')}

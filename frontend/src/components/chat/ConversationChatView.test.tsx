@@ -1,12 +1,22 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { I18nextProvider } from 'react-i18next'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConversationChatView } from './ConversationChatView'
+import i18n from '@/i18n'
+
+const terminalMocks = vi.hoisted(() => ({
+  register: vi.fn(),
+  toggleDock: vi.fn(),
+  isDockOpen: false,
+}))
 
 vi.mock('@/components/chat/Composer', () => ({
   Composer: ({ allowMentions, disabledReason }: { allowMentions?: boolean; disabledReason?: string }) => (
     <div>
       composer:{String(allowMentions)}:{disabledReason ?? 'enabled'}
+      <input aria-label="Message" />
     </div>
   ),
 }))
@@ -39,12 +49,22 @@ vi.mock('@/hooks/useSendMessageStream', () => ({
 }))
 vi.mock('@/stores/fileNavStore', () => ({ useFileNavStore: () => null }))
 vi.mock('@/stores/messageStore', () => ({ useMessageStore: () => vi.fn() }))
+vi.mock('@/terminal/useTerminalConversationRegistration', () => ({
+  useTerminalConversationRegistration: terminalMocks.register,
+}))
+vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
+  useTerminalRuntime: () => ({
+    isDockOpen: terminalMocks.isDockOpen,
+    toggleDock: terminalMocks.toggleDock,
+  }),
+}))
 
-describe('ConversationChatView', () => {
-  it('keeps direct chat canvas capabilities while omitting group-only controls', () => {
-    render(
+function renderConversation() {
+  return render(
+    <I18nextProvider i18n={i18n}>
       <ConversationChatView
         conversationId="chat-1"
+        workspaceId="workspace-1"
         scope="direct-chats"
         schedulerEnabled={false}
         agents={[]}
@@ -59,8 +79,24 @@ describe('ConversationChatView', () => {
           showWorkspace: true,
           allowMentions: false,
         }}
-      />,
-    )
+      />
+    </I18nextProvider>,
+  )
+}
+
+describe('ConversationChatView', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en-US')
+    terminalMocks.register.mockReset()
+    terminalMocks.toggleDock.mockReset().mockResolvedValue(undefined)
+    terminalMocks.isDockOpen = false
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
+  })
+
+  afterEach(cleanup)
+
+  it('keeps direct chat canvas capabilities while omitting group-only controls', () => {
+    renderConversation()
 
     expect(screen.getByText('message list')).toBeInTheDocument()
     expect(screen.getByText('composer:false:enabled')).toBeInTheDocument()
@@ -68,5 +104,51 @@ describe('ConversationChatView', () => {
     expect(screen.queryByText('Manage Group')).not.toBeInTheDocument()
     expect(screen.queryByText('group only')).not.toBeInTheDocument()
     expect(screen.queryByText('turn trace')).not.toBeInTheDocument()
+  })
+
+  it('registers its workspace and toggles the terminal from the header', async () => {
+    const user = userEvent.setup()
+    renderConversation()
+
+    expect(terminalMocks.register).toHaveBeenCalledWith('chat-1', 'workspace-1')
+    const button = screen.getByRole('button', { name: 'Show terminal' })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+    await user.click(button)
+    expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
+  })
+
+  it('handles Ctrl+` on Windows and ignores unsafe or ordinary key events', () => {
+    renderConversation()
+
+    const handled = new KeyboardEvent('keydown', {
+      key: '`', ctrlKey: true, bubbles: true, cancelable: true,
+    })
+    window.dispatchEvent(handled)
+    expect(handled.defaultPrevented).toBe(true)
+    expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
+
+    fireEvent.keyDown(window, { key: '`', ctrlKey: true, repeat: true })
+    fireEvent.keyDown(window, { key: '`', metaKey: true })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: '`' })
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: '`', ctrlKey: true, isComposing: true,
+    })
+    const prevented = new KeyboardEvent('keydown', {
+      key: '`', ctrlKey: true, bubbles: true, cancelable: true,
+    })
+    prevented.preventDefault()
+    window.dispatchEvent(prevented)
+
+    expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses Meta+` rather than Ctrl+` on macOS', () => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
+    renderConversation()
+
+    fireEvent.keyDown(window, { key: '`', ctrlKey: true })
+    expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
+    fireEvent.keyDown(window, { key: '`', metaKey: true })
+    expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
   })
 })

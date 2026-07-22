@@ -5,7 +5,26 @@ import type { TerminalRuntimeContextValue, TerminalRuntimeTab } from '@/terminal
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? _key,
+    t: (key: string, options?: Record<string, unknown>) => {
+      const translations: Record<string, string> = {
+        'terminal.title': 'Terminal', 'terminal.new': 'New terminal',
+        'terminal.rename': 'Rename terminal', 'terminal.close': 'Close terminal',
+        'terminal.restart': 'Restart terminal', 'terminal.collapse': 'Collapse terminal',
+        'terminal.maximize': 'Maximize terminal', 'terminal.restore': 'Restore terminal',
+        'terminal.resize': 'Resize terminal height', 'terminal.empty': 'No terminal tabs.',
+        'terminal.loading': 'Preparing terminal availability…', 'terminal.starting': 'Starting',
+        'terminal.exited': 'Exited', 'terminal.exitCode': 'Exit code {{code}}',
+        'terminal.retry': 'Retry', 'terminal.fullAccessTitle': 'Full local shell access',
+        'terminal.fullAccessBody': 'This terminal starts in the workspace but can access other files and processes allowed by your operating-system account.',
+        'terminal.dismiss': 'I understand',
+        'terminal.desktopRequired': 'Terminal is available only in the desktop app.',
+        'terminal.workspaceRequired': 'Bind a workspace to use the terminal.',
+        'terminal.localWorkspaceRequired': 'Cloud sandbox terminals are not supported yet.',
+        'terminal.pathRequired': 'The local workspace needs an absolute directory.',
+        'terminal.spawnError': 'Unable to start the terminal: {{message}}',
+      }
+      return (translations[key] ?? key).replace(/{{(\w+)}}/g, (_, name: string) => String(options?.[name] ?? ''))
+    },
   }),
 }))
 
@@ -84,14 +103,14 @@ describe('TerminalDock', () => {
     expect(screen.getByRole('button', { name: 'Rename terminal' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Close terminal' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Restart terminal' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Collapse terminal panel' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Maximize terminal panel' })).toBeInTheDocument()
-    expect(screen.getByRole('separator', { name: 'Resize terminal panel' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse terminal' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Maximize terminal' })).toBeInTheDocument()
+    expect(screen.getByRole('separator', { name: 'Resize terminal height' })).toBeInTheDocument()
 
     runtime = { ...runtime, isMaximized: true }
     rerender(<TerminalDock />)
-    expect(screen.getByRole('button', { name: 'Restore terminal panel' })).toBeInTheDocument()
-    const separator = screen.getByRole('separator', { name: 'Resize terminal panel' })
+    expect(screen.getByRole('button', { name: 'Restore terminal' })).toBeInTheDocument()
+    const separator = screen.getByRole('separator', { name: 'Resize terminal height' })
     expect(Number(separator.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(
       Number(separator.getAttribute('aria-valuemax')),
     )
@@ -170,37 +189,37 @@ describe('TerminalDock', () => {
   it('supports inline rename from the toolbar and tab double click', () => {
     render(<TerminalDock />)
     fireEvent.click(screen.getByRole('button', { name: 'Rename terminal' }))
-    const input = screen.getByRole('textbox', { name: 'Terminal name' })
+    const input = screen.getByRole('textbox', { name: 'Rename terminal' })
     fireEvent.change(input, { target: { value: 'Build shell' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(actions.renameTab).toHaveBeenCalledWith('tab-a', 'Build shell')
 
     fireEvent.doubleClick(screen.getByRole('tab', { name: 'PowerShell' }))
-    expect(screen.getByRole('textbox', { name: 'Terminal name' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Rename terminal' })).toBeInTheDocument()
   })
 
   it('keeps an empty open dock after the last tab closes', () => {
     runtime = { ...runtime, allTabs: [], activeTabs: [], activeTabId: null }
     render(<TerminalDock />)
-    expect(screen.getByText('No terminals are open.')).toBeInTheDocument()
+    expect(screen.getByText('No terminal tabs.')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'New terminal' })).not.toHaveLength(0)
   })
 
   it('persists dismissal of the one-time full-access warning', () => {
     const { unmount } = render(<TerminalDock />)
-    expect(screen.getByText(/full host shell/i)).toBeInTheDocument()
+    expect(screen.getByText(/full local shell access/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'I understand' }))
     expect(localStorage.getItem(FULL_ACCESS_WARNING_KEY)).toBe('dismissed')
     unmount()
     render(<TerminalDock />)
-    expect(screen.queryByText(/full host shell/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/full local shell access/i)).not.toBeInTheDocument()
   })
 
   it.each([
-    ['desktopRequired', 'Open the desktop app'],
+    ['desktopRequired', 'desktop app'],
     ['workspaceRequired', 'Bind a workspace'],
-    ['localWorkspaceRequired', 'cloud workspaces are not supported'],
-    ['pathRequired', 'valid local path'],
+    ['localWorkspaceRequired', 'Cloud sandbox terminals are not supported'],
+    ['pathRequired', 'absolute directory'],
   ] as const)('shows the %s unavailable state', (availability, message) => {
     runtime = {
       ...runtime,
@@ -216,9 +235,9 @@ describe('TerminalDock', () => {
   })
 
   it.each([
-    ['desktopRequired', 'starting', 'Open the desktop app', /Starting shell/i],
+    ['desktopRequired', 'starting', 'desktop app', /^Starting$/i],
     ['workspaceRequired', 'exited', 'Bind a workspace', /Process exited/i],
-    ['pathRequired', 'error', 'valid local path', /Unable to start PowerShell/i],
+    ['pathRequired', 'error', 'absolute directory', /Unable to start the terminal/i],
   ] as const)(
     'prioritizes the %s unavailable state over an existing %s tab',
     (availability, status, unavailableText, hiddenStatusText) => {
@@ -266,7 +285,7 @@ describe('TerminalDock', () => {
       activeTabs: [{ ...firstTab, status: 'exited', exitCode: 7 }],
     }
     const { rerender } = render(<TerminalDock />)
-    expect(screen.getByText('Process exited with code 7')).toBeInTheDocument()
+    expect(screen.getByText('Exit code 7')).toBeInTheDocument()
 
     const error = Object.assign(new Error('Unable to start PowerShell'), { code: 'terminal.spawn_failed' })
     runtime = {
@@ -275,7 +294,7 @@ describe('TerminalDock', () => {
       activeTabs: [{ ...firstTab, status: 'error', error }],
     }
     rerender(<TerminalDock />)
-    expect(screen.getByText('Unable to start PowerShell')).toBeInTheDocument()
+    expect(screen.getByText('Unable to start the terminal: Unable to start PowerShell')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 })

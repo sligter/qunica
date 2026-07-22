@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
   clearMutateAsync: vi.fn(),
   deleteMutateAsync: vi.fn(),
+  closeConversation: vi.fn(),
+  toggleDock: vi.fn(),
+  registerTerminal: vi.fn(),
 }))
 
 vi.mock('@/components/agents/WorkspaceField', () => ({
@@ -110,6 +113,16 @@ vi.mock('@/hooks/useGroupAgentActions', () => ({
 vi.mock('@/hooks/useDeleteGroup', () => ({
   useDeleteGroup: () => ({ isPending: false, mutateAsync: mocks.deleteMutateAsync }),
 }))
+vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
+  useTerminalRuntime: () => ({
+    closeConversation: mocks.closeConversation,
+    isDockOpen: false,
+    toggleDock: mocks.toggleDock,
+  }),
+}))
+vi.mock('@/terminal/useTerminalConversationRegistration', () => ({
+  useTerminalConversationRegistration: mocks.registerTerminal,
+}))
 
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { GroupChatPage } from '@/pages/group/GroupChatPage'
@@ -189,6 +202,9 @@ describe('group management i18n', () => {
     mocks.mutateAsync.mockReset()
     mocks.clearMutateAsync.mockReset()
     mocks.deleteMutateAsync.mockReset()
+    mocks.closeConversation.mockReset().mockResolvedValue(undefined)
+    mocks.toggleDock.mockReset().mockResolvedValue(undefined)
+    mocks.registerTerminal.mockReset()
   })
 
   afterEach(async () => {
@@ -228,6 +244,7 @@ describe('group management i18n', () => {
   })
 
   it('localizes group chat framing while preserving group data raw', async () => {
+    mocks.group = { ...group, workspace_id: 'workspace-1' }
     await setLanguage('zh-CN')
     render(
       <MemoryRouter initialEntries={['/groups/group-1']}>
@@ -241,6 +258,7 @@ describe('group management i18n', () => {
     expect(screen.getByText('公告：RAW announcement / 路径 C:/work')).toBeVisible()
     expect(screen.getByRole('button', { name: '隐藏工作区文件' })).toBeVisible()
     expect(document.title).toBe('原样 Group 42 · AG Swarmer')
+    expect(mocks.registerTerminal).toHaveBeenCalledWith('group-1', 'workspace-1')
   })
 
   it('localizes the manage shell and tabs while preserving the group name', async () => {
@@ -444,6 +462,53 @@ describe('group management i18n', () => {
     expect(
       within(screen.getByRole('alertdialog')).queryByText(/Failed to delete group/),
     ).not.toBeInTheDocument()
+    expect(mocks.closeConversation).not.toHaveBeenCalled()
+  })
+
+  it('closes group terminals only after backend deletion succeeds', async () => {
+    const user = userEvent.setup()
+    mocks.deleteMutateAsync.mockResolvedValueOnce(undefined)
+    mocks.closeConversation.mockResolvedValueOnce(undefined)
+    render(
+      <MemoryRouter>
+        <GroupSettingsTab group={group} />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete group' }))
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }),
+    )
+
+    await waitFor(() => expect(mocks.closeConversation).toHaveBeenCalledWith('group-1', true))
+    expect(mocks.deleteMutateAsync.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.closeConversation.mock.invocationCallOrder[0]!,
+    )
+  })
+
+  it('continues group deletion after terminal cleanup fails', async () => {
+    const user = userEvent.setup()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    mocks.deleteMutateAsync.mockResolvedValueOnce(undefined)
+    mocks.closeConversation.mockRejectedValueOnce({
+      code: 'terminal.cleanup_timeout', message: 'Cleanup timed out',
+    })
+    render(
+      <MemoryRouter>
+        <GroupSettingsTab group={group} />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete group' }))
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }),
+    )
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(consoleError).toHaveBeenCalledWith('[terminal] cleanup failed', {
+      code: 'terminal.cleanup_timeout', message: 'Cleanup timed out',
+    })
+    consoleError.mockRestore()
   })
 
   it('preserves an unknown communication mode from the wire', async () => {

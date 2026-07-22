@@ -83,7 +83,7 @@ function rememberWarningDismissed(): void {
 }
 
 export function TerminalDock() {
-  const { t } = useTranslation()
+  const { t } = useTranslation('chat')
   const runtime = useTerminalRuntime()
   const hostRef = useRef<HTMLElement>(null)
   const [availableHeight, setAvailableHeight] = useState(() => (
@@ -157,15 +157,15 @@ export function TerminalDock() {
   const unavailableMessage = (() => {
     switch (activeTarget?.availability) {
       case 'loading':
-        return t('terminal:unavailable.loading', { defaultValue: 'Preparing terminal availability…' })
+        return t('terminal.loading')
       case 'desktopRequired':
-        return t('terminal:unavailable.desktop', { defaultValue: 'Open the desktop app to use a local terminal.' })
+        return t('terminal.desktopRequired')
       case 'workspaceRequired':
-        return t('terminal:unavailable.workspace', { defaultValue: 'Bind a workspace before opening a terminal.' })
+        return t('terminal.workspaceRequired')
       case 'localWorkspaceRequired':
-        return t('terminal:unavailable.localWorkspace', { defaultValue: 'Terminal requires a local workspace; cloud workspaces are not supported.' })
+        return t('terminal.localWorkspaceRequired')
       case 'pathRequired':
-        return t('terminal:unavailable.path', { defaultValue: 'This workspace does not have a valid local path.' })
+        return t('terminal.pathRequired')
       default:
         return null
     }
@@ -184,7 +184,7 @@ export function TerminalDock() {
           <div
             role="separator"
             aria-orientation="horizontal"
-            aria-label={t('terminal:actions.resize', { defaultValue: 'Resize terminal panel' })}
+            aria-label={t('terminal.resize')}
             aria-valuemin={separatorMin}
             aria-valuemax={separatorMax}
             aria-valuenow={separatorNow}
@@ -213,7 +213,7 @@ export function TerminalDock() {
                       {renameTabId === tab.tabId ? (
                         <input
                           autoFocus
-                          aria-label={t('terminal:actions.renameInput', { defaultValue: 'Terminal name' })}
+                          aria-label={t('terminal.rename')}
                           className="h-6 min-w-0 flex-1 rounded-sm border border-ring bg-[var(--terminal-background)] px-1.5 text-xs text-[var(--terminal-foreground)] outline-none"
                           value={renameDraft}
                           onChange={(event) => setRenameDraft(event.target.value)}
@@ -236,8 +236,8 @@ export function TerminalDock() {
                       <button
                         type="button"
                         className="ml-1 grid h-6 w-6 shrink-0 place-items-center rounded-sm opacity-60 hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
-                        aria-label={t('terminal:actions.closeNamed', { defaultValue: `Close ${tab.label}` })}
-                        title={t('terminal:actions.close', { defaultValue: 'Close terminal' })}
+                        aria-label={`${t('terminal.close')}: ${tab.label}`}
+                        title={t('terminal.close')}
                         onClick={() => void runtime.closeTab(tab.tabId).catch(() => undefined)}
                       >
                         <X className="h-3 w-3" />
@@ -248,7 +248,7 @@ export function TerminalDock() {
               </div>
             ) : (
               <div className="min-w-0 flex-1 px-2 text-xs font-medium text-[var(--terminal-inactive-tab)]">
-                {t('terminal:title', { defaultValue: 'Terminal' })}
+                {t('terminal.title')}
               </div>
             )}
 
@@ -256,24 +256,24 @@ export function TerminalDock() {
               {ready ? (
                 <>
                   <IconAction
-                    label={t('terminal:actions.new', { defaultValue: 'New terminal' })}
+                    label={t('terminal.new')}
                     icon={Plus}
                     onClick={() => void runtime.createTab().catch(() => undefined)}
                   />
                   <IconAction
-                    label={t('terminal:actions.rename', { defaultValue: 'Rename terminal' })}
+                    label={t('terminal.rename')}
                     icon={Pencil}
                     disabled={activeTab === null}
                     onClick={() => startRename(activeTab)}
                   />
                   <IconAction
-                    label={t('terminal:actions.close', { defaultValue: 'Close terminal' })}
+                    label={t('terminal.close')}
                     icon={X}
                     disabled={activeTab === null}
                     onClick={() => activeTab && void runtime.closeTab(activeTab.tabId).catch(() => undefined)}
                   />
                   <IconAction
-                    label={t('terminal:actions.restart', { defaultValue: 'Restart terminal' })}
+                    label={t('terminal.restart')}
                     icon={RotateCw}
                     disabled={activeTab === null}
                     onClick={() => activeTab && void runtime.restartTab(activeTab.tabId).catch(() => undefined)}
@@ -282,14 +282,14 @@ export function TerminalDock() {
               ) : null}
               <IconAction
                 label={runtime.isMaximized
-                  ? t('terminal:actions.restore', { defaultValue: 'Restore terminal panel' })
-                  : t('terminal:actions.maximize', { defaultValue: 'Maximize terminal panel' })}
+                  ? t('terminal.restore')
+                  : t('terminal.maximize')}
                 icon={runtime.isMaximized ? Minimize2 : Maximize2}
                 active={runtime.isMaximized}
                 onClick={runtime.toggleMaximized}
               />
               <IconAction
-                label={t('terminal:actions.collapse', { defaultValue: 'Collapse terminal panel' })}
+                label={t('terminal.collapse')}
                 icon={ChevronDown}
                 onClick={() => void runtime.toggleDock().catch(() => undefined)}
               />
@@ -300,12 +300,11 @@ export function TerminalDock() {
             <div className="flex min-h-10 items-center gap-2 border-b border-[var(--terminal-border)] bg-warning px-3 py-1.5 text-xs text-warning-foreground">
               <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
               <p className="min-w-0 flex-1">
-                {t('terminal:warning.fullAccess', {
-                  defaultValue: 'This is a full host shell, not a sandbox. Commands can access files and processes allowed by your operating-system account.',
-                })}
+                <strong className="mr-1 font-semibold">{t('terminal.fullAccessTitle')}</strong>
+                {t('terminal.fullAccessBody')}
               </p>
               <Button type="button" variant="outline" size="sm" className="h-7 bg-transparent" onClick={dismissWarning}>
-                {t('terminal:warning.dismiss', { defaultValue: 'I understand' })}
+                {t('terminal.dismiss')}
               </Button>
             </div>
           ) : null}
@@ -339,11 +338,11 @@ export function TerminalDock() {
             <div>
               <SquareTerminal className="mx-auto mb-3 h-7 w-7 text-[var(--terminal-inactive-tab)]" aria-hidden="true" />
               <p className="mb-3 text-sm text-[var(--terminal-inactive-tab)]">
-                {t('terminal:empty', { defaultValue: 'No terminals are open.' })}
+                {t('terminal.empty')}
               </p>
               <Button type="button" variant="outline" size="sm" onClick={() => void runtime.createTab().catch(() => undefined)}>
                 <Plus className="h-3.5 w-3.5" />
-                {t('terminal:actions.new', { defaultValue: 'New terminal' })}
+                {t('terminal.new')}
               </Button>
             </div>
           </div>
@@ -351,30 +350,30 @@ export function TerminalDock() {
 
         {runtimeChromeVisible && activeTab?.status === 'starting' ? (
           <div className="pointer-events-none absolute right-3 top-2 rounded bg-[var(--terminal-chrome)] px-2 py-1 text-[11px] text-[var(--terminal-inactive-tab)]">
-            {t('terminal:status.starting', { defaultValue: 'Starting shell…' })}
+            {t('terminal.starting')}
           </div>
         ) : null}
         {runtimeChromeVisible && activeTab?.status === 'exited' ? (
           <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
             <span className="text-[var(--terminal-inactive-tab)]">
               {activeTab.exitCode === null
-                ? t('terminal:status.exited', { defaultValue: 'Process exited' })
-                : t('terminal:status.exitedCode', { defaultValue: `Process exited with code ${activeTab.exitCode}` })}
+                ? t('terminal.exited')
+                : t('terminal.exitCode', { code: activeTab.exitCode })}
             </span>
             <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
               <RotateCw className="h-3.5 w-3.5" />
-              {t('terminal:actions.restart', { defaultValue: 'Restart terminal' })}
+              {t('terminal.restart')}
             </Button>
           </div>
         ) : null}
         {runtimeChromeVisible && activeTab?.status === 'error' ? (
           <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 border-t border-destructive/40 bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
             <span className="min-w-0 truncate text-destructive" title={activeTab.error?.message}>
-              {activeTab.error?.message ?? t('terminal:status.error', { defaultValue: 'Terminal failed' })}
+              {t('terminal.spawnError', { message: activeTab.error?.message ?? '' })}
             </span>
             <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
               <RotateCw className="h-3.5 w-3.5" />
-              {t('terminal:actions.retry', { defaultValue: 'Retry' })}
+              {t('terminal.retry')}
             </Button>
           </div>
         ) : null}
