@@ -119,6 +119,54 @@ describe('TerminalDock', () => {
     expect(screen.getByTestId('terminal-dock-host')).toHaveAttribute('aria-hidden', 'true')
   })
 
+  it.each([
+    ['collapsed', 'empty'],
+    ['collapsed', 'exited'],
+    ['collapsed', 'error'],
+    ['route hidden', 'empty'],
+    ['route hidden', 'exited'],
+    ['route hidden', 'error'],
+  ] as const)('removes %s %s-state controls from the DOM without unmounting panes', (hiddenBy, state) => {
+    const error = Object.assign(new Error('Unable to start PowerShell'), { code: 'terminal.spawn_failed' })
+    const activeStateTab = state === 'exited'
+      ? { ...firstTab, status: 'exited' as const, exitCode: 7 }
+      : { ...firstTab, status: 'error' as const, error }
+
+    runtime = state === 'empty'
+      ? { ...runtime, allTabs: [backgroundTab], activeTabs: [], activeTabId: null }
+      : {
+          ...runtime,
+          allTabs: [activeStateTab, backgroundTab],
+          activeTabs: [activeStateTab],
+          activeTabId: activeStateTab.tabId,
+        }
+
+    const { rerender } = render(<TerminalDock />)
+    const pane = screen.getByTestId(state === 'empty' ? 'mock-pane-tab-b' : 'mock-pane-tab-a')
+
+    if (state === 'empty') {
+      expect(screen.getAllByRole('button', { name: 'New terminal' }).length).toBeGreaterThan(0)
+    } else if (state === 'exited') {
+      expect(screen.getAllByRole('button', { name: 'Restart terminal' }).length).toBeGreaterThan(0)
+    } else {
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    }
+
+    runtime = hiddenBy === 'collapsed'
+      ? { ...runtime, isDockOpen: false }
+      : { ...runtime, activeConversation: null }
+    rerender(<TerminalDock />)
+
+    const hiddenControlName = state === 'empty'
+      ? 'New terminal'
+      : state === 'exited'
+        ? 'Restart terminal'
+        : 'Retry'
+    expect(screen.queryAllByRole('button', { name: hiddenControlName, hidden: true })).toHaveLength(0)
+    expect(screen.getByTestId(state === 'empty' ? 'mock-pane-tab-b' : 'mock-pane-tab-a')).toBe(pane)
+    expect(screen.getByTestId('terminal-dock-host')).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('supports inline rename from the toolbar and tab double click', () => {
     render(<TerminalDock />)
     fireEvent.click(screen.getByRole('button', { name: 'Rename terminal' }))
