@@ -8,6 +8,12 @@
 
 **Tech Stack:** React 19, TypeScript 5.7, Zustand 5, xterm.js 6.0, Tauri 2, Rust 2021, `portable-pty` 0.9, Vitest 4, Cargo tests.
 
+## Execution Override
+
+- User direction on 2026-07-22: do not use TDD.
+- For every task below, implementation may precede tests. Ignore instructions to demonstrate an expected RED failure or provide RED/GREEN evidence.
+- Test coverage, focused verification, full-suite verification, task review, and final review remain required.
+
 ## Global Constraints
 
 - The terminal is a full local shell, not a workspace sandbox; it starts in the bound workspace but may access other host paths.
