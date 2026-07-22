@@ -1,15 +1,29 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AppLayout } from '@/components/layout/AppLayout'
 import { enUS } from '@/i18n/resources/en-US'
 import { zhCN } from '@/i18n/resources/zh-CN'
+import type { TerminalTransport } from '@/terminal/transport'
 
-async function renderAppLayout(language: 'en-US' | 'zh-CN' = 'en-US') {
+function createFakeTransport(): TerminalTransport {
+  return {
+    create: vi.fn(),
+    write: vi.fn(),
+    resize: vi.fn(),
+    close: vi.fn(),
+    closeAll: vi.fn(),
+  }
+}
+
+async function renderAppLayout(
+  language: 'en-US' | 'zh-CN' = 'en-US',
+  terminalTransport?: TerminalTransport,
+) {
   const i18n = i18next.createInstance()
   await i18n.use(initReactI18next).init({
     lng: language,
@@ -21,10 +35,14 @@ async function renderAppLayout(language: 'en-US' | 'zh-CN' = 'en-US') {
   return render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={['/settings']}>
           <Routes>
-            <Route element={<AppLayout />}>
-              <Route index element={<div>Application content</div>} />
+            <Route element={<AppLayout terminalTransport={terminalTransport} />}>
+              <Route
+                path="settings"
+                element={<><div>Settings content</div><Link to="/agents">Agents route</Link></>}
+              />
+              <Route path="agents" element={<div>Agents content</div>} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -68,5 +86,18 @@ describe('AppLayout', () => {
     expect(screen.getByText('群组')).toBeInTheDocument()
     expect(screen.getByText('Agent')).toBeInTheDocument()
     expect(screen.getByText('设置')).toBeInTheDocument()
+  })
+
+  it('keeps one terminal host mounted across routes without creating on non-chat routes', async () => {
+    const transport = createFakeTransport()
+    await renderAppLayout('en-US', transport)
+    const host = screen.getByTestId('terminal-dock-host')
+
+    fireEvent.click(screen.getByRole('link', { name: 'Agents route' }))
+
+    expect(screen.getByText('Agents content')).toBeInTheDocument()
+    expect(screen.getByTestId('terminal-dock-host')).toBe(host)
+    expect(transport.create).not.toHaveBeenCalled()
+    expect(transport.close).not.toHaveBeenCalled()
   })
 })
