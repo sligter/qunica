@@ -20,69 +20,100 @@ export interface TerminalMetadataStore {
 export type TerminalMetadata = TerminalMetadataStore
 
 const EMPTY_METADATA: TerminalMetadataStore = { height: 0, conversations: {} }
+const DANGEROUS_CONVERSATION_KEYS = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function getOwnProperty(
+  value: Record<string, unknown>,
+  key: string,
+): unknown {
+  return Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined
+}
+
+function createConversationRecord(): Record<string, TerminalConversationMetadata> {
+  return Object.create(null) as Record<string, TerminalConversationMetadata>
+}
+
+function createEmptyMetadata(): TerminalMetadataStore {
+  return { ...EMPTY_METADATA, conversations: createConversationRecord() }
+}
+
 function sanitizeTab(value: unknown): TerminalTabMetadata | null {
   if (!isRecord(value)) return null
+  const id = getOwnProperty(value, 'id')
+  const label = getOwnProperty(value, 'label')
+  const launchDirectory = getOwnProperty(value, 'launchDirectory')
   if (
-    typeof value.id !== 'string' ||
-    typeof value.label !== 'string' ||
-    typeof value.launchDirectory !== 'string'
+    typeof id !== 'string' ||
+    typeof label !== 'string' ||
+    typeof launchDirectory !== 'string'
   ) {
     return null
   }
   return {
-    id: value.id,
-    label: value.label,
-    launchDirectory: value.launchDirectory,
+    id,
+    label,
+    launchDirectory,
   }
 }
 
 function sanitizeConversation(value: unknown): TerminalConversationMetadata | null {
   if (!isRecord(value)) return null
-  const tabs = Array.isArray(value.tabs)
-    ? value.tabs.flatMap((tab) => {
+  const rawTabs = getOwnProperty(value, 'tabs')
+  const tabs = Array.isArray(rawTabs)
+    ? rawTabs.flatMap((tab) => {
         const sanitized = sanitizeTab(tab)
         return sanitized === null ? [] : [sanitized]
       })
     : []
+  const open = getOwnProperty(value, 'open')
+  const activeTabId = getOwnProperty(value, 'activeTabId')
+  const validTabIds = new Set(tabs.map((tab) => tab.id))
   return {
-    open: typeof value.open === 'boolean' ? value.open : false,
+    open: typeof open === 'boolean' ? open : false,
     activeTabId:
-      typeof value.activeTabId === 'string' || value.activeTabId === null
-        ? value.activeTabId
+      typeof activeTabId === 'string' && validTabIds.has(activeTabId)
+        ? activeTabId
         : null,
     tabs,
   }
 }
 
 function sanitizeMetadata(value: unknown): TerminalMetadataStore {
-  if (!isRecord(value)) return { ...EMPTY_METADATA, conversations: {} }
+  if (!isRecord(value)) return createEmptyMetadata()
 
-  const conversationEntries: [string, TerminalConversationMetadata][] = []
-  if (isRecord(value.conversations)) {
-    for (const [conversationId, conversation] of Object.entries(value.conversations)) {
+  const conversations = createConversationRecord()
+  const rawConversations = getOwnProperty(value, 'conversations')
+  if (isRecord(rawConversations)) {
+    for (const [conversationId, conversation] of Object.entries(rawConversations)) {
+      if (DANGEROUS_CONVERSATION_KEYS.has(conversationId)) continue
       const sanitized = sanitizeConversation(conversation)
-      if (sanitized !== null) conversationEntries.push([conversationId, sanitized])
+      if (sanitized !== null) conversations[conversationId] = sanitized
     }
   }
 
+  const height = getOwnProperty(value, 'height')
+
   return {
-    height: typeof value.height === 'number' && Number.isFinite(value.height) ? value.height : 0,
-    conversations: Object.fromEntries(conversationEntries),
+    height: typeof height === 'number' && Number.isFinite(height) ? height : 0,
+    conversations,
   }
 }
 
 export function loadTerminalMetadata(): TerminalMetadataStore {
   try {
     const raw = localStorage.getItem(TERMINAL_METADATA_STORAGE_KEY)
-    if (raw === null) return { ...EMPTY_METADATA, conversations: {} }
+    if (raw === null) return createEmptyMetadata()
     return sanitizeMetadata(JSON.parse(raw))
   } catch {
-    return { ...EMPTY_METADATA, conversations: {} }
+    return createEmptyMetadata()
   }
 }
 

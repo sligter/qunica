@@ -108,6 +108,17 @@ describe('createTauriTerminalTransport', () => {
     ])
   })
 
+  it('preserves an empty write as one IPC invocation', async () => {
+    await createTauriTerminalTransport().write('chat-1', 'session-1', '')
+
+    expect(tauriMock.invoke).toHaveBeenCalledOnce()
+    expect(tauriMock.invoke).toHaveBeenCalledWith('terminal_write', {
+      conversationId: 'chat-1',
+      sessionId: 'session-1',
+      data: '',
+    })
+  })
+
   it('writes large ASCII input in bounded chunks and awaits each invoke in order', async () => {
     let releaseFirst: (() => void) | undefined
     const firstWrite = new Promise<void>((resolve) => {
@@ -150,6 +161,63 @@ describe('createTauriTerminalTransport', () => {
     for (const chunk of chunks) {
       expect(new TextEncoder().encode(chunk).byteLength).toBeLessThanOrEqual(16 * 1024)
     }
+  })
+
+  it('writes isolated high and low surrogates in ordered UTF-8-bounded chunks', async () => {
+    let releaseFirst: (() => void) | undefined
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    tauriMock.invoke
+      .mockImplementationOnce(() => firstWrite)
+      .mockResolvedValueOnce(undefined)
+    const firstChunk = `${'a'.repeat(16 * 1024 - 3)}\uD800`
+    const secondChunk = `${'b'.repeat(16 * 1024 - 4)}\uDC00c`
+    const input = firstChunk + secondChunk
+
+    const writing = createTauriTerminalTransport().write(
+      'chat-1',
+      'session-1',
+      input,
+    )
+
+    expect(tauriMock.invoke).toHaveBeenCalledTimes(1)
+    expect(tauriMock.invoke.mock.calls[0]?.[1]).toEqual({
+      conversationId: 'chat-1',
+      sessionId: 'session-1',
+      data: firstChunk,
+    })
+
+    releaseFirst?.()
+    await writing
+
+    const chunks = tauriMock.invoke.mock.calls.map(
+      (call) => (call[1] as { data: string }).data,
+    )
+    expect(chunks).toEqual([firstChunk, secondChunk])
+    expect(chunks.join('')).toBe(input)
+    for (const chunk of chunks) {
+      expect(new TextEncoder().encode(chunk).byteLength).toBeLessThanOrEqual(16 * 1024)
+    }
+  })
+
+  it('does not send later chunks when the first write invocation fails', async () => {
+    tauriMock.invoke.mockRejectedValueOnce(new Error('write failed'))
+    const input = 'a'.repeat(16 * 1024 + 1)
+
+    await expect(
+      createTauriTerminalTransport().write('chat-1', 'session-1', input),
+    ).rejects.toMatchObject({
+      code: 'terminal.command_failed',
+      message: 'write failed',
+    })
+
+    expect(tauriMock.invoke).toHaveBeenCalledOnce()
+    expect(tauriMock.invoke).toHaveBeenCalledWith('terminal_write', {
+      conversationId: 'chat-1',
+      sessionId: 'session-1',
+      data: 'a'.repeat(16 * 1024),
+    })
   })
 
   it('normalizes Rust command error objects', async () => {
