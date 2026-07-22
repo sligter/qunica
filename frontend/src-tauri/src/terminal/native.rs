@@ -1,51 +1,32 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use base64::Engine;
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use super::manager::{EventSink, PtyHandle, PtySpawner};
-use super::process_tree::ProcessTreeGuard;
+use super::process_tree::{attach_or_rollback, ProcessTreeGuard};
 use super::protocol::{CreateTerminalRequest, TerminalCommandError, TerminalEvent};
 use super::shell::ShellSpec;
 
 const OUTPUT_CHUNK_SIZE: usize = 16 * 1024;
+const INPUT_CHUNK_SIZE: usize = 16 * 1024;
+const INPUT_QUEUE_CAPACITY: usize = 64;
+const GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_millis(500);
+const TAIL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Default)]
 pub struct NativePtySpawner;
 
 struct PtyIo {
     master: Mutex<Option<Box<dyn MasterPty>>>,
-    writer: Mutex<Option<Box<dyn Write + Send>>>,
 }
 
 impl PtyIo {
-    fn write(&self, data: &[u8]) -> Result<(), TerminalCommandError> {
-        let mut writer = self.writer.lock().map_err(|_| native_state_error())?;
-        let writer = writer.as_mut().ok_or_else(|| {
-            TerminalCommandError::new("terminal.session_closing", "Terminal session is closing")
-        })?;
-        writer.write_all(data).map_err(|_| {
-            TerminalCommandError::new("terminal.write_failed", "Failed to write to terminal")
-        })?;
-        writer.flush().map_err(|_| {
-            TerminalCommandError::new("terminal.write_failed", "Failed to flush terminal input")
-        })
-    }
-
-    fn write_graceful_exit(&self) {
-        let Ok(mut writer) = self.writer.lock() else {
-            return;
-        };
-        if let Some(writer) = writer.as_mut() {
-            let _ = writer.write_all(b"exit\r");
-            let _ = writer.flush();
-        }
-    }
-
     fn resize(&self, cols: u16, rows: u16) -> Result<(), TerminalCommandError> {
         let master = self.master.lock().map_err(|_| native_state_error())?;
         let master = master.as_ref().ok_or_else(|| {
@@ -64,11 +45,91 @@ impl PtyIo {
     }
 
     fn close(&self) {
-        if let Ok(mut writer) = self.writer.lock() {
-            writer.take();
-        }
         if let Ok(mut master) = self.master.lock() {
             master.take();
+        }
+    }
+}
+
+struct InputQueue {
+    sender: Mutex<Option<SyncSender<Vec<u8>>>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl InputQueue {
+    fn new(sender: SyncSender<Vec<u8>>) -> Self {
+        Self {
+            sender: Mutex::new(Some(sender)),
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn closed_flag(&self) -> Arc<AtomicBool> {
+        self.closed.clone()
+    }
+
+    fn enqueue(&self, data: &[u8]) -> Result<(), TerminalCommandError> {
+        if data.len() > INPUT_CHUNK_SIZE {
+            return Err(TerminalCommandError::new(
+                "terminal.input_too_large",
+                "Terminal input exceeds the 16 KiB limit",
+            ));
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(session_closing_error());
+        }
+        let sender = self.sender.lock().map_err(|_| native_state_error())?;
+        let sender = sender.as_ref().ok_or_else(session_closing_error)?;
+        sender.try_send(data.to_vec()).map_err(|error| match error {
+            TrySendError::Full(_) => TerminalCommandError::new(
+                "terminal.input_backpressure",
+                "Terminal input queue is full",
+            ),
+            TrySendError::Disconnected(_) => session_closing_error(),
+        })
+    }
+
+    fn try_graceful_exit(&self) {
+        let Ok(sender) = self.sender.lock() else {
+            return;
+        };
+        if let Some(sender) = sender.as_ref() {
+            let _ = sender.try_send(b"exit\r".to_vec());
+        }
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        if let Ok(mut sender) = self.sender.lock() {
+            sender.take();
+        }
+    }
+}
+
+#[derive(Default)]
+struct RootCompletion {
+    exited: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl RootCompletion {
+    fn mark_exited(&self) {
+        if let Ok(mut exited) = self.exited.lock() {
+            *exited = true;
+        }
+        self.changed.notify_all();
+    }
+
+    fn has_exited(&self) -> bool {
+        self.exited.lock().is_ok_and(|exited| *exited)
+    }
+
+    fn wait_for(&self, timeout: Duration) {
+        let Ok(exited) = self.exited.lock() else {
+            return;
+        };
+        if !*exited {
+            let _ = self.changed.wait_timeout(exited, timeout);
         }
     }
 }
@@ -76,25 +137,39 @@ impl PtyIo {
 struct CleanupState {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     process_tree: Mutex<Option<ProcessTreeGuard>>,
-    exited: Arc<AtomicBool>,
+    root: Arc<RootCompletion>,
 }
 
 impl CleanupState {
     fn force(&self) -> Result<(), TerminalCommandError> {
-        let root_alive = !self.exited.load(Ordering::Acquire);
-        let guard = self
-            .process_tree
-            .lock()
-            .map_err(|_| native_state_error())?
-            .take();
-        let process_tree_result = guard.map_or(Ok(()), |guard| guard.terminate(root_alive));
+        let root_alive = !self.root.has_exited();
+        let mut guard_slot = self.process_tree.lock().map_err(|_| native_state_error())?;
+        let process_tree_result = guard_slot
+            .as_mut()
+            .map_or(Ok(()), |guard| guard.terminate(root_alive));
+        if process_tree_result.is_ok() {
+            guard_slot.take();
+        }
+        drop(guard_slot);
 
-        if !self.exited.load(Ordering::Acquire) {
+        if !self.root.has_exited() {
             if let Ok(mut killer) = self.killer.lock() {
                 let _ = killer.kill();
             }
         }
         process_tree_result
+    }
+
+    fn on_root_exit(&self) -> Result<(), TerminalCommandError> {
+        let mut guard_slot = self.process_tree.lock().map_err(|_| native_state_error())?;
+        let release = match guard_slot.as_mut() {
+            Some(guard) => guard.on_root_exit()?,
+            None => false,
+        };
+        if release {
+            guard_slot.take();
+        }
+        Ok(())
     }
 }
 
@@ -112,23 +187,123 @@ impl ReaderCompletion {
         self.changed.notify_all();
     }
 
-    fn wait(&self) {
+    fn wait_for(&self, timeout: Duration) -> bool {
         let Ok(mut done) = self.done.lock() else {
-            return;
+            return true;
         };
-        while !*done {
-            let Ok(next) = self.changed.wait(done) else {
-                return;
+        if !*done {
+            let Ok((next, _)) = self.changed.wait_timeout(done, timeout) else {
+                return true;
             };
             done = next;
         }
+        *done
+    }
+}
+
+#[derive(Default)]
+struct StartupGate {
+    state: Mutex<StartupState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+enum StartupState {
+    #[default]
+    Pending,
+    Committed,
+    Aborted,
+}
+
+impl StartupGate {
+    fn commit(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = StartupState::Committed;
+        }
+        self.changed.notify_all();
+    }
+
+    fn abort(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = StartupState::Aborted;
+        }
+        self.changed.notify_all();
+    }
+
+    fn wait_for_commit(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        while matches!(*state, StartupState::Pending) {
+            let Ok(next) = self.changed.wait(state) else {
+                return false;
+            };
+            state = next;
+        }
+        matches!(*state, StartupState::Committed)
+    }
+}
+
+struct EventDispatcher {
+    sink: Arc<dyn EventSink>,
+    state: Mutex<EventState>,
+}
+
+#[derive(Default)]
+struct EventState {
+    exit_sent: bool,
+}
+
+impl EventDispatcher {
+    fn new(sink: Arc<dyn EventSink>) -> Self {
+        Self {
+            sink,
+            state: Mutex::new(EventState::default()),
+        }
+    }
+
+    fn send_output(&self, bytes: &[u8]) -> Result<(), TerminalCommandError> {
+        let state = self.state.lock().map_err(|_| native_state_error())?;
+        if state.exit_sent {
+            return Ok(());
+        }
+        self.sink.send(output_event(bytes))
+    }
+
+    fn send_error(
+        &self,
+        code: &'static str,
+        message: &'static str,
+    ) -> Result<(), TerminalCommandError> {
+        let state = self.state.lock().map_err(|_| native_state_error())?;
+        if state.exit_sent {
+            return Ok(());
+        }
+        self.sink.send(TerminalEvent::Error {
+            code: code.to_string(),
+            message: message.to_string(),
+        })
+    }
+
+    fn send_exit(
+        &self,
+        code: Option<u32>,
+        signal: Option<String>,
+    ) -> Result<(), TerminalCommandError> {
+        let mut state = self.state.lock().map_err(|_| native_state_error())?;
+        if state.exit_sent {
+            return Ok(());
+        }
+        state.exit_sent = true;
+        self.sink.send(TerminalEvent::Exit { code, signal })
     }
 }
 
 struct NativePtyHandle {
     io: Arc<PtyIo>,
+    input: Arc<InputQueue>,
     cleanup: Arc<CleanupState>,
-    exited: Arc<AtomicBool>,
+    root: Arc<RootCompletion>,
     pid: u32,
 }
 
@@ -174,19 +349,19 @@ impl NativePtySpawner {
             ));
         };
 
-        let process_tree = match ProcessTreeGuard::attach(pid) {
-            Ok(process_tree) => process_tree,
-            Err(error) => {
-                let _ = child.kill();
-                return Err(error);
-            }
-        };
+        let process_tree = attach_or_rollback(pid, child.as_mut())?;
         let killer = child.clone_killer();
+        let root = Arc::new(RootCompletion::default());
+        let cleanup = Arc::new(CleanupState {
+            killer: Mutex::new(killer),
+            process_tree: Mutex::new(Some(process_tree)),
+            root: root.clone(),
+        });
 
         let reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(_) => {
-                let _ = child.kill();
+                rollback_attached_child(cleanup.as_ref(), child.as_mut());
                 return Err(TerminalCommandError::new(
                     "terminal.pty_reader_failed",
                     "Failed to open terminal output stream",
@@ -196,7 +371,7 @@ impl NativePtySpawner {
         let writer = match pair.master.take_writer() {
             Ok(writer) => writer,
             Err(_) => {
-                let _ = child.kill();
+                rollback_attached_child(cleanup.as_ref(), child.as_mut());
                 return Err(TerminalCommandError::new(
                     "terminal.pty_writer_failed",
                     "Failed to open terminal input stream",
@@ -204,94 +379,108 @@ impl NativePtySpawner {
             }
         };
 
-        let exited = Arc::new(AtomicBool::new(false));
         let io = Arc::new(PtyIo {
             master: Mutex::new(Some(pair.master)),
-            writer: Mutex::new(Some(writer)),
         });
-        let cleanup = Arc::new(CleanupState {
-            killer: Mutex::new(killer),
-            process_tree: Mutex::new(Some(process_tree)),
-            exited: exited.clone(),
-        });
+        let (input_sender, input_receiver) = sync_channel(INPUT_QUEUE_CAPACITY);
+        let input = Arc::new(InputQueue::new(input_sender));
+        let input_closed = input.closed_flag();
+        let dispatcher = Arc::new(EventDispatcher::new(sink));
         let reader_completion = Arc::new(ReaderCompletion::default());
+        let startup = Arc::new(StartupGate::default());
+        let child_slot = Arc::new(Mutex::new(Some(child)));
 
-        let wait_sink = sink.clone();
+        let writer_startup = startup.clone();
+        let writer_dispatcher = dispatcher.clone();
         let wait_io = io.clone();
-        let wait_cleanup = cleanup.clone();
-        let wait_exited = exited.clone();
-        let wait_reader_completion = reader_completion.clone();
+        let writer_cleanup = cleanup.clone();
         if thread::Builder::new()
-            .name(format!("terminal-wait-{pid}"))
+            .name(format!("terminal-writer-{pid}"))
             .spawn(move || {
-                let status = child.wait();
-                wait_exited.store(true, Ordering::Release);
-                wait_io.close();
-                wait_reader_completion.wait();
-
-                let event = match status {
-                    Ok(status) => {
-                        tracing::info!(
-                            lifecycle = "exit",
-                            exit_code = status.exit_code(),
-                            signal = status.signal().unwrap_or("none"),
-                            "terminal shell exited"
-                        );
-                        TerminalEvent::Exit {
-                            code: Some(status.exit_code()),
-                            signal: status.signal().map(str::to_string),
-                        }
-                    }
-                    Err(_) => TerminalEvent::Error {
-                        code: "terminal.wait_failed".to_string(),
-                        message: "Failed to wait for terminal shell".to_string(),
-                    },
-                };
-                if wait_sink.send(event).is_err() {
-                    let result = wait_cleanup.force();
-                    tracing::info!(
-                        lifecycle = "close",
-                        close_reason = "channel_disconnected",
-                        forced_cleanup = result.is_ok(),
-                        "terminal channel disconnected"
+                if writer_startup.wait_for_commit() {
+                    write_input(
+                        input_receiver,
+                        input_closed,
+                        writer,
+                        writer_dispatcher,
+                        wait_io,
+                        writer_cleanup,
                     );
                 }
             })
             .is_err()
         {
-            let _ = cleanup.force();
-            io.close();
+            abort_startup(&startup, &input, &io, &cleanup, &child_slot);
             return Err(TerminalCommandError::new(
                 "terminal.thread_spawn_failed",
-                "Failed to start terminal wait thread",
+                "Failed to start terminal input thread",
             ));
         }
 
-        let reader_sink = sink;
+        let reader_startup = startup.clone();
+        let reader_dispatcher = dispatcher.clone();
         let reader_io = io.clone();
         let reader_cleanup = cleanup.clone();
         let reader_completion_for_thread = reader_completion.clone();
         if thread::Builder::new()
             .name(format!("terminal-reader-{pid}"))
             .spawn(move || {
-                read_output(
-                    reader,
-                    reader_sink,
-                    reader_io,
-                    reader_cleanup,
-                    reader_completion_for_thread,
-                );
+                if reader_startup.wait_for_commit() {
+                    read_output(
+                        reader,
+                        reader_dispatcher,
+                        reader_io,
+                        reader_cleanup,
+                        reader_completion_for_thread,
+                    );
+                } else {
+                    reader_completion_for_thread.mark_done();
+                }
             })
             .is_err()
         {
             reader_completion.mark_done();
-            let _ = cleanup.force();
-            io.close();
+            abort_startup(&startup, &input, &io, &cleanup, &child_slot);
             return Err(TerminalCommandError::new(
                 "terminal.thread_spawn_failed",
                 "Failed to start terminal output thread",
             ));
         }
+
+        let wait_startup = startup.clone();
+        let wait_dispatcher = dispatcher;
+        let wait_io = io.clone();
+        let wait_input = input.clone();
+        let wait_cleanup = cleanup.clone();
+        let wait_root = root.clone();
+        let wait_reader_completion = reader_completion;
+        let wait_child_slot = child_slot.clone();
+        if thread::Builder::new()
+            .name(format!("terminal-wait-{pid}"))
+            .spawn(move || {
+                if !wait_startup.wait_for_commit() {
+                    return;
+                }
+                wait_for_child(
+                    wait_child_slot,
+                    wait_dispatcher,
+                    wait_io,
+                    wait_input,
+                    wait_cleanup,
+                    wait_root,
+                    wait_reader_completion,
+                );
+            })
+            .is_err()
+        {
+            abort_startup(&startup, &input, &io, &cleanup, &child_slot);
+            return Err(TerminalCommandError::new(
+                "terminal.thread_spawn_failed",
+                "Failed to start terminal wait thread",
+            ));
+        }
+
+        startup.commit();
 
         tracing::info!(
             lifecycle = "created",
@@ -301,8 +490,9 @@ impl NativePtySpawner {
         );
         Ok(Arc::new(NativePtyHandle {
             io,
+            input,
             cleanup,
-            exited,
+            root,
             pid,
         }))
     }
@@ -322,7 +512,7 @@ impl PtySpawner for NativePtySpawner {
 
 impl PtyHandle for NativePtyHandle {
     fn write(&self, data: &[u8]) -> Result<(), TerminalCommandError> {
-        self.io.write(data)
+        self.input.enqueue(data)
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<(), TerminalCommandError> {
@@ -336,14 +526,10 @@ impl PtyHandle for NativePtyHandle {
             process_id = self.pid,
             "closing terminal PTY"
         );
-        self.io.write_graceful_exit();
-        for _ in 0..20 {
-            if self.exited.load(Ordering::Acquire) {
-                break;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
+        self.input.try_graceful_exit();
+        self.root.wait_for(GRACEFUL_EXIT_TIMEOUT);
 
+        self.input.close();
         let result = self.cleanup.force();
         self.io.close();
         tracing::info!(
@@ -356,14 +542,145 @@ impl PtyHandle for NativePtyHandle {
     }
 }
 
+fn rollback_attached_child(cleanup: &CleanupState, child: &mut dyn Child) {
+    let _ = cleanup.force();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn abort_startup(
+    startup: &StartupGate,
+    input: &InputQueue,
+    io: &PtyIo,
+    cleanup: &CleanupState,
+    child_slot: &Mutex<Option<Box<dyn Child + Send + Sync>>>,
+) {
+    startup.abort();
+    input.close();
+    let _ = cleanup.force();
+    io.close();
+    if let Ok(mut slot) = child_slot.lock() {
+        if let Some(mut child) = slot.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn write_input(
+    receiver: Receiver<Vec<u8>>,
+    input_closed: Arc<AtomicBool>,
+    mut writer: Box<dyn Write + Send>,
+    dispatcher: Arc<EventDispatcher>,
+    io: Arc<PtyIo>,
+    cleanup: Arc<CleanupState>,
+) {
+    while let Ok(data) = receiver.recv() {
+        if input_closed.load(Ordering::Acquire) {
+            break;
+        }
+        if writer
+            .write_all(&data)
+            .and_then(|()| writer.flush())
+            .is_ok()
+        {
+            continue;
+        }
+
+        let _ = dispatcher.send_error("terminal.write_failed", "Failed to write to terminal");
+        let result = cleanup.force();
+        io.close();
+        tracing::info!(
+            lifecycle = "close",
+            close_reason = "write_failed",
+            forced_cleanup = result.is_ok(),
+            "terminal input writer failed"
+        );
+        break;
+    }
+}
+
+fn wait_for_child(
+    child_slot: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
+    dispatcher: Arc<EventDispatcher>,
+    io: Arc<PtyIo>,
+    input: Arc<InputQueue>,
+    cleanup: Arc<CleanupState>,
+    root: Arc<RootCompletion>,
+    reader_completion: Arc<ReaderCompletion>,
+) {
+    let Some(mut child) = child_slot.lock().ok().and_then(|mut slot| slot.take()) else {
+        return;
+    };
+    let status = child.wait();
+    if status.is_ok() {
+        root.mark_exited();
+    }
+    input.close();
+
+    let cleanup_result = if status.is_ok() {
+        cleanup.on_root_exit()
+    } else {
+        cleanup.force()
+    };
+    io.close();
+    let _ = reader_completion.wait_for(TAIL_OUTPUT_DRAIN_TIMEOUT);
+
+    if cleanup_result.is_err()
+        && dispatcher
+            .send_error(
+                "terminal.process_tree_failed",
+                "Failed to clean up the terminal process tree",
+            )
+            .is_err()
+    {
+        let _ = cleanup.force();
+        return;
+    }
+
+    let (code, signal) = match status {
+        Ok(status) => {
+            tracing::info!(
+                lifecycle = "exit",
+                exit_code = status.exit_code(),
+                signal = status.signal().unwrap_or("none"),
+                "terminal shell exited"
+            );
+            (
+                Some(status.exit_code()),
+                status.signal().map(str::to_string),
+            )
+        }
+        Err(_) => {
+            if dispatcher
+                .send_error("terminal.wait_failed", "Failed to wait for terminal shell")
+                .is_err()
+            {
+                let _ = cleanup.force();
+                return;
+            }
+            (None, None)
+        }
+    };
+    if dispatcher.send_exit(code, signal).is_err() {
+        let result = cleanup.force();
+        tracing::info!(
+            lifecycle = "close",
+            close_reason = "channel_disconnected",
+            forced_cleanup = result.is_ok(),
+            "terminal channel disconnected"
+        );
+    }
+}
+
 fn read_output(
     mut reader: Box<dyn Read + Send>,
-    sink: Arc<dyn EventSink>,
+    dispatcher: Arc<EventDispatcher>,
     io: Arc<PtyIo>,
     cleanup: Arc<CleanupState>,
     completion: Arc<ReaderCompletion>,
 ) {
-    let channel_connected = forward_output(reader.as_mut(), sink.as_ref());
+    let channel_connected = forward_dispatched_output(reader.as_mut(), dispatcher.as_ref());
     if !channel_connected {
         let result = cleanup.force();
         io.close();
@@ -377,6 +694,22 @@ fn read_output(
     completion.mark_done();
 }
 
+fn forward_dispatched_output(reader: &mut dyn Read, dispatcher: &EventDispatcher) -> bool {
+    let mut buffer = [0_u8; OUTPUT_CHUNK_SIZE];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return true,
+            Ok(read) => {
+                if dispatcher.send_output(&buffer[..read]).is_err() {
+                    return false;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+}
+
+#[cfg(test)]
 fn forward_output(reader: &mut dyn Read, sink: &dyn EventSink) -> bool {
     let mut buffer = [0_u8; OUTPUT_CHUNK_SIZE];
     loop {
@@ -405,12 +738,20 @@ fn native_state_error() -> TerminalCommandError {
     )
 }
 
+fn session_closing_error() -> TerminalCommandError {
+    TerminalCommandError::new("terminal.session_closing", "Terminal session is closing")
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::sync::Mutex;
+    use std::sync::mpsc::sync_channel;
+    use std::sync::{Arc, Condvar, Mutex};
 
-    use super::{forward_output, output_event, OUTPUT_CHUNK_SIZE};
+    use super::{
+        forward_output, output_event, EventDispatcher, InputQueue, StartupGate, INPUT_CHUNK_SIZE,
+        INPUT_QUEUE_CAPACITY, OUTPUT_CHUNK_SIZE,
+    };
     use crate::terminal::manager::EventSink;
     use crate::terminal::protocol::{TerminalCommandError, TerminalEvent};
     use base64::Engine;
@@ -419,6 +760,73 @@ mod tests {
     struct RecordingSink {
         chunks: Mutex<Vec<Vec<u8>>>,
         fail_after: Option<usize>,
+    }
+
+    #[derive(Default)]
+    struct EventRecordingSink {
+        events: Mutex<Vec<TerminalEvent>>,
+    }
+
+    #[derive(Default)]
+    struct BlockingEventSink {
+        state: Mutex<BlockingEventState>,
+        changed: Condvar,
+    }
+
+    #[derive(Default)]
+    struct BlockingEventState {
+        events: Vec<TerminalEvent>,
+        output_entered: bool,
+        release_output: bool,
+    }
+
+    impl BlockingEventSink {
+        fn wait_for_output(&self) {
+            let mut state = self.state.lock().expect("blocking sink mutex poisoned");
+            while !state.output_entered {
+                state = self
+                    .changed
+                    .wait(state)
+                    .expect("blocking sink mutex poisoned");
+            }
+        }
+
+        fn release_output(&self) {
+            self.state
+                .lock()
+                .expect("blocking sink mutex poisoned")
+                .release_output = true;
+            self.changed.notify_all();
+        }
+    }
+
+    impl EventSink for BlockingEventSink {
+        fn send(&self, event: TerminalEvent) -> Result<(), TerminalCommandError> {
+            let mut state = self.state.lock().expect("blocking sink mutex poisoned");
+            let should_block = matches!(event, TerminalEvent::Output { .. });
+            state.events.push(event);
+            if should_block {
+                state.output_entered = true;
+                self.changed.notify_all();
+                while !state.release_output {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .expect("blocking sink mutex poisoned");
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl EventSink for EventRecordingSink {
+        fn send(&self, event: TerminalEvent) -> Result<(), TerminalCommandError> {
+            self.events
+                .lock()
+                .expect("recording events mutex poisoned")
+                .push(event);
+            Ok(())
+        }
     }
 
     impl EventSink for RecordingSink {
@@ -488,6 +896,96 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn input_queue_rejects_oversized_and_excess_input_without_blocking() {
+        let (sender, _receiver) = sync_channel(INPUT_QUEUE_CAPACITY);
+        let queue = InputQueue::new(sender);
+
+        let oversized = queue
+            .enqueue(&vec![b'x'; INPUT_CHUNK_SIZE + 1])
+            .unwrap_err();
+        assert_eq!(oversized.code, "terminal.input_too_large");
+
+        for _ in 0..INPUT_QUEUE_CAPACITY {
+            queue.enqueue(b"x").expect("bounded input should enqueue");
+        }
+        let full = queue.enqueue(b"x").unwrap_err();
+        assert_eq!(full.code, "terminal.input_backpressure");
+
+        queue.close();
+        let closed = queue.enqueue(b"x").unwrap_err();
+        assert_eq!(closed.code, "terminal.session_closing");
+    }
+
+    #[test]
+    fn event_dispatcher_never_sends_output_after_exit() {
+        let sink = Arc::new(EventRecordingSink::default());
+        let dispatcher = EventDispatcher::new(sink.clone());
+
+        dispatcher.send_output(b"before").unwrap();
+        dispatcher.send_exit(Some(0), None).unwrap();
+        dispatcher.send_output(b"after").unwrap();
+        dispatcher
+            .send_error("terminal.test", "late test error")
+            .unwrap();
+
+        let events = sink.events.lock().expect("recording events mutex poisoned");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], TerminalEvent::Output { .. }));
+        assert!(matches!(
+            events[1],
+            TerminalEvent::Exit { code: Some(0), .. }
+        ));
+    }
+
+    #[test]
+    fn exit_waits_for_in_flight_output_and_closes_the_event_gate() {
+        let sink = Arc::new(BlockingEventSink::default());
+        let dispatcher = Arc::new(EventDispatcher::new(sink.clone()));
+
+        let output_dispatcher = dispatcher.clone();
+        let output = std::thread::spawn(move || output_dispatcher.send_output(b"tail"));
+        sink.wait_for_output();
+
+        let exit_dispatcher = dispatcher.clone();
+        let (started_sender, started_receiver) = sync_channel(0);
+        let (finished_sender, finished_receiver) = sync_channel(1);
+        let exit = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            let result = exit_dispatcher.send_exit(Some(0), None);
+            finished_sender.send(()).unwrap();
+            result
+        });
+        started_receiver.recv().unwrap();
+        assert!(finished_receiver.try_recv().is_err());
+
+        sink.release_output();
+        output.join().unwrap().unwrap();
+        exit.join().unwrap().unwrap();
+        finished_receiver.recv().unwrap();
+        dispatcher.send_output(b"late").unwrap();
+
+        let state = sink.state.lock().expect("blocking sink mutex poisoned");
+        assert_eq!(state.events.len(), 2);
+        assert!(matches!(state.events[0], TerminalEvent::Output { .. }));
+        assert!(matches!(state.events[1], TerminalEvent::Exit { .. }));
+    }
+
+    #[test]
+    fn aborted_startup_gate_releases_workers_without_committing() {
+        let gate = Arc::new(StartupGate::default());
+        let worker_gate = gate.clone();
+        let (entered_sender, entered_receiver) = sync_channel(0);
+        let worker = std::thread::spawn(move || {
+            entered_sender.send(()).unwrap();
+            worker_gate.wait_for_commit()
+        });
+
+        entered_receiver.recv().unwrap();
+        gate.abort();
+        assert!(!worker.join().unwrap());
     }
 
     #[cfg(windows)]

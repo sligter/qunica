@@ -1,6 +1,8 @@
 #[cfg(windows)]
 use std::process::Command;
 
+use portable_pty::Child;
+
 use super::protocol::TerminalCommandError;
 
 pub(crate) fn taskkill_args(pid: u32) -> [String; 4] {
@@ -10,6 +12,21 @@ pub(crate) fn taskkill_args(pid: u32) -> [String; 4] {
         "/T".to_string(),
         "/F".to_string(),
     ]
+}
+
+pub(crate) fn attach_or_rollback(
+    pid: u32,
+    child: &mut dyn Child,
+) -> Result<ProcessTreeGuard, TerminalCommandError> {
+    match ProcessTreeGuard::attach(pid) {
+        Ok(guard) => Ok(guard),
+        Err(error) => {
+            platform::rollback_unmanaged_tree(pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -50,14 +67,15 @@ mod platform {
             self.handle.unwrap_or(ptr::null_mut())
         }
 
-        fn close(mut self) -> io::Result<()> {
-            let Some(handle) = self.handle.take() else {
+        fn close(&mut self) -> io::Result<()> {
+            let Some(handle) = self.handle else {
                 return Ok(());
             };
             let result = unsafe { CloseHandle(handle) };
             if result == 0 {
                 Err(io::Error::last_os_error())
             } else {
+                self.handle = None;
                 Ok(())
             }
         }
@@ -114,7 +132,7 @@ mod platform {
             Ok(Self { pid, job })
         }
 
-        pub(crate) fn terminate(self, root_alive: bool) -> Result<(), TerminalCommandError> {
+        pub(crate) fn terminate(&mut self, root_alive: bool) -> Result<(), TerminalCommandError> {
             let pid = self.pid;
             let close_result = self.job.close().map_err(|error| {
                 terminal_os_error(
@@ -129,6 +147,14 @@ mod platform {
             }
             close_result
         }
+
+        pub(crate) fn on_root_exit(&mut self) -> Result<bool, TerminalCommandError> {
+            Ok(false)
+        }
+    }
+
+    pub(crate) fn rollback_unmanaged_tree(pid: u32) {
+        let _ = Command::new("taskkill").args(taskkill_args(pid)).status();
     }
 
     fn windows_error(code: &'static str, operation: &'static str) -> TerminalCommandError {
@@ -172,14 +198,30 @@ mod platform {
             Ok(Self { process_group })
         }
 
-        pub(crate) fn terminate(self, _root_alive: bool) -> Result<(), TerminalCommandError> {
+        pub(crate) fn terminate(&mut self, _root_alive: bool) -> Result<(), TerminalCommandError> {
             let term_result = signal_group(self.process_group, libc::SIGTERM);
-            if !matches!(term_result, Ok(false)) {
+            if matches!(term_result, Ok(true)) {
                 thread::sleep(Duration::from_millis(500));
             }
             let kill_result = signal_group(self.process_group, libc::SIGKILL);
             term_result.and(kill_result).map(|_| ())
         }
+
+        pub(crate) fn on_root_exit(&mut self) -> Result<bool, TerminalCommandError> {
+            self.terminate(false)?;
+            Ok(true)
+        }
+    }
+
+    pub(crate) fn rollback_unmanaged_tree(pid: u32) {
+        let Ok(process_group) = libc::pid_t::try_from(pid) else {
+            return;
+        };
+        let term_result = signal_group(process_group, libc::SIGTERM);
+        if matches!(term_result, Ok(true)) {
+            thread::sleep(Duration::from_millis(500));
+        }
+        let _ = signal_group(process_group, libc::SIGKILL);
     }
 
     fn signal_group(
