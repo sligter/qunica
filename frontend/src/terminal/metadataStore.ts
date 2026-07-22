@@ -64,13 +64,18 @@ function sanitizeTab(value: unknown): TerminalTabMetadata | null {
   }
 }
 
-function sanitizeConversation(value: unknown): TerminalConversationMetadata | null {
+function sanitizeConversation(
+  value: unknown,
+  seenTabIds: Set<string>,
+): TerminalConversationMetadata | null {
   if (!isRecord(value)) return null
   const rawTabs = getOwnProperty(value, 'tabs')
   const tabs = Array.isArray(rawTabs)
     ? rawTabs.flatMap((tab) => {
         const sanitized = sanitizeTab(tab)
-        return sanitized === null ? [] : [sanitized]
+        if (sanitized === null || seenTabIds.has(sanitized.id)) return []
+        seenTabIds.add(sanitized.id)
+        return [sanitized]
       })
     : []
   const open = getOwnProperty(value, 'open')
@@ -90,11 +95,12 @@ function sanitizeMetadata(value: unknown): TerminalMetadataStore {
   if (!isRecord(value)) return createEmptyMetadata()
 
   const conversations = createConversationRecord()
+  const seenTabIds = new Set<string>()
   const rawConversations = getOwnProperty(value, 'conversations')
   if (isRecord(rawConversations)) {
     for (const [conversationId, conversation] of Object.entries(rawConversations)) {
       if (DANGEROUS_CONVERSATION_KEYS.has(conversationId)) continue
-      const sanitized = sanitizeConversation(conversation)
+      const sanitized = sanitizeConversation(conversation, seenTabIds)
       if (sanitized !== null) conversations[conversationId] = sanitized
     }
   }

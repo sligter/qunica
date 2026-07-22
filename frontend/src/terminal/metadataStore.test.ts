@@ -161,6 +161,88 @@ describe('terminal metadata storage', () => {
     })
   })
 
+  it('loads globally unique tab ids with first-wins ordering and repairs active tabs', () => {
+    localStorage.setItem(
+      TERMINAL_METADATA_STORAGE_KEY,
+      JSON.stringify({
+        height: 240,
+        conversations: {
+          first: {
+            open: true,
+            activeTabId: 'shared',
+            tabs: [
+              { id: 'shared', label: 'First', launchDirectory: 'D:/first' },
+              { id: 'shared', label: 'Duplicate', launchDirectory: 'D:/duplicate' },
+            ],
+          },
+          second: {
+            open: true,
+            activeTabId: 'shared',
+            tabs: [
+              { id: 'shared', label: 'Cross conversation', launchDirectory: 'D:/second' },
+              { id: 'unique', label: 'Unique', launchDirectory: 'D:/second' },
+            ],
+          },
+        },
+      }),
+    )
+
+    expect(loadTerminalMetadata()).toEqual({
+      height: 240,
+      conversations: {
+        first: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [{ id: 'shared', label: 'First', launchDirectory: 'D:/first' }],
+        },
+        second: {
+          open: true,
+          activeTabId: null,
+          tabs: [{ id: 'unique', label: 'Unique', launchDirectory: 'D:/second' }],
+        },
+      },
+    })
+  })
+
+  it('saves globally unique tab ids and validates active tabs after filtering', () => {
+    saveTerminalMetadata({
+      height: 260,
+      conversations: {
+        first: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [{ id: 'shared', label: 'First', launchDirectory: 'D:/first' }],
+        },
+        second: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [
+            { id: 'shared', label: 'Duplicate', launchDirectory: 'D:/second' },
+            { id: 'second-only', label: 'Second', launchDirectory: 'D:/second' },
+          ],
+        },
+      },
+    })
+
+    expect(loadTerminalMetadata()).toEqual({
+      height: 260,
+      conversations: {
+        first: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [{ id: 'shared', label: 'First', launchDirectory: 'D:/first' }],
+        },
+        second: {
+          open: true,
+          activeTabId: null,
+          tabs: [
+            { id: 'second-only', label: 'Second', launchDirectory: 'D:/second' },
+          ],
+        },
+      },
+    })
+  })
+
   it('rejects dangerous conversation keys from persisted JSON', () => {
     localStorage.setItem(
       TERMINAL_METADATA_STORAGE_KEY,

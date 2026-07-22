@@ -213,6 +213,8 @@ export function TerminalRuntimeProvider({
   const closingTabsRef = useRef(new Map<string, Promise<void>>())
   const restartingTabsRef = useRef(new Map<string, Promise<void>>())
   const restartTokensRef = useRef(new Map<string, symbol>())
+  const pendingStartsRef = useRef(new Set<Promise<void>>())
+  const pendingStartsByTabRef = useRef(new Map<string, Set<Promise<void>>>())
   const closeAllRef = useRef<Promise<void> | null>(null)
   const isClosingAllRef = useRef(false)
   const metadataEpochRef = useRef(0)
@@ -264,17 +266,47 @@ export function TerminalRuntimeProvider({
   }, [])
 
   const invalidateGeneration = useCallback((tabId: string): void => {
-    generationsRef.current.set(tabId, (generationsRef.current.get(tabId) ?? 0) + 1)
+    const generation = (generationsRef.current.get(tabId) ?? 0) + 1
+    generationsRef.current.set(tabId, generation)
+    const entry = runtimeRef.current.get(tabId)
+    if (entry !== undefined) entry.generation = generation
   }, [])
 
-  const closeOrphan = useCallback((conversationId: string, sessionId: string) => {
-    void transport.close(conversationId, sessionId).catch((cause) => {
-      const error = normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
-      console.warn('Terminal orphan cleanup failed', error.code)
-    })
-  }, [transport])
+  const trackStart = useCallback((tabId: string, operation: Promise<void>): Promise<void> => {
+    pendingStartsRef.current.add(operation)
+    const tabOperations = pendingStartsByTabRef.current.get(tabId) ?? new Set<Promise<void>>()
+    tabOperations.add(operation)
+    pendingStartsByTabRef.current.set(tabId, tabOperations)
+    void operation.finally(() => {
+      pendingStartsRef.current.delete(operation)
+      const currentTabOperations = pendingStartsByTabRef.current.get(tabId)
+      currentTabOperations?.delete(operation)
+      if (currentTabOperations?.size === 0) pendingStartsByTabRef.current.delete(tabId)
+    }).catch(() => undefined)
+    return operation
+  }, [])
 
-  const startRuntimeTab = useCallback(async (
+  const settlePendingStarts = useCallback(async (
+    operationsForSnapshot: () => Promise<void>[],
+  ): Promise<unknown | undefined> => {
+    let failure: unknown | undefined
+    while (true) {
+      const snapshot = operationsForSnapshot()
+      if (snapshot.length === 0) return failure
+      const results = await Promise.allSettled(snapshot)
+      failure ??= firstFailure(results)
+    }
+  }, [])
+
+  const settlePendingStartsForTab = useCallback((tabId: string) => (
+    settlePendingStarts(() => Array.from(pendingStartsByTabRef.current.get(tabId) ?? []))
+  ), [settlePendingStarts])
+
+  const settleAllPendingStarts = useCallback(() => (
+    settlePendingStarts(() => Array.from(pendingStartsRef.current))
+  ), [settlePendingStarts])
+
+  const startRuntimeTab = useCallback((
     tab: TerminalTabMetadata,
     conversationId: string,
     fallbackCwd: string,
@@ -283,7 +315,7 @@ export function TerminalRuntimeProvider({
     requestedCwd = looksAbsolute(tab.launchDirectory) ? tab.launchDirectory : fallbackCwd,
     mayFallback = looksAbsolute(tab.launchDirectory) && tab.launchDirectory !== fallbackCwd,
   ): Promise<void> => {
-    if (isClosingAllRef.current) return
+    if (isClosingAllRef.current) return Promise.resolve()
     const generation = nextGeneration(tab.id)
     const entry: RuntimeEntry = {
       tabId: tab.id,
@@ -307,6 +339,7 @@ export function TerminalRuntimeProvider({
     publishRuntime()
 
     const onEvent = (event: TerminalEvent) => {
+      if (isClosingAllRef.current) return
       const current = runtimeRef.current.get(tab.id)
       if (current === undefined || current.generation !== generation) return
       if (event.event === 'output') {
@@ -325,19 +358,75 @@ export function TerminalRuntimeProvider({
       publishRuntime()
     }
 
-    try {
-      const descriptor = await transport.create(
-        {
-          conversationId,
-          cwd: requestedCwd,
-          cols: DEFAULT_COLS,
-          rows: DEFAULT_ROWS,
-        },
-        onEvent,
-      )
-      const current = runtimeRef.current.get(tab.id)
-      if (current === undefined || current.generation !== generation) {
-        closeOrphan(conversationId, descriptor.sessionId)
+    const operation = Promise.resolve().then(async () => {
+      let current = runtimeRef.current.get(tab.id)
+      if (
+        isClosingAllRef.current ||
+        current === undefined ||
+        current.generation !== generation
+      ) {
+        return
+      }
+
+      let descriptor
+      try {
+        descriptor = await transport.create(
+          {
+            conversationId,
+            cwd: requestedCwd,
+            cols: DEFAULT_COLS,
+            rows: DEFAULT_ROWS,
+          },
+          onEvent,
+        )
+      } catch (cause) {
+        current = runtimeRef.current.get(tab.id)
+        if (
+          isClosingAllRef.current ||
+          current === undefined ||
+          current.generation !== generation
+        ) {
+          return
+        }
+        if (mayFallback && requestedCwd !== fallbackCwd) {
+          current.output.bufferedChunks = []
+          current.output.bufferedBytes = 0
+          updateTabMetadata(conversationId, tab.id, (savedTab) => {
+            savedTab.launchDirectory = fallbackCwd
+          })
+          await startRuntimeTab(
+            { ...tab, launchDirectory: fallbackCwd },
+            conversationId,
+            fallbackCwd,
+            useDescriptorLabel,
+            output,
+            fallbackCwd,
+            false,
+          )
+          return
+        }
+        current.status = 'error'
+        current.error = normalizeTerminalTransportError(
+          cause,
+          'terminal.spawn_failed',
+          'Unable to start the terminal',
+        )
+        current.exitCode = null
+        publishRuntime()
+        return
+      }
+
+      current = runtimeRef.current.get(tab.id)
+      if (
+        isClosingAllRef.current ||
+        current === undefined ||
+        current.generation !== generation
+      ) {
+        try {
+          await transport.close(conversationId, descriptor.sessionId)
+        } catch (cause) {
+          throw normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
+        }
         return
       }
       current.sessionId = descriptor.sessionId
@@ -349,37 +438,9 @@ export function TerminalRuntimeProvider({
         if (useDescriptorLabel) savedTab.label = descriptor.shellName
       })
       publishRuntime()
-    } catch (cause) {
-      const current = runtimeRef.current.get(tab.id)
-      if (current === undefined || current.generation !== generation) return
-      if (mayFallback && requestedCwd !== fallbackCwd) {
-        if (isClosingAllRef.current) return
-        current.output.bufferedChunks = []
-        current.output.bufferedBytes = 0
-        updateTabMetadata(conversationId, tab.id, (savedTab) => {
-          savedTab.launchDirectory = fallbackCwd
-        })
-        await startRuntimeTab(
-          { ...tab, launchDirectory: fallbackCwd },
-          conversationId,
-          fallbackCwd,
-          useDescriptorLabel,
-          output,
-          fallbackCwd,
-          false,
-        )
-        return
-      }
-      current.status = 'error'
-      current.error = normalizeTerminalTransportError(
-        cause,
-        'terminal.spawn_failed',
-        'Unable to start the terminal',
-      )
-      current.exitCode = null
-      publishRuntime()
-    }
-  }, [closeOrphan, nextGeneration, publishRuntime, transport, updateTabMetadata])
+    })
+    return trackStart(tab.id, operation)
+  }, [nextGeneration, publishRuntime, trackStart, transport, updateTabMetadata])
 
   const ensureConversationRestored = useCallback((
     conversationId: string,
@@ -400,7 +461,7 @@ export function TerminalRuntimeProvider({
     }
     for (const tab of conversation.tabs) {
       if (!runtimeRef.current.has(tab.id)) {
-        void startRuntimeTab(tab, conversationId, cwd, false)
+        void startRuntimeTab(tab, conversationId, cwd, false).catch(() => undefined)
       }
     }
   }, [startRuntimeTab, updateConversationMetadata])
@@ -424,6 +485,7 @@ export function TerminalRuntimeProvider({
   }, [startRuntimeTab, updateConversationMetadata])
 
   const registerConversation = useCallback((target: TerminalConversationTarget) => {
+    if (isClosingAllRef.current) return () => undefined
     const registration: Registration = {
       id: ++nextRegistrationIdRef.current,
       target,
@@ -507,42 +569,30 @@ export function TerminalRuntimeProvider({
     const existing = closingTabsRef.current.get(tabId)
     if (existing !== undefined) return existing
     const entry = runtimeRef.current.get(tabId)
-    if (entry === undefined) {
-      if (removeMetadata) {
-        const conversationId = Object.entries(metadataRef.current.conversations)
-          .find(([, conversation]) => conversation.tabs.some((tab) => tab.id === tabId))
-          ?.[0]
-        if (conversationId !== undefined) {
-          updateConversationMetadata(conversationId, (conversation) => {
-            const index = conversation.tabs.findIndex((tab) => tab.id === tabId)
-            if (index < 0) return
-            conversation.tabs.splice(index, 1)
-            if (conversation.activeTabId === tabId) {
-              conversation.activeTabId = conversation.tabs[index]?.id
-                ?? conversation.tabs[index - 1]?.id
-                ?? null
-            }
-          })
-        }
-      }
-      return Promise.resolve()
-    }
-
     invalidateGeneration(tabId)
     const operationMetadataEpoch = metadataEpochRef.current
-    const operation = (async () => {
+    const metadataConversationId = entry?.conversationId ?? Object.entries(
+      metadataRef.current.conversations,
+    ).find(([, conversation]) => conversation.tabs.some((tab) => tab.id === tabId))?.[0]
+    const operation = Promise.resolve().then(async () => {
+      let failure = await settlePendingStartsForTab(tabId)
       try {
-        if (entry.sessionId !== null) {
+        if (entry?.sessionId !== null && entry?.sessionId !== undefined) {
           await transport.close(entry.conversationId, entry.sessionId)
         }
+      } catch (cause) {
+        failure ??= normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
       } finally {
-        if (runtimeRef.current.get(tabId) === entry) runtimeRef.current.delete(tabId)
-        clearOutputChannel(entry.output)
+        if (entry !== undefined) {
+          if (runtimeRef.current.get(tabId) === entry) runtimeRef.current.delete(tabId)
+          clearOutputChannel(entry.output)
+        }
         if (
           removeMetadata &&
-          metadataEpochRef.current === operationMetadataEpoch
+          metadataEpochRef.current === operationMetadataEpoch &&
+          metadataConversationId !== undefined
         ) {
-          updateConversationMetadata(entry.conversationId, (conversation) => {
+          updateConversationMetadata(metadataConversationId, (conversation) => {
             const index = conversation.tabs.findIndex((tab) => tab.id === tabId)
             if (index < 0) return
             conversation.tabs.splice(index, 1)
@@ -555,7 +605,8 @@ export function TerminalRuntimeProvider({
         }
         publishRuntime()
       }
-    })()
+      if (failure !== undefined) throw failure
+    })
     closingTabsRef.current.set(tabId, operation)
     void operation.finally(() => {
       if (closingTabsRef.current.get(tabId) === operation) {
@@ -563,7 +614,13 @@ export function TerminalRuntimeProvider({
       }
     }).catch(() => undefined)
     return operation
-  }, [invalidateGeneration, publishRuntime, transport, updateConversationMetadata])
+  }, [
+    invalidateGeneration,
+    publishRuntime,
+    settlePendingStartsForTab,
+    transport,
+    updateConversationMetadata,
+  ])
 
   const closeTab = useCallback((tabId: string) => closeTabRuntime(tabId, true), [closeTabRuntime])
 
@@ -587,7 +644,16 @@ export function TerminalRuntimeProvider({
         }
       } catch (cause) {
         const error = normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
-        console.warn('Terminal restart cleanup failed', error.code)
+        if (
+          restartTokensRef.current.get(tabId) === restartToken &&
+          runtimeRef.current.get(tabId) === entry
+        ) {
+          entry.status = 'error'
+          entry.exitCode = null
+          entry.error = error
+          publishRuntime()
+        }
+        throw error
       }
       const savedTabStillExists = metadataRef.current.conversations[entry.conversationId]
         ?.tabs.some((candidate) => candidate.id === tabId) ?? false
@@ -617,17 +683,20 @@ export function TerminalRuntimeProvider({
       }
     }).catch(() => undefined)
     return operation
-  }, [invalidateGeneration, startRuntimeTab, transport])
+  }, [invalidateGeneration, publishRuntime, startRuntimeTab, transport])
 
   const closeConversation = useCallback(async (
     conversationId: string,
     shouldClearMetadata: boolean,
   ): Promise<void> => {
-    const tabIds = Array.from(runtimeRef.current.values())
-      .filter((entry) => entry.conversationId === conversationId)
-      .map((entry) => entry.tabId)
+    const tabIds = new Set(
+      metadataRef.current.conversations[conversationId]?.tabs.map((tab) => tab.id) ?? [],
+    )
+    for (const entry of runtimeRef.current.values()) {
+      if (entry.conversationId === conversationId) tabIds.add(entry.tabId)
+    }
     const results = await Promise.allSettled(
-      tabIds.map((tabId) => closeTabRuntime(tabId, false)),
+      Array.from(tabIds, (tabId) => closeTabRuntime(tabId, false)),
     )
     restoredConversationsRef.current.delete(conversationId)
     readyCwdsRef.current.delete(conversationId)
@@ -646,15 +715,33 @@ export function TerminalRuntimeProvider({
     metadataEpochRef.current += 1
     const entries = Array.from(runtimeRef.current.values())
     restartTokensRef.current.clear()
-    restartingTabsRef.current.clear()
-    closingTabsRef.current.clear()
     for (const entry of entries) invalidateGeneration(entry.tabId)
-    const operation = (async () => {
+    const operation = Promise.resolve().then(async () => {
+      let failure: unknown | undefined
       try {
-        await transport.closeAll()
+        try {
+          await transport.closeAll()
+        } catch (cause) {
+          failure ??= normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
+        }
+
+        try {
+          const pendingFailure = await settleAllPendingStarts()
+          failure ??= pendingFailure
+        } catch (cause) {
+          failure ??= normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
+        }
+
+        try {
+          await transport.closeAll()
+        } catch (cause) {
+          failure ??= normalizeTerminalTransportError(cause, 'terminal.cleanup_failed')
+        }
       } finally {
-        for (const entry of entries) clearOutputChannel(entry.output)
+        for (const entry of runtimeRef.current.values()) clearOutputChannel(entry.output)
         runtimeRef.current.clear()
+        pendingStartsRef.current.clear()
+        pendingStartsByTabRef.current.clear()
         restoredConversationsRef.current.clear()
         readyCwdsRef.current.clear()
         if (shouldClearMetadata) {
@@ -665,7 +752,8 @@ export function TerminalRuntimeProvider({
         }
         publishRuntime()
       }
-    })()
+      if (failure !== undefined) throw failure
+    })
     closeAllRef.current = operation
     void operation.finally(() => {
       if (closeAllRef.current === operation) {
@@ -674,7 +762,7 @@ export function TerminalRuntimeProvider({
       }
     }).catch(() => undefined)
     return operation
-  }, [invalidateGeneration, publishRuntime, transport])
+  }, [invalidateGeneration, publishRuntime, settleAllPendingStarts, transport])
 
   const subscribeOutput = useCallback((
     tabId: string,

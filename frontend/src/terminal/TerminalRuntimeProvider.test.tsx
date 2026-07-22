@@ -357,6 +357,51 @@ describe('TerminalRuntimeProvider', () => {
     expect(runtime.activeTabs[0]).toMatchObject({ sessionId: 'session-2', status: 'running' })
   })
 
+  it('keeps the old session when restart cleanup fails and creates only after a retry', async () => {
+    const transport = new FakeTransport()
+    transport.close.mockRejectedValueOnce(new Error('cleanup failed'))
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    await toggleDock()
+    const tabId = runtime.activeTabId!
+    const oldEvent = transport.creates[0]!.onEvent
+
+    let restartError: unknown
+    await act(async () => {
+      try {
+        await runtime.restartTab(tabId)
+      } catch (cause) {
+        restartError = cause
+      }
+    })
+
+    expect(restartError).toMatchObject({ code: 'terminal.cleanup_failed' })
+    expect(transport.create).toHaveBeenCalledOnce()
+    expect(runtime.activeTabs[0]).toMatchObject({
+      sessionId: 'session-1',
+      status: 'error',
+      error: { code: 'terminal.cleanup_failed' },
+    })
+    act(() => {
+      oldEvent({ event: 'exit', data: { code: 0, signal: null } })
+      oldEvent({ event: 'error', data: { code: 'late', message: 'late' } })
+    })
+    expect(runtime.activeTabs[0]).toMatchObject({
+      sessionId: 'session-1',
+      status: 'error',
+      error: { code: 'terminal.cleanup_failed' },
+    })
+
+    await act(async () => runtime.restartTab(tabId))
+
+    expect(transport.close).toHaveBeenCalledTimes(2)
+    expect(transport.create).toHaveBeenCalledTimes(2)
+    expect(runtime.activeTabs[0]).toMatchObject({
+      sessionId: 'session-2',
+      status: 'running',
+      error: null,
+    })
+  })
+
   it('does not recreate when closeTab cancels a restart waiting on native close', async () => {
     let releaseClose: (() => void) | undefined
     const closeGate = new Promise<void>((resolve) => {
@@ -397,16 +442,21 @@ describe('TerminalRuntimeProvider', () => {
     expect(runtime.allTabs).toHaveLength(0)
   })
 
-  it('closes an orphan descriptor when a tab is removed during create', async () => {
+  it('waits for a pending create and closes its orphan before closeTab resolves', async () => {
     let resolveCreate: ((descriptor: TerminalDescriptor) => void) | undefined
     const deferred = new Promise<TerminalDescriptor>((resolve) => {
       resolveCreate = resolve
+    })
+    let releaseOrphanClose: (() => void) | undefined
+    const orphanCloseGate = new Promise<void>((resolve) => {
+      releaseOrphanClose = resolve
     })
     const transport = new FakeTransport()
     transport.create.mockImplementation((request, onEvent) => {
       transport.creates.push({ request, onEvent })
       return deferred
     })
+    transport.close.mockImplementation(() => orphanCloseGate)
     render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
     let opening!: Promise<void>
     act(() => {
@@ -415,11 +465,23 @@ describe('TerminalRuntimeProvider', () => {
     await waitFor(() => expect(runtime.activeTabs).toHaveLength(1))
     const tabId = runtime.activeTabId!
 
-    await act(async () => runtime.closeTab(tabId))
-    resolveCreate?.({ sessionId: 'orphan', shellName: 'Shell', cwd: 'D:/workspace' })
-    await opening
-    await waitFor(() => expect(transport.close).toHaveBeenCalledWith('chat', 'orphan'))
+    let closeSettled = false
+    const closing = runtime.closeTab(tabId).finally(() => {
+      closeSettled = true
+    })
+    await act(async () => Promise.resolve())
 
+    expect(closeSettled).toBe(false)
+    expect(transport.close).not.toHaveBeenCalled()
+
+    resolveCreate?.({ sessionId: 'orphan', shellName: 'Shell', cwd: 'D:/workspace' })
+    await waitFor(() => expect(transport.close).toHaveBeenCalledWith('chat', 'orphan'))
+    expect(closeSettled).toBe(false)
+    releaseOrphanClose?.()
+    await act(async () => Promise.all([opening, closing]))
+
+    expect(transport.close).toHaveBeenCalledWith('chat', 'orphan')
+    expect(closeSettled).toBe(true)
     expect(runtime.activeTabs).toHaveLength(0)
   })
 
@@ -493,6 +555,35 @@ describe('TerminalRuntimeProvider', () => {
     expect(transport.close).toHaveBeenCalledTimes(2)
   })
 
+  it('does not resolve closeConversation until its pending create orphan is closed', async () => {
+    let resolveCreate: ((descriptor: TerminalDescriptor) => void) | undefined
+    const createGate = new Promise<TerminalDescriptor>((resolve) => {
+      resolveCreate = resolve
+    })
+    const transport = new FakeTransport()
+    transport.create.mockImplementation((request, onEvent) => {
+      transport.creates.push({ request, onEvent })
+      return createGate
+    })
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    const opening = runtime.toggleDock()
+    await waitFor(() => expect(transport.create).toHaveBeenCalledOnce())
+
+    let cleanupSettled = false
+    const cleanupPromise = runtime.closeConversation('chat', true).finally(() => {
+      cleanupSettled = true
+    })
+    await act(async () => Promise.resolve())
+    expect(cleanupSettled).toBe(false)
+
+    resolveCreate?.({ sessionId: 'conversation-orphan', shellName: 'Shell', cwd: 'D:/workspace' })
+    await act(async () => Promise.all([opening, cleanupPromise]))
+
+    expect(transport.close).toHaveBeenCalledWith('chat', 'conversation-orphan')
+    expect(runtime.allTabs).toHaveLength(0)
+    expect(storedMetadata().conversations.chat).toBeUndefined()
+  })
+
   it('closeAll removes every runtime and metadata in finally and is concurrent-idempotent', async () => {
     let rejectCloseAll: ((cause: Error) => void) | undefined
     const deferred = new Promise<void>((_resolve, reject) => {
@@ -508,12 +599,15 @@ describe('TerminalRuntimeProvider', () => {
     expect(first).toBe(second)
     await runtime.createTab()
     await runtime.toggleDock()
+    const ignoredUnregister = runtime.registerConversation(ready('blocked-chat', 'D:/blocked'))
     expect(transport.create).toHaveBeenCalledOnce()
+    expect(runtime.activeConversation?.conversationId).toBe('chat')
+    ignoredUnregister()
     rejectCloseAll?.(new Error('close all failed'))
     await expect(first).rejects.toThrow('close all failed')
     await waitFor(() => expect(runtime.allTabs).toHaveLength(0))
 
-    expect(transport.closeAll).toHaveBeenCalledOnce()
+    expect(transport.closeAll).toHaveBeenCalledTimes(2)
     expect(localStorage.getItem(TERMINAL_METADATA_STORAGE_KEY)).toBeNull()
 
     let unregister: () => void = () => undefined
@@ -523,6 +617,123 @@ describe('TerminalRuntimeProvider', () => {
     await toggleDock()
     expect(transport.create).toHaveBeenCalledTimes(2)
     unregister()
+  })
+
+  it('waits through both closeAll barriers when a descriptor arrives before the first response', async () => {
+    let resolveCreate: ((descriptor: TerminalDescriptor) => void) | undefined
+    const createGate = new Promise<TerminalDescriptor>((resolve) => {
+      resolveCreate = resolve
+    })
+    let releaseFirstBarrier: (() => void) | undefined
+    const firstBarrier = new Promise<void>((resolve) => {
+      releaseFirstBarrier = resolve
+    })
+    const transport = new FakeTransport()
+    transport.create.mockImplementation((request, onEvent) => {
+      transport.creates.push({ request, onEvent })
+      return createGate
+    })
+    transport.closeAll
+      .mockImplementationOnce(() => firstBarrier)
+      .mockResolvedValueOnce(undefined)
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    const opening = runtime.toggleDock()
+    await waitFor(() => expect(transport.create).toHaveBeenCalledOnce())
+    const listener = vi.fn()
+    runtime.subscribeOutput(runtime.activeTabId!, listener)
+
+    let cleanupSettled = false
+    const cleanupPromise = runtime.closeAll(true).finally(() => {
+      cleanupSettled = true
+    })
+    await waitFor(() => expect(transport.closeAll).toHaveBeenCalledOnce())
+    resolveCreate?.({ sessionId: 'early-orphan', shellName: 'Shell', cwd: 'D:/workspace' })
+    await waitFor(() => expect(transport.close).toHaveBeenCalledWith('chat', 'early-orphan'))
+    act(() => {
+      transport.creates[0]?.onEvent({ event: 'output', data: { bytes: new Uint8Array([1]) } })
+      transport.creates[0]?.onEvent({
+        event: 'error',
+        data: { code: 'late', message: 'late cleanup event' },
+      })
+    })
+
+    expect(cleanupSettled).toBe(false)
+    expect(listener).not.toHaveBeenCalled()
+    expect(transport.closeAll).toHaveBeenCalledOnce()
+
+    releaseFirstBarrier?.()
+    await act(async () => Promise.all([opening, cleanupPromise]))
+
+    expect(transport.closeAll).toHaveBeenCalledTimes(2)
+    expect(runtime.allTabs).toHaveLength(0)
+  })
+
+  it('waits for a create not yet in the manager and still runs the final barrier after orphan failure', async () => {
+    let enterManager: (() => void) | undefined
+    const beforeManager = new Promise<void>((resolve) => {
+      enterManager = resolve
+    })
+    let managerCreates = 0
+    const transport = new FakeTransport()
+    transport.create.mockImplementation(async (request, onEvent) => {
+      transport.creates.push({ request, onEvent })
+      await beforeManager
+      managerCreates += 1
+      return { sessionId: 'late-orphan', shellName: 'Shell', cwd: request.cwd }
+    })
+    transport.close.mockRejectedValueOnce(new Error('orphan close failed'))
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    const opening = runtime.toggleDock()
+    const openingResult = opening.catch((cause: unknown) => cause)
+    await waitFor(() => expect(transport.create).toHaveBeenCalledOnce())
+
+    let cleanupSettled = false
+    const cleanupPromise = runtime.closeAll(true).finally(() => {
+      cleanupSettled = true
+    })
+    await waitFor(() => expect(transport.closeAll).toHaveBeenCalledOnce())
+
+    expect(managerCreates).toBe(0)
+    expect(cleanupSettled).toBe(false)
+    expect(transport.closeAll).toHaveBeenCalledOnce()
+
+    enterManager?.()
+    await expect(cleanupPromise).rejects.toThrow('orphan close failed')
+    await expect(openingResult).resolves.toMatchObject({
+      code: 'terminal.cleanup_failed',
+    })
+
+    expect(managerCreates).toBe(1)
+    expect(transport.close).toHaveBeenCalledWith('chat', 'late-orphan')
+    expect(transport.closeAll).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(runtime.allTabs).toHaveLength(0))
+  })
+
+  it('returns the first closeAll failure after pending and final cleanup also fail', async () => {
+    let resolveCreate: ((descriptor: TerminalDescriptor) => void) | undefined
+    const createGate = new Promise<TerminalDescriptor>((resolve) => {
+      resolveCreate = resolve
+    })
+    const transport = new FakeTransport()
+    transport.create.mockImplementation((request, onEvent) => {
+      transport.creates.push({ request, onEvent })
+      return createGate
+    })
+    transport.closeAll
+      .mockRejectedValueOnce(new Error('first barrier failed'))
+      .mockRejectedValueOnce(new Error('final barrier failed'))
+    transport.close.mockRejectedValueOnce(new Error('orphan failed'))
+    render(<Harness transport={transport} target={ready('chat', 'D:/workspace')} />)
+    const openingResult = runtime.toggleDock().catch((cause: unknown) => cause)
+    await waitFor(() => expect(transport.create).toHaveBeenCalledOnce())
+
+    const cleanupPromise = runtime.closeAll(true)
+    await waitFor(() => expect(transport.closeAll).toHaveBeenCalledOnce())
+    resolveCreate?.({ sessionId: 'orphan', shellName: 'Shell', cwd: 'D:/workspace' })
+
+    await expect(cleanupPromise).rejects.toThrow('first barrier failed')
+    await openingResult
+    expect(transport.closeAll).toHaveBeenCalledTimes(2)
   })
 
   it('prevents a pending closeTab from recreating metadata after closeAll', async () => {
@@ -633,6 +844,48 @@ describe('TerminalRuntimeProvider', () => {
     await waitFor(() => expect(runtime.allTabs[0]?.status).toBe('running'))
 
     expect(transport.create).toHaveBeenCalledOnce()
+  })
+
+  it('restores duplicate persisted tab ids only for the first conversation', async () => {
+    seedMetadata({
+      height: 0,
+      conversations: {
+        'chat-a': {
+          open: true,
+          activeTabId: 'shared-tab',
+          tabs: [
+            { id: 'shared-tab', label: 'First owner', launchDirectory: 'D:/a' },
+          ],
+        },
+        'chat-b': {
+          open: true,
+          activeTabId: 'shared-tab',
+          tabs: [
+            { id: 'shared-tab', label: 'Duplicate owner', launchDirectory: 'D:/b' },
+            { id: 'chat-b-tab', label: 'Second shell', launchDirectory: 'D:/b' },
+          ],
+        },
+      },
+    })
+    const transport = new FakeTransport()
+    const { rerender } = render(
+      <Harness transport={transport} target={ready('chat-a', 'D:/a')} />,
+    )
+    await waitFor(() => expect(runtime.activeTabs[0]?.status).toBe('running'))
+
+    rerender(<Harness transport={transport} target={ready('chat-b', 'D:/b')} />)
+    await waitFor(() => expect(runtime.activeTabs[0]?.status).toBe('running'))
+
+    expect(transport.create).toHaveBeenCalledTimes(2)
+    expect(runtime.allTabs.map((tab) => [tab.tabId, tab.conversationId])).toEqual([
+      ['shared-tab', 'chat-a'],
+      ['chat-b-tab', 'chat-b'],
+    ])
+    expect(runtime.activeTabId).toBe('chat-b-tab')
+    expect(storedMetadata().conversations['chat-b']).toMatchObject({
+      activeTabId: 'chat-b-tab',
+      tabs: [{ id: 'chat-b-tab' }],
+    })
   })
 
   it('deduplicates restored creation under StrictMode and concurrent dock toggles', async () => {
