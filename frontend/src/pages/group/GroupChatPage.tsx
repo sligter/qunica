@@ -40,6 +40,7 @@ export function GroupChatPage() {
   return (
     <ConversationChatView
       conversationId={groupId}
+      workspaceId={group.data.workspace_id}
       scope="groups"
       schedulerEnabled={group.data.scheduler_enabled}
       agents={agents}

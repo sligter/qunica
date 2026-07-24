@@ -89,6 +89,12 @@ frontend/src-tauri/target/release/bundle/nsis/AG Swarmer_0.1.0_x64-setup.exe
 frontend/src-tauri/target/release/bundle/portable/AG Swarmer_0.1.0_x64-portable.zip
 ```
 
+### 本地终端
+
+仅 Tauri 桌面应用可在已绑定的本地工作区中打开多标签交互终端。使用 Ctrl/Cmd + \` 展开或折叠终端面板。
+
+终端运行完整的宿主 Shell，并非工作区沙箱；它可访问当前账户权限允许的工作区外文件和进程。切换聊天或将应用隐藏到系统托盘不会停止终端；真正退出应用会结束 PTY 及其后代进程。重启应用只恢复标签元数据和启动目录，不恢复旧进程、命令输入或输出。用户终端与 Agent 工具执行彼此独立。
+
 免安装版解压后直接运行 `AG Swarmer.exe`。不要把 `ag-swarmer-backend.exe` 从同一目录移走。
 
 ## 桌面运行行为

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Files, PanelRightClose } from 'lucide-react'
+import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
@@ -17,6 +17,8 @@ import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
+import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
+import { useTerminalConversationRegistration } from '@/terminal/useTerminalConversationRegistration'
 import type { GroupAgentRead } from '@/types/api'
 
 const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-files-open:'
@@ -25,6 +27,7 @@ type WorkspaceFilesOpenUpdater = boolean | ((current: boolean) => boolean)
 
 export interface ConversationChatViewProps {
   conversationId: string
+  workspaceId: string | null
   scope: ConversationScope
   schedulerEnabled: boolean
   agents: GroupAgentRead[]
@@ -56,8 +59,37 @@ function storeWorkspaceFilesOpen(conversationId: string, value: boolean): void {
   sessionStorage.setItem(workspaceFilesOpenStorageKey(conversationId), String(value))
 }
 
+function isEditableShortcutTarget(event: globalThis.KeyboardEvent): boolean {
+  const isEditableElement = (target: EventTarget): boolean => {
+    if (!(target instanceof HTMLElement)) return false
+
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target.isContentEditable ||
+      target.closest('[contenteditable=true]') !== null
+    )
+  }
+
+  const eventPath = event.composedPath?.() ?? []
+  if (eventPath.some(isEditableElement)) return true
+
+  const { target } = event
+  const isWindowLikeTarget =
+    target !== null &&
+    typeof target === 'object' &&
+    'window' in target &&
+    (target as { window?: unknown }).window === target
+  if (target === null || target === window || target === document || isWindowLikeTarget) return false
+
+  // Do not claim a shortcut from a custom or inaccessible event target.
+  return !(target instanceof HTMLElement)
+}
+
 export function ConversationChatView({
   conversationId,
+  workspaceId,
   scope,
   schedulerEnabled,
   agents,
@@ -70,6 +102,8 @@ export function ConversationChatView({
   disabledComposerReason,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
+  const { isDockOpen, toggleDock } = useTerminalRuntime()
+  useTerminalConversationRegistration(conversationId, workspaceId)
   const messagesQuery = useConversationMessages(scope, conversationId)
   const stream = useSendMessageStream(conversationId, schedulerEnabled, {
     scope,
@@ -97,6 +131,30 @@ export function ConversationChatView({
     setSelectedTurnId(null)
     clearWarnings(conversationId)
   }, [capabilities.showWorkspace, clearWarnings, conversationId])
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const isMac = /mac/i.test(navigator.platform || navigator.userAgent)
+      const modifier = isMac
+        ? event.metaKey && !event.ctrlKey
+        : event.ctrlKey && !event.metaKey
+      if (
+        event.key !== '`' ||
+        !modifier ||
+        event.altKey ||
+        event.isComposing ||
+        event.repeat ||
+        event.defaultPrevented
+      ) {
+        return
+      }
+      if (isEditableShortcutTarget(event)) return
+      event.preventDefault()
+      void toggleDock().catch(() => undefined)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toggleDock])
 
   const setWorkspaceFilesOpenPersisted = useCallback(
     (next: WorkspaceFilesOpenUpdater) => {
@@ -146,6 +204,15 @@ export function ConversationChatView({
           {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant={isDockOpen ? 'secondary' : 'ghost'}
+            size="icon"
+            onClick={() => void toggleDock().catch(() => undefined)}
+            aria-label={isDockOpen ? t('terminal.hide') : t('terminal.show')}
+            aria-pressed={isDockOpen}
+          >
+            <SquareTerminal className="h-4 w-4" />
+          </Button>
           {capabilities.showWorkspace ? (
             <Button
               variant={workspaceFilesOpen ? 'secondary' : 'ghost'}

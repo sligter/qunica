@@ -1,0 +1,363 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  clearTerminalMetadata,
+  loadTerminalMetadata,
+  saveTerminalMetadata,
+  TERMINAL_METADATA_STORAGE_KEY,
+  type TerminalMetadataStore,
+} from './metadataStore'
+
+describe('terminal metadata storage', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('persists only restorable metadata and drops sensitive runtime fields', () => {
+    const unsafeValue = {
+      height: 320,
+      sessionId: 'root-session-secret',
+      output: 'root-output-secret',
+      env: { TOKEN: 'root-env-secret' },
+      history: ['root-history-secret'],
+      conversations: {
+        'chat-1': {
+          open: true,
+          activeTabId: 'tab-1',
+          sessionId: 'session-secret',
+          output: 'output-secret',
+          env: { TOKEN: 'env-secret' },
+          history: ['history-secret'],
+          tabs: [
+            {
+              id: 'tab-1',
+              label: 'PowerShell',
+              launchDirectory: 'D:/project',
+              sessionId: 'tab-session-secret',
+              output: 'tab-output-secret',
+              env: 'tab-env-secret',
+              history: 'tab-history-secret',
+            },
+          ],
+        },
+      },
+    } as unknown as TerminalMetadataStore
+
+    saveTerminalMetadata(unsafeValue)
+
+    const raw = localStorage.getItem(TERMINAL_METADATA_STORAGE_KEY) ?? ''
+    expect(JSON.parse(raw)).toEqual({
+      height: 320,
+      conversations: {
+        'chat-1': {
+          open: true,
+          activeTabId: 'tab-1',
+          tabs: [
+            { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+          ],
+        },
+      },
+    })
+    for (const forbidden of ['sessionId', 'output', 'env', 'history', 'secret']) {
+      expect(raw).not.toContain(forbidden)
+    }
+    expect(loadTerminalMetadata().conversations['chat-1']?.activeTabId).toBe('tab-1')
+  })
+
+  it('falls back to an empty schema for invalid JSON and invalid roots', () => {
+    localStorage.setItem(TERMINAL_METADATA_STORAGE_KEY, '{broken')
+    expect(loadTerminalMetadata()).toEqual({ height: 0, conversations: {} })
+
+    for (const invalid of [null, [], 'metadata', 42]) {
+      localStorage.setItem(TERMINAL_METADATA_STORAGE_KEY, JSON.stringify(invalid))
+      expect(loadTerminalMetadata()).toEqual({ height: 0, conversations: {} })
+    }
+  })
+
+  it('validates and cleans every persisted field independently', () => {
+    localStorage.setItem(
+      TERMINAL_METADATA_STORAGE_KEY,
+      JSON.stringify({
+        height: '320',
+        ignoredRoot: true,
+        conversations: {
+          'chat-1': {
+            open: 'yes',
+            activeTabId: 7,
+            ignoredConversation: true,
+            tabs: [
+              {
+                id: 'tab-1',
+                label: 'PowerShell',
+                launchDirectory: 'D:/project',
+                ignoredTab: true,
+              },
+              { id: 'missing-directory', label: 'Invalid' },
+              null,
+            ],
+          },
+          'chat-invalid': null,
+        },
+      }),
+    )
+
+    expect(loadTerminalMetadata()).toEqual({
+      height: 0,
+      conversations: {
+        'chat-1': {
+          open: false,
+          activeTabId: null,
+          tabs: [
+            { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+          ],
+        },
+      },
+    })
+  })
+
+  it('clears activeTabId when it does not identify a sanitized tab', () => {
+    localStorage.setItem(
+      TERMINAL_METADATA_STORAGE_KEY,
+      JSON.stringify({
+        height: 320,
+        conversations: {
+          missing: {
+            open: true,
+            activeTabId: 'tab-missing',
+            tabs: [
+              { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+            ],
+          },
+        },
+      }),
+    )
+
+    expect(loadTerminalMetadata().conversations.missing?.activeTabId).toBeNull()
+
+    saveTerminalMetadata({
+      height: 320,
+      conversations: {
+        dropped: {
+          open: true,
+          activeTabId: 'tab-invalid',
+          tabs: [
+            { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+            { id: 'tab-invalid', label: 'Invalid' },
+          ],
+        },
+      },
+    } as unknown as TerminalMetadataStore)
+
+    expect(loadTerminalMetadata().conversations.dropped).toEqual({
+      open: true,
+      activeTabId: null,
+      tabs: [
+        { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+      ],
+    })
+  })
+
+  it('loads globally unique tab ids with first-wins ordering and repairs active tabs', () => {
+    localStorage.setItem(
+      TERMINAL_METADATA_STORAGE_KEY,
+      JSON.stringify({
+        height: 240,
+        conversations: {
+          first: {
+            open: true,
+            activeTabId: 'shared',
+            tabs: [
+              { id: 'shared', label: 'First', launchDirectory: 'D:/first' },
+              { id: 'shared', label: 'Duplicate', launchDirectory: 'D:/duplicate' },
+            ],
+          },
+          second: {
+            open: true,
+            activeTabId: 'shared',
+            tabs: [
+              { id: 'shared', label: 'Cross conversation', launchDirectory: 'D:/second' },
+              { id: 'unique', label: 'Unique', launchDirectory: 'D:/second' },
+            ],
+          },
+        },
+      }),
+    )
+
+    expect(loadTerminalMetadata()).toEqual({
+      height: 240,
+      conversations: {
+        first: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [{ id: 'shared', label: 'First', launchDirectory: 'D:/first' }],
+        },
+        second: {
+          open: true,
+          activeTabId: null,
+          tabs: [{ id: 'unique', label: 'Unique', launchDirectory: 'D:/second' }],
+        },
+      },
+    })
+  })
+
+  it('saves globally unique tab ids and validates active tabs after filtering', () => {
+    saveTerminalMetadata({
+      height: 260,
+      conversations: {
+        first: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [{ id: 'shared', label: 'First', launchDirectory: 'D:/first' }],
+        },
+        second: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [
+            { id: 'shared', label: 'Duplicate', launchDirectory: 'D:/second' },
+            { id: 'second-only', label: 'Second', launchDirectory: 'D:/second' },
+          ],
+        },
+      },
+    })
+
+    expect(loadTerminalMetadata()).toEqual({
+      height: 260,
+      conversations: {
+        first: {
+          open: true,
+          activeTabId: 'shared',
+          tabs: [{ id: 'shared', label: 'First', launchDirectory: 'D:/first' }],
+        },
+        second: {
+          open: true,
+          activeTabId: null,
+          tabs: [
+            { id: 'second-only', label: 'Second', launchDirectory: 'D:/second' },
+          ],
+        },
+      },
+    })
+  })
+
+  it('rejects dangerous conversation keys from persisted JSON', () => {
+    localStorage.setItem(
+      TERMINAL_METADATA_STORAGE_KEY,
+      `{
+        "height": 240,
+        "conversations": {
+          "__proto__": { "polluted": true },
+          "constructor": { "polluted": true },
+          "prototype": { "polluted": true },
+          "chat-safe": {
+            "open": true,
+            "activeTabId": "tab-1",
+            "tabs": [
+              { "id": "tab-1", "label": "PowerShell", "launchDirectory": "D:/project" }
+            ]
+          }
+        }
+      }`,
+    )
+
+    const metadata = loadTerminalMetadata()
+
+    expect(metadata).toEqual({
+      height: 240,
+      conversations: {
+        'chat-safe': {
+          open: true,
+          activeTabId: 'tab-1',
+          tabs: [
+            { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+          ],
+        },
+      },
+    })
+    expect(Object.getPrototypeOf(metadata.conversations)).toBeNull()
+    expect(Object.prototype).not.toHaveProperty('polluted')
+  })
+
+  it('does not persist dangerous keys supplied by runtime objects', () => {
+    const conversations = Object.create(null) as Record<string, unknown>
+    const maliciousConversation = {
+      open: true,
+      activeTabId: null,
+      tabs: [],
+      polluted: true,
+    }
+    conversations['__proto__'] = maliciousConversation
+    conversations['constructor'] = maliciousConversation
+    conversations['prototype'] = maliciousConversation
+    conversations['chat-safe'] = {
+      open: false,
+      activeTabId: 'tab-1',
+      tabs: [
+        { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+      ],
+    }
+
+    saveTerminalMetadata({
+      height: 200,
+      conversations,
+    } as unknown as TerminalMetadataStore)
+
+    const persisted = JSON.parse(
+      localStorage.getItem(TERMINAL_METADATA_STORAGE_KEY) ?? '{}',
+    ) as { conversations?: Record<string, unknown> }
+    expect(Object.keys(persisted.conversations ?? {})).toEqual(['chat-safe'])
+    expect(loadTerminalMetadata().conversations).toEqual({
+      'chat-safe': {
+        open: false,
+        activeTabId: 'tab-1',
+        tabs: [
+          { id: 'tab-1', label: 'PowerShell', launchDirectory: 'D:/project' },
+        ],
+      },
+    })
+    expect(Object.prototype).not.toHaveProperty('polluted')
+  })
+
+  it('keeps a finite height for viewport-aware clamping later', () => {
+    localStorage.setItem(
+      TERMINAL_METADATA_STORAGE_KEY,
+      JSON.stringify({ height: 50_000, conversations: {} }),
+    )
+    expect(loadTerminalMetadata().height).toBe(50_000)
+  })
+
+  it('clears the versioned metadata key', () => {
+    saveTerminalMetadata({ height: 240, conversations: {} })
+    expect(localStorage.getItem(TERMINAL_METADATA_STORAGE_KEY)).not.toBeNull()
+
+    clearTerminalMetadata()
+
+    expect(localStorage.getItem(TERMINAL_METADATA_STORAGE_KEY)).toBeNull()
+    expect(loadTerminalMetadata()).toEqual({ height: 0, conversations: {} })
+  })
+
+  it('silently degrades when localStorage access throws', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementationOnce(() => {
+      throw new Error('storage read denied')
+    })
+    expect(loadTerminalMetadata()).toEqual({ height: 0, conversations: {} })
+
+    vi.restoreAllMocks()
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+      throw new Error('storage write denied')
+    })
+    expect(() =>
+      saveTerminalMetadata({ height: 240, conversations: {} }),
+    ).not.toThrow()
+
+    vi.restoreAllMocks()
+    localStorage.setItem(TERMINAL_METADATA_STORAGE_KEY, '{}')
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementationOnce(() => {
+      throw new Error('storage remove denied')
+    })
+    expect(() => clearTerminalMetadata()).not.toThrow()
+  })
+})

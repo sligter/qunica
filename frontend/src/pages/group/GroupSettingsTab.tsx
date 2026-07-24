@@ -16,6 +16,8 @@ import { ApiError } from '@/lib/api-v2/client'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
 import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
+import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
+import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 import type { GroupCommunicationMode, GroupRead, GroupUpdate } from '@/types/api'
 
 const communicationModeKeys = {
@@ -45,6 +47,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   const del = useDeleteGroup()
   const clearMessages = useClearGroupMessages(group.id)
   const navigate = useNavigate()
+  const { closeConversation } = useTerminalRuntime()
 
   // Text-like fields: saved via the section Save buttons.
   const [name, setName] = useState(group.name)
@@ -470,6 +473,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         onConfirm={async () => {
           try {
             await del.mutateAsync(group.id)
+            await closeConversation(group.id, true).catch(logTerminalCleanupError)
             void navigate('/')
           } catch (err) {
             const detail = rawErrorDetail(err)

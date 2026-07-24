@@ -1,17 +1,31 @@
 import { Outlet } from 'react-router-dom'
 
 import { AppSidebar } from '@/components/layout/AppSidebar'
+import {
+  TerminalRuntimeProvider,
+} from '@/terminal/TerminalRuntimeProvider'
+import { TerminalDock } from '@/terminal/TerminalDock'
+import type { TerminalTransport } from '@/terminal/transport'
 
-export function AppLayout() {
+export interface AppLayoutProps {
+  terminalTransport?: TerminalTransport
+}
+
+export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   return (
-    <div
-      className="flex h-screen min-h-0 bg-background"
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <AppSidebar />
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
-      </main>
-    </div>
+    <TerminalRuntimeProvider transport={terminalTransport}>
+      <div
+        className="flex h-screen min-h-0 bg-background"
+        onContextMenu={(event) => event.preventDefault()}
+      >
+        <AppSidebar />
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <Outlet />
+          </div>
+          <TerminalDock />
+        </main>
+      </div>
+    </TerminalRuntimeProvider>
   )
 }
