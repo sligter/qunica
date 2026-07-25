@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -121,11 +121,12 @@ describe('WorkspaceFilesTab', () => {
     expect(folderButton).toHaveAccessibleDescription(
       'Drag this folder to the composer to insert its relative path.',
     )
-    expect(fileRow).toHaveAttribute('aria-grabbed', 'false')
-    expect(folderRow).toHaveAttribute('aria-grabbed', 'false')
+    expect(fileButton).toHaveAttribute('draggable', 'true')
+    expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
+    expect(folderButton).toHaveAttribute('aria-grabbed', 'false')
 
     const setData = vi.fn()
-    fireEvent.dragStart(fileRow!, {
+    fireEvent.dragStart(fileButton, {
       dataTransfer: { effectAllowed: 'none', setData },
     })
 
@@ -139,12 +140,18 @@ describe('WorkspaceFilesTab', () => {
         kind: 'file',
       },
     ])
-    expect(fileRow).toHaveAttribute('aria-grabbed', 'true')
-    fireEvent.dragEnd(fileRow!)
-    expect(fileRow).toHaveAttribute('aria-grabbed', 'false')
+    expect(fileButton).toHaveAttribute('aria-grabbed', 'true')
+    fireEvent.dragEnd(fileButton)
+    expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
+
+    setData.mockClear()
+    fireEvent.dragStart(screen.getByLabelText('Download README_RAW_原文.md'), {
+      dataTransfer: { effectAllowed: 'none', setData },
+    })
+    expect(setData).not.toHaveBeenCalled()
   })
 
-  it('preserves keyboard opening and the context menu action', async () => {
+  it('preserves keyboard opening and provides keyboard context-menu navigation', async () => {
     const user = userEvent.setup()
     renderTab()
     const fileButton = screen.getByText('README_RAW_原文.md').closest('button')!
@@ -153,9 +160,16 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByRole('dialog')).toBeVisible()
 
     await user.keyboard('{Escape}')
-    fireEvent.contextMenu(fileButton.closest('li')!)
+    fireEvent.keyDown(fileButton, { key: 'F10', shiftKey: true })
     expect(screen.getByRole('menu', { name: 'File actions' })).toBeVisible()
-    expect(screen.getByRole('menuitem', { name: 'Open preview' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Open preview' })).toHaveFocus()
+
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('menuitem', { name: 'Download' })).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('menu', { name: 'File actions' })).not.toBeInTheDocument()
+    await waitFor(() => expect(fileButton).toHaveFocus())
   })
 
   it('localizes the Chinese preview framing without changing the raw path', async () => {
@@ -170,7 +184,7 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByText('preview:groups:raw dir/README_RAW_原文.md')).toBeVisible()
   })
 
-  it('shows localized English delete failure framing with the raw Error message', async () => {
+  it('shows localized English delete failure framing without raw diagnostics', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('DELETE_RAW_ERROR')))
     renderTab()
 
@@ -178,11 +192,12 @@ describe('WorkspaceFilesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Failed to delete path: DELETE_RAW_ERROR',
+      'Failed to delete path: The workspace operation could not be completed.',
     )
+    expect(screen.queryByText('DELETE_RAW_ERROR')).not.toBeInTheDocument()
   })
 
-  it('shows localized Chinese delete failure framing with a raw non-Error rejection', async () => {
+  it('shows localized Chinese delete failure framing without raw non-Error text', async () => {
     await i18n.changeLanguage('zh-CN')
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue('DELETE_RAW_NON_ERROR'))
     renderTab()
@@ -191,8 +206,9 @@ describe('WorkspaceFilesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      '删除路径失败：DELETE_RAW_NON_ERROR',
+      '删除路径失败：无法完成此工作区操作。',
     )
+    expect(screen.queryByText('DELETE_RAW_NON_ERROR')).not.toBeInTheDocument()
   })
 
   it('uses the locale helper for selected-count display while keeping numeric plural input', async () => {

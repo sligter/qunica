@@ -6,6 +6,10 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { useSaveConversationWorkspaceFileText } from '@/hooks/useConversationWorkspaceFiles'
+import {
+  workspaceErrorMessageKey,
+  type WorkspaceErrorMessageKey,
+} from '@/i18n/localizedError'
 import { ApiError } from '@/lib/api-v2/client'
 import { cn } from '@/lib/utils'
 import type {
@@ -36,10 +40,6 @@ function snapshotFromFile(file: ConversationWorkspaceFileTextResponse): EditorSn
   }
 }
 
-function displayError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 export function WorkspaceTextEditor({
   scope,
   conversationId,
@@ -52,7 +52,7 @@ export function WorkspaceTextEditor({
   const [draft, setDraft] = useState(() => file.content ?? '')
   const [conflict, setConflict] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [refreshError, setRefreshError] = useState<string | null>(null)
+  const [refreshError, setRefreshError] = useState<WorkspaceErrorMessageKey | null>(null)
   const [confirmRefreshOpen, setConfirmRefreshOpen] = useState(false)
   const observedFile = useRef({ path: file.path, version: file.version })
   const currentPath = useRef(file.path)
@@ -123,10 +123,11 @@ export function WorkspaceTextEditor({
       const refreshed = await onRefresh()
       if (currentPath.current === requestPath) applyServerFile(refreshed, requestRevision)
     } catch (error: unknown) {
+      const errorKey = workspaceErrorMessageKey(error)
       const message = t('workspace.previewPanel.refreshError', {
-        message: displayError(error),
+        message: t(errorKey),
       })
-      setRefreshError(message)
+      setRefreshError(errorKey)
       throw new Error(message)
     } finally {
       setRefreshing(false)
@@ -142,7 +143,9 @@ export function WorkspaceTextEditor({
   }
 
   const saveError = save.error
-    ? t('workspace.previewPanel.saveError', { message: displayError(save.error) })
+    ? t('workspace.previewPanel.saveError', {
+        message: t(workspaceErrorMessageKey(save.error)),
+      })
     : null
 
   return (
@@ -214,7 +217,7 @@ export function WorkspaceTextEditor({
 
       {refreshError ? (
         <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
-          {refreshError}
+          {t('workspace.previewPanel.refreshError', { message: t(refreshError) })}
         </p>
       ) : null}
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { useDownloadConversationWorkspaceFile } from '@/hooks/useConversationWorkspaceFiles'
 import { normalizeLanguage } from '@/i18n'
+import { workspaceErrorMessageKey } from '@/i18n/localizedError'
 import { formatNumber } from '@/lib/format'
 import type { ConversationScope } from '@/types/api'
 
@@ -12,10 +13,6 @@ export interface WorkspaceFileMetadata {
   name: string
   mime_type: string
   size: number | null
-}
-
-function displayError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function formatWorkspaceFileSize(
@@ -80,7 +77,7 @@ export function WorkspaceFileFallback({
       {download.error ? (
         <p className="mt-3 text-xs text-destructive" role="alert">
           {t('workspace.previewPanel.downloadError', {
-            message: displayError(download.error),
+            message: t(workspaceErrorMessageKey(download.error)),
           })}
         </p>
       ) : null}

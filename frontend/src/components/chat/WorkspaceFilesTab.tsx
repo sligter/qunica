@@ -33,6 +33,10 @@ import {
   useRenameGroupWorkspaceFile,
 } from '@/hooks/useGroupFiles'
 import { normalizeLanguage } from '@/i18n'
+import {
+  workspaceErrorMessageKey,
+  type WorkspaceErrorMessageKey,
+} from '@/i18n/localizedError'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -69,10 +73,6 @@ function formatSize(size: number | null | undefined, language: 'en-US' | 'zh-CN'
   return `${formatNumber(Number((size / (1024 * 1024)).toFixed(1)), language)} MB`
 }
 
-function displayError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function dragItem(file: ConversationWorkspaceFileRead): WorkspaceDragItemInput {
   return {
     path: file.path,
@@ -98,7 +98,7 @@ export function WorkspaceFilesTab({
   const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
   const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [operationError, setOperationError] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<WorkspaceErrorMessageKey | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [draggingPath, setDraggingPath] = useState<string | null>(null)
   const [menu, setMenu] = useState<{
@@ -107,7 +107,10 @@ export function WorkspaceFilesTab({
     file: ConversationWorkspaceFileRead
   } | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>())
+  const menuFirstItemRef = useRef<HTMLButtonElement | null>(null)
   const dragDescriptionId = useId()
+  const contextMenuId = useId()
   const activeConversationId = workspaceId ? conversationId : undefined
   const groupId = scope === 'groups' ? activeConversationId : undefined
   const hasConversation = Boolean(activeConversationId)
@@ -162,8 +165,18 @@ export function WorkspaceFilesTab({
     openEntry(file)
   }
 
+  const handleFileKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    file: ConversationWorkspaceFileRead,
+  ) => {
+    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    setMenu({ x: rect.left + 8, y: rect.bottom, file })
+  }
+
   const handleFileDragStart = (
-    event: React.DragEvent<HTMLLIElement>,
+    event: React.DragEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
     const draggedFiles = selectedDragFiles(file)
@@ -213,9 +226,13 @@ export function WorkspaceFilesTab({
 
   useEffect(() => {
     if (!menu) return
+    menuFirstItemRef.current?.focus()
     const close = () => setMenu(null)
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenu(null)
+      if (event.key !== 'Escape') return
+      const trigger = fileButtonRefs.current.get(menu.file.path)
+      setMenu(null)
+      requestAnimationFrame(() => trigger?.focus())
     }
     window.addEventListener('click', close)
     window.addEventListener('resize', close)
@@ -228,6 +245,33 @@ export function WorkspaceFilesTab({
       window.removeEventListener('keydown', onKey)
     }
   }, [menu])
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!menu) return
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      const trigger = fileButtonRefs.current.get(menu.file.path)
+      setMenu(null)
+      requestAnimationFrame(() => trigger?.focus())
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    )
+    if (items.length === 0) return
+    event.preventDefault()
+    const activeIndex = items.indexOf(document.activeElement as HTMLButtonElement)
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowUp'
+          ? (activeIndex <= 0 ? items.length - 1 : activeIndex - 1)
+          : (activeIndex + 1) % items.length
+    items[nextIndex]?.focus()
+  }
 
   const startRename = (file: ConversationWorkspaceFileRead) => {
     if (!canMutate) return
@@ -288,7 +332,7 @@ export function WorkspaceFilesTab({
     setDownloadingPath(file.path)
     void download
       .mutateAsync(file.path)
-      .catch((error: unknown) => setOperationError(displayError(error)))
+      .catch((error: unknown) => setOperationError(workspaceErrorMessageKey(error)))
       .finally(() => setDownloadingPath(null))
   }
 
@@ -297,7 +341,9 @@ export function WorkspaceFilesTab({
       await del.mutateAsync(file.path)
     } catch (error: unknown) {
       throw new Error(
-        t('common:workspaceOperations.deletePathError', { message: displayError(error) }),
+        t('common:workspaceOperations.deletePathError', {
+          message: t(`chat:${workspaceErrorMessageKey(error)}`),
+        }),
       )
     }
     const deletesPreview = previewFile?.path === file.path
@@ -400,17 +446,23 @@ export function WorkspaceFilesTab({
 
       {files.error ? (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
-          {t('chat:workspace.filePanel.loadError', { message: displayError(files.error) })}
+          {t('chat:workspace.filePanel.loadError', {
+            message: t(`chat:${workspaceErrorMessageKey(files.error)}`),
+          })}
         </div>
       ) : null}
       {canMutate && upload.error ? (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
-          {t('chat:errors.uploadDetail', { message: displayError(upload.error) })}
+          {t('chat:errors.uploadDetail', {
+            message: t(`chat:${workspaceErrorMessageKey(upload.error)}`),
+          })}
         </div>
       ) : null}
       {operationError ? (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
-          {t('chat:workspace.filePanel.operationError', { message: operationError })}
+          {t('chat:workspace.filePanel.operationError', {
+            message: t(`chat:${operationError}`),
+          })}
         </div>
       ) : null}
 
@@ -444,25 +496,32 @@ export function WorkspaceFilesTab({
               return (
                 <li
                   key={file.path}
-                  draggable
-                  aria-grabbed={draggingPath === file.path}
                   className={cn(
                     'group flex items-center gap-2 px-3 py-2 hover:bg-muted/70',
                     isSelected && 'bg-muted ring-1 ring-inset ring-ring/40',
                   )}
-                  onDragStart={(event) => handleFileDragStart(event, file)}
-                  onDragEnd={() => setDraggingPath(null)}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     setMenu({ x: event.clientX, y: event.clientY, file })
                   }}
                 >
                   <button
+                    ref={(element) => {
+                      if (element) fileButtonRefs.current.set(file.path, element)
+                      else fileButtonRefs.current.delete(file.path)
+                    }}
                     type="button"
+                    draggable
                     className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={(event) => handleFileClick(event, file)}
                     onDoubleClick={() => openEntry(file)}
+                    onKeyDown={(event) => handleFileKeyDown(event, file)}
+                    onDragStart={(event) => handleFileDragStart(event, file)}
+                    onDragEnd={() => setDraggingPath(null)}
                     aria-pressed={isSelected}
+                    aria-grabbed={draggingPath === file.path}
+                    aria-haspopup="menu"
+                    aria-controls={menu?.file.path === file.path ? contextMenuId : undefined}
                     aria-describedby={`${dragDescriptionId}-${kind}`}
                   >
                     {file.is_dir ? (
@@ -588,7 +647,7 @@ export function WorkspaceFilesTab({
           {rename.error ? (
             <p className="mt-2 text-xs text-destructive" role="alert">
               {t('chat:workspace.filePanel.renameError', {
-                message: displayError(rename.error),
+                message: t(`chat:${workspaceErrorMessageKey(rename.error)}`),
               })}
             </p>
           ) : null}
@@ -597,13 +656,16 @@ export function WorkspaceFilesTab({
 
       {menu ? (
         <div
+          id={contextMenuId}
           className="fixed z-50 min-w-44 overflow-hidden rounded-md border border-border bg-background py-1 text-sm text-foreground shadow-md"
           style={{ top: menu.y, left: menu.x }}
           role="menu"
           aria-label={t('chat:workspace.contextMenu')}
           onClick={(event) => event.stopPropagation()}
+          onKeyDown={handleMenuKeyDown}
         >
           <button
+            ref={menuFirstItemRef}
             type="button"
             role="menuitem"
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"

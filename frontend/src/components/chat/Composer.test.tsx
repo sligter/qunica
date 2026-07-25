@@ -128,7 +128,7 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: '停止生成' })).toBeVisible()
   })
 
-  it('localizes upload error framing while preserving the raw detail', async () => {
+  it('localizes upload errors without exposing backend diagnostics', async () => {
     const user = userEvent.setup()
     mocks.upload.mockRejectedValueOnce(new Error('RAW_UPLOAD_DETAIL'))
     render(<Composer groupId="group-1" onSend={vi.fn()} />)
@@ -137,10 +137,13 @@ describe('Composer', () => {
       screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
       new File(['content'], 'notes.txt', { type: 'text/plain' }),
     )
-    expect(await screen.findByText('Upload failed: RAW_UPLOAD_DETAIL')).toBeVisible()
+    expect(await screen.findByText(
+      'Upload failed: The workspace operation could not be completed.',
+    )).toBeVisible()
 
     await i18n.changeLanguage('zh-CN')
-    expect(await screen.findByText('上传失败：RAW_UPLOAD_DETAIL')).toBeVisible()
+    expect(await screen.findByText('上传失败：无法完成此工作区操作。')).toBeVisible()
+    expect(screen.queryByText('RAW_UPLOAD_DETAIL')).not.toBeInTheDocument()
   })
 
   it.each([
@@ -307,6 +310,29 @@ describe('Composer', () => {
     expect(dropZone).toHaveAttribute('data-drop-active', 'true')
     fireEvent.dragLeave(dropZone, { dataTransfer })
     expect(dropZone).toHaveAttribute('data-drop-active', 'false')
+  })
+
+  it('announces drop readiness and completion to assistive technology', async () => {
+    mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={vi.fn()}
+      />,
+    )
+    const dropZone = screen.getByRole('group', { name: 'Message composer file drop area' })
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    const dataTransfer = workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }])
+
+    fireEvent.dragEnter(dropZone, { dataTransfer })
+    expect(textarea).toHaveAccessibleDescription(
+      'Drop workspace files to attach them or folders to insert their paths.',
+    )
+
+    fireEvent.drop(dropZone, { dataTransfer })
+    await waitFor(() => expect(textarea).toHaveAccessibleDescription('Workspace file added.'))
   })
 
   it('uploads an image and sends an attachment-only message with its workspace path', async () => {
@@ -529,7 +555,8 @@ describe('Composer', () => {
       screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
       new File(['pdf'], 'retry.pdf', { type: 'application/pdf' }),
     )
-    expect(await screen.findByText('offline')).toBeVisible()
+    expect(await screen.findByText('Upload failed: Unable to reach the workspace service.')).toBeVisible()
+    expect(screen.getAllByText('Upload failed')).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Retry upload retry.pdf' }))
     await screen.findByText('retry.pdf')

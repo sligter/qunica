@@ -11,6 +11,10 @@ import {
   type ConversationWorkspaceFileMetadata,
 } from '@/hooks/useConversationWorkspaceFiles'
 import { useUploadGroupWorkspaceFiles } from '@/hooks/useGroupFiles'
+import {
+  workspaceErrorMessageKey,
+  type WorkspaceErrorMessageKey,
+} from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { WORKSPACE_ITEM_MIME, workspaceItemsFromDataTransfer } from '@/lib/workspaceDrag'
@@ -28,7 +32,6 @@ type UploadAttachment = {
   file: File
   status: 'uploading' | 'uploaded' | 'failed'
   uploaded?: { path: string }
-  error?: string
 }
 
 export interface WorkspaceAttachment {
@@ -77,10 +80,6 @@ interface ComposerProps {
 /** ~10 lines of text-sm (20px line-height) plus padding. */
 const MAX_TEXTAREA_HEIGHT = 208
 const MAX_ATTACHMENTS_PER_MESSAGE = 10
-
-function errorDetail(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
-}
 
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`
@@ -146,13 +145,13 @@ function PendingAttachmentRow({
         type="button"
         className="shrink-0 rounded focus:outline-none focus:ring-2 focus:ring-ring"
         onClick={() => setPreviewOpen(true)}
-        aria-label={`Preview ${details.name}`}
+        aria-label={t('attachments.previewNamed', { name: details.name })}
       >
         <img src={previewUrl} alt="" className="h-7 w-7 rounded object-cover" />
       </button>
     ) : isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
     <div className="min-w-0 flex-1"><div className="truncate">{details.name}</div><div className="truncate text-[11px] text-muted-foreground">{details.mime || t('attachments.unknownType')} · {formatSize(details.size)}</div></div>
-    <span className={cn('shrink-0 text-muted-foreground', attachment.kind === 'upload' && attachment.status === 'failed' && 'text-destructive')}>{attachment.kind === 'workspace' ? t('attachments.workspace') : attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
+    <span className={cn('shrink-0 text-muted-foreground', attachment.kind === 'upload' && attachment.status === 'failed' && 'text-destructive')}>{attachment.kind === 'workspace' ? t('attachments.workspace') : attachment.status === 'failed' ? t('attachments.failed') : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
     {attachment.kind === 'upload' && attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRetry} disabled={retryDisabled} aria-label={t('attachments.retryNamed', { name: details.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
     <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRemove} aria-label={t('attachments.removeNamed', { name: details.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
     <ImageLightbox open={previewOpen} onOpenChange={setPreviewOpen} src={previewUrl} alt={details.name} />
@@ -176,7 +175,7 @@ export function Composer({
   const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
   const [attachments, setAttachmentState] = useState<PendingAttachment[]>([])
-  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<WorkspaceErrorMessageKey | null>(null)
   const [notice, setNotice] = useState<ComposerNotice | null>(null)
   const [isDragActive, setIsDragActive] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -486,10 +485,10 @@ export function Composer({
             )))
             showNotice('composer.drop.fileAdded', 'status', { count: 1 })
           } catch (error) {
-            setUploadError(errorDetail(error))
+            setUploadError(workspaceErrorMessageKey(error))
             updateAttachments((current) => current.map((item) => (
               item.kind === 'upload' && item.localId === attachment.localId
-                ? { ...item, status: 'failed' as const, error: errorDetail(error) }
+                ? { ...item, status: 'failed' as const }
                 : item
             )))
           }
@@ -505,7 +504,7 @@ export function Composer({
     setUploadError(null)
     updateAttachments((current) => current.map((item) => (
       item.kind === 'upload' && item.localId === attachment.localId
-        ? { ...item, status: 'uploading' as const, error: undefined }
+        ? { ...item, status: 'uploading' as const }
         : item
     )))
     void uploadWorkspaceFiles.mutateAsync([attachment.file]).then(([uploaded]) => {
@@ -516,10 +515,10 @@ export function Composer({
           : item
       )))
     }).catch((error) => {
-      setUploadError(errorDetail(error))
+      setUploadError(workspaceErrorMessageKey(error))
       updateAttachments((current) => current.map((item) => (
         item.kind === 'upload' && item.localId === attachment.localId
-          ? { ...item, status: 'failed' as const, error: errorDetail(error) }
+          ? { ...item, status: 'failed' as const }
           : item
       )))
     })
@@ -669,8 +668,8 @@ export function Composer({
   return (
     <div className="shrink-0 px-4 pb-4 pt-1">
       <div className="mx-auto w-full max-w-6xl">
-        {uploadError ? <p aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: uploadError })}</p> : null}
-        {notice?.tone === 'error' ? <p aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{noticeText}</p> : null}
+        {uploadError ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: t(uploadError) })}</p> : null}
+        {notice?.tone === 'error' ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{noticeText}</p> : null}
         {disabledReason ? (
           <p className="mb-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
             {disabledReason}

@@ -14,6 +14,7 @@ import {
   useConversationWorkspaceFileBlob,
   useConversationWorkspaceFileText,
 } from '@/hooks/useConversationWorkspaceFiles'
+import { workspaceErrorMessageKey } from '@/i18n/localizedError'
 import type {
   ConversationScope,
   ConversationWorkspaceFileRead,
@@ -79,10 +80,6 @@ function useWorkspaceObjectUrl(blob: Blob | undefined): string | null {
 
   if (!state || state.blob !== blob) return null
   return state.url
-}
-
-function displayError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 interface WorkspacePreviewRouterProps {
@@ -152,7 +149,9 @@ export function WorkspacePreviewRouter({
         conversationId={conversationId}
         metadata={fallbackMetadata}
         reason={t('workspace.filePanel.previewError', {
-          message: displayError(text.error ?? t('workspace.previewError')),
+          message: text.error
+            ? t(workspaceErrorMessageKey(text.error))
+            : t('workspace.errorMessages.unexpected'),
         })}
       />
     )
@@ -228,7 +227,7 @@ export function WorkspacePreviewRouter({
         conversationId={conversationId}
         metadata={metadata}
         reason={t('workspace.previewPanel.blobError', {
-          message: displayError(blob.error),
+          message: t(workspaceErrorMessageKey(blob.error)),
         })}
       />
     )

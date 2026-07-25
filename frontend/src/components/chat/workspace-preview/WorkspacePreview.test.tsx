@@ -81,6 +81,7 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
 
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
     useAuthStore.setState({ token: null })
   })
@@ -195,7 +196,15 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
     await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:image-preview'))
   })
 
-  it('shows Office and unknown files as metadata plus authenticated download fallback', () => {
+  it('shows Office files as metadata and keeps keyboard download available', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn().mockResolvedValue(new Response('docx', { status: 200 }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:office-download'),
+      revokeObjectURL: vi.fn(),
+    })
     const client = testClient()
     const officeFile = { ...baseFile, path: 'report.docx', name: 'report.docx', size: 4096 }
     renderRouter(client, officeFile, textResponse({
@@ -213,7 +222,12 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
     )).toBeVisible()
     expect(screen.getAllByText('report.docx')).toHaveLength(2)
     expect(screen.getByText('4 KB')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Download file' })).toBeVisible()
+    const download = screen.getByRole('button', { name: 'Download file' })
+    expect(download).toBeVisible()
+    download.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(click).toHaveBeenCalledTimes(1)
   })
 
   it('does not fetch a Blob for an oversized image preview', () => {
@@ -248,6 +262,7 @@ describe('WorkspaceTextEditor', () => {
 
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
     useAuthStore.setState({ token: null })
   })
@@ -286,7 +301,9 @@ describe('WorkspaceTextEditor', () => {
     await user.clear(editor)
     await user.type(editor, 'edited')
     expect(screen.getByText('Unsaved changes')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Save' }))
+    const save = screen.getByRole('button', { name: 'Save' })
+    save.focus()
+    await user.keyboard('{Enter}')
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const [, request] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -328,6 +345,40 @@ describe('WorkspaceTextEditor', () => {
     expect(screen.getByRole('textbox', { name: 'Edit note.txt' })).toHaveAttribute('readonly')
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(screen.getByText(/Editing and saving are disabled/)).toBeVisible()
+  })
+
+  it('localizes save and refresh failures without raw backend text', async () => {
+    const user = userEvent.setup()
+    await i18n.changeLanguage('zh-CN')
+    const rawSaveMessage = 'workspace file is not valid UTF-8 text'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'invalid_input', message: rawSaveMessage },
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const onRefresh = vi.fn().mockRejectedValue(new Error('RAW_REFRESH_BACKEND_DETAIL'))
+    renderEditor(textResponse(), onRefresh)
+
+    const editor = screen.getByRole('textbox', { name: '编辑 note.txt' })
+    await user.clear(editor)
+    await user.type(editor, 'edited')
+    const save = screen.getByRole('button', { name: '保存' })
+    save.focus()
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '保存失败：请求未通过，请检查文件或文件夹后重试。',
+    )
+    expect(screen.queryByText(rawSaveMessage)).not.toBeInTheDocument()
+
+    await user.clear(editor)
+    await user.type(editor, 'hello')
+    const refresh = screen.getByRole('button', { name: '刷新' })
+    refresh.focus()
+    await user.keyboard('{Enter}')
+    expect(await screen.findByText('刷新失败：无法完成此工作区操作。')).toBeVisible()
+    expect(screen.queryByText('RAW_REFRESH_BACKEND_DETAIL')).not.toBeInTheDocument()
   })
 
   it('preserves the local buffer on 409 and refreshes only after confirmation', async () => {
