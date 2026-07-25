@@ -562,7 +562,9 @@ export interface ModelInfo {
   name: string
 }
 
-export interface GroupWorkspaceFileRead {
+export type ConversationScope = 'groups' | 'direct-chats'
+
+export interface ConversationWorkspaceFileRead {
   path: string
   name: string
   is_dir: boolean
@@ -571,12 +573,12 @@ export interface GroupWorkspaceFileRead {
   abs_path?: string | null
 }
 
-export interface GroupWorkspaceRoot {
+export interface ConversationWorkspaceRoot {
   root: string
   separator: string
 }
 
-export interface GroupWorkspaceFilePreview {
+export interface ConversationWorkspaceFilePreview {
   path: string
   name: string
   is_text: boolean
@@ -585,6 +587,30 @@ export interface GroupWorkspaceFilePreview {
   message: string | null
   size: number | null
 }
+
+export interface ConversationWorkspaceFileTextResponse {
+  path: string
+  name: string
+  mime_type: string
+  size: number
+  content: string | null
+  is_text: boolean
+  truncated: boolean
+  version: string
+  message: string | null
+}
+
+export interface ConversationWorkspaceFileTextSaveRequest {
+  content: string
+  version: string
+}
+
+export type ConversationWorkspaceFileTextSaveResponse = ConversationWorkspaceFileTextResponse
+
+/** Compatibility aliases retained until the group-only file panel migrates. */
+export type GroupWorkspaceFileRead = ConversationWorkspaceFileRead
+export type GroupWorkspaceRoot = ConversationWorkspaceRoot
+export type GroupWorkspaceFilePreview = ConversationWorkspaceFilePreview
 
 export interface GroupWorkspaceFileRename {
   new_path: string
