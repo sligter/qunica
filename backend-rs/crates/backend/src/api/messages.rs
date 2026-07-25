@@ -5,7 +5,7 @@
 //! its bounded channel, then shapes a frontend-compatible response from the
 //! durable runtime events and persisted message rows.
 
-use std::{collections::HashSet, convert::Infallible, fs};
+use std::convert::Infallible;
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use axum::{
@@ -26,24 +26,21 @@ use crate::{
         auth::current_user_id,
         conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
-        groups::workspace_file_content_type,
         sse_replay::{
             event_kind_from_wire, fetch_replay_events_for_group, last_event_id, parse_replay_cursor,
         },
+        workspace_files::{validate_conversation_attachments, ConversationScope},
         AppState,
     },
     runtime::{
-        group::{AttachmentKind, MessageAttachment},
-        run_group_turn, RuntimeServices, TurnOutcome, TurnRequest,
+        group::MessageAttachment, run_group_turn, RuntimeServices, TurnOutcome, TurnRequest,
     },
-    tools::resolve_workspace_path,
 };
 
 /// Buffered events between the runtime task and the SSE response body. Bounded
 /// so a slow/absent client applies backpressure (and so disconnects surface as
 /// a failed send rather than unbounded growth).
 const CHANNEL_CAPACITY: usize = 64;
-const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
 
 #[derive(Debug, Deserialize)]
 pub struct MessageInput {
@@ -469,8 +466,19 @@ async fn send_for_kind(
     if expected == ConversationKind::Direct {
         ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
     }
-    let attachments =
-        validate_attachments(state.db.pool(), &group_id, &owner_id, body.attachments).await?;
+    let attachment_paths = body
+        .attachments
+        .into_iter()
+        .map(|attachment| attachment.path)
+        .collect::<Vec<_>>();
+    let attachments = validate_conversation_attachments(
+        state.db.pool(),
+        conversation_scope(expected),
+        &group_id,
+        &owner_id,
+        &attachment_paths,
+    )
+    .await?;
     if content.is_empty() && attachments.is_empty() {
         return Err(ApiError::invalid_input(
             "content or attachments must not be empty",
@@ -642,8 +650,19 @@ async fn stream_for_kind(
     if expected == ConversationKind::Direct {
         ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
     }
-    let attachments =
-        validate_attachments(state.db.pool(), &group_id, &owner_id, body.attachments).await?;
+    let attachment_paths = body
+        .attachments
+        .into_iter()
+        .map(|attachment| attachment.path)
+        .collect::<Vec<_>>();
+    let attachments = validate_conversation_attachments(
+        state.db.pool(),
+        conversation_scope(expected),
+        &group_id,
+        &owner_id,
+        &attachment_paths,
+    )
+    .await?;
     if content.is_empty() && attachments.is_empty() {
         return Err(ApiError::invalid_input(
             "content or attachments must not be empty",
@@ -823,6 +842,13 @@ fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {
         .map_err(|_| ApiError::invalid_input(format!("invalid {field}")))
 }
 
+fn conversation_scope(kind: ConversationKind) -> ConversationScope {
+    match kind {
+        ConversationKind::Group => ConversationScope::Groups,
+        ConversationKind::Direct => ConversationScope::DirectChats,
+    }
+}
+
 fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(30);
@@ -831,98 +857,6 @@ fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
         .parse::<i64>()
         .map_err(|_| ApiError::invalid_input("limit must be an integer"))?;
     Ok(limit.clamp(1, 100))
-}
-
-async fn validate_attachments(
-    pool: &sqlx::SqlitePool,
-    group_id: &str,
-    owner_id: &str,
-    inputs: Vec<MessageAttachmentInput>,
-) -> Result<Vec<MessageAttachment>, ApiError> {
-    if inputs.len() > MAX_ATTACHMENTS_PER_MESSAGE {
-        return Err(ApiError::invalid_input(format!(
-            "at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments are allowed"
-        )));
-    }
-    if inputs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let workspace: Option<(String, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT w.owner_id, w.backend_type, w.local_path, w.status \
-         FROM groups g JOIN workspaces w ON w.id = g.workspace_id \
-         WHERE g.id = ? AND g.owner_id = ? AND g.status = 'active'",
-    )
-    .bind(group_id)
-    .bind(owner_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|_| ApiError::internal("database error"))?;
-    let Some((workspace_owner_id, backend_type, local_path, status)) = workspace else {
-        return Err(ApiError::invalid_input(
-            "conversation has no active workspace",
-        ));
-    };
-    if workspace_owner_id != owner_id || status != "active" || backend_type != "local" {
-        return Err(ApiError::invalid_input(
-            "attachments require an active local workspace",
-        ));
-    }
-    let root = local_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| ApiError::invalid_input("local workspace has no local_path"))?;
-    let root = fs::canonicalize(root)
-        .map_err(|_| ApiError::invalid_input("workspace path must be an existing directory"))?;
-    if !root.is_dir() {
-        return Err(ApiError::invalid_input(
-            "workspace path must be an existing directory",
-        ));
-    }
-
-    let mut seen = HashSet::new();
-    let mut attachments = Vec::with_capacity(inputs.len());
-    for input in inputs {
-        let path = resolve_workspace_path(&root, &input.path)
-            .map_err(|_| ApiError::invalid_input("attachment path is invalid"))?;
-        let path = fs::canonicalize(&path)
-            .map_err(|_| ApiError::invalid_input("attachment path is invalid"))?;
-        if !path.starts_with(&root) || !path.is_file() {
-            return Err(ApiError::invalid_input(
-                "attachment path must be a workspace file",
-            ));
-        }
-        if !seen.insert(path.clone()) {
-            return Err(ApiError::invalid_input("attachment paths must be unique"));
-        }
-        let metadata = fs::metadata(&path)
-            .map_err(|_| ApiError::invalid_input("attachment path is invalid"))?;
-        let relative = path
-            .strip_prefix(&root)
-            .map_err(|_| ApiError::invalid_input("attachment path is invalid"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| ApiError::invalid_input("attachment path is invalid"))?
-            .to_string();
-        let mime_type = workspace_file_content_type(&path).to_string();
-        let kind = match mime_type.as_str() {
-            "image/png" | "image/jpeg" | "image/webp" | "image/gif" => AttachmentKind::Image,
-            _ => AttachmentKind::File,
-        };
-        attachments.push(MessageAttachment {
-            id: Uuid::new_v4().to_string(),
-            path: relative,
-            name,
-            mime_type,
-            size: metadata.len() as i64,
-            kind,
-        });
-    }
-    Ok(attachments)
 }
 
 fn is_durable_response_event(kind: &StreamEventKind) -> bool {

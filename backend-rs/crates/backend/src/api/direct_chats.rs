@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -8,7 +8,14 @@ use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::api::{
+    auth::current_user_id,
+    error::ApiError,
+    workspace_files::{
+        self, ConversationScope, SaveWorkspaceFileTextRequest, WorkspaceFilePathQuery,
+    },
+    AppState,
+};
 
 const SELECT_DIRECT_CHAT: &str = "SELECT g.id, g.name AS title, g.title_source, \
     g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, \
@@ -158,6 +165,127 @@ pub async fn delete(
         .bind(now_rfc3339()).bind(&chat_id).bind(&owner_id).execute(state.db.pool()).await
         .map_err(|_| ApiError::internal("failed to delete direct chat"))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Read-only workspace file APIs for direct chats.  Upload, rename and delete
+/// remain group-only operations; text saves are the sole direct-chat mutation.
+pub async fn get_workspace_root(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+) -> Result<Json<workspace_files::WorkspaceRootResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    Ok(Json(
+        workspace_files::workspace_root(
+            state.db.pool(),
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+        )
+        .await?,
+    ))
+}
+
+pub async fn list_workspace_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+) -> Result<Json<Vec<workspace_files::WorkspaceFileResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    Ok(Json(
+        workspace_files::list_workspace_files(
+            state.db.pool(),
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+            &query.path,
+        )
+        .await?,
+    ))
+}
+
+pub async fn preview_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+) -> Result<Json<workspace_files::WorkspaceFilePreviewResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    Ok(Json(
+        workspace_files::preview_workspace_file(
+            state.db.pool(),
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+            &query.path,
+        )
+        .await?,
+    ))
+}
+
+pub async fn download_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+) -> Result<axum::response::Response, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    workspace_files::stream_workspace_file(
+        state.db.pool(),
+        ConversationScope::DirectChats,
+        &chat_id,
+        &owner_id,
+        &query.path,
+    )
+    .await
+}
+
+pub async fn read_workspace_file_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    Ok(Json(
+        workspace_files::read_workspace_file_text(
+            state.db.pool(),
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+            &query.path,
+        )
+        .await?,
+    ))
+}
+
+pub async fn save_workspace_file_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+    Json(body): Json<SaveWorkspaceFileTextRequest>,
+) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    Ok(Json(
+        workspace_files::save_workspace_file_text(
+            state.db.pool(),
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+            &query.path,
+            &body.content,
+            &body.version,
+        )
+        .await?,
+    ))
 }
 
 async fn fetch(

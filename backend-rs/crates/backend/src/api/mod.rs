@@ -12,6 +12,7 @@ pub mod skills;
 mod sse_replay;
 pub mod system_settings;
 pub mod threads;
+pub mod workspace_files;
 pub mod workspaces;
 
 use std::{path::PathBuf, sync::Arc};
@@ -198,6 +199,14 @@ pub fn router(state: AppState) -> Router {
             get(groups::download_group_workspace_file),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-files/text",
+            get(groups::read_group_workspace_file_text),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-files/text/save",
+            axum::routing::patch(groups::save_group_workspace_file_text),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-files/rename",
             axum::routing::patch(groups::rename_group_workspace_file),
         )
@@ -361,6 +370,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/direct-chats/:group_id/messages/stream",
             axum::routing::post(messages::stream_direct),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files",
+            get(direct_chats::list_workspace_files),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/root",
+            get(direct_chats::get_workspace_root),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/preview",
+            get(direct_chats::preview_workspace_file),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/download",
+            get(direct_chats::download_workspace_file),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/text",
+            get(direct_chats::read_workspace_file_text),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/text/save",
+            axum::routing::patch(direct_chats::save_workspace_file_text),
         )
         .route("/api/v2/threads/:thread_id", get(threads::get))
         .route(

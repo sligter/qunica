@@ -1,7 +1,7 @@
 use axum::{
     extract::{Multipart, Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, StatusCode},
+    response::Response,
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -10,13 +10,18 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::{Path as FsPath, PathBuf},
 };
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::api::{
+    auth::current_user_id,
+    error::ApiError,
+    workspace_files::{self, ConversationScope},
+    AppState,
+};
 use crate::git::{
     self as workspace_git, DiffMode, WorkspaceGitBranches, WorkspaceGitCommitDetails,
     WorkspaceGitDiff, WorkspaceGitLog, WorkspaceGitStatus,
@@ -51,10 +56,7 @@ const NOTES_DIR: &str = "Notes";
 const NOTE_FILE_SUFFIX: &str = ".md";
 const GROUP_FILE_COLUMNS: &str = "id, group_id, filename, file_size, mime_type, created_at";
 const UPLOADS_DIR: &str = "uploads";
-const MAX_WORKSPACE_PREVIEW_BYTES: usize = 64 * 1024;
-const TEXT_WORKSPACE_PREVIEW_CHARS: usize = 20_000;
 const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
-const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
 const MAX_COMMIT_DIFF_PROMPT_CHARS: usize = 20_000;
 const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
 
@@ -1225,12 +1227,16 @@ pub async fn get_group_workspace_root(
 ) -> Result<Json<GroupWorkspaceRootResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let root = workspace_files::workspace_root(
+        state.db.pool(),
+        ConversationScope::Groups,
+        &group_id,
+        &owner_id,
+    )
+    .await?;
     Ok(Json(GroupWorkspaceRootResponse {
-        root: root.to_string_lossy().to_string(),
-        separator: std::path::MAIN_SEPARATOR.to_string(),
+        root: root.root,
+        separator: root.separator,
     }))
 }
 
@@ -1242,29 +1248,24 @@ pub async fn list_group_workspace_files(
 ) -> Result<Json<Vec<GroupWorkspaceFileResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    let directory = resolve_group_workspace_file_path(&root, &query.path)?;
-    if !directory.is_dir() {
-        return Err(ApiError::invalid_input("workspace path is not a directory"));
-    }
-
-    let mut rows = Vec::new();
-    for entry in fs::read_dir(&directory)
-        .map_err(|_| ApiError::invalid_input("workspace path is not a directory"))?
-    {
-        let entry = entry.map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
-            continue;
-        }
-        rows.push(workspace_file_response(&entry.path(), &root)?);
-    }
-    rows.sort_by(|left, right| {
-        (if left.is_dir { 0 } else { 1 }, left.name.to_lowercase())
-            .cmp(&(if right.is_dir { 0 } else { 1 }, right.name.to_lowercase()))
-    });
+    let rows = workspace_files::list_workspace_files(
+        state.db.pool(),
+        ConversationScope::Groups,
+        &group_id,
+        &owner_id,
+        &query.path,
+    )
+    .await?
+    .into_iter()
+    .map(|row| GroupWorkspaceFileResponse {
+        path: row.path,
+        name: row.name,
+        is_dir: row.is_dir,
+        size: row.size,
+        modified_at: row.modified_at,
+        abs_path: row.abs_path,
+    })
+    .collect();
     Ok(Json(rows))
 }
 
@@ -1276,55 +1277,22 @@ pub async fn preview_group_workspace_file(
 ) -> Result<Json<GroupWorkspaceFilePreviewResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    let file_path = resolve_group_workspace_file_path(&root, &query.path)?;
-    if !file_path.is_file() {
-        return Err(ApiError::invalid_input("workspace path is not a file"));
-    }
-
-    let metadata = fs::metadata(&file_path)
-        .map_err(|_| ApiError::invalid_input("workspace path is not a file"))?;
-    let size = metadata.len() as i64;
-    let mut file = fs::File::open(&file_path)
-        .map_err(|_| ApiError::invalid_input("workspace path is not a file"))?;
-    let mut sample = Vec::new();
-    Read::by_ref(&mut file)
-        .take((MAX_WORKSPACE_PREVIEW_BYTES + 1) as u64)
-        .read_to_end(&mut sample)
-        .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
-
-    let byte_truncated = sample.len() > MAX_WORKSPACE_PREVIEW_BYTES;
-    let capped = &sample[..sample.len().min(MAX_WORKSPACE_PREVIEW_BYTES)];
-
-    if !workspace_file_looks_text(&file_path, capped) {
-        return Ok(Json(GroupWorkspaceFilePreviewResponse {
-            path: display_workspace_path(&root, &file_path)?,
-            name: workspace_file_name(&file_path)?,
-            is_text: false,
-            content: None,
-            truncated: false,
-            message: Some(BINARY_PREVIEW_MESSAGE.to_string()),
-            size: Some(size),
-        }));
-    }
-
-    let mut content = String::from_utf8_lossy(capped).to_string();
-    let mut truncated = byte_truncated;
-    if content.chars().count() > TEXT_WORKSPACE_PREVIEW_CHARS {
-        content = content.chars().take(TEXT_WORKSPACE_PREVIEW_CHARS).collect();
-        truncated = true;
-    }
-
+    let preview = workspace_files::preview_workspace_file(
+        state.db.pool(),
+        ConversationScope::Groups,
+        &group_id,
+        &owner_id,
+        &query.path,
+    )
+    .await?;
     Ok(Json(GroupWorkspaceFilePreviewResponse {
-        path: display_workspace_path(&root, &file_path)?,
-        name: workspace_file_name(&file_path)?,
-        is_text: true,
-        content: Some(content),
-        truncated,
-        message: None,
-        size: Some(size),
+        path: preview.path,
+        name: preview.name,
+        is_text: preview.is_text,
+        content: preview.content,
+        truncated: preview.truncated,
+        message: preview.message,
+        size: preview.size,
     }))
 }
 
@@ -1365,31 +1333,57 @@ pub async fn download_group_workspace_file(
 ) -> Result<Response, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
+    workspace_files::stream_workspace_file(
+        state.db.pool(),
+        ConversationScope::Groups,
+        &group_id,
+        &owner_id,
+        &query.path,
+    )
+    .await
+}
 
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
-    let file_path = resolve_group_workspace_file_path(&root, &query.path)?;
-    if !file_path.is_file() {
-        return Err(ApiError::invalid_input("workspace path is not a file"));
-    }
-    let bytes = fs::read(&file_path)
-        .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
-    let filename = workspace_file_name(&file_path)?;
+pub async fn read_group_workspace_file_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    Ok(Json(
+        workspace_files::read_workspace_file_text(
+            state.db.pool(),
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+            &query.path,
+        )
+        .await?,
+    ))
+}
 
-    let mut response_headers = HeaderMap::new();
-    response_headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(workspace_file_content_type(&file_path)),
-    );
-    response_headers.insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!(
-            "attachment; filename=\"{}\"",
-            header_safe_filename(&filename)
-        ))
-        .map_err(|_| ApiError::internal("failed to build download headers"))?,
-    );
-    Ok((response_headers, bytes).into_response())
+pub async fn save_group_workspace_file_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Json(body): Json<workspace_files::SaveWorkspaceFileTextRequest>,
+) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    Ok(Json(
+        workspace_files::save_workspace_file_text(
+            state.db.pool(),
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+            &query.path,
+            &body.content,
+            &body.version,
+        )
+        .await?,
+    ))
 }
 
 pub async fn rename_group_workspace_file(
@@ -3796,86 +3790,6 @@ fn workspace_file_name(path: &FsPath) -> Result<String, ApiError> {
         .to_string())
 }
 
-fn workspace_file_looks_text(path: &FsPath, sample: &[u8]) -> bool {
-    if sample.contains(&0) {
-        return false;
-    }
-    if workspace_file_has_text_extension(path) {
-        return true;
-    }
-    std::str::from_utf8(sample).is_ok()
-}
-
-fn workspace_file_has_text_extension(path: &FsPath) -> bool {
-    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-        return false;
-    };
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "txt"
-            | "md"
-            | "markdown"
-            | "csv"
-            | "json"
-            | "jsonl"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "ini"
-            | "cfg"
-            | "log"
-            | "xml"
-            | "html"
-            | "css"
-            | "js"
-            | "jsx"
-            | "ts"
-            | "tsx"
-            | "py"
-            | "sh"
-            | "bat"
-            | "ps1"
-            | "sql"
-            | "rst"
-    )
-}
-
-pub(crate) fn workspace_file_content_type(path: &FsPath) -> &'static str {
-    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-        return "application/octet-stream";
-    };
-    match extension.to_ascii_lowercase().as_str() {
-        "txt" | "log" | "csv" | "md" | "markdown" | "rst" => "text/plain",
-        "html" => "text/html",
-        "css" => "text/css",
-        "js" | "jsx" => "text/javascript",
-        "json" | "jsonl" => "application/json",
-        "xml" => "application/xml",
-        "yaml" | "yml" => "application/yaml",
-        "toml" | "ini" | "cfg" => "text/plain",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "pdf" => "application/pdf",
-        _ => "application/octet-stream",
-    }
-}
-
-fn header_safe_filename(filename: &str) -> String {
-    filename
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii() && ch != '"' && ch != '\\' && !ch.is_control() {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 fn path_exists_or_symlink(path: &FsPath) -> Result<bool, ApiError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -3976,7 +3890,9 @@ fn unique_group_upload_filename(
             return Ok(candidate);
         }
     }
-    Err(ApiError::conflict("could not allocate a unique upload filename"))
+    Err(ApiError::conflict(
+        "could not allocate a unique upload filename",
+    ))
 }
 
 fn write_new_group_upload_file(path: &FsPath, bytes: &[u8]) -> Result<(), ApiError> {
