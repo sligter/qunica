@@ -751,4 +751,63 @@ describe('useSendMessageStream direct conversations', () => {
       updated_at: '2026-07-19T00:00:00Z',
     })
   })
+
+  it('invalidates direct-chat workspace files for agent, tool, ACP, and close events', () => {
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const { result } = renderHook(
+      () => useSendMessageStream('chat-1', false, { scope: 'direct-chats' }),
+      { wrapper: wrapper(queryClient) },
+    )
+
+    act(() => ignoreSend(result.current.send('hello')))
+    const stream = mocks.streams[0]!
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'stream-1:1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'stream-1:2',
+      kind: 'agent_message',
+      payload: { message_id: 'agent-message-1', agent_id: 'agent-1', content: 'reply' },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 3,
+      event_id: 'stream-1:3',
+      kind: 'tool_call_result',
+      payload: {
+        agent_id: 'agent-1',
+        tool_call_id: 'tool-1',
+        tool_name: 'write_file',
+        status: 'completed',
+      },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 4,
+      event_id: 'stream-1:4',
+      kind: 'acp_agent_run',
+      payload: {
+        run_id: 'run-1',
+        agent_id: 'agent-1',
+        display_name: 'Agent One',
+        status: 'completed',
+      },
+    })
+    act(() => stream.handlers.onClose?.())
+
+    const directWorkspaceInvalidations = invalidate.mock.calls.filter(
+      ([filters]) => filters?.queryKey?.join('/') === 'direct-chats/chat-1/workspace-files',
+    )
+    expect(directWorkspaceInvalidations).toHaveLength(4)
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: ['groups', 'chat-1', 'workspace-files'],
+    })
+  })
 })

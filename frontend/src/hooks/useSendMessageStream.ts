@@ -28,6 +28,7 @@ import {
   conversationMessagesKey,
   type ConversationScope,
 } from '@/hooks/useGroupMessages'
+import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
@@ -432,7 +433,7 @@ export function useSendMessageStream(
   const invalidate = useCallback(() => {
     if (!groupId) return
     void qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId) })
-    void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+    void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
   }, [groupId, qc, scope])
 
   const invalidateTurn = useCallback(
@@ -741,7 +742,7 @@ export function useSendMessageStream(
                   agentDisplayName(parsed.data.agent_id, parsed.data.display_name),
                 )
                 finalizeInFlight(groupId, msg)
-                void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+                void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
                 void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
                 return
               }
@@ -782,7 +783,7 @@ export function useSendMessageStream(
                 pushToolActivity(groupId, activity)
                 upsertStreamTool(groupId, streamId, activity)
                 if (event.kind === 'tool_call_result') {
-                  void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+                  void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
                 }
                 return
               }
@@ -813,7 +814,7 @@ export function useSendMessageStream(
                   summary: parsed.data.summary,
                 })
                 if (parsed.data.status && parsed.data.status !== 'running') {
-                  void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+                  void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
                 }
                 return
               }
