@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn parses_branch_counts_and_paths_with_spaces() {
         let status = parse_status(
-            "# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -3\01 .M N... 100644 100644 100644 abc def tracked file.txt\0? new file.txt\0",
+            "# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -3\x001 .M N... 100644 100644 100644 abc def tracked file.txt\0? new file.txt\0",
         );
 
         assert!(status.available);
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn parses_rename_and_copy_destinations_with_old_path() {
         let status = parse_status(
-            "# branch.oid abc\0# branch.head main\02 R. N... 100644 100644 100644 abc def R100 new name.txt\0old name.txt\02 C. N... 100644 100644 100644 abc def C100 copied name.txt\0source name.txt\01 M. N... 100644 100644 100644 abc def staged.txt\0",
+            "# branch.oid abc\0# branch.head main\x002 R. N... 100644 100644 100644 abc def R100 new name.txt\0old name.txt\x002 C. N... 100644 100644 100644 abc def C100 copied name.txt\0source name.txt\x001 M. N... 100644 100644 100644 abc def staged.txt\0",
         );
 
         assert_eq!(status.files.len(), 3);
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn preserves_path_boundary_whitespace_from_z_output() {
         let status = parse_status(
-            "# branch.oid abc\0# branch.head main\01 .M N... 100644 100644 100644 abc def  leading and trailing \0?  untracked trailing \0",
+            "# branch.oid abc\0# branch.head main\x001 .M N... 100644 100644 100644 abc def  leading and trailing \0?  untracked trailing \0",
         );
 
         assert_eq!(status.files[0].path, " leading and trailing ");
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn dirty_counts_skip_staged_unstaged_for_untracked() {
         let status = parse_status(
-            "# branch.oid abc\0# branch.head main\01 M. N... 100644 100644 100644 abc def staged.txt\01 .M N... 100644 100644 100644 abc def unstaged.txt\0? untracked.txt\0u UU N... 100644 100644 100644 100644 a b c conflict.txt\0",
+            "# branch.oid abc\0# branch.head main\x001 M. N... 100644 100644 100644 abc def staged.txt\x001 .M N... 100644 100644 100644 abc def unstaged.txt\0? untracked.txt\0u UU N... 100644 100644 100644 100644 a b c conflict.txt\0",
         );
 
         assert_eq!(status.dirty_counts.staged, 2);

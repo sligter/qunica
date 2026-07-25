@@ -9,6 +9,10 @@ use thiserror::Error;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./src/db/migrations");
 
+type SchemaMatchFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, sqlx::Error>> + Send + 'a>>;
+type SchemaMatchFn = for<'a> fn(&'a SqlitePool) -> SchemaMatchFuture<'a>;
+
 const APPEARANCE_MIGRATION_VERSION: i64 = 2;
 const APPEARANCE_MIGRATION_DESCRIPTION: &str = "system settings appearance";
 const LEGACY_APPEARANCE_MIGRATION_DESCRIPTION: &str = "system_settings_appearance";
@@ -87,7 +91,7 @@ async fn reconcile_checksum_when_schema_matches(
     pool: &SqlitePool,
     version: i64,
     description: &str,
-    schema_matches: fn(&SqlitePool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, sqlx::Error>> + Send + '_>>,
+    schema_matches: SchemaMatchFn,
 ) -> Result<(), sqlx::Error> {
     let Some(migration) = migration_by_version(version, description) else {
         return Ok(());

@@ -4859,7 +4859,7 @@ fn vision_messages_from_rows(
     workspace_root: Option<&std::path::Path>,
     use_native_images: bool,
 ) -> (Vec<ChatMessage>, Vec<String>) {
-    let mut messages = to_llm_messages(system_prompt, current_agent_id, &rows);
+    let mut messages = to_llm_messages(system_prompt, current_agent_id, rows);
     if !use_native_images {
         return (messages, Vec::new());
     }

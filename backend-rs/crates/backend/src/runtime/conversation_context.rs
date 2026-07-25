@@ -122,9 +122,11 @@ impl From<ConversationRow> for ConversationMessage {
             turn_id: row.turn_id,
             dispatch_id: row.dispatch_id,
             reply_to_message_id: row.reply_to_message_id,
-            attachments: (!is_agent)
-                .then(|| attachments_from_content_json(row.content_json.as_deref()))
-                .unwrap_or_default(),
+            attachments: if is_agent {
+                Vec::new()
+            } else {
+                attachments_from_content_json(row.content_json.as_deref())
+            },
         }
     }
 }

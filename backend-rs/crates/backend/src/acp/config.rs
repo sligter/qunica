@@ -162,8 +162,7 @@ pub fn normalize_acp_runtime(raw: Option<&Value>) -> Result<AcpRuntimeConfig, Ac
     let thinking_effort =
         normalize_optional_text(map.get("thinking_effort"), "ACP runtime thinking_effort")?;
 
-    let mut command = command;
-    migrate_legacy_codex_acp_command(profile, &mut command, &mut args);
+    migrate_legacy_codex_acp_command(profile, &command, &mut args);
 
     Ok(AcpRuntimeConfig {
         command,
@@ -294,7 +293,7 @@ fn absolute_command_path(path: PathBuf) -> PathBuf {
 
 fn migrate_legacy_codex_acp_command(
     profile: AcpRuntimeProfile,
-    command: &mut String,
+    command: &str,
     args: &mut Vec<String>,
 ) {
     if profile != AcpRuntimeProfile::Codex

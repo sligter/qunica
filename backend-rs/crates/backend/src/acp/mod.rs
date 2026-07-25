@@ -489,6 +489,7 @@ async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
 
 /// Spawn the child, drive the ACP session under a timeout and cancellation, and
 /// return the turn outcome.
+#[allow(clippy::too_many_arguments)]
 async fn run_one_shot_turn(
     config: &AcpRuntimeConfig,
     cwd: &Path,
@@ -1027,7 +1028,11 @@ async fn new_session_prompt(
                         prompt_has_image_attachments,
                         supports_prompt_images && !prompt_images.is_empty(),
                     ),
-                    supports_prompt_images.then_some(prompt_images).unwrap_or_default(),
+                    if supports_prompt_images {
+                        prompt_images
+                    } else {
+                        &[]
+                    },
                 ),
                 "messageId": Uuid::new_v4().to_string(),
             }),
@@ -1045,6 +1050,7 @@ async fn new_session_prompt(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_existing_session_prompt(
     conn: &AcpConnection,
     session_id: &str,
@@ -1077,6 +1083,7 @@ async fn drive_existing_session_prompt(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_new_session_prompt(
     conn: &AcpConnection,
     cwd: &str,
@@ -1127,7 +1134,11 @@ async fn prompt_existing_session(
                         prompt_has_image_attachments,
                         supports_prompt_images && !prompt_images.is_empty(),
                     ),
-                    supports_prompt_images.then_some(prompt_images).unwrap_or_default(),
+                    if supports_prompt_images {
+                        prompt_images
+                    } else {
+                        &[]
+                    },
                 ),
                 "messageId": Uuid::new_v4().to_string(),
             }),
