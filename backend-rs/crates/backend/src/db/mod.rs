@@ -99,19 +99,22 @@ async fn reconcile_checksum_when_schema_matches(
     if !table_exists(pool, "_sqlx_migrations").await? {
         return Ok(());
     }
-    let applied: Option<(Vec<u8>, bool)> = sqlx::query_as(
-        "SELECT checksum, success FROM _sqlx_migrations WHERE version = ?1",
-    )
-    .bind(version)
-    .fetch_optional(pool)
-    .await?;
+    let applied: Option<(Vec<u8>, bool)> =
+        sqlx::query_as("SELECT checksum, success FROM _sqlx_migrations WHERE version = ?1")
+            .bind(version)
+            .fetch_optional(pool)
+            .await?;
     let Some((checksum, success)) = applied else {
         return Ok(());
     };
     if !success || checksum == migration.checksum.as_ref() || !schema_matches(pool).await? {
         return Ok(());
     }
-    tracing::warn!(version, description, "repairing legacy checksum for already-applied alpha migration");
+    tracing::warn!(
+        version,
+        description,
+        "repairing legacy checksum for already-applied alpha migration"
+    );
     sqlx::query("UPDATE _sqlx_migrations SET checksum = ?1 WHERE version = ?2")
         .bind(migration.checksum.as_ref())
         .bind(version)
@@ -121,7 +124,8 @@ async fn reconcile_checksum_when_schema_matches(
 }
 
 async fn reconcile_legacy_initial_migration_checksum(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    let Some(migration) = migration_by_version(INITIAL_MIGRATION_VERSION, INITIAL_MIGRATION_DESCRIPTION)
+    let Some(migration) =
+        migration_by_version(INITIAL_MIGRATION_VERSION, INITIAL_MIGRATION_DESCRIPTION)
     else {
         return Ok(());
     };
@@ -129,16 +133,18 @@ async fn reconcile_legacy_initial_migration_checksum(pool: &SqlitePool) -> Resul
         return Ok(());
     }
 
-    let applied: Option<(Vec<u8>, bool)> = sqlx::query_as(
-        "SELECT checksum, success FROM _sqlx_migrations WHERE version = ?1",
-    )
-    .bind(INITIAL_MIGRATION_VERSION)
-    .fetch_optional(pool)
-    .await?;
+    let applied: Option<(Vec<u8>, bool)> =
+        sqlx::query_as("SELECT checksum, success FROM _sqlx_migrations WHERE version = ?1")
+            .bind(INITIAL_MIGRATION_VERSION)
+            .fetch_optional(pool)
+            .await?;
     let Some((checksum, success)) = applied else {
         return Ok(());
     };
-    if !success || checksum == migration.checksum.as_ref() || !initial_schema_matches_target(pool).await? {
+    if !success
+        || checksum == migration.checksum.as_ref()
+        || !initial_schema_matches_target(pool).await?
+    {
         return Ok(());
     }
 
@@ -269,13 +275,12 @@ async fn initial_schema_matches_target(pool: &SqlitePool) -> Result<bool, sqlx::
 }
 
 async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> Result<bool, sqlx::Error> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
-    )
-    .bind(table)
-    .bind(column)
-    .fetch_one(pool)
-    .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2")
+            .bind(table)
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
     Ok(count > 0)
 }
 
@@ -298,7 +303,8 @@ fn scheduler_schema_matches_target(
                 return Ok(false);
             }
         }
-        Ok(table_exists(pool, "group_turns").await? && table_exists(pool, "agent_dispatches").await?)
+        Ok(table_exists(pool, "group_turns").await?
+            && table_exists(pool, "agent_dispatches").await?)
     })
 }
 
@@ -382,14 +388,12 @@ mod tests {
             .await
             .unwrap();
 
-        let expected_checksum = migration_by_version(
-            SCHEDULER_MIGRATION_VERSION,
-            SCHEDULER_MIGRATION_DESCRIPTION,
-        )
-        .unwrap()
-        .checksum
-        .as_ref()
-        .to_vec();
+        let expected_checksum =
+            migration_by_version(SCHEDULER_MIGRATION_VERSION, SCHEDULER_MIGRATION_DESCRIPTION)
+                .unwrap()
+                .checksum
+                .as_ref()
+                .to_vec();
         assert_eq!(scheduler_checksum(&pool).await, expected_checksum);
     }
 

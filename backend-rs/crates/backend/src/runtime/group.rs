@@ -4992,7 +4992,6 @@ async fn build_acp_prompt_images(
     thread_id: &str,
     workspace_root: Option<&std::path::Path>,
 ) -> anyhow::Result<(Vec<AcpImage>, bool)> {
-
     let rows = load_conversation(pool, thread_id).await?;
     let Some(row) = rows.last().filter(|row| {
         matches!(

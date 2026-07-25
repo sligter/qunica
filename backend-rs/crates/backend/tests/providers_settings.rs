@@ -1248,8 +1248,12 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
         }
         assert_eq!(preset["source"], "fallback");
         let args = preset["args"].as_array().unwrap();
-        if command.ends_with("npx") || command.ends_with("npx.cmd") || command.ends_with("npx.exe") {
-            assert!(!args.is_empty(), "npx preset {id} requires package arguments");
+        if command.ends_with("npx") || command.ends_with("npx.cmd") || command.ends_with("npx.exe")
+        {
+            assert!(
+                !args.is_empty(),
+                "npx preset {id} requires package arguments"
+            );
         }
         assert!(!preset["mode_options"].as_array().unwrap().is_empty());
         assert!(!preset["thinking_effort_options"]
