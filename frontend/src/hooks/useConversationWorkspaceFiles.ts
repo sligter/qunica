@@ -292,6 +292,7 @@ export function useConversationWorkspaceFileBlob(
         signal,
       ),
     enabled: token !== null && !!conversationId && !!path,
+    gcTime: 0,
   })
 }
 

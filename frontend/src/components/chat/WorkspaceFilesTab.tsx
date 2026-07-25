@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import {
   ChevronLeft,
   Download,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { WorkspacePreviewRouter } from '@/components/chat/workspace-preview/WorkspacePreviewRouter'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
@@ -23,124 +24,136 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import {
-  downloadGroupWorkspaceFile,
+  useConversationWorkspaceFiles,
+  useDownloadConversationWorkspaceFile,
+  useUploadConversationWorkspaceFile,
+} from '@/hooks/useConversationWorkspaceFiles'
+import {
   useDeleteGroupWorkspaceFile,
-  useGroupWorkspaceFilePreview,
-  useGroupWorkspaceFiles,
-  useGroupWorkspaceRoot,
   useRenameGroupWorkspaceFile,
-  useUploadGroupWorkspaceFile,
 } from '@/hooks/useGroupFiles'
 import { normalizeLanguage } from '@/i18n'
-import { isDesktopRuntime, revealInFileManager } from '@/lib/desktop'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { encodeWorkspacePaths, WORKSPACE_PATHS_MIME } from '@/lib/workspaceDrag'
-import { joinWorkspaceAbsPath } from '@/lib/workspaceFileLink'
-import { useAuthStore } from '@/stores/authStore'
+import {
+  encodeWorkspaceDragItems,
+  WORKSPACE_ITEM_MIME,
+  type WorkspaceDragItemInput,
+} from '@/lib/workspaceDrag'
 import { useFileNavStore } from '@/stores/fileNavStore'
-import type { GroupWorkspaceFileRead } from '@/types/api'
+import type { ConversationScope, ConversationWorkspaceFileRead } from '@/types/api'
 
 interface WorkspaceFilesTabProps {
-  groupId: string | undefined
+  scope: ConversationScope
+  conversationId: string | undefined
+  workspaceId: string | null
   onInsertPaths?: (paths: string[]) => void
 }
 
-function parentPath(path: string) {
+function parentPath(path: string): string {
   const parts = path.split('/').filter(Boolean)
   parts.pop()
   return parts.join('/')
 }
 
-function formatSize(size: number | null | undefined, language: 'en-US' | 'zh-CN') {
+function fileName(path: string): string {
+  return path.replaceAll('\\', '/').split('/').at(-1) || path
+}
+
+function formatSize(size: number | null | undefined, language: 'en-US' | 'zh-CN'): string {
   if (size == null) return ''
   if (size < 1024) return `${formatNumber(size, language)} B`
-  if (size < 1024 * 1024) return `${formatNumber(Number((size / 1024).toFixed(1)), language)} KB`
+  if (size < 1024 * 1024) {
+    return `${formatNumber(Number((size / 1024).toFixed(1)), language)} KB`
+  }
   return `${formatNumber(Number((size / (1024 * 1024)).toFixed(1)), language)} MB`
 }
 
-function displayError(error: unknown) {
+function displayError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabProps) {
+function dragItem(file: ConversationWorkspaceFileRead): WorkspaceDragItemInput {
+  return {
+    path: file.path,
+    name: file.name,
+    kind: file.is_dir ? 'directory' : 'file',
+  }
+}
+
+export function WorkspaceFilesTab({
+  scope,
+  conversationId,
+  workspaceId,
+  onInsertPaths,
+}: WorkspaceFilesTabProps) {
   const { t, i18n } = useTranslation(['chat', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const [currentPath, setCurrentPath] = useState('')
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [previewFile, setPreviewFile] = useState<ConversationWorkspaceFileRead | null>(null)
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<Set<string>>(
     () => new Set(),
   )
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
-  const [renaming, setRenaming] = useState<GroupWorkspaceFileRead | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<GroupWorkspaceFileRead | null>(null)
+  const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
-  const [menu, setMenu] = useState<{ x: number; y: number; file: GroupWorkspaceFileRead } | null>(
-    null,
-  )
+  const [draggingPath, setDraggingPath] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{
+    x: number
+    y: number
+    file: ConversationWorkspaceFileRead
+  } | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const token = useAuthStore((s) => s.token)
-  const files = useGroupWorkspaceFiles(groupId, currentPath)
-  const preview = useGroupWorkspaceFilePreview(groupId, selectedPath)
-  const root = useGroupWorkspaceRoot(groupId)
-  const upload = useUploadGroupWorkspaceFile(groupId)
+  const dragDescriptionId = useId()
+  const activeConversationId = workspaceId ? conversationId : undefined
+  const groupId = scope === 'groups' ? activeConversationId : undefined
+  const hasConversation = Boolean(activeConversationId)
+  const canMutate = scope === 'groups'
+  const files = useConversationWorkspaceFiles(scope, activeConversationId, currentPath)
+  const upload = useUploadConversationWorkspaceFile(scope, activeConversationId)
+  const download = useDownloadConversationWorkspaceFile(scope, activeConversationId)
   const rename = useRenameGroupWorkspaceFile(groupId)
   const del = useDeleteGroupWorkspaceFile(groupId)
-  const navRequest = useFileNavStore((s) => s.request)
-  const clearNav = useFileNavStore((s) => s.clear)
-  const desktop = isDesktopRuntime()
-  const hasGroupId = groupId !== undefined && groupId.length > 0
+  const navRequest = useFileNavStore((state) => state.request)
+  const clearNav = useFileNavStore((state) => state.clear)
 
   const title = currentPath || t('chat:workspace.root')
   const sortedFiles = files.data ?? []
   const selectedCount = selectedWorkspacePaths.size
 
-  const selectOnlyPath = (path: string) => {
-    setSelectedWorkspacePaths(new Set([path]))
-  }
+  const selectOnlyPath = (path: string) => setSelectedWorkspacePaths(new Set([path]))
 
   const toggleSelectedPath = (path: string) => {
     setSelectedWorkspacePaths((current) => {
       const next = new Set(current)
-      if (next.has(path)) {
-        next.delete(path)
-      } else {
-        next.add(path)
-      }
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
       return next
     })
   }
 
-  const fileDragPaths = (file: GroupWorkspaceFileRead) => {
-    if (selectedWorkspacePaths.has(file.path)) return Array.from(selectedWorkspacePaths)
-    return [file.path]
+  const selectedDragFiles = (file: ConversationWorkspaceFileRead) => {
+    if (!selectedWorkspacePaths.has(file.path)) return [file]
+    const selected = sortedFiles.filter((candidate) => selectedWorkspacePaths.has(candidate.path))
+    return selected.length > 0 ? selected : [file]
   }
 
-  const openEntry = (file: GroupWorkspaceFileRead) => {
+  const openEntry = (file: ConversationWorkspaceFileRead) => {
     selectOnlyPath(file.path)
     if (file.is_dir) {
       setCurrentPath(file.path)
-    } else {
-      setSelectedPath(file.path)
-      setIsPreviewOpen(true)
+      return
     }
-  }
-
-  const absPathFor = (file: GroupWorkspaceFileRead) =>
-    file.abs_path ?? joinWorkspaceAbsPath(root.data?.root, root.data?.separator, file.path)
-
-  const revealEntry = (file: GroupWorkspaceFileRead) => {
-    setDownloadError(null)
-    void revealInFileManager(absPathFor(file)).catch((error: unknown) =>
-      setDownloadError(displayError(error)),
-    )
+    setPreviewFile(file)
+    setIsPreviewOpen(true)
   }
 
   const handleFileClick = (
     event: React.MouseEvent<HTMLButtonElement>,
-    file: GroupWorkspaceFileRead,
+    file: ConversationWorkspaceFileRead,
   ) => {
     if (event.ctrlKey || event.metaKey) {
       toggleSelectedPath(file.path)
@@ -151,15 +164,17 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
 
   const handleFileDragStart = (
     event: React.DragEvent<HTMLLIElement>,
-    file: GroupWorkspaceFileRead,
+    file: ConversationWorkspaceFileRead,
   ) => {
-    const paths = fileDragPaths(file)
-    if (!selectedWorkspacePaths.has(file.path)) {
-      selectOnlyPath(file.path)
-    }
+    const draggedFiles = selectedDragFiles(file)
+    if (!selectedWorkspacePaths.has(file.path)) selectOnlyPath(file.path)
+    setDraggingPath(file.path)
     event.dataTransfer.effectAllowed = 'copy'
-    event.dataTransfer.setData(WORKSPACE_PATHS_MIME, encodeWorkspacePaths(paths))
-    event.dataTransfer.setData('text/plain', paths.join('\n'))
+    event.dataTransfer.setData(
+      WORKSPACE_ITEM_MIME,
+      encodeWorkspaceDragItems(draggedFiles.map(dragItem)),
+    )
+    event.dataTransfer.setData('text/plain', draggedFiles.map((item) => item.path).join('\n'))
   }
 
   const insertSelectedPaths = () => {
@@ -167,20 +182,35 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
     onInsertPaths?.(Array.from(selectedWorkspacePaths))
   }
 
-  // Open a file when a chat link requests it (locate folder + preview).
   useEffect(() => {
-    if (!navRequest || navRequest.groupId !== groupId) return
+    setCurrentPath('')
+    setPreviewFile(null)
+    setIsPreviewOpen(false)
+    setRenaming(null)
+    setPendingDelete(null)
+    setOperationError(null)
+    setMenu(null)
+  }, [conversationId, scope, workspaceId])
+
+  useEffect(() => {
+    if (!navRequest || navRequest.groupId !== conversationId || !workspaceId) return
+    const requestedFile: ConversationWorkspaceFileRead = {
+      path: navRequest.path,
+      name: fileName(navRequest.path),
+      is_dir: false,
+      size: null,
+      modified_at: null,
+    }
     setCurrentPath(parentPath(navRequest.path))
-    setSelectedPath(navRequest.path)
+    setPreviewFile(requestedFile)
     setIsPreviewOpen(true)
     clearNav()
-  }, [navRequest, groupId, clearNav])
+  }, [clearNav, conversationId, navRequest, workspaceId])
 
   useEffect(() => {
     setSelectedWorkspacePaths(new Set())
-  }, [currentPath, groupId])
+  }, [currentPath, conversationId, scope])
 
-  // Dismiss the right-click menu on any outside interaction.
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -199,34 +229,36 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
     }
   }, [menu])
 
-  const startRename = (file: GroupWorkspaceFileRead) => {
+  const startRename = (file: ConversationWorkspaceFileRead) => {
+    if (!canMutate) return
     setRenaming(file)
     setRenameValue(file.path)
   }
 
   const submitRename = () => {
-    if (!hasGroupId || !renaming || !renameValue.trim()) return
+    if (!groupId || !renaming || !renameValue.trim()) return
     const oldPath = renaming.path
-    const wasPreviewOpen = isPreviewOpen && selectedPath !== null
+    const wasPreviewOpen = isPreviewOpen && previewFile !== null
     void rename
       .mutateAsync({ path: oldPath, newPath: renameValue.trim() })
       .then((next) => {
         setRenaming(null)
-        setSelectedPath((path) => {
-          if (path === oldPath) return next.path
-          if (path?.startsWith(`${oldPath}/`)) return `${next.path}${path.slice(oldPath.length)}`
-          return path
+        setPreviewFile((selected) => {
+          if (!selected) return selected
+          if (selected.path === oldPath) return next
+          if (selected.path.startsWith(`${oldPath}/`)) {
+            const path = `${next.path}${selected.path.slice(oldPath.length)}`
+            return { ...selected, path, name: fileName(path) }
+          }
+          return selected
         })
         setSelectedWorkspacePaths((current) => {
           const updated = new Set<string>()
           for (const path of current) {
-            if (path === oldPath) {
-              updated.add(next.path)
-            } else if (path.startsWith(`${oldPath}/`)) {
+            if (path === oldPath) updated.add(next.path)
+            else if (path.startsWith(`${oldPath}/`)) {
               updated.add(`${next.path}${path.slice(oldPath.length)}`)
-            } else {
-              updated.add(path)
-            }
+            } else updated.add(path)
           }
           return updated
         })
@@ -235,37 +267,32 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
           setCurrentPath(parentPath(next.path))
         }
       })
+      .catch(() => undefined)
   }
 
-  const uploadFile = (file: File | undefined) => {
-    if (!file || !hasGroupId) return
-    setDownloadError(null)
+  const uploadFile = (file: globalThis.File | undefined) => {
+    if (!file || !groupId) return
+    setOperationError(null)
     void upload
       .mutateAsync(file)
-      .then(() => {
-        setCurrentPath('uploads')
-        if (fileInputRef.current) fileInputRef.current.value = ''
-      })
-      .catch(() => {
+      .then(() => setCurrentPath('uploads'))
+      .catch(() => undefined)
+      .finally(() => {
         if (fileInputRef.current) fileInputRef.current.value = ''
       })
   }
 
-  const downloadFile = (file: GroupWorkspaceFileRead) => {
-    if (!hasGroupId || file.is_dir) return
-    setDownloadError(null)
+  const downloadFile = (file: ConversationWorkspaceFileRead) => {
+    if (!activeConversationId || file.is_dir) return
+    setOperationError(null)
     setDownloadingPath(file.path)
-    void downloadGroupWorkspaceFile(groupId, file.path, token)
-      .catch((error: unknown) => setDownloadError(displayError(error)))
+    void download
+      .mutateAsync(file.path)
+      .catch((error: unknown) => setOperationError(displayError(error)))
       .finally(() => setDownloadingPath(null))
   }
 
-  const deletePath = (file: GroupWorkspaceFileRead) => {
-    if (!hasGroupId) return
-    setPendingDelete(file)
-  }
-
-  const performDelete = async (file: GroupWorkspaceFileRead) => {
+  const performDelete = async (file: ConversationWorkspaceFileRead) => {
     try {
       await del.mutateAsync(file.path)
     } catch (error: unknown) {
@@ -273,13 +300,12 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
         t('common:workspaceOperations.deletePathError', { message: displayError(error) }),
       )
     }
-    const deletesSelectedPath =
-      selectedPath === file.path || (file.is_dir && selectedPath?.startsWith(`${file.path}/`))
-    setSelectedPath((selected) => {
-      if (selected === file.path) return null
-      if (file.is_dir && selected?.startsWith(`${file.path}/`)) return null
-      return selected
-    })
+    const deletesPreview = previewFile?.path === file.path
+      || Boolean(file.is_dir && previewFile?.path.startsWith(`${file.path}/`))
+    if (deletesPreview) {
+      setPreviewFile(null)
+      setIsPreviewOpen(false)
+    }
     setSelectedWorkspacePaths((current) => {
       const next = new Set<string>()
       for (const path of current) {
@@ -289,42 +315,50 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
       }
       return next
     })
-    if (deletesSelectedPath) {
-      setIsPreviewOpen(false)
-    }
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <span id={`${dragDescriptionId}-file`} className="sr-only">
+        {t('chat:workspace.filePanel.dragFileDescription')}
+      </span>
+      <span id={`${dragDescriptionId}-directory`} className="sr-only">
+        {t('chat:workspace.filePanel.dragDirectoryDescription')}
+      </span>
+
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
         <p className="min-w-0 truncate text-[11px] text-muted-foreground" title={title}>
           {title}
         </p>
         <div className="flex shrink-0 items-center gap-1">
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="sr-only"
-            onChange={(event) => uploadFile(event.target.files?.[0])}
-            aria-label={t('chat:workspace.filePanel.uploadAria')}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={upload.isPending || !hasGroupId}
-            aria-label={t('chat:workspace.filePanel.uploadAria')}
-            title={t('chat:workspace.filePanel.uploadTitle')}
-          >
-            <Upload className="h-4 w-4" />
-          </Button>
+          {canMutate ? (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="sr-only"
+                onChange={(event) => uploadFile(event.target.files?.[0])}
+                aria-label={t('chat:workspace.filePanel.uploadAria')}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={upload.isPending || !groupId}
+                aria-label={t('chat:workspace.filePanel.uploadAria')}
+                title={t('chat:workspace.filePanel.uploadTitle')}
+              >
+                <Upload className="h-4 w-4" />
+              </Button>
+            </>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8 shrink-0"
             onClick={() => void files.refetch()}
-            disabled={files.isFetching || !hasGroupId}
+            disabled={files.isFetching || !hasConversation}
             aria-label={t('chat:workspace.filePanel.refresh')}
           >
             <RefreshCw className={cn('h-4 w-4', files.isFetching && 'animate-spin')} />
@@ -332,7 +366,7 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
         </div>
       </div>
 
-      {currentPath && (
+      {currentPath ? (
         <button
           type="button"
           className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground hover:bg-muted/70 hover:text-foreground"
@@ -341,14 +375,16 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
           <ChevronLeft className="h-3.5 w-3.5" />
           {t('chat:workspace.filePanel.up')}
         </button>
-      )}
+      ) : null}
 
-      {selectedCount > 0 && (
+      {selectedCount > 0 ? (
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-          <span>{t('common:workspaceOperations.selectedCount', {
-            count: selectedCount,
-            formattedCount: formatNumber(selectedCount, language),
-          })}</span>
+          <span>
+            {t('common:workspaceOperations.selectedCount', {
+              count: selectedCount,
+              formattedCount: formatNumber(selectedCount, language),
+            })}
+          </span>
           <Button
             type="button"
             variant="outline"
@@ -360,46 +396,62 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             {t('chat:workspace.insertSelected')}
           </Button>
         </div>
-      )}
+      ) : null}
 
-      {files.error && (
-        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+      {files.error ? (
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
           {t('chat:workspace.filePanel.loadError', { message: displayError(files.error) })}
         </div>
-      )}
-      {upload.error && (
-        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+      ) : null}
+      {canMutate && upload.error ? (
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
           {t('chat:errors.uploadDetail', { message: displayError(upload.error) })}
         </div>
-      )}
-      {downloadError && (
-        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-          {t('chat:workspace.filePanel.operationError', { message: downloadError })}
+      ) : null}
+      {operationError ? (
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
+          {t('chat:workspace.filePanel.operationError', { message: operationError })}
         </div>
-      )}
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!hasGroupId && <p className="p-3 text-sm text-muted-foreground">{t('chat:workspace.filePanel.selectGroup')}</p>}
-        {hasGroupId && files.isLoading && <p className="p-3 text-sm text-muted-foreground">{t('chat:workspace.loading')}</p>}
-        {hasGroupId && !files.isLoading && !files.error && sortedFiles.length === 0 && (
+        {!conversationId ? (
+          <p className="p-3 text-sm text-muted-foreground">
+            {t('chat:workspace.filePanel.selectConversation')}
+          </p>
+        ) : null}
+        {conversationId && !workspaceId ? (
+          <p className="p-3 text-sm text-muted-foreground">
+            {t('chat:workspace.filePanel.noWorkspace')}
+          </p>
+        ) : null}
+        {hasConversation && files.isLoading ? (
+          <p className="p-3 text-sm text-muted-foreground" role="status">
+            {t('chat:workspace.loading')}
+          </p>
+        ) : null}
+        {hasConversation && !files.isLoading && !files.error && sortedFiles.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
             <Folder className="h-8 w-8" />
             <p>{t('chat:workspace.empty')}</p>
           </div>
-        )}
-        {sortedFiles.length > 0 && (
+        ) : null}
+        {sortedFiles.length > 0 ? (
           <ul className="divide-y divide-border">
             {sortedFiles.map((file) => {
               const isSelected = selectedWorkspacePaths.has(file.path)
+              const kind = file.is_dir ? 'directory' : 'file'
               return (
                 <li
                   key={file.path}
                   draggable
+                  aria-grabbed={draggingPath === file.path}
                   className={cn(
                     'group flex items-center gap-2 px-3 py-2 hover:bg-muted/70',
                     isSelected && 'bg-muted ring-1 ring-inset ring-ring/40',
                   )}
                   onDragStart={(event) => handleFileDragStart(event, file)}
+                  onDragEnd={() => setDraggingPath(null)}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     setMenu({ x: event.clientX, y: event.clientY, file })
@@ -407,9 +459,11 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
                 >
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={(event) => handleFileClick(event, file)}
+                    onDoubleClick={() => openEntry(file)}
                     aria-pressed={isSelected}
+                    aria-describedby={`${dragDescriptionId}-${kind}`}
                   >
                     {file.is_dir ? (
                       <Folder className="h-4 w-4 shrink-0 text-primary" />
@@ -419,49 +473,55 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">{file.name}</span>
                       <span className="block text-[10px] text-muted-foreground">
-                        {file.is_dir ? t('chat:workspace.filePanel.folder') : formatSize(file.size, language)}
+                        {file.is_dir
+                          ? t('chat:workspace.filePanel.folder')
+                          : formatSize(file.size, language)}
                       </span>
                     </span>
                   </button>
-                  {!file.is_dir && (
+                  {!file.is_dir ? (
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                       onClick={() => downloadFile(file)}
                       disabled={downloadingPath === file.path}
                       aria-label={t('chat:workspace.filePanel.downloadNamed', { name: file.name })}
                     >
                       <Download className="h-3.5 w-3.5" />
                     </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                    onClick={() => startRename(file)}
-                    aria-label={t('chat:workspace.filePanel.renameNamed', { name: file.name })}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100"
-                    onClick={() => deletePath(file)}
-                    disabled={del.isPending}
-                    aria-label={t('chat:workspace.filePanel.deleteNamed', { name: file.name })}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  ) : null}
+                  {canMutate ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                        onClick={() => startRename(file)}
+                        aria-label={t('chat:workspace.filePanel.renameNamed', { name: file.name })}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                        onClick={() => setPendingDelete(file)}
+                        disabled={del.isPending}
+                        aria-label={t('chat:workspace.filePanel.deleteNamed', { name: file.name })}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </>
+                  ) : null}
                 </li>
               )
             })}
           </ul>
-        )}
+        ) : null}
       </div>
 
-      {pendingDelete && (
+      {pendingDelete ? (
         <ConfirmDialog
           open
           onOpenChange={(open) => {
@@ -477,52 +537,36 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
           destructive
           onConfirm={() => performDelete(pendingDelete)}
         />
-      )}
+      ) : null}
 
-      <Dialog open={isPreviewOpen && selectedPath !== null} onOpenChange={setIsPreviewOpen}>
+      <Dialog open={isPreviewOpen && previewFile !== null} onOpenChange={setIsPreviewOpen}>
         <DialogContent
           closeLabel={t('common:actions.close')}
-          className="max-h-[85vh] max-w-3xl overflow-hidden p-0"
+          className="max-h-[88vh] max-w-4xl overflow-hidden p-0"
         >
           <DialogHeader className="border-b border-border px-6 py-4 pr-12">
             <DialogTitle className="truncate text-base">
-              {selectedPath ?? t('chat:workspace.preview')}
+              {previewFile?.path ?? t('chat:workspace.preview')}
             </DialogTitle>
-            <DialogDescription>
-              {t('chat:workspace.filePanel.previewDescription')}
+            <DialogDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {previewFile?.size != null ? <span>{formatSize(previewFile.size, language)}</span> : null}
+              {previewFile?.size != null ? <span aria-hidden="true">·</span> : null}
+              <span>{t('chat:workspace.filePanel.previewDescription')}</span>
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-40 overflow-y-auto px-6 py-4">
-            {selectedPath && preview.isLoading && (
-              <p className="text-sm text-muted-foreground">{t('chat:workspace.previewLoading')}</p>
-            )}
-            {selectedPath && preview.error && (
-              <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                {t('chat:workspace.filePanel.previewError', { message: displayError(preview.error) })}
-              </p>
-            )}
-            {preview.data && !preview.data.is_text && (
-              <p className="rounded-md border border-border bg-muted/50 p-3 text-sm text-muted-foreground">
-                {preview.data.message
-                  ? t('chat:workspace.filePanel.previewUnavailableDetail', { message: preview.data.message })
-                  : t('chat:workspace.binaryPreview')}
-              </p>
-            )}
-            {preview.data?.is_text && (
-              <>
-                <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed whitespace-pre-wrap break-words text-foreground">
-                  {preview.data.content}
-                </pre>
-                {preview.data.truncated ? (
-                  <p className="mt-2 text-xs text-muted-foreground">{t('chat:workspace.filePanel.previewTruncated')}</p>
-                ) : null}
-              </>
-            )}
+            {previewFile && activeConversationId ? (
+              <WorkspacePreviewRouter
+                scope={scope}
+                conversationId={activeConversationId}
+                file={previewFile}
+              />
+            ) : null}
           </div>
         </DialogContent>
       </Dialog>
 
-      {renaming && (
+      {renaming ? (
         <div className="border-t border-border p-3">
           <label className="mb-1 block text-xs font-medium" htmlFor="workspace-file-rename">
             {t('chat:workspace.filePanel.renamePath')}
@@ -541,18 +585,27 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
               {t('common:actions.cancel')}
             </Button>
           </div>
-          {rename.error && <p className="mt-2 text-xs text-destructive">{t('chat:workspace.filePanel.renameError', { message: displayError(rename.error) })}</p>}
+          {rename.error ? (
+            <p className="mt-2 text-xs text-destructive" role="alert">
+              {t('chat:workspace.filePanel.renameError', {
+                message: displayError(rename.error),
+              })}
+            </p>
+          ) : null}
         </div>
-      )}
+      ) : null}
 
-      {menu && (
+      {menu ? (
         <div
           className="fixed z-50 min-w-44 overflow-hidden rounded-md border border-border bg-background py-1 text-sm text-foreground shadow-md"
           style={{ top: menu.y, left: menu.x }}
+          role="menu"
+          aria-label={t('chat:workspace.contextMenu')}
           onClick={(event) => event.stopPropagation()}
         >
           <button
             type="button"
+            role="menuitem"
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
             onClick={() => {
               openEntry(menu.file)
@@ -564,24 +617,14 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
             ) : (
               <File className="h-3.5 w-3.5" />
             )}
-            {menu.file.is_dir ? t('chat:workspace.filePanel.openFolder') : t('chat:workspace.filePanel.openPreview')}
+            {menu.file.is_dir
+              ? t('chat:workspace.filePanel.openFolder')
+              : t('chat:workspace.filePanel.openPreview')}
           </button>
-          {desktop && (
+          {!menu.file.is_dir ? (
             <button
               type="button"
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
-              onClick={() => {
-                revealEntry(menu.file)
-                setMenu(null)
-              }}
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              {t('chat:workspace.filePanel.revealExplorer')}
-            </button>
-          )}
-          {!menu.file.is_dir && (
-            <button
-              type="button"
+              role="menuitem"
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
               onClick={() => {
                 downloadFile(menu.file)
@@ -591,31 +634,37 @@ export function WorkspaceFilesTab({ groupId, onInsertPaths }: WorkspaceFilesTabP
               <Download className="h-3.5 w-3.5" />
               {t('chat:workspace.download')}
             </button>
-          )}
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
-            onClick={() => {
-              startRename(menu.file)
-              setMenu(null)
-            }}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            {t('chat:workspace.rename')}
-          </button>
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-destructive hover:bg-muted"
-            onClick={() => {
-              deletePath(menu.file)
-              setMenu(null)
-            }}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t('common:actions.delete')}
-          </button>
+          ) : null}
+          {canMutate ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                onClick={() => {
+                  startRename(menu.file)
+                  setMenu(null)
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                {t('chat:workspace.rename')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-destructive hover:bg-muted"
+                onClick={() => {
+                  setPendingDelete(menu.file)
+                  setMenu(null)
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('common:actions.delete')}
+              </button>
+            </>
+          ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

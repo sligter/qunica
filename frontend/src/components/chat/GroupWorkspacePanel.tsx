@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
+import { ConversationWorkspacePanel } from '@/components/chat/ConversationWorkspacePanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { WorkspaceFilesTab } from '@/components/chat/WorkspaceFilesTab'
 import { WorkspaceGitTab } from '@/components/chat/WorkspaceGitTab'
-import { workspaceGitQueryKey } from '@/hooks/useGroupFiles'
+import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
+import { workspaceGitQueryKey } from '@/hooks/useWorkspaceGit'
 import { cn } from '@/lib/utils'
 import { useFileNavStore } from '@/stores/fileNavStore'
 
 interface GroupWorkspacePanelProps {
   groupId: string | undefined
+  workspaceId?: string | null
   width?: number
   className?: string
   onInsertPaths?: (paths: string[]) => void
@@ -26,6 +28,7 @@ function readStoredTab(): WorkspaceTab {
 
 export function GroupWorkspacePanel({
   groupId,
+  workspaceId = null,
   width,
   className,
   onInsertPaths,
@@ -44,7 +47,9 @@ export function GroupWorkspacePanel({
     if (next === 'git') {
       void queryClient.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
     } else {
-      void queryClient.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
+      void queryClient.invalidateQueries({
+        queryKey: conversationWorkspaceFilesQueryKey('groups', groupId),
+      })
     }
   }
 
@@ -73,7 +78,13 @@ export function GroupWorkspacePanel({
           </TabsList>
         </div>
         <TabsContent value="files" className="mt-0 min-h-0 flex-1">
-          <WorkspaceFilesTab groupId={groupId} onInsertPaths={onInsertPaths} />
+          <ConversationWorkspacePanel
+            embedded
+            scope="groups"
+            conversationId={groupId}
+            workspaceId={workspaceId}
+            onInsertPaths={onInsertPaths}
+          />
         </TabsContent>
         <TabsContent value="git" className="mt-0 min-h-0 flex-1">
           <WorkspaceGitTab groupId={groupId} />
