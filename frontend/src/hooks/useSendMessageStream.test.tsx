@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
     abort: ReturnType<typeof vi.fn>
   }>,
   fetchJson: vi.fn(),
+  streamStartError: null as unknown,
 }))
 
 vi.mock('@/lib/api-v2/client', async (importOriginal) => {
@@ -25,6 +26,7 @@ vi.mock('@/lib/api-v2/client', async (importOriginal) => {
 
 vi.mock('@/lib/api-v2/sse', () => ({
   openApiV2SseStream: (options: { handlers: ApiV2SseHandlers; url: string }) => {
+    if (mocks.streamStartError) throw mocks.streamStartError
     const abort = vi.fn()
     mocks.streams.push({ handlers: options.handlers, url: options.url, abort })
     return { abort } as unknown as AbortController
@@ -111,6 +113,10 @@ function emit(handlers: ApiV2SseHandlers, event: unknown) {
   act(() => handlers.onEvent(event as never))
 }
 
+function ignoreSend(promise: Promise<void>) {
+  void promise.catch(() => undefined)
+}
+
 function emitActiveSchedulerStream(
   handlers: ApiV2SseHandlers,
   streamId: string,
@@ -166,8 +172,140 @@ describe('useSendMessageStream scheduler events', () => {
     mocks.streams.length = 0
     mocks.fetchJson.mockReset()
     mocks.fetchJson.mockResolvedValue(traceResponse())
+    mocks.streamStartError = null
     useMessageStore.setState(initialMessages, true)
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
+  })
+
+  it('resolves send on the persisted user-message acknowledgement before agents finish', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    let sendPromise!: Promise<void>
+    act(() => {
+      sendPromise = hook.result.current.send('hello')
+    })
+    let resolved = false
+    void sendPromise.then(() => {
+      resolved = true
+    })
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+
+    await expect(sendPromise).resolves.toBeUndefined()
+    expect(hook.result.current.activeStreamCount).toBe(1)
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'agent_start',
+      payload: { agent_id: 'agent-1', display_name: 'Agent One' },
+    })
+    expect(hook.result.current.activeStreamCount).toBe(1)
+  })
+
+  it('rejects send when the stream reports an error before acknowledgement', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    let sendPromise!: Promise<void>
+    act(() => {
+      sendPromise = hook.result.current.send('hello')
+    })
+    const rejection = expect(sendPromise).rejects.toThrow('persist failed')
+
+    emit(mocks.streams[0].handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'error',
+      payload: { message: 'persist failed' },
+    })
+
+    await rejection
+    expect(hook.result.current.error).toBe('persist failed')
+  })
+
+  it('keeps send resolved when an agent error arrives after acknowledgement', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    let sendPromise!: Promise<void>
+    act(() => {
+      sendPromise = hook.result.current.send('hello')
+    })
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+    await expect(sendPromise).resolves.toBeUndefined()
+
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'error',
+      payload: { message: 'agent failed after persistence' },
+    })
+
+    await expect(sendPromise).resolves.toBeUndefined()
+    expect(hook.result.current.error).toBe('agent failed after persistence')
+  })
+
+  it('rejects unacknowledged sends on transport error, close, and startup failure', async () => {
+    const queryClient = new QueryClient()
+    const first = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    let transportPromise!: Promise<void>
+    act(() => {
+      transportPromise = first.result.current.send('transport')
+    })
+    const transportRejection = expect(transportPromise).rejects.toThrow('network down')
+    act(() => mocks.streams[0].handlers.onError?.(new Error('network down')))
+    await transportRejection
+    first.unmount()
+
+    const second = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    let closePromise!: Promise<void>
+    act(() => {
+      closePromise = second.result.current.send('close')
+    })
+    const closeRejection = expect(closePromise).rejects.toThrow(
+      'Message stream ended before the user message was acknowledged',
+    )
+    act(() => mocks.streams[1].handlers.onClose?.())
+    await closeRejection
+    second.unmount()
+
+    mocks.streamStartError = new Error('startup failed')
+    const third = renderHook(() => useSendMessageStream('group-1', true), {
+      wrapper: wrapper(queryClient),
+    })
+    let startupPromise!: Promise<void>
+    act(() => {
+      startupPromise = third.result.current.send('startup')
+    })
+    await expect(startupPromise).rejects.toThrow('startup failed')
+    expect(mocks.streams).toHaveLength(2)
   })
 
   it('queues pre-turn cancellation, posts once when the turn arrives, then aborts', async () => {
@@ -183,7 +321,7 @@ describe('useSendMessageStream scheduler events', () => {
       wrapper: wrapper(queryClient),
     })
 
-    act(() => hook.result.current.send('hello'))
+    act(() => ignoreSend(hook.result.current.send('hello')))
     const stream = mocks.streams[0]
     emit(stream.handlers, {
       stream_id: 'stream-1',
@@ -204,7 +342,7 @@ describe('useSendMessageStream scheduler events', () => {
     expect(mocks.fetchJson).not.toHaveBeenCalled()
     expect(stream.abort).not.toHaveBeenCalled()
 
-    act(() => hook.result.current.send('blocked while cancelling'))
+    act(() => ignoreSend(hook.result.current.send('blocked while cancelling')))
     expect(mocks.streams).toHaveLength(1)
     expect(hook.result.current.error).toBe('Cancellation is in progress')
 
@@ -257,7 +395,7 @@ describe('useSendMessageStream scheduler events', () => {
     const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
-    act(() => hook.result.current.send('hello'))
+    act(() => ignoreSend(hook.result.current.send('hello')))
     const stream = mocks.streams[0]
     emit(stream.handlers, {
       stream_id: 'stream-1',
@@ -307,7 +445,7 @@ describe('useSendMessageStream scheduler events', () => {
     const hook = renderHook(() => useSendMessageStream('group-1', false), {
       wrapper: wrapper(queryClient),
     })
-    act(() => hook.result.current.send('hello'))
+    act(() => ignoreSend(hook.result.current.send('hello')))
     const stream = mocks.streams[0]
     emit(stream.handlers, {
       stream_id: 'stream-1',
@@ -335,7 +473,7 @@ describe('useSendMessageStream scheduler events', () => {
     const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
-    act(() => hook.result.current.send('hello'))
+    act(() => ignoreSend(hook.result.current.send('hello')))
     const stream = mocks.streams[0]
     emit(stream.handlers, {
       stream_id: 'stream-1',
@@ -371,8 +509,8 @@ describe('useSendMessageStream scheduler events', () => {
       wrapper: wrapper(queryClient),
     })
     act(() => {
-      hook.result.current.send('first')
-      hook.result.current.send('second')
+      ignoreSend(hook.result.current.send('first'))
+      ignoreSend(hook.result.current.send('second'))
     })
     const [first, second] = mocks.streams
     emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
@@ -422,7 +560,7 @@ describe('useSendMessageStream scheduler events', () => {
         wrapper: wrapper(queryClient),
       },
     )
-    act(() => hook.result.current.send('first'))
+    act(() => ignoreSend(hook.result.current.send('first')))
     const first = mocks.streams[0]
     emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
 
@@ -453,7 +591,7 @@ describe('useSendMessageStream scheduler events', () => {
     const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
-    act(() => hook.result.current.send('hello'))
+    act(() => ignoreSend(hook.result.current.send('hello')))
     const stream = mocks.streams[0]
     emit(stream.handlers, {
       stream_id: 'stream-1',
@@ -518,7 +656,7 @@ describe('useSendMessageStream scheduler events', () => {
     const hook = renderHook(() => useSendMessageStream('group-1', true), {
       wrapper: wrapper(queryClient),
     })
-    act(() => hook.result.current.send('hello'))
+    act(() => ignoreSend(hook.result.current.send('hello')))
     const stream = mocks.streams[0]
     emit(stream.handlers, {
       stream_id: 'stream-1',
@@ -573,6 +711,7 @@ describe('useSendMessageStream scheduler events', () => {
 describe('useSendMessageStream direct conversations', () => {
   beforeEach(() => {
     mocks.streams.length = 0
+    mocks.streamStartError = null
     useMessageStore.setState(initialMessages, true)
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
@@ -589,7 +728,7 @@ describe('useSendMessageStream direct conversations', () => {
       { wrapper: wrapper(queryClient) },
     )
 
-    act(() => result.current.send('hello'))
+    act(() => ignoreSend(result.current.send('hello')))
 
     expect(mocks.streams[0]?.url).toBe('/api/v2/direct-chats/chat-1/messages/stream')
     emit(mocks.streams[0]!.handlers, {

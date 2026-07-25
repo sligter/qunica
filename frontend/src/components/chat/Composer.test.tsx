@@ -1,12 +1,27 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Composer } from '@/components/chat/Composer'
 import i18n from '@/i18n'
-import type { GroupAgentRead } from '@/types/api'
+import { encodeWorkspaceDragItems, WORKSPACE_ITEM_MIME } from '@/lib/workspaceDrag'
+import type {
+  ConversationScope,
+  ConversationWorkspaceFileRead,
+  ConversationWorkspaceFileTextResponse,
+  GroupAgentRead,
+} from '@/types/api'
 
-const mocks = vi.hoisted(() => ({ upload: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  getFile: vi.fn(),
+  getMetadata: vi.fn(),
+  upload: vi.fn(),
+}))
+
+vi.mock('@/hooks/useConversationWorkspaceFiles', () => ({
+  getConversationWorkspaceFile: mocks.getFile,
+  getConversationWorkspaceFileMetadata: mocks.getMetadata,
+}))
 
 vi.mock('@/hooks/useGroupFiles', () => ({
   WorkspaceUploadManyError: class WorkspaceUploadManyError extends Error {},
@@ -33,13 +48,70 @@ const groupAgents: GroupAgentRead[] = [
   },
 ]
 
-describe('Composer mentions', () => {
+function workspaceFile(path: string, isDirectory = false): ConversationWorkspaceFileRead {
+  const name = path.split('/').at(-1) ?? path
+  return {
+    path,
+    name,
+    is_dir: isDirectory,
+    size: isDirectory ? null : 12,
+    modified_at: '2026-07-25T00:00:00Z',
+  }
+}
+
+function workspaceMetadata(
+  path: string,
+  mimeType = 'text/markdown',
+  size = 12,
+): ConversationWorkspaceFileTextResponse {
+  return {
+    path,
+    name: path.split('/').at(-1) ?? path,
+    mime_type: mimeType,
+    size,
+    content: mimeType.startsWith('text/') ? 'content' : null,
+    is_text: mimeType.startsWith('text/'),
+    truncated: false,
+    version: 'version-1',
+    message: null,
+  }
+}
+
+function workspaceDataTransfer(
+  items: Array<{ path: string; name?: string; kind: 'file' | 'directory' }>,
+) {
+  const encoded = encodeWorkspaceDragItems(items.map((item) => ({
+    path: item.path,
+    name: item.name ?? item.path.split('/').at(-1) ?? item.path,
+    kind: item.kind,
+  })))
+  return {
+    files: [],
+    types: [WORKSPACE_ITEM_MIME],
+    dropEffect: 'none',
+    getData: (type: string) => type === WORKSPACE_ITEM_MIME ? encoded : '',
+  }
+}
+
+function operatingSystemDataTransfer(files: File[]) {
+  return {
+    files,
+    types: ['Files'],
+    dropEffect: 'none',
+    getData: () => '',
+  }
+}
+
+describe('Composer', () => {
   beforeEach(() => {
+    mocks.getFile.mockReset()
+    mocks.getMetadata.mockReset()
     mocks.upload.mockReset()
   })
 
   afterEach(async () => {
     cleanup()
+    vi.unstubAllGlobals()
     await i18n.changeLanguage('en-US')
   })
 
@@ -114,6 +186,129 @@ describe('Composer mentions', () => {
     expect(screen.queryByText('@Reviewer')).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['groups', 'group-1'],
+    ['direct-chats', 'chat-1'],
+  ] satisfies Array<[ConversationScope, string]>) (
+    'adds and sends a server-confirmed workspace file in %s',
+    async (scope, conversationId) => {
+      const user = userEvent.setup()
+      const onSend = vi.fn()
+      mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))
+      render(
+        <Composer
+          conversationId={conversationId}
+          workspaceId="workspace-1"
+          scope={scope}
+          onSend={onSend}
+        />,
+      )
+
+      fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+        dataTransfer: workspaceDataTransfer([
+          { path: 'docs/guide.md', name: 'guide.md', kind: 'file' },
+        ]),
+      })
+
+      expect(await screen.findByText('text/markdown · 12 B')).toBeVisible()
+      expect(mocks.getMetadata).toHaveBeenCalledWith(
+        scope,
+        conversationId,
+        'docs/guide.md',
+        null,
+      )
+      await user.click(screen.getByRole('button', { name: 'Send message' }))
+      expect(onSend).toHaveBeenCalledWith({
+        content: '',
+        attachments: [{ path: 'docs/guide.md' }],
+      })
+    },
+  )
+
+  it('deduplicates repeated workspace file drops by server-confirmed path', async () => {
+    mocks.getMetadata.mockResolvedValue(workspaceMetadata('docs/guide.md'))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={vi.fn()}
+      />,
+    )
+    const dropZone = screen.getByRole('group', { name: 'Message composer file drop area' })
+    const dataTransfer = workspaceDataTransfer([
+      { path: 'docs/guide.md', name: 'guide.md', kind: 'file' },
+      { path: 'docs/guide.md', name: 'guide.md', kind: 'file' },
+    ])
+
+    fireEvent.drop(dropZone, { dataTransfer })
+    expect(await screen.findByText('guide.md')).toBeVisible()
+    fireEvent.drop(dropZone, { dataTransfer })
+
+    await waitFor(() => expect(screen.getAllByText('guide.md')).toHaveLength(1))
+    expect(mocks.getMetadata).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces the focused selection with a directory path and appends when unfocused', async () => {
+    const user = userEvent.setup()
+    mocks.getFile
+      .mockResolvedValueOnce(workspaceFile('docs', true))
+      .mockResolvedValueOnce(workspaceFile('assets', true))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={vi.fn()}
+      />,
+    )
+    const textarea = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement
+    const dropZone = screen.getByRole('group', { name: 'Message composer file drop area' })
+    await user.type(textarea, 'open OLD now')
+    textarea.focus()
+    textarea.setSelectionRange(5, 8)
+
+    fireEvent.drop(dropZone, {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs', kind: 'directory' }]),
+    })
+    await waitFor(() => expect(textarea).toHaveValue('open docs now'))
+    await waitFor(() => {
+      expect(textarea).toHaveFocus()
+      expect(textarea).toHaveProperty('selectionStart', 9)
+    })
+
+    textarea.blur()
+    fireEvent.drop(dropZone, {
+      dataTransfer: workspaceDataTransfer([{ path: 'assets', kind: 'directory' }]),
+    })
+    await waitFor(() => expect(textarea).toHaveValue('open docs now assets'))
+    await waitFor(() => {
+      expect(textarea).toHaveFocus()
+      expect(textarea).toHaveProperty('selectionStart', 20)
+    })
+  })
+
+  it('keeps the card highlighted until the final nested dragleave', () => {
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={vi.fn()}
+      />,
+    )
+    const dropZone = screen.getByRole('group', { name: 'Message composer file drop area' })
+    const dataTransfer = workspaceDataTransfer([{ path: 'docs', kind: 'directory' }])
+
+    fireEvent.dragEnter(dropZone, { dataTransfer })
+    fireEvent.dragEnter(screen.getByRole('textbox', { name: 'Message' }), { dataTransfer })
+    expect(dropZone).toHaveAttribute('data-drop-active', 'true')
+    fireEvent.dragLeave(screen.getByRole('textbox', { name: 'Message' }), { dataTransfer })
+    expect(dropZone).toHaveAttribute('data-drop-active', 'true')
+    fireEvent.dragLeave(dropZone, { dataTransfer })
+    expect(dropZone).toHaveAttribute('data-drop-active', 'false')
+  })
+
   it('uploads an image and sends an attachment-only message with its workspace path', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
@@ -128,6 +323,7 @@ describe('Composer mentions', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }))
 
     expect(onSend).toHaveBeenCalledWith({ content: '', attachments: [{ path: 'uploads/photo.png' }] })
+    await waitFor(() => expect(screen.queryByText('photo.png')).not.toBeInTheDocument())
   })
 
   it('opens a preview when a pasted image attachment thumbnail is clicked', async () => {
@@ -154,9 +350,154 @@ describe('Composer mentions', () => {
     const file = new File(['png'], 'drop.png', { type: 'image/png' })
     const textarea = screen.getByRole('textbox', { name: 'Message' })
 
-    fireEvent.drop(textarea, { dataTransfer: { files: [file], types: ['Files'], getData: () => '' } })
+    fireEvent.drop(textarea, { dataTransfer: operatingSystemDataTransfer([file]) })
 
     await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith([file]))
+  })
+
+  it('rejects direct-chat external file drops and selections without calling the group upload hook', async () => {
+    const user = userEvent.setup()
+    render(
+      <Composer
+        conversationId="chat-1"
+        workspaceId="workspace-1"
+        scope="direct-chats"
+        onSend={vi.fn()}
+      />,
+    )
+    const file = new File(['text'], 'notes.txt', { type: 'text/plain' })
+
+    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+      dataTransfer: operatingSystemDataTransfer([file]),
+    })
+    expect(await screen.findByText('External file uploads are not supported in direct chats.')).toBeVisible()
+    expect(mocks.upload).not.toHaveBeenCalled()
+
+    await user.upload(
+      screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
+      file,
+    )
+    expect(mocks.upload).not.toHaveBeenCalled()
+  })
+
+  it('rejects drops while disabled without reading metadata or uploading files', () => {
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        disabledReason="Read only"
+        onSend={vi.fn()}
+      />,
+    )
+    const dropZone = screen.getByRole('group', { name: 'Message composer file drop area' })
+    fireEvent.dragEnter(dropZone, {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
+    })
+    fireEvent.drop(dropZone, {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
+    })
+    fireEvent.drop(dropZone, {
+      dataTransfer: operatingSystemDataTransfer([
+        new File(['text'], 'notes.txt', { type: 'text/plain' }),
+      ]),
+    })
+
+    expect(dropZone).toHaveAttribute('data-drop-active', 'false')
+    expect(mocks.getMetadata).not.toHaveBeenCalled()
+    expect(mocks.upload).not.toHaveBeenCalled()
+  })
+
+  it('reports a missing workspace without accepting workspace references', async () => {
+    render(
+      <Composer
+        conversationId="chat-1"
+        workspaceId={null}
+        scope="direct-chats"
+        onSend={vi.fn()}
+      />,
+    )
+
+    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
+    })
+
+    expect(await screen.findByText('This conversation has no local workspace.')).toBeVisible()
+    expect(mocks.getMetadata).not.toHaveBeenCalled()
+  })
+
+  it('removes a workspace attachment from the draft without any disk mutation', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={onSend}
+      />,
+    )
+    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'Remove guide.md' }))
+    expect(screen.queryByText('guide.md')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('clears only ready attachments after an async send succeeds', async () => {
+    const user = userEvent.setup()
+    let resolveSend!: () => void
+    const onSend = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSend = resolve
+    }))
+    mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={onSend}
+      />,
+    )
+    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
+    })
+    await screen.findByText('guide.md')
+
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(screen.getByText('guide.md')).toBeVisible()
+    await act(async () => resolveSend())
+    await waitFor(() => expect(screen.queryByText('guide.md')).not.toBeInTheDocument())
+  })
+
+  it('keeps ready attachments when an async send fails', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn().mockRejectedValue(new Error('send failed'))
+    mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={onSend}
+      />,
+    )
+    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+      dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
+    })
+    await screen.findByText('guide.md')
+
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(screen.getByText('guide.md')).toBeVisible()
+    expect(onSend).toHaveBeenCalledWith({
+      content: '',
+      attachments: [{ path: 'docs/guide.md' }],
+    })
   })
 
   it('uploads clipboard image files without preventing ordinary text paste', async () => {

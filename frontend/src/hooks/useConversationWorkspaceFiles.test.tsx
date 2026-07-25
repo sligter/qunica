@@ -16,6 +16,7 @@ import {
   conversationWorkspaceFilesQueryKey,
   createWorkspaceFileObjectUrl,
   fetchConversationWorkspaceFileBlob,
+  getConversationWorkspaceFileMetadata,
   useConversationWorkspaceFilePreview,
   useConversationWorkspaceFileText,
   useConversationWorkspaceFiles,
@@ -154,6 +155,27 @@ describe('conversation workspace file client', () => {
     )
     expect(mockedFetchJson).toHaveBeenCalledWith(
       '/groups/group-1/workspace-files/text?path=docs%2Fguide.md',
+      { token: 'owner-token' },
+    )
+  })
+
+  it('reads server-confirmed attachment metadata through the shared text endpoint', async () => {
+    mockedFetchJson.mockResolvedValueOnce(textFixture)
+
+    await expect(getConversationWorkspaceFileMetadata(
+      'direct-chats',
+      'chat-1',
+      'docs/guide.md',
+      'owner-token',
+    )).resolves.toEqual({
+      path: textFixture.path,
+      name: textFixture.name,
+      mime_type: textFixture.mime_type,
+      size: textFixture.size,
+    })
+
+    expect(mockedFetchJson).toHaveBeenCalledWith(
+      '/direct-chats/chat-1/workspace-files/text?path=docs%2Fguide.md',
       { token: 'owner-token' },
     )
   })

@@ -5,15 +5,25 @@ import { useTranslation } from 'react-i18next'
 import { MentionPopover } from '@/components/chat/MentionPopover'
 import { ImageLightbox } from '@/components/chat/ImageLightbox'
 import { Button } from '@/components/ui/button'
-import { getGroupWorkspaceFile, useUploadGroupWorkspaceFiles } from '@/hooks/useGroupFiles'
+import {
+  getConversationWorkspaceFile,
+  getConversationWorkspaceFileMetadata,
+  type ConversationWorkspaceFileMetadata,
+} from '@/hooks/useConversationWorkspaceFiles'
+import { useUploadGroupWorkspaceFiles } from '@/hooks/useGroupFiles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
-import { WORKSPACE_PATHS_MIME, workspacePathsFromDataTransfer } from '@/lib/workspaceDrag'
-import type { GroupAgentRead, MessageSendInput } from '@/types/api'
+import { WORKSPACE_ITEM_MIME, workspaceItemsFromDataTransfer } from '@/lib/workspaceDrag'
+import type {
+  ConversationScope,
+  GroupAgentRead,
+  MessageSendInput,
+} from '@/types/api'
 
 export type WorkspacePathInserter = (paths: string[]) => void
 
-type PendingAttachment = {
+type UploadAttachment = {
+  kind: 'upload'
   localId: string
   file: File
   status: 'uploading' | 'uploaded' | 'failed'
@@ -21,12 +31,43 @@ type PendingAttachment = {
   error?: string
 }
 
+export interface WorkspaceAttachment {
+  kind: 'workspace'
+  localId: string
+  path: string
+  name: string
+  mime: string
+  size: number
+}
+
+type PendingAttachment = UploadAttachment | WorkspaceAttachment
+
+type ComposerNoticeKey =
+  | 'composer.drop.ready'
+  | 'composer.drop.fileAdded'
+  | 'composer.drop.directoryInserted'
+  | 'composer.drop.unsupported'
+  | 'composer.drop.uploadUnsupported'
+  | 'composer.drop.noWorkspace'
+  | 'composer.drop.unreadable'
+  | 'composer.drop.limitReached'
+
+type ComposerNotice = {
+  key: ComposerNoticeKey
+  tone: 'status' | 'error'
+  values?: Record<string, number | string>
+}
+
 interface ComposerProps {
-  onSend: (input: MessageSendInput) => void
+  onSend: (input: MessageSendInput) => void | Promise<void>
   onCancel?: () => void
   isStreaming?: boolean
   hint?: string
   groupAgents?: GroupAgentRead[]
+  conversationId?: string
+  workspaceId?: string | null
+  scope?: ConversationScope
+  /** Compatibility for direct Composer consumers while callers migrate to conversationId. */
   groupId?: string
   allowMentions?: boolean
   disabledReason?: string
@@ -35,6 +76,7 @@ interface ComposerProps {
 
 /** ~10 lines of text-sm (20px line-height) plus padding. */
 const MAX_TEXTAREA_HEIGHT = 208
+const MAX_ATTACHMENTS_PER_MESSAGE = 10
 
 function errorDetail(error: unknown) {
   return error instanceof Error ? error.message : String(error)
@@ -46,26 +88,57 @@ function formatSize(size: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function attachmentPath(attachment: PendingAttachment): string | null {
+  if (attachment.kind === 'workspace') return attachment.path
+  return attachment.status === 'uploaded' ? attachment.uploaded?.path ?? null : null
+}
+
+function attachmentDetails(attachment: PendingAttachment) {
+  if (attachment.kind === 'workspace') {
+    return {
+      name: attachment.name,
+      mime: attachment.mime,
+      size: attachment.size,
+    }
+  }
+  return {
+    name: attachment.file.name,
+    mime: attachment.file.type,
+    size: attachment.file.size,
+  }
+}
+
+function isRecognizedDrop(dataTransfer: DataTransfer): boolean {
+  const types = Array.from(dataTransfer.types)
+  return (dataTransfer.files?.length ?? 0) > 0
+    || types.includes('Files')
+    || types.includes(WORKSPACE_ITEM_MIME)
+}
+
 function PendingAttachmentRow({
   attachment,
   onRemove,
   onRetry,
+  retryDisabled,
 }: {
   attachment: PendingAttachment
   onRemove: () => void
   onRetry: () => void
+  retryDisabled: boolean
 }) {
   const { t } = useTranslation('chat')
-  const isImage = attachment.file.type.startsWith('image/')
+  const details = attachmentDetails(attachment)
+  const previewFile = attachment.kind === 'upload' ? attachment.file : null
+  const isImage = details.mime.startsWith('image/')
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
 
   useEffect(() => {
-    if (!isImage || attachment.file.size === 0) return
-    const objectUrl = URL.createObjectURL(attachment.file)
+    if (!isImage || !previewFile || previewFile.size === 0) return
+    const objectUrl = URL.createObjectURL(previewFile)
     setPreviewUrl(objectUrl)
     return () => URL.revokeObjectURL(objectUrl)
-  }, [attachment.file, isImage])
+  }, [isImage, previewFile])
 
   return <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs">
     {previewUrl ? (
@@ -73,16 +146,16 @@ function PendingAttachmentRow({
         type="button"
         className="shrink-0 rounded focus:outline-none focus:ring-2 focus:ring-ring"
         onClick={() => setPreviewOpen(true)}
-        aria-label={`Preview ${attachment.file.name}`}
+        aria-label={`Preview ${details.name}`}
       >
         <img src={previewUrl} alt="" className="h-7 w-7 rounded object-cover" />
       </button>
     ) : isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
-    <div className="min-w-0 flex-1"><div className="truncate">{attachment.file.name}</div><div className="truncate text-[11px] text-muted-foreground">{attachment.file.type || t('attachments.unknownType')} · {formatSize(attachment.file.size)}</div></div>
-    <span className={cn('shrink-0 text-muted-foreground', attachment.status === 'failed' && 'text-destructive')}>{attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
-    {attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRetry} aria-label={t('attachments.retryNamed', { name: attachment.file.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
-    <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRemove} aria-label={t('attachments.removeNamed', { name: attachment.file.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
-    <ImageLightbox open={previewOpen} onOpenChange={setPreviewOpen} src={previewUrl} alt={attachment.file.name} />
+    <div className="min-w-0 flex-1"><div className="truncate">{details.name}</div><div className="truncate text-[11px] text-muted-foreground">{details.mime || t('attachments.unknownType')} · {formatSize(details.size)}</div></div>
+    <span className={cn('shrink-0 text-muted-foreground', attachment.kind === 'upload' && attachment.status === 'failed' && 'text-destructive')}>{attachment.kind === 'workspace' ? t('attachments.workspace') : attachment.status === 'failed' ? attachment.error : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
+    {attachment.kind === 'upload' && attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRetry} disabled={retryDisabled} aria-label={t('attachments.retryNamed', { name: details.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
+    <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRemove} aria-label={t('attachments.removeNamed', { name: details.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
+    <ImageLightbox open={previewOpen} onOpenChange={setPreviewOpen} src={previewUrl} alt={details.name} />
   </div>
 }
 
@@ -92,6 +165,9 @@ export function Composer({
   isStreaming,
   hint,
   groupAgents = [],
+  conversationId,
+  workspaceId,
+  scope = 'groups',
   groupId,
   allowMentions = true,
   disabledReason,
@@ -99,16 +175,60 @@ export function Composer({
 }: ComposerProps) {
   const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  const [attachments, setAttachmentState] = useState<PendingAttachment[]>([])
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<ComposerNotice | null>(null)
+  const [isDragActive, setIsDragActive] = useState(false)
+  const [isSending, setIsSending] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
   const [mentionStart, setMentionStart] = useState(-1)
   const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const attachmentsRef = useRef<PendingAttachment[]>([])
+  const valueRef = useRef('')
+  const draftRevisionRef = useRef(0)
+  const dragDepthRef = useRef(0)
   const token = useAuthStore((state) => state.token)
-  const uploadWorkspaceFiles = useUploadGroupWorkspaceFiles(groupId)
+  const resolvedConversationId = conversationId ?? groupId
+  const hasWorkspace = workspaceId === undefined
+    ? Boolean(resolvedConversationId)
+    : Boolean(workspaceId)
+  const isDisabled = Boolean(disabledReason)
+  const uploadWorkspaceFiles = useUploadGroupWorkspaceFiles(
+    scope === 'groups' ? resolvedConversationId : undefined,
+  )
+
+  const updateValue = useCallback((next: string) => {
+    draftRevisionRef.current += 1
+    valueRef.current = next
+    setValue(next)
+  }, [])
+
+  const updateAttachments = useCallback(
+    (update: (current: PendingAttachment[]) => PendingAttachment[]) => {
+      const next = update(attachmentsRef.current)
+      attachmentsRef.current = next
+      setAttachmentState(next)
+    },
+    [],
+  )
+
+  const showNotice = useCallback(
+    (
+      key: ComposerNoticeKey,
+      tone: ComposerNotice['tone'] = 'status',
+      values?: ComposerNotice['values'],
+    ) => setNotice({ key, tone, values }),
+    [],
+  )
+
+  const ensureWorkspaceContext = useCallback(() => {
+    if (resolvedConversationId && hasWorkspace) return true
+    showNotice('composer.drop.noWorkspace', 'error')
+    return false
+  }, [hasWorkspace, resolvedConversationId, showNotice])
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current
@@ -121,43 +241,201 @@ export function Composer({
     resizeTextarea()
   }, [value, resizeTextarea])
 
-  const insertWorkspacePaths = useCallback(
-    (paths: string[]) => {
-      const cleanPaths = paths.map((path) => path.trim()).filter((path) => path.length > 0)
-      if (cleanPaths.length === 0 || !groupId) return
-      void Promise.all(cleanPaths.map((path) => getGroupWorkspaceFile(groupId, path, token)))
-        .then((files) => {
-          const resolved = files.filter((file): file is NonNullable<typeof file> => file !== null)
-          if (resolved.length === 0) return
-          setAttachments((current) => [
-            ...current,
-            ...resolved.map((file) => ({
-              localId: crypto.randomUUID(),
-              file: new File([], file.name),
-              status: 'uploaded' as const,
-              uploaded: { path: file.path },
-            })),
-          ])
+  const insertDirectoryPaths = useCallback((paths: string[]) => {
+    const cleanPaths = Array.from(new Set(
+      paths.map((path) => path.trim()).filter((path) => path.length > 0),
+    ))
+    if (cleanPaths.length === 0) return
+
+    const textarea = textareaRef.current
+    const draft = valueRef.current
+    const hasFocus = textarea !== null && document.activeElement === textarea
+    const start = hasFocus ? textarea.selectionStart : draft.length
+    const end = hasFocus ? textarea.selectionEnd : draft.length
+    const before = draft.slice(0, start)
+    const after = draft.slice(end)
+    const inserted = cleanPaths.join(' ')
+    const leadingSpace = before.length > 0 && !/\s$/.test(before) ? ' ' : ''
+    const trailingSpace = after.length > 0 && !/^\s/.test(after) ? ' ' : ''
+    const next = `${before}${leadingSpace}${inserted}${trailingSpace}${after}`
+    const cursor = before.length + leadingSpace.length + inserted.length + trailingSpace.length
+
+    updateValue(next)
+    setShowMention(false)
+    showNotice('composer.drop.directoryInserted', 'status', { count: cleanPaths.length })
+    requestAnimationFrame(() => {
+      const current = textareaRef.current
+      if (!current) return
+      current.setSelectionRange(cursor, cursor)
+      current.focus()
+    })
+  }, [showNotice, updateValue])
+
+  const addWorkspaceMetadata = useCallback(
+    (metadata: ConversationWorkspaceFileMetadata[]) => {
+      let addedCount = 0
+      let limitReached = false
+      updateAttachments((current) => {
+        const existingPaths = new Set(
+          current.map(attachmentPath).filter((path): path is string => path !== null),
+        )
+        const additions: WorkspaceAttachment[] = []
+        for (const file of metadata) {
+          if (existingPaths.has(file.path)) continue
+          if (current.length + additions.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+            limitReached = true
+            break
+          }
+          existingPaths.add(file.path)
+          additions.push({
+            kind: 'workspace',
+            localId: crypto.randomUUID(),
+            path: file.path,
+            name: file.name,
+            mime: file.mime_type,
+            size: file.size,
+          })
+        }
+        addedCount = additions.length
+        return additions.length > 0 ? [...current, ...additions] : current
+      })
+
+      if (addedCount > 0) {
+        showNotice('composer.drop.fileAdded', 'status', { count: addedCount })
+      } else if (limitReached) {
+        showNotice('composer.drop.limitReached', 'error', {
+          count: MAX_ATTACHMENTS_PER_MESSAGE,
         })
-        .catch((error) => setUploadError(errorDetail(error)))
-      setShowMention(false)
+      }
+      return addedCount
     },
-    [groupId, token],
+    [showNotice, updateAttachments],
   )
+
+  const addWorkspaceFiles = useCallback(async (paths: string[]) => {
+    if (!ensureWorkspaceContext() || !resolvedConversationId) return
+    const existingPaths = new Set(
+      attachmentsRef.current.map(attachmentPath).filter((path): path is string => path !== null),
+    )
+    const cleanPaths = Array.from(new Set(
+      paths
+        .map((path) => path.trim())
+        .filter((path) => path.length > 0 && !existingPaths.has(path)),
+    ))
+    if (cleanPaths.length === 0) return
+    if (attachmentsRef.current.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+      showNotice('composer.drop.limitReached', 'error', {
+        count: MAX_ATTACHMENTS_PER_MESSAGE,
+      })
+      return
+    }
+
+    setUploadError(null)
+    const results = await Promise.allSettled(
+      cleanPaths.map((path) => getConversationWorkspaceFileMetadata(
+        scope,
+        resolvedConversationId,
+        path,
+        token,
+      )),
+    )
+    const metadata = results
+      .filter((result): result is PromiseFulfilledResult<ConversationWorkspaceFileMetadata> => (
+        result.status === 'fulfilled'
+      ))
+      .map((result) => result.value)
+    addWorkspaceMetadata(metadata)
+    if (results.some((result) => result.status === 'rejected')) {
+      showNotice('composer.drop.unreadable', 'error')
+    }
+  }, [addWorkspaceMetadata, ensureWorkspaceContext, resolvedConversationId, scope, showNotice, token])
+
+  const verifyAndInsertDirectories = useCallback(async (paths: string[]) => {
+    if (!ensureWorkspaceContext() || !resolvedConversationId) return
+    const cleanPaths = Array.from(new Set(
+      paths.map((path) => path.trim()).filter((path) => path.length > 0),
+    ))
+    if (cleanPaths.length === 0) return
+    const results = await Promise.allSettled(
+      cleanPaths.map((path) => getConversationWorkspaceFile(
+        scope,
+        resolvedConversationId,
+        path,
+        token,
+      )),
+    )
+    const directories = results.flatMap((result) => (
+      result.status === 'fulfilled' && result.value?.is_dir ? [result.value.path] : []
+    ))
+    if (directories.length > 0) insertDirectoryPaths(directories)
+    if (directories.length === 0 && results.length > 0) {
+      showNotice('composer.drop.unreadable', 'error')
+    }
+  }, [ensureWorkspaceContext, insertDirectoryPaths, resolvedConversationId, scope, showNotice, token])
+
+  const insertWorkspacePaths = useCallback((paths: string[]) => {
+    setShowMention(false)
+    void (async () => {
+      if (!ensureWorkspaceContext() || !resolvedConversationId) return
+      const cleanPaths = Array.from(new Set(
+        paths.map((path) => path.trim()).filter((path) => path.length > 0),
+      ))
+      const results = await Promise.allSettled(
+        cleanPaths.map((path) => getConversationWorkspaceFile(
+          scope,
+          resolvedConversationId,
+          path,
+          token,
+        )),
+      )
+      const files: string[] = []
+      const directories: string[] = []
+      for (const result of results) {
+        if (result.status !== 'fulfilled' || result.value === null) continue
+        if (result.value.is_dir) directories.push(result.value.path)
+        else files.push(result.value.path)
+      }
+      if (directories.length > 0) insertDirectoryPaths(directories)
+      if (files.length > 0) await addWorkspaceFiles(files)
+      if (files.length === 0 && directories.length === 0 && cleanPaths.length > 0) {
+        showNotice('composer.drop.unreadable', 'error')
+      }
+    })()
+  }, [addWorkspaceFiles, ensureWorkspaceContext, insertDirectoryPaths, resolvedConversationId, scope, showNotice, token])
 
   useEffect(() => {
     onRegisterWorkspacePathInserter?.(insertWorkspacePaths)
     return () => onRegisterWorkspacePathInserter?.(null)
   }, [insertWorkspacePaths, onRegisterWorkspacePathInserter])
 
-  const send = () => {
-    const content = value.trim()
-    const uploaded = attachments.filter((attachment) => attachment.status === 'uploaded' && attachment.uploaded)
-    if (!content && uploaded.length === 0) return
-    onSend({ content, attachments: uploaded.map((attachment) => ({ path: attachment.uploaded!.path })) })
-    setValue('')
-    setAttachments((current) => current.filter((attachment) => attachment.status !== 'uploaded'))
-    setShowMention(false)
+  const send = async () => {
+    if (isSending) return
+    if (attachmentsRef.current.some((attachment) => (
+      attachment.kind === 'upload' && attachment.status === 'uploading'
+    ))) return
+    const content = valueRef.current.trim()
+    const ready = attachmentsRef.current.flatMap((attachment) => {
+      const path = attachmentPath(attachment)
+      return path === null ? [] : [{ localId: attachment.localId, path }]
+    })
+    if (!content && ready.length === 0) return
+
+    const sentIds = new Set(ready.map((attachment) => attachment.localId))
+    const sentDraftRevision = draftRevisionRef.current
+    setIsSending(true)
+    try {
+      await onSend({
+        content,
+        attachments: ready.map((attachment) => ({ path: attachment.path })),
+      })
+      if (draftRevisionRef.current === sentDraftRevision) updateValue('')
+      updateAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.localId)))
+      setShowMention(false)
+    } catch {
+      // Keep the draft and ready attachments intact so the user can retry.
+    } finally {
+      setIsSending(false)
+    }
   }
 
   const uploadFiles = useCallback(
@@ -165,37 +443,91 @@ export function Composer({
       const files = Array.from(fileList ?? [])
       if (files.length === 0) return
       setUploadError(null)
-      const pending = files.map((file) => ({ localId: crypto.randomUUID(), file, status: 'uploading' as const }))
-      setAttachments((current) => [...current, ...pending])
+      if (isDisabled) return
+      if (!ensureWorkspaceContext()) {
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        return
+      }
+      if (scope !== 'groups') {
+        showNotice('composer.drop.uploadUnsupported', 'error')
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        return
+      }
+      const capacity = MAX_ATTACHMENTS_PER_MESSAGE - attachmentsRef.current.length
+      const acceptedFiles = files.slice(0, Math.max(0, capacity))
+      if (acceptedFiles.length === 0) {
+        showNotice('composer.drop.limitReached', 'error', {
+          count: MAX_ATTACHMENTS_PER_MESSAGE,
+        })
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        return
+      }
+      const pending: UploadAttachment[] = acceptedFiles.map((file) => ({
+        kind: 'upload',
+        localId: crypto.randomUUID(),
+        file,
+        status: 'uploading',
+      }))
+      updateAttachments((current) => [...current, ...pending])
+      if (acceptedFiles.length < files.length) {
+        showNotice('composer.drop.limitReached', 'error', {
+          count: MAX_ATTACHMENTS_PER_MESSAGE,
+        })
+      }
       void (async () => {
         for (const attachment of pending) {
           try {
             const [uploaded] = await uploadWorkspaceFiles.mutateAsync([attachment.file])
-            setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'uploaded', uploaded } : item))
+            if (!uploaded) throw new Error('Workspace upload returned no file')
+            updateAttachments((current) => current.map((item) => (
+              item.kind === 'upload' && item.localId === attachment.localId
+                ? { ...item, status: 'uploaded' as const, uploaded: { path: uploaded.path } }
+                : item
+            )))
+            showNotice('composer.drop.fileAdded', 'status', { count: 1 })
           } catch (error) {
             setUploadError(errorDetail(error))
-            setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'failed', error: errorDetail(error) } : item))
+            updateAttachments((current) => current.map((item) => (
+              item.kind === 'upload' && item.localId === attachment.localId
+                ? { ...item, status: 'failed' as const, error: errorDetail(error) }
+                : item
+            )))
           }
         }
         if (fileInputRef.current) fileInputRef.current.value = ''
       })()
     },
-    [uploadWorkspaceFiles],
+    [ensureWorkspaceContext, isDisabled, scope, showNotice, updateAttachments, uploadWorkspaceFiles],
   )
 
   const retryAttachment = useCallback((attachment: PendingAttachment) => {
-    setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'uploading', error: undefined } : item))
+    if (isDisabled || attachment.kind !== 'upload' || scope !== 'groups') return
+    setUploadError(null)
+    updateAttachments((current) => current.map((item) => (
+      item.kind === 'upload' && item.localId === attachment.localId
+        ? { ...item, status: 'uploading' as const, error: undefined }
+        : item
+    )))
     void uploadWorkspaceFiles.mutateAsync([attachment.file]).then(([uploaded]) => {
-      setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'uploaded', uploaded } : item))
+      if (!uploaded) throw new Error('Workspace upload returned no file')
+      updateAttachments((current) => current.map((item) => (
+        item.kind === 'upload' && item.localId === attachment.localId
+          ? { ...item, status: 'uploaded' as const, uploaded: { path: uploaded.path } }
+          : item
+      )))
     }).catch((error) => {
       setUploadError(errorDetail(error))
-      setAttachments((current) => current.map((item) => item.localId === attachment.localId ? { ...item, status: 'failed', error: errorDetail(error) } : item))
+      updateAttachments((current) => current.map((item) => (
+        item.kind === 'upload' && item.localId === attachment.localId
+          ? { ...item, status: 'failed' as const, error: errorDetail(error) }
+          : item
+      )))
     })
-  }, [uploadWorkspaceFiles])
+  }, [isDisabled, scope, updateAttachments, uploadWorkspaceFiles])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value
-    setValue(newValue)
+    updateValue(newValue)
 
     const cursorPos = e.target.selectionStart
     const textBeforeCursor = newValue.slice(0, cursorPos)
@@ -218,12 +550,13 @@ export function Composer({
 
   const handleMentionSelect = useCallback(
     (agent: GroupAgentRead) => {
-      const before = value.slice(0, mentionStart)
-      const cursorPos = textareaRef.current?.selectionStart ?? value.length
-      const after = value.slice(cursorPos)
+      const draft = valueRef.current
+      const before = draft.slice(0, mentionStart)
+      const cursorPos = textareaRef.current?.selectionStart ?? draft.length
+      const after = draft.slice(cursorPos)
       const inserted = `@${agent.display_name} `
       const newValue = before + inserted + after
-      setValue(newValue)
+      updateValue(newValue)
       setShowMention(false)
 
       requestAnimationFrame(() => {
@@ -235,28 +568,74 @@ export function Composer({
         }
       })
     },
-    [value, mentionStart],
+    [mentionStart, updateValue],
   )
 
-  const handleDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (event.dataTransfer.files.length > 0) {
-      event.preventDefault()
-      uploadFiles(event.dataTransfer.files)
+  const resetDragState = useCallback(() => {
+    dragDepthRef.current = 0
+    setIsDragActive(false)
+    setNotice((current) => current?.key === 'composer.drop.ready' ? null : current)
+  }, [])
+
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isRecognizedDrop(event.dataTransfer)) return
+    event.preventDefault()
+    if (isDisabled) {
+      event.dataTransfer.dropEffect = 'none'
       return
     }
-    const paths = workspacePathsFromDataTransfer(event.dataTransfer)
-    if (paths.length === 0) return
-    event.preventDefault()
-    insertWorkspacePaths(paths)
+    dragDepthRef.current += 1
+    if (dragDepthRef.current === 1) {
+      setIsDragActive(true)
+      showNotice('composer.drop.ready')
+    }
   }
 
-  const handleDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    const types = Array.from(event.dataTransfer.types)
-    if (!types.includes('Files') && !types.includes(WORKSPACE_PATHS_MIME) && !types.includes('text/plain')) {
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (dragDepthRef.current === 0) return
+    event.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) {
+      setIsDragActive(false)
+      setNotice((current) => current?.key === 'composer.drop.ready' ? null : current)
+    }
+  }
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isRecognizedDrop(event.dataTransfer)) return
+    event.preventDefault()
+    if (isDisabled) {
+      event.dataTransfer.dropEffect = 'none'
       return
     }
-    event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    resetDragState()
+    event.preventDefault()
+    if (isDisabled) {
+      event.dataTransfer.dropEffect = 'none'
+      return
+    }
+
+    const workspaceItems = workspaceItemsFromDataTransfer(event.dataTransfer)
+    if (workspaceItems.files.length > 0 || workspaceItems.directories.length > 0) {
+      if (workspaceItems.files.length > 0) {
+        void addWorkspaceFiles(workspaceItems.files.map((item) => item.path))
+      }
+      if (workspaceItems.directories.length > 0) {
+        void verifyAndInsertDirectories(workspaceItems.directories.map((item) => item.path))
+      }
+      return
+    }
+
+    const files = Array.from(event.dataTransfer.files)
+    if (files.length > 0) {
+      uploadFiles(files)
+      return
+    }
+    showNotice('composer.drop.unsupported', 'error')
   }
 
   const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -274,29 +653,46 @@ export function Composer({
     if (showMention) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      send()
+      void send()
     }
   }
 
   const hasText = value.trim().length > 0
-  const hasUploading = attachments.some((attachment) => attachment.status === 'uploading')
-  const hasUploaded = attachments.some((attachment) => attachment.status === 'uploaded')
-  const isDisabled = Boolean(disabledReason)
+  const hasUploading = attachments.some((attachment) => (
+    attachment.kind === 'upload' && attachment.status === 'uploading'
+  ))
+  const hasUploaded = attachments.some((attachment) => attachmentPath(attachment) !== null)
   const showStopAsPrimary = Boolean(isStreaming) && !hasText
+  const noticeText = notice ? t(notice.key, notice.values ?? {}) : ''
+  const liveStatus = notice?.tone === 'status' ? noticeText : ''
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-1">
       <div className="mx-auto w-full max-w-6xl">
-        {uploadError ? <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: uploadError })}</p> : null}
+        {uploadError ? <p aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: uploadError })}</p> : null}
+        {notice?.tone === 'error' ? <p aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{noticeText}</p> : null}
         {disabledReason ? (
           <p className="mb-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
             {disabledReason}
           </p>
         ) : null}
+        <p id="composer-drop-status" className="sr-only" aria-live="polite" aria-atomic="true">
+          {liveStatus}
+        </p>
         <div
+          role="group"
+          aria-label={t('composer.dropZone')}
+          aria-disabled={isDisabled}
+          data-drop-active={isDragActive ? 'true' : 'false'}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
           className={cn(
-            'relative rounded-2xl border border-border bg-card shadow-sm transition-shadow',
+            'relative rounded-2xl border border-border bg-card shadow-sm transition-[border-color,background-color,box-shadow]',
             'focus-within:border-ring/50 focus-within:ring-1 focus-within:ring-ring/40 focus-within:shadow-md',
+            isDragActive && 'cursor-copy border-primary/70 bg-primary/5 shadow-md ring-2 ring-primary/20',
+            isDisabled && 'cursor-not-allowed',
           )}
         >
           {allowMentions ? (
@@ -313,12 +709,11 @@ export function Composer({
             value={value}
             onChange={handleChange}
             onKeyDown={onKeyDown}
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
             onPaste={handlePaste}
             placeholder={t('composer.placeholder')}
             rows={1}
             aria-label={t('composer.message')}
+            aria-describedby="composer-drop-status"
             disabled={isDisabled}
             className={cn(
               'block max-h-52 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-3.5',
@@ -328,7 +723,7 @@ export function Composer({
           {attachments.length > 0 ? (
             <div className="space-y-1 px-3 pb-1">
               {attachments.map((attachment) => {
-                return <PendingAttachmentRow key={attachment.localId} attachment={attachment} onRetry={() => retryAttachment(attachment)} onRemove={() => setAttachments((current) => current.filter((item) => item.localId !== attachment.localId))} />
+                return <PendingAttachmentRow key={attachment.localId} attachment={attachment} onRetry={() => retryAttachment(attachment)} retryDisabled={isDisabled} onRemove={() => updateAttachments((current) => current.filter((item) => item.localId !== attachment.localId))} />
               })}
             </div>
           ) : null}
@@ -339,17 +734,27 @@ export function Composer({
               multiple
               className="sr-only"
               onChange={(event) => uploadFiles(event.target.files)}
+              disabled={isDisabled}
               aria-label={t('composer.upload')}
+              aria-describedby="composer-drop-status"
             />
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isDisabled || !groupId || uploadWorkspaceFiles.isPending}
+              onClick={() => {
+                setUploadError(null)
+                if (!ensureWorkspaceContext()) return
+                if (scope !== 'groups') {
+                  showNotice('composer.drop.uploadUnsupported', 'error')
+                  return
+                }
+                fileInputRef.current?.click()
+              }}
+              disabled={isDisabled || uploadWorkspaceFiles.isPending}
               aria-label={t('composer.upload')}
-              title={t('composer.uploadTitle')}
+              title={scope === 'groups' ? t('composer.uploadTitle') : t('composer.uploadUnsupportedTitle')}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -430,8 +835,8 @@ export function Composer({
                 type="button"
                 size="icon"
                 className="h-8 w-8 shrink-0 rounded-full"
-                onClick={send}
-                disabled={isDisabled || hasUploading || (!hasText && !hasUploaded)}
+                onClick={() => void send()}
+                disabled={isDisabled || isSending || hasUploading || (!hasText && !hasUploaded)}
                 aria-label={t('composer.send')}
                 title={t('composer.sendTitle')}
               >

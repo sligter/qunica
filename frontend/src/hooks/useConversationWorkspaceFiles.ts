@@ -42,6 +42,11 @@ export interface RevocableWorkspaceFileObjectUrl {
   revoke: () => void
 }
 
+export type ConversationWorkspaceFileMetadata = Pick<
+  ConversationWorkspaceFileTextResponse,
+  'path' | 'name' | 'mime_type' | 'size'
+>
+
 export class ConversationWorkspaceUploadUnsupportedError extends Error {
   readonly scope: ConversationScope
 
@@ -298,18 +303,46 @@ export function useConversationWorkspaceFileText(
   const token = useAuthStore((state) => state.token)
   return useQuery({
     queryKey: conversationWorkspaceFileTextQueryKey(scope, conversationId, path),
-    queryFn: () =>
-      fetchJson<ConversationWorkspaceFileTextResponse>(
-        conversationWorkspaceFileEndpoint(
-          scope,
-          requireConversationId(conversationId),
-          'text',
-          requireWorkspaceFilePath(path ?? ''),
-        ),
-        { token },
-      ),
+    queryFn: () => fetchConversationWorkspaceFileText(
+      scope,
+      requireConversationId(conversationId),
+      requireWorkspaceFilePath(path ?? ''),
+      token,
+    ),
     enabled: token !== null && !!conversationId && !!path,
   })
+}
+
+function fetchConversationWorkspaceFileText(
+  scope: ConversationScope,
+  conversationId: string,
+  path: string,
+  token: string | null,
+): Promise<ConversationWorkspaceFileTextResponse> {
+  return fetchJson<ConversationWorkspaceFileTextResponse>(
+    conversationWorkspaceFileEndpoint(
+      scope,
+      requireConversationId(conversationId),
+      'text',
+      requireWorkspaceFilePath(path),
+    ),
+    { token },
+  )
+}
+
+export async function getConversationWorkspaceFileMetadata(
+  scope: ConversationScope,
+  conversationId: string,
+  path: string,
+  token: string | null,
+): Promise<ConversationWorkspaceFileMetadata> {
+  const file = await fetchConversationWorkspaceFileText(scope, conversationId, path, token)
+  return {
+    path: file.path,
+    name: file.name,
+    mime_type: file.mime_type,
+    size: file.size,
+  }
 }
 
 export function useSaveConversationWorkspaceFileText(

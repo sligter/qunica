@@ -109,6 +109,10 @@ export function ConversationChatView({
     scope,
     onConversationUpdated,
   })
+  const sendMessage = stream.send
+  const submitHumanInput = useCallback((content: string) => {
+    void sendMessage(content).catch(() => undefined)
+  }, [sendMessage])
   const clearWarnings = useMessageStore((state) => state.clearWarnings)
   const fileNavRequest = useFileNavStore((state) => state.request)
   const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)
@@ -240,7 +244,7 @@ export function ConversationChatView({
             hasOlderMessages={messagesQuery.hasNextPage}
             isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
             onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
-            onSubmitHumanInput={stream.send}
+            onSubmitHumanInput={submitHumanInput}
             onViewTurnTrace={capabilities.showTurnTrace ? openTurnTrace : undefined}
             scope={scope}
             agents={agents}
@@ -255,9 +259,12 @@ export function ConversationChatView({
           ) : null}
 
           <Composer
-            groupId={conversationId}
+            key={`${scope}:${conversationId}:${workspaceId ?? 'no-workspace'}`}
+            conversationId={conversationId}
+            workspaceId={workspaceId}
+            scope={scope}
             isStreaming={stream.isStreaming}
-            onSend={stream.send}
+            onSend={sendMessage}
             onCancel={stream.cancel}
             hint={hint}
             groupAgents={agents}

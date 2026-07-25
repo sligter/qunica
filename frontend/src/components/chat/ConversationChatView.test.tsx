@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { I18nextProvider } from 'react-i18next'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,16 +13,29 @@ const terminalMocks = vi.hoisted(() => ({
   isDockOpen: false,
 }))
 
+const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
+
 vi.mock('@/components/chat/Composer', () => ({
-  Composer: ({ allowMentions, disabledReason }: { allowMentions?: boolean; disabledReason?: string }) => (
-    <div>
-      composer:{String(allowMentions)}:{disabledReason ?? 'enabled'}
-      <input aria-label="Message" />
-      <textarea aria-label="Message draft" />
-      <select aria-label="Message mode"><option>default</option></select>
-      <div aria-label="Rich message" contentEditable />
-    </div>
-  ),
+  Composer: (props: {
+    allowMentions?: boolean
+    conversationId?: string
+    disabledReason?: string
+    scope?: 'groups' | 'direct-chats'
+    workspaceId?: string | null
+  }) => {
+    composerMocks.render(props)
+    const [mountedConversationId] = useState(props.conversationId)
+    return (
+      <div>
+        composer:{String(props.allowMentions)}:{props.disabledReason ?? 'enabled'}
+        <span data-testid="composer-instance">{mountedConversationId}</span>
+        <input aria-label="Message" />
+        <textarea aria-label="Message draft" />
+        <select aria-label="Message mode"><option>default</option></select>
+        <div aria-label="Rich message" contentEditable />
+      </div>
+    )
+  },
 }))
 vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
   GroupWorkspacePanel: () => <div>workspace panel</div>,
@@ -62,13 +76,23 @@ vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
   }),
 }))
 
-function renderConversation() {
-  return render(
+interface ConversationRenderOptions {
+  conversationId?: string
+  scope?: 'groups' | 'direct-chats'
+  workspaceId?: string | null
+}
+
+function conversationElement({
+  conversationId = 'chat-1',
+  scope = 'direct-chats',
+  workspaceId = 'workspace-1',
+}: ConversationRenderOptions = {}) {
+  return (
     <I18nextProvider i18n={i18n}>
       <ConversationChatView
-        conversationId="chat-1"
-        workspaceId="workspace-1"
-        scope="direct-chats"
+        conversationId={conversationId}
+        workspaceId={workspaceId}
+        scope={scope}
         schedulerEnabled={false}
         agents={[]}
         title="Direct chat"
@@ -83,8 +107,12 @@ function renderConversation() {
           allowMentions: false,
         }}
       />
-    </I18nextProvider>,
+    </I18nextProvider>
   )
+}
+
+function renderConversation(options: ConversationRenderOptions = {}) {
+  return render(conversationElement(options))
 }
 
 describe('ConversationChatView', () => {
@@ -93,6 +121,7 @@ describe('ConversationChatView', () => {
     terminalMocks.register.mockReset()
     terminalMocks.toggleDock.mockReset().mockResolvedValue(undefined)
     terminalMocks.isDockOpen = false
+    composerMocks.render.mockReset()
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
   })
 
@@ -107,6 +136,11 @@ describe('ConversationChatView', () => {
     expect(screen.queryByText('Manage Group')).not.toBeInTheDocument()
     expect(screen.queryByText('group only')).not.toBeInTheDocument()
     expect(screen.queryByText('turn trace')).not.toBeInTheDocument()
+    expect(composerMocks.render).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-1',
+      workspaceId: 'workspace-1',
+      scope: 'direct-chats',
+    }))
   })
 
   it('registers its workspace and toggles the terminal from the header', async () => {
@@ -118,6 +152,32 @@ describe('ConversationChatView', () => {
     expect(button).toHaveAttribute('aria-pressed', 'false')
     await user.click(button)
     expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes group conversation file scope and workspace identity to the composer', () => {
+    renderConversation({
+      conversationId: 'group-1',
+      scope: 'groups',
+      workspaceId: 'workspace-group',
+    })
+
+    expect(composerMocks.render).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'group-1',
+      workspaceId: 'workspace-group',
+      scope: 'groups',
+    }))
+  })
+
+  it('remounts the composer when the conversation identity changes', () => {
+    const view = renderConversation({ conversationId: 'chat-1', workspaceId: 'workspace-1' })
+    expect(screen.getByTestId('composer-instance')).toHaveTextContent('chat-1')
+
+    view.rerender(conversationElement({
+      conversationId: 'chat-2',
+      workspaceId: 'workspace-2',
+    }))
+
+    expect(screen.getByTestId('composer-instance')).toHaveTextContent('chat-2')
   })
 
   it('handles Ctrl+` on Windows and ignores unsafe or ordinary key events', () => {

@@ -278,6 +278,28 @@ interface PendingCancellation {
   resolve: () => void
 }
 
+interface PendingSendAcknowledgement {
+  promise: Promise<void>
+  resolve: () => void
+  reject: (error: Error) => void
+}
+
+function asError(error: unknown, fallback: string): Error {
+  if (error instanceof Error) return error
+  const message = String(error)
+  return new Error(message || fallback)
+}
+
+function createPendingSendAcknowledgement(): PendingSendAcknowledgement {
+  let resolve!: () => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 interface SendMessageStreamOptions {
   scope?: ConversationScope
   onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
@@ -332,7 +354,27 @@ export function useSendMessageStream(
   const agentNamesRef = useRef<Map<string, string>>(new Map())
   const streamProtocolByRequestRef = useRef<Map<string, StreamProtocol>>(new Map())
   const schedulerTurnByRequestRef = useRef<Map<string, string>>(new Map())
+  const pendingSendAcknowledgementsRef = useRef<Map<string, PendingSendAcknowledgement>>(
+    new Map(),
+  )
   const pendingCancellationRef = useRef<PendingCancellation | null>(null)
+
+  const acknowledgeSend = useCallback((id: string) => {
+    const acknowledgement = pendingSendAcknowledgementsRef.current.get(id)
+    if (!acknowledgement) return
+    pendingSendAcknowledgementsRef.current.delete(id)
+    acknowledgement.resolve()
+  }, [])
+
+  const rejectSendBeforeAcknowledgement = useCallback((id: string, error: unknown) => {
+    const acknowledgement = pendingSendAcknowledgementsRef.current.get(id)
+    if (!acknowledgement) return
+    pendingSendAcknowledgementsRef.current.delete(id)
+    acknowledgement.reject(asError(
+      error,
+      'Message stream ended before the user message was acknowledged',
+    ))
+  }, [])
 
   const refreshActiveCount = useCallback(() => {
     setActiveStreamCount(streamsRef.current.size)
@@ -346,6 +388,7 @@ export function useSendMessageStream(
     const agentNames = agentNamesRef.current
     const streamProtocols = streamProtocolByRequestRef.current
     const schedulerTurns = schedulerTurnByRequestRef.current
+    const pendingSendAcknowledgements = pendingSendAcknowledgementsRef.current
     return () => {
       const hadAbandonedStreams = streams.size > 0
       const pendingCancellation = pendingCancellationRef.current
@@ -354,6 +397,13 @@ export function useSendMessageStream(
         pendingCancellationRef.current = null
       }
       for (const [requestId, ctrl] of streams) {
+        const acknowledgement = pendingSendAcknowledgements.get(requestId)
+        if (acknowledgement) {
+          pendingSendAcknowledgements.delete(requestId)
+          acknowledgement.reject(new Error(
+            'Message stream ended before the user message was acknowledged',
+          ))
+        }
         ctrl.abort()
         const streamId = streamIds.get(requestId)
         if (abandonedGroupId && streamId) {
@@ -369,9 +419,15 @@ export function useSendMessageStream(
       agentNames.clear()
       streamProtocols.clear()
       schedulerTurns.clear()
+      for (const acknowledgement of pendingSendAcknowledgements.values()) {
+        acknowledgement.reject(new Error(
+          'Message stream ended before the user message was acknowledged',
+        ))
+      }
+      pendingSendAcknowledgements.clear()
       setActiveStreamCount(0)
     }
-  }, [clearToolActivity, detachStreamRun, groupId])
+  }, [clearToolActivity, detachStreamRun, groupId, scope])
 
   const invalidate = useCallback(() => {
     if (!groupId) return
@@ -447,6 +503,10 @@ export function useSendMessageStream(
       .map((id) => streamIdsRef.current.get(id))
       .filter((streamId): streamId is string => Boolean(streamId))
     for (const id of activeRequestIds) {
+      rejectSendBeforeAcknowledgement(
+        id,
+        new Error('Message send was cancelled before acknowledgement'),
+      )
       streamsRef.current.get(id)?.abort()
       streamsRef.current.delete(id)
       streamIdsRef.current.delete(id)
@@ -482,12 +542,17 @@ export function useSendMessageStream(
     invalidate,
     markStreamRunCancelled,
     reconcileSchedulerTurn,
+    rejectSendBeforeAcknowledgement,
     refreshActiveCount,
     token,
   ])
 
   const finishStream = useCallback(
     (id: string, streamId?: string | null) => {
+      rejectSendBeforeAcknowledgement(
+        id,
+        new Error('Message stream ended before the user message was acknowledged'),
+      )
       streamsRef.current.delete(id)
       const resolvedStreamId = streamId ?? streamIdsRef.current.get(id)
       if (resolvedStreamId && groupId) {
@@ -516,18 +581,33 @@ export function useSendMessageStream(
       completePendingCancellation,
       groupId,
       invalidate,
+      rejectSendBeforeAcknowledgement,
       refreshActiveCount,
     ],
   )
 
   const send = useCallback(
-    (input: string | MessageSendInput) => {
-      if (!groupId || !token) return
-      if (pendingCancellationRef.current) {
-        setError('Cancellation is in progress')
-        return
+    (input: string | MessageSendInput): Promise<void> => {
+      if (!groupId || !token) {
+        const message = 'Authentication and a conversation are required to send a message'
+        setError(message)
+        return Promise.reject(new Error(message))
       }
-      const id = requestId()
+      if (pendingCancellationRef.current) {
+        const message = 'Cancellation is in progress'
+        setError(message)
+        return Promise.reject(new Error(message))
+      }
+      let id: string
+      try {
+        id = requestId()
+      } catch (error) {
+        const startupError = asError(error, 'Unable to start the message stream')
+        setError(startupError.message)
+        return Promise.reject(startupError)
+      }
+      const acknowledgement = createPendingSendAcknowledgement()
+      pendingSendAcknowledgementsRef.current.set(id, acknowledgement)
       streamProtocolByRequestRef.current.set(
         id,
         schedulerEnabled ? 'scheduler' : 'legacy',
@@ -537,11 +617,12 @@ export function useSendMessageStream(
       clearToolActivity(groupId)
       const message = typeof input === 'string' ? { content: input, attachments: [] } : input
 
-      const ctrl = openApiV2SseStream({
-        url: `/api/v2${conversationApiPath(scope, groupId)}/messages/stream`,
-        body: message,
-        token,
-        handlers: {
+      try {
+        const ctrl = openApiV2SseStream({
+          url: `/api/v2${conversationApiPath(scope, groupId)}/messages/stream`,
+          body: message,
+          token,
+          handlers: {
           onEvent: (event) => {
             const streamId = event.stream_id
             streamIdsRef.current.set(id, streamId)
@@ -562,6 +643,18 @@ export function useSendMessageStream(
                 window.setTimeout(() => clearToolActivity(groupId), 4_000)
               }
               return
+            }
+            if (
+              event.kind === 'user_message'
+              && userMessagePayloadSchema.safeParse(event.payload).success
+            ) {
+              acknowledgeSend(id)
+            }
+            if (event.kind === 'error') {
+              rejectSendBeforeAcknowledgement(
+                id,
+                new Error(messageFromPayload(event.payload, 'Stream failed')),
+              )
             }
             if (!acceptsStreamEvent(groupId, streamId)) return
             const agentDisplayName = (agentId: string | undefined, fallback?: string) => {
@@ -787,6 +880,7 @@ export function useSendMessageStream(
           },
           onError: (err) => {
             const message = err instanceof Error ? err.message : String(err)
+            rejectSendBeforeAcknowledgement(id, err)
             setError(message)
             const streamId = streamIdsRef.current.get(id)
             if (streamId) {
@@ -801,12 +895,21 @@ export function useSendMessageStream(
           onClose: () => {
             finishStream(id)
           },
-        },
-      })
-      streamsRef.current.set(id, ctrl)
-      refreshActiveCount()
+          },
+        })
+        streamsRef.current.set(id, ctrl)
+        refreshActiveCount()
+      } catch (error) {
+        const startupError = asError(error, 'Unable to start the message stream')
+        setError(startupError.message)
+        streamProtocolByRequestRef.current.delete(id)
+        schedulerTurnByRequestRef.current.delete(id)
+        rejectSendBeforeAcknowledgement(id, startupError)
+      }
+      return acknowledgement.promise
     },
     [
+      acknowledgeSend,
       addStreamAgentStart,
       acceptsStreamEvent,
       applySchedulerEvent,
@@ -836,6 +939,7 @@ export function useSendMessageStream(
       pushWarning,
       qc,
       refreshActiveCount,
+      rejectSendBeforeAcknowledgement,
     schedulerEnabled,
     scope,
       setActiveAgent,
