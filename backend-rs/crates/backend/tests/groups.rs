@@ -1,4 +1,6 @@
-use ag_swarmer_backend::api::{router_with_state_for_tests, AppState};
+use ag_swarmer_backend::api::{
+    router_with_state_for_tests, workspace_files::MAX_WORKSPACE_TEXT_BYTES, AppState,
+};
 use axum::{
     body::Body,
     http::{header, HeaderMap, Request, StatusCode},
@@ -321,6 +323,14 @@ fn workspace_file_url(group_id: &str, path: &str) -> String {
     format!("/api/v2/groups/{group_id}/workspace-files?path={path}")
 }
 
+fn workspace_file_text_url(group_id: &str, path: &str) -> String {
+    format!("/api/v2/groups/{group_id}/workspace-files/text?path={path}")
+}
+
+fn workspace_file_text_save_url(group_id: &str, path: &str) -> String {
+    format!("/api/v2/groups/{group_id}/workspace-files/text/save?path={path}")
+}
+
 fn workspace_git_url(group_id: &str, action: &str) -> String {
     format!("/api/v2/groups/{group_id}/workspace-git/{action}")
 }
@@ -379,7 +389,7 @@ fn git_status_file<'a>(status: &'a Value, path: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing git status row for {path}: {status}"))
 }
 
-fn workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Body>> {
+fn shared_workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Body>> {
     vec![
         authed(
             "GET",
@@ -392,6 +402,28 @@ fn workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Bod
             &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=missing.txt"),
             token,
         ),
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files/download?path=missing.txt"),
+            token,
+        ),
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "missing.txt"),
+            token,
+        ),
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "missing.txt"),
+            token,
+            json!({"content": "blocked", "version": "deadbeef"}),
+        ),
+    ]
+}
+
+fn workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Body>> {
+    let mut requests = shared_workspace_file_route_requests(group_id, token);
+    requests.extend([
         authed_multipart_file(
             &format!("/api/v2/groups/{group_id}/workspace-files/upload"),
             token,
@@ -399,11 +431,6 @@ fn workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Bod
             "blocked.txt",
             Some("text/plain"),
             b"blocked",
-        ),
-        authed(
-            "GET",
-            &format!("/api/v2/groups/{group_id}/workspace-files/download?path=missing.txt"),
-            token,
         ),
         authed_json(
             "PATCH",
@@ -416,7 +443,8 @@ fn workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Bod
             &format!("/api/v2/groups/{group_id}/workspace-files?path=missing.txt"),
             token,
         ),
-    ]
+    ]);
+    requests
 }
 
 async fn assert_workspace_file_route_errors(
@@ -430,6 +458,48 @@ async fn assert_workspace_file_route_errors(
         let (status, body) = send(app, request).await;
         assert_eq!(status, expected_status, "body: {body:?}");
         assert_eq!(body["error"]["code"], expected_code);
+    }
+}
+
+async fn assert_shared_workspace_file_route_errors(
+    app: &Router,
+    token: &str,
+    group_id: &str,
+    expected_status: StatusCode,
+    expected_code: &str,
+) {
+    for request in shared_workspace_file_route_requests(group_id, token) {
+        let (status, body) = send(app, request).await;
+        assert_eq!(status, expected_status, "body: {body:?}");
+        assert_eq!(body["error"]["code"], expected_code);
+    }
+}
+
+fn assert_json_omits_path(value: &Value, path: &Path) {
+    let raw = path.to_string_lossy().into_owned();
+    let normalized = raw.replace('\\', "/");
+    match value {
+        Value::String(text) => {
+            assert!(
+                !text.contains(&raw),
+                "response leaked path {raw:?}: {value}"
+            );
+            assert!(
+                !text.contains(&normalized),
+                "response leaked normalized path {normalized:?}: {value}"
+            );
+        }
+        Value::Array(values) => {
+            for value in values {
+                assert_json_omits_path(value, path);
+            }
+        }
+        Value::Object(fields) => {
+            for value in fields.values() {
+                assert_json_omits_path(value, path);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2133,6 +2203,313 @@ async fn workspace_files_preview_handles_text_truncation_and_binary() {
 }
 
 #[tokio::test]
+async fn workspace_file_text_read_and_save_round_trip_utf8_with_new_version() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-file-text-round-trip@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let text_path = root.path().join("notes.md");
+    let original = "你好，workspace 👋\nsecond line\n";
+    std::fs::write(&text_path, original).unwrap();
+
+    let (status, read) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "notes.md"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {read:?}");
+    assert_eq!(read["path"], "notes.md");
+    assert_eq!(read["name"], "notes.md");
+    assert_eq!(read["mime_type"], "text/plain");
+    assert_eq!(read["size"], original.len());
+    assert_eq!(read["content"], original);
+    assert_eq!(read["is_text"], true);
+    assert_eq!(read["truncated"], false);
+    assert_eq!(read["message"], Value::Null);
+    let first_version = read["version"].as_str().unwrap().to_owned();
+    assert_eq!(first_version.len(), 64);
+    assert!(first_version.chars().all(|ch| ch.is_ascii_hexdigit()));
+
+    let updated = "保存后的 UTF-8 内容 ✅\n";
+    let (status, saved) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "notes.md"),
+            &token,
+            json!({"content": updated, "version": first_version.clone()}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {saved:?}");
+    assert_eq!(saved["content"], updated);
+    assert_eq!(saved["size"], updated.len());
+    assert_eq!(saved["is_text"], true);
+    assert_eq!(saved["truncated"], false);
+    let saved_version = saved["version"].as_str().unwrap();
+    assert_eq!(saved_version.len(), 64);
+    assert_ne!(saved_version, first_version);
+    assert_eq!(std::fs::read_to_string(&text_path).unwrap(), updated);
+
+    let (status, reread) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "notes.md"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reread["content"], updated);
+    assert_eq!(reread["version"], saved["version"]);
+}
+
+#[tokio::test]
+async fn workspace_file_text_stale_save_preserves_external_content_without_path_leak() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-file-text-conflict@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let text_path = root.path().join("concurrent.txt");
+    std::fs::write(&text_path, "initial").unwrap();
+
+    let (status, read) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "concurrent.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let stale_version = read["version"].as_str().unwrap().to_owned();
+
+    let external = "external editor won";
+    std::fs::write(&text_path, external).unwrap();
+    let canonical_root = root.path().canonicalize().unwrap();
+    let canonical_file = text_path.canonicalize().unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "concurrent.txt"),
+            &token,
+            json!({"content": "stale API write", "version": stale_version}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "conflict");
+    assert_eq!(
+        body["error"]["message"],
+        "workspace file changed since it was read"
+    );
+    assert_eq!(std::fs::read_to_string(&text_path).unwrap(), external);
+    assert_json_omits_path(&body, &canonical_root);
+    assert_json_omits_path(&body, &canonical_file);
+}
+
+#[tokio::test]
+async fn workspace_file_text_rejects_truncated_binary_directory_deleted_and_oversized_writes() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-file-text-reject@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let large_path = root.path().join("large.txt");
+    let large_bytes = vec![b'a'; MAX_WORKSPACE_TEXT_BYTES + 1];
+    std::fs::write(&large_path, &large_bytes).unwrap();
+    let (status, large) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "large.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {large:?}");
+    assert_eq!(large["is_text"], true);
+    assert_eq!(large["truncated"], true);
+    assert_eq!(
+        large["content"].as_str().unwrap().len(),
+        MAX_WORKSPACE_TEXT_BYTES
+    );
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "large.txt"),
+            &token,
+            json!({"content": "must not replace", "version": large["version"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(std::fs::read(&large_path).unwrap(), large_bytes);
+
+    let binary_path = root.path().join("binary.bin");
+    let binary_bytes = vec![0xff, 0, 1, 2, 3];
+    std::fs::write(&binary_path, &binary_bytes).unwrap();
+    let (status, binary) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "binary.bin"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(binary["is_text"], false);
+    assert_eq!(binary["content"], Value::Null);
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "binary.bin"),
+            &token,
+            json!({"content": "text", "version": binary["version"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(std::fs::read(&binary_path).unwrap(), binary_bytes);
+
+    let directory_path = root.path().join("folder");
+    std::fs::create_dir(&directory_path).unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "folder"),
+            &token,
+            json!({"content": "text", "version": "0".repeat(64)}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert!(directory_path.is_dir());
+
+    let deleted_path = root.path().join("deleted.txt");
+    std::fs::write(&deleted_path, "delete after read").unwrap();
+    let (status, deleted) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "deleted.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    std::fs::remove_file(&deleted_path).unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "deleted.txt"),
+            &token,
+            json!({"content": "must not recreate", "version": deleted["version"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "not_found");
+    assert!(!deleted_path.exists());
+
+    let stable_path = root.path().join("stable.txt");
+    std::fs::write(&stable_path, "stable").unwrap();
+    let (status, stable) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "stable.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let oversized = "x".repeat(MAX_WORKSPACE_TEXT_BYTES + 1);
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "stable.txt"),
+            &token,
+            json!({"content": oversized, "version": stable["version"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(std::fs::read_to_string(&stable_path).unwrap(), "stable");
+}
+
+#[tokio::test]
+async fn workspace_file_text_save_rejects_symlink_escape_after_read() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-file-text-symlink-save@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let inside_path = root.path().join("swap.txt");
+    std::fs::write(&inside_path, "same bytes").unwrap();
+    let (status, read) = send(
+        &app,
+        authed(
+            "GET",
+            &workspace_file_text_url(group_id, "swap.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let outside = tempfile::tempdir().unwrap();
+    let outside_path = outside.path().join("outside.txt");
+    std::fs::write(&outside_path, "same bytes").unwrap();
+    std::fs::remove_file(&inside_path).unwrap();
+    if create_file_symlink(&outside_path, &inside_path).is_err() {
+        return;
+    }
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &workspace_file_text_save_url(group_id, "swap.txt"),
+            &token,
+            json!({"content": "escaped write", "version": read["version"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(
+        std::fs::read_to_string(&outside_path).unwrap(),
+        "same bytes"
+    );
+    assert!(std::fs::symlink_metadata(&inside_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[tokio::test]
 async fn workspace_files_upload_writes_uploads_and_rejects_bad_inputs() {
     let app = app().await;
     let token = register_and_login(&app, "workspace-files-upload@example.com").await;
@@ -2335,7 +2712,7 @@ async fn attachment_message_persists_workspace_image_metadata() {
 async fn attachment_message_rejects_unsafe_or_duplicate_paths_without_insertion() {
     let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "attachment-message-reject@example.com").await;
-    let (_root, workspace) = create_local_workspace(&app, &token, "Attachment Messages").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Attachment Messages").await;
     let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
     let group_id = group["id"].as_str().unwrap();
 
@@ -2355,6 +2732,9 @@ async fn attachment_message_rejects_unsafe_or_duplicate_paths_without_insertion(
 
     for attachments in [
         json!([{"path":"../secret.txt"}]),
+        json!([{"path":"/absolute.txt"}]),
+        json!([{"path":r"C:\secret.txt"}]),
+        json!([{"path":r"\\server\share.txt"}]),
         json!([{"path":"uploads/diagram.png"}, {"path":"uploads/diagram.png"}]),
     ] {
         let (status, body) = send(
@@ -2370,6 +2750,33 @@ async fn attachment_message_rejects_unsafe_or_duplicate_paths_without_insertion(
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["code"], "invalid_input");
 
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+            .bind(group_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+    if create_dir_symlink(outside.path(), &root.path().join("link")).is_ok() {
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "POST",
+                &format!("/api/v2/groups/{group_id}/messages/stream"),
+                &token,
+                json!({"content":"", "attachments":[{"path":"link/secret.txt"}]}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+        assert_eq!(body["error"]["code"], "invalid_input");
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("secret.txt")).unwrap(),
+            "secret"
+        );
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
             .bind(group_id)
             .fetch_one(state.db.pool())
@@ -3425,33 +3832,63 @@ async fn workspace_files_rejects_explicit_dot_path() {
     let (_root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
     let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
     let group_id = group["id"].as_str().unwrap();
-    let unsafe_path_message =
+    let shared_path_message =
+        "workspace file paths must be relative and stay inside the conversation workspace";
+    let group_path_message =
         "workspace file paths must be relative and stay inside the group workspace";
 
-    for request in [
-        authed("GET", &workspace_file_url(group_id, "."), &token),
-        authed(
-            "GET",
-            &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=."),
-            &token,
+    for (request, expected_message) in [
+        (
+            authed("GET", &workspace_file_url(group_id, "."), &token),
+            shared_path_message,
         ),
-        authed(
-            "GET",
-            &format!("/api/v2/groups/{group_id}/workspace-files/download?path=."),
-            &token,
+        (
+            authed(
+                "GET",
+                &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=."),
+                &token,
+            ),
+            shared_path_message,
         ),
-        authed_json(
-            "PATCH",
-            &format!("/api/v2/groups/{group_id}/workspace-files/rename?path=."),
-            &token,
-            json!({"new_path": "renamed.txt"}),
+        (
+            authed(
+                "GET",
+                &format!("/api/v2/groups/{group_id}/workspace-files/download?path=."),
+                &token,
+            ),
+            shared_path_message,
         ),
-        authed("DELETE", &workspace_file_url(group_id, "."), &token),
+        (
+            authed("GET", &workspace_file_text_url(group_id, "."), &token),
+            shared_path_message,
+        ),
+        (
+            authed_json(
+                "PATCH",
+                &workspace_file_text_save_url(group_id, "."),
+                &token,
+                json!({"content": "blocked", "version": "0".repeat(64)}),
+            ),
+            shared_path_message,
+        ),
+        (
+            authed_json(
+                "PATCH",
+                &format!("/api/v2/groups/{group_id}/workspace-files/rename?path=."),
+                &token,
+                json!({"new_path": "renamed.txt"}),
+            ),
+            group_path_message,
+        ),
+        (
+            authed("DELETE", &workspace_file_url(group_id, "."), &token),
+            group_path_message,
+        ),
     ] {
         let (status, body) = send(&app, request).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["code"], "invalid_input");
-        assert_eq!(body["error"]["message"], unsafe_path_message);
+        assert_eq!(body["error"]["message"], expected_message);
     }
 }
 
@@ -3472,29 +3909,67 @@ async fn workspace_files_reject_path_traversal_and_symlink_escapes() {
         "dir//file.txt",
         "dir/./file.txt",
     ] {
-        let (status, body) = send(
-            &app,
+        for request in [
             authed("GET", &workspace_file_url(group_id, path), &token),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "path {path:?}");
-        assert_eq!(body["error"]["code"], "invalid_input");
+            authed(
+                "GET",
+                &format!("/api/v2/groups/{group_id}/workspace-files/preview?path={path}"),
+                &token,
+            ),
+            authed(
+                "GET",
+                &format!("/api/v2/groups/{group_id}/workspace-files/download?path={path}"),
+                &token,
+            ),
+            authed("GET", &workspace_file_text_url(group_id, path), &token),
+            authed_json(
+                "PATCH",
+                &workspace_file_text_save_url(group_id, path),
+                &token,
+                json!({"content": "blocked", "version": "0".repeat(64)}),
+            ),
+        ] {
+            let (status, body) = send(&app, request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "path {path:?}: {body:?}");
+            assert_eq!(body["error"]["code"], "invalid_input");
+        }
     }
 
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
     if create_dir_symlink(outside.path(), &root.path().join("link")).is_ok() {
-        let (status, body) = send(
-            &app,
+        for request in [
+            authed("GET", &workspace_file_url(group_id, "link"), &token),
             authed(
                 "GET",
                 &format!("/api/v2/groups/{group_id}/workspace-files/preview?path=link/secret.txt"),
                 &token,
             ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"]["code"], "invalid_input");
+            authed(
+                "GET",
+                &format!("/api/v2/groups/{group_id}/workspace-files/download?path=link/secret.txt"),
+                &token,
+            ),
+            authed(
+                "GET",
+                &workspace_file_text_url(group_id, "link/secret.txt"),
+                &token,
+            ),
+            authed_json(
+                "PATCH",
+                &workspace_file_text_save_url(group_id, "link/secret.txt"),
+                &token,
+                json!({"content": "blocked", "version": "0".repeat(64)}),
+            ),
+        ] {
+            let (status, body) = send(&app, request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+            assert_eq!(body["error"]["code"], "invalid_input");
+        }
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("secret.txt")).unwrap(),
+            "secret"
+        );
     }
 
     let outside_uploads = tempfile::tempdir().unwrap();
@@ -4398,6 +4873,15 @@ async fn direct_container_is_isolated_from_group_endpoints() {
         assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
         assert_eq!(body["error"]["code"], "not_found");
     }
+
+    assert_shared_workspace_file_route_errors(
+        &app,
+        &token,
+        &direct_id,
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
 }
 
 #[tokio::test]

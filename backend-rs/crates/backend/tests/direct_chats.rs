@@ -1,10 +1,11 @@
 use ag_swarmer_backend::api::{router_with_state_for_tests, AppState};
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
     Router,
 };
 use serde_json::{json, Value};
+use std::path::Path;
 use tower::ServiceExt;
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -19,6 +20,16 @@ async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
         serde_json::from_slice(&bytes).unwrap()
     };
     (status, value)
+}
+
+async fn send_bytes(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, bytes.to_vec())
 }
 
 fn request(method: &str, uri: &str, token: Option<&str>, body: Value) -> Request<Body> {
@@ -102,6 +113,30 @@ async fn create_workspace(app: &Router, token: &str) -> String {
     body["id"].as_str().unwrap().to_string()
 }
 
+async fn create_local_workspace(
+    app: &Router,
+    token: &str,
+    name: &str,
+) -> (tempfile::TempDir, String) {
+    let root = tempfile::tempdir().unwrap();
+    let (status, body) = send(
+        app,
+        request(
+            "POST",
+            "/api/v2/workspaces",
+            Some(token),
+            json!({
+                "name": name,
+                "backend_type": "local",
+                "local_path": root.path().to_string_lossy()
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body:?}");
+    (root, body["id"].as_str().unwrap().to_string())
+}
+
 async fn create_agent(app: &Router, token: &str, workspace_id: &str, name: &str) -> String {
     let (status, body) = send(
         app,
@@ -130,6 +165,413 @@ async fn create_chat(app: &Router, token: &str, agent_id: &str) -> Value {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body:?}");
     body
+}
+
+fn direct_workspace_file_url(chat_id: &str, suffix: &str, path: &str) -> String {
+    format!("/api/v2/direct-chats/{chat_id}/workspace-files{suffix}?path={path}")
+}
+
+fn direct_workspace_file_route_requests(chat_id: &str, token: &str) -> Vec<Request<Body>> {
+    vec![
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/root"),
+            token,
+        ),
+        authed(
+            "GET",
+            &direct_workspace_file_url(chat_id, "", "fixture.txt"),
+            token,
+        ),
+        authed(
+            "GET",
+            &direct_workspace_file_url(chat_id, "/preview", "fixture.txt"),
+            token,
+        ),
+        authed(
+            "GET",
+            &direct_workspace_file_url(chat_id, "/download", "fixture.txt"),
+            token,
+        ),
+        authed(
+            "GET",
+            &direct_workspace_file_url(chat_id, "/text", "fixture.txt"),
+            token,
+        ),
+        request(
+            "PATCH",
+            &direct_workspace_file_url(chat_id, "/text/save", "fixture.txt"),
+            Some(token),
+            json!({"content": "blocked", "version": "deadbeef"}),
+        ),
+    ]
+}
+
+async fn assert_direct_workspace_file_route_errors(
+    app: &Router,
+    token: &str,
+    chat_id: &str,
+    expected_status: StatusCode,
+    expected_code: &str,
+) {
+    for request in direct_workspace_file_route_requests(chat_id, token) {
+        let (status, body) = send(app, request).await;
+        assert_eq!(status, expected_status, "body: {body:?}");
+        assert_eq!(body["error"]["code"], expected_code);
+    }
+}
+
+#[cfg(unix)]
+fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+#[tokio::test]
+async fn direct_workspace_files_list_stream_and_text_save_round_trip() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-workspace-files@example.com").await;
+    let (root, workspace_id) = create_local_workspace(&app, &token, "Direct Workspace").await;
+    std::fs::create_dir(root.path().join("docs")).unwrap();
+    std::fs::write(root.path().join(".hidden"), b"hidden").unwrap();
+    std::fs::write(root.path().join("photo.png"), b"\x89PNG\r\n").unwrap();
+    std::fs::write(root.path().join("manual.pdf"), b"%PDF-1.4\n").unwrap();
+    std::fs::write(root.path().join("page.html"), b"<html>preview</html>").unwrap();
+    let note_path = root.path().join("note.txt");
+    let original = "direct UTF-8 文本 👋\n";
+    std::fs::write(&note_path, original).unwrap();
+    let agent_id = create_agent(&app, &token, &workspace_id, "Local Agent").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let (status, workspace_root) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/root"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        workspace_root["root"],
+        root.path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    );
+
+    let (status, list) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {list:?}");
+    let rows = list.as_array().unwrap();
+    for expected in ["docs", "manual.pdf", "note.txt", "page.html", "photo.png"] {
+        assert!(
+            rows.iter().any(|row| row["name"] == expected),
+            "missing {expected}: {rows:?}"
+        );
+    }
+    assert!(!rows.iter().any(|row| row["name"] == ".hidden"));
+    assert_eq!(
+        rows.iter().find(|row| row["name"] == "docs").unwrap()["is_dir"],
+        true
+    );
+
+    let streamed: [(&str, &str, &[u8]); 3] = [
+        ("photo.png", "image/png", b"\x89PNG\r\n"),
+        ("manual.pdf", "application/pdf", b"%PDF-1.4\n"),
+        ("page.html", "text/html", b"<html>preview</html>"),
+    ];
+    for (path, mime_type, expected_bytes) in streamed {
+        let (status, headers, bytes) = send_bytes(
+            &app,
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/download", path),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "path {path}");
+        assert_eq!(bytes, expected_bytes);
+        assert_eq!(
+            headers.get("content-type").unwrap().to_str().unwrap(),
+            mime_type
+        );
+        assert!(headers
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains(&format!("filename=\"{path}\"")));
+    }
+
+    let (status, read) = send(
+        &app,
+        authed(
+            "GET",
+            &direct_workspace_file_url(chat_id, "/text", "note.txt"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {read:?}");
+    assert_eq!(read["content"], original);
+    assert_eq!(read["is_text"], true);
+    assert_eq!(read["truncated"], false);
+    let first_version = read["version"].as_str().unwrap().to_owned();
+
+    let updated = "direct save 已完成 ✅\n";
+    let (status, saved) = send(
+        &app,
+        request(
+            "PATCH",
+            &direct_workspace_file_url(chat_id, "/text/save", "note.txt"),
+            Some(&token),
+            json!({"content": updated, "version": first_version.clone()}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {saved:?}");
+    assert_eq!(saved["content"], updated);
+    assert_ne!(saved["version"], first_version);
+    assert_eq!(std::fs::read_to_string(&note_path).unwrap(), updated);
+}
+
+#[tokio::test]
+async fn direct_attachment_message_persists_local_workspace_metadata() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-attachment-message@example.com").await;
+    let (root, workspace_id) = create_local_workspace(&app, &token, "Direct Attachments").await;
+    let attachment_path = root.path().join("diagram.png");
+    std::fs::write(&attachment_path, b"PNG!").unwrap();
+    let agent_id = create_agent(&app, &token, &workspace_id, "Attachment Agent").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            Some(&token),
+            json!({"content": "", "attachments": [{"path": "diagram.png"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body:?}");
+    let attachments = &body["user_message"]["attachments"];
+    assert_eq!(attachments[0]["path"], "diagram.png");
+    assert_eq!(attachments[0]["name"], "diagram.png");
+    assert_eq!(attachments[0]["mime_type"], "image/png");
+    assert_eq!(attachments[0]["size"], 4);
+    assert_eq!(attachments[0]["kind"], "image");
+
+    let user_message_id = body["user_message"]["id"].as_str().unwrap();
+    let event_payload: String = sqlx::query_scalar(
+        "SELECT se.payload_json FROM stream_events se \
+         JOIN messages m ON m.thread_id = se.thread_id \
+         WHERE se.kind = 'user_message' \
+           AND m.group_id = ? \
+           AND m.id = ? \
+           AND json_extract(se.payload_json, '$.message_id') = ?",
+    )
+    .bind(chat_id)
+    .bind(user_message_id)
+    .bind(user_message_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let event_payload: Value = serde_json::from_str(&event_payload).unwrap();
+    assert_eq!(event_payload["attachments"], *attachments);
+
+    std::fs::remove_file(&attachment_path).unwrap();
+    let (status, messages) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(messages[0]["attachments"], *attachments);
+}
+
+#[tokio::test]
+async fn direct_workspace_files_cloud_and_unbound_workspaces_are_rejected() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-workspace-errors@example.com").await;
+
+    let cloud_workspace_id = create_workspace(&app, &token).await;
+    let cloud_agent_id = create_agent(&app, &token, &cloud_workspace_id, "Cloud Agent").await;
+    let cloud_chat = create_chat(&app, &token, &cloud_agent_id).await;
+    let cloud_chat_id = cloud_chat["id"].as_str().unwrap();
+    assert_direct_workspace_file_route_errors(
+        &app,
+        &token,
+        cloud_chat_id,
+        StatusCode::BAD_REQUEST,
+        "invalid_input",
+    )
+    .await;
+
+    let (_root, local_workspace_id) =
+        create_local_workspace(&app, &token, "Unbound Direct Workspace").await;
+    let local_agent_id = create_agent(&app, &token, &local_workspace_id, "Unbound Agent").await;
+    let local_chat = create_chat(&app, &token, &local_agent_id).await;
+    let local_chat_id = local_chat["id"].as_str().unwrap();
+    sqlx::query("UPDATE groups SET workspace_id = NULL WHERE id = ?")
+        .bind(local_chat_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    assert_direct_workspace_file_route_errors(
+        &app,
+        &token,
+        local_chat_id,
+        StatusCode::BAD_REQUEST,
+        "invalid_input",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn direct_workspace_files_and_attachments_reject_unsafe_paths_and_symlink_escapes() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-workspace-path-safety@example.com").await;
+    let (root, workspace_id) = create_local_workspace(&app, &token, "Direct Path Safety").await;
+    let agent_id = create_agent(&app, &token, &workspace_id, "Path Agent").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    for path in [
+        "../secret.txt",
+        "/absolute.txt",
+        "C:%5Csecret.txt",
+        "%5C%5Cserver%5Cshare.txt",
+    ] {
+        for request in [
+            authed("GET", &direct_workspace_file_url(chat_id, "", path), &token),
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/preview", path),
+                &token,
+            ),
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/download", path),
+                &token,
+            ),
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/text", path),
+                &token,
+            ),
+            request(
+                "PATCH",
+                &direct_workspace_file_url(chat_id, "/text/save", path),
+                Some(&token),
+                json!({"content": "blocked", "version": "0".repeat(64)}),
+            ),
+        ] {
+            let (status, body) = send(&app, request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "path {path:?}: {body:?}");
+            assert_eq!(body["error"]["code"], "invalid_input");
+        }
+    }
+
+    for path in [
+        "../secret.txt",
+        "/absolute.txt",
+        r"C:\secret.txt",
+        r"\\server\share.txt",
+    ] {
+        let (status, body) = send(
+            &app,
+            request(
+                "POST",
+                &format!("/api/v2/direct-chats/{chat_id}/messages"),
+                Some(&token),
+                json!({"content": "", "attachments": [{"path": path}]}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "path {path:?}: {body:?}");
+        assert_eq!(body["error"]["code"], "invalid_input");
+    }
+
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = outside.path().join("secret.txt");
+    std::fs::write(&outside_file, "secret").unwrap();
+    if create_dir_symlink(outside.path(), &root.path().join("link")).is_ok() {
+        for request in [
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "", "link"),
+                &token,
+            ),
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/preview", "link/secret.txt"),
+                &token,
+            ),
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/download", "link/secret.txt"),
+                &token,
+            ),
+            authed(
+                "GET",
+                &direct_workspace_file_url(chat_id, "/text", "link/secret.txt"),
+                &token,
+            ),
+            request(
+                "PATCH",
+                &direct_workspace_file_url(chat_id, "/text/save", "link/secret.txt"),
+                Some(&token),
+                json!({"content": "blocked", "version": "0".repeat(64)}),
+            ),
+        ] {
+            let (status, body) = send(&app, request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+            assert_eq!(body["error"]["code"], "invalid_input");
+        }
+        let (status, body) = send(
+            &app,
+            request(
+                "POST",
+                &format!("/api/v2/direct-chats/{chat_id}/messages"),
+                Some(&token),
+                json!({"content": "", "attachments": [{"path": "link/secret.txt"}]}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+        assert_eq!(body["error"]["code"], "invalid_input");
+        assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "secret");
+    }
+
+    let message_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+        .bind(chat_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(message_count, 0);
 }
 
 #[tokio::test]
@@ -199,6 +641,15 @@ async fn direct_chat_lifecycle_enforces_agent_state_ownership_and_kind() {
     let chat = create_chat(&app, &token_a, &agent_a).await;
     let chat_id = chat["id"].as_str().unwrap();
     let token_b = register(&app, "direct-other@example.com").await;
+
+    assert_direct_workspace_file_route_errors(
+        &app,
+        &token_b,
+        chat_id,
+        StatusCode::FORBIDDEN,
+        "permission_denied",
+    )
+    .await;
 
     for call in [
         authed("GET", &format!("/api/v2/direct-chats/{chat_id}"), &token_b),
@@ -275,6 +726,15 @@ async fn direct_chat_lifecycle_enforces_agent_state_ownership_and_kind() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    assert_direct_workspace_file_route_errors(
+        &app,
+        &token_a,
+        group_id,
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
 }
 
 #[tokio::test]
