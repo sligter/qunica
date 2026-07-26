@@ -1013,3 +1013,68 @@ async fn direct_stream_generates_first_title_and_replays_conversation_update() {
     .unwrap();
     assert!(replay_text.contains("conversation_updated"));
 }
+
+#[tokio::test]
+async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-workspace-mutations@example.com").await;
+    let (root, workspace_id) =
+        create_local_workspace(&app, &token, "Direct Mutations Workspace").await;
+    std::fs::write(root.path().join("before.txt"), b"before").unwrap();
+    std::fs::create_dir(root.path().join("empty")).unwrap();
+    let agent_id = create_agent(&app, &token, &workspace_id, "Local Agent").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let (status, renamed) = send(
+        &app,
+        request(
+            "PATCH",
+            &format!("/api/v2/groups/{chat_id}/workspace-files/rename?path=before.txt"),
+            Some(&token),
+            json!({"new_path": "after.txt"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {renamed:?}");
+    assert_eq!(renamed["path"], "after.txt");
+    assert!(root.path().join("after.txt").is_file());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{chat_id}/workspace-files?path=empty"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert!(!root.path().join("empty").exists());
+
+    let (status, initialized) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/groups/{chat_id}/workspace-git/init"),
+            Some(&token),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {initialized:?}");
+    assert_eq!(initialized["available"], true);
+
+    let foreign_token = register(&app, "direct-workspace-foreign@example.com").await;
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{chat_id}/workspace-git/status"),
+            &foreign_token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
+    assert_eq!(body["error"]["code"], "permission_denied");
+}
