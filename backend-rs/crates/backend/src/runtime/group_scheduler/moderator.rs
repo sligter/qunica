@@ -56,6 +56,22 @@ pub enum ModeratorFailure {
     UnexpectedDelta,
 }
 
+impl ModeratorFailure {
+    /// Stable wire name reported alongside a `moderator_fallback` event so a
+    /// deleted provider or a misbehaving model is distinguishable from a plain
+    /// call-budget fallback.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingConfiguration => "missing_configuration",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Provider => "provider_error",
+            Self::Timeout => "timeout",
+            Self::InvalidResponse => "invalid_response",
+            Self::UnexpectedDelta => "unexpected_delta",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeratorAttempt {
     pub result: Result<ModeratorSelection, ModeratorFailure>,

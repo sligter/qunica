@@ -60,9 +60,9 @@ use crate::runtime::group_scheduler::{
     mentions::{scan_visible_mentions, MentionTarget},
     next_decision, select_with_moderator, validate_topology, ActionKind, ActiveTurn,
     ActiveTurnRegistry, DispatchOutput, DispatchStatus, FinishDispatch, ModeratorAttempt,
-    ModeratorCandidate, ModeratorConfig, ModeratorMessage, ModeratorRequest, NewDispatch, NewTurn,
-    SchedulerAction, SchedulerCandidate, SchedulerDecision, SchedulerDispatch, SchedulerStore,
-    SelectionReason, TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
+    ModeratorCandidate, ModeratorConfig, ModeratorFailure, ModeratorMessage, ModeratorRequest,
+    NewDispatch, NewTurn, SchedulerDecision, SchedulerDispatch, SchedulerStore, SelectionReason,
+    TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
 };
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{
@@ -649,10 +649,10 @@ async fn run_scheduled_turn(
         Ok(candidates) => candidates,
         Err(error) => return ctx.fail(&error.to_string()).await,
     };
-    let topology_snapshot = match snapshot_topology(group, &candidates) {
-        Ok(snapshot) => snapshot,
-        Err(error) => return ctx.fail(&error.to_string()).await,
-    };
+    let ResolvedTopology {
+        snapshot: topology_snapshot,
+        degraded_reason: topology_degraded_reason,
+    } = resolve_topology(group, &candidates);
     let active_agent_count = candidates.len();
     let explicit_mentions = scan_mentions(&req.content, &candidates);
     let user_mentioned_agent_ids = explicit_mentions
@@ -686,19 +686,11 @@ async fn run_scheduled_turn(
         "max_total_tokens": limits.max_total_tokens,
         "moderator_enabled": group.moderator_enabled,
     });
-    let superseded_turn = match store.supersede_active_turn_for_thread(&ctx.thread_id).await {
-        Ok(turn) => turn,
-        Err(error) => return ctx.fail(&error.to_string()).await,
-    };
-    if let Some(superseded_turn) = superseded_turn {
-        services
-            .active_turns
-            .cancel(&ctx.thread_id, &superseded_turn.id)
-            .await;
-    }
     let turn_id = Uuid::new_v4().to_string();
-    if let Err(error) = store
-        .create_turn(NewTurn {
+    // Superseding and creating share one transaction so two concurrent sends
+    // cannot both see an idle thread and race on the active-turn index.
+    let superseded_turn = match store
+        .supersede_and_create_turn(NewTurn {
             id: turn_id.clone(),
             thread_id: ctx.thread_id.clone(),
             group_id: group.id.clone(),
@@ -712,7 +704,14 @@ async fn run_scheduled_turn(
         })
         .await
     {
-        return ctx.fail(&error.to_string()).await;
+        Ok((superseded, _created)) => superseded,
+        Err(error) => return ctx.fail(&error.to_string()).await,
+    };
+    if let Some(superseded_turn) = superseded_turn {
+        services
+            .active_turns
+            .cancel(&ctx.thread_id, &superseded_turn.id)
+            .await;
     }
     let active_turn = services
         .active_turns
@@ -745,6 +744,27 @@ async fn run_scheduled_turn(
             }
         };
     }
+    if let Some(reason) = topology_degraded_reason {
+        tracing::warn!(turn_id, group_id = %group.id, reason = %reason, "group topology degraded");
+        if let Err(error) = ctx
+            .emit_durable_event(
+                StreamEventKind::Warning,
+                json!({
+                    "turn_id": turn_id,
+                    "message": reason,
+                    "code": "topology_degraded",
+                }),
+            )
+            .await
+        {
+            return match error {
+                StepErr::Cancelled => cancel_scheduled_turn(ctx, &store, &turn_id).await,
+                StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                    fail_scheduled_persistence(ctx, &store, &turn_id).await
+                }
+            };
+        }
+    }
     let mut scheduler_runtime = ScheduledTurnRuntime {
         store: store.clone(),
         turn_id: turn_id.clone(),
@@ -763,7 +783,13 @@ async fn run_scheduled_turn(
     let mut previous_speaker: Option<String> = None;
     let mut had_visible = false;
     let mut pending_mentions = Vec::<PendingMention>::new();
+    // Agent-to-agent `@mention` follow-ups this turn has already run, capped by
+    // the group's `agent_free_mention_max_dispatches`.
+    let mut agent_mention_dispatches: i64 = 0;
     loop {
+        if agent_mention_dispatches >= group.agent_free_mention_max_dispatches {
+            pending_mentions.clear();
+        }
         while pending_mentions.first().is_some_and(|pending| {
             scheduler_runtime
                 .budget
@@ -780,38 +806,31 @@ async fn run_scheduled_turn(
                     .initial_round_claims
                     .contains(&agent.agent_id)
             })
-            .map(|agent| SchedulerCandidate {
-                agent_id: agent.agent_id.clone(),
-                eligible: true,
-            })
+            .map(|agent| agent.agent_id.clone())
             .collect::<Vec<_>>();
-        let mention_action = pending_mentions
+        let agent_mentions = pending_mentions
             .first()
-            .map(|pending| SchedulerAction::Speak {
-                mentioned_agent_ids: vec![pending.target_agent_id.clone()],
-                content: String::new(),
-            });
+            .map(|pending| vec![pending.target_agent_id.clone()])
+            .unwrap_or_default();
         let decision_hop = pending_mentions.first().map_or(0, |pending| pending.hop);
         let remaining_user_mentions = user_mentioned_agent_ids
             .iter()
-            .filter(|agent_id| {
-                scheduler_candidates
-                    .iter()
-                    .any(|candidate| candidate.agent_id == agent_id.as_str())
-            })
+            .filter(|agent_id| scheduler_candidates.contains(agent_id))
             .cloned()
             .collect::<Vec<_>>();
         let decision = next_decision(
             &scheduler_runtime.budget,
             previous_speaker.as_deref(),
             &remaining_user_mentions,
-            mention_action.as_ref(),
+            &agent_mentions,
             &scheduler_candidates,
             decision_hop,
             group.moderator_enabled,
         );
         let mut preselected_agent = None;
         let mut moderator_consumes_pending = false;
+        // Why the moderator could not pick, when a fallback is reported.
+        let mut moderator_failure: Option<&'static str> = None;
         let requires_moderator_resolution =
             matches!(&decision, SchedulerDecision::RequestModerator)
                 || matches!(
@@ -902,7 +921,21 @@ async fn run_scheduled_turn(
                     if cancellation_requested(ctx) {
                         return cancel_scheduled_turn(ctx, &store, &turn_id).await;
                     }
-                    selected_agent_id = attempt.result.ok().map(|selection| selection.agent_id);
+                    match attempt.result {
+                        Ok(selection) => selected_agent_id = Some(selection.agent_id),
+                        Err(failure) => {
+                            tracing::warn!(
+                                turn_id,
+                                failure = failure.as_str(),
+                                "moderator selection failed; falling back"
+                            );
+                            moderator_failure = Some(failure.as_str());
+                        }
+                    }
+                } else {
+                    // The API requires both when the moderator is enabled, so
+                    // this means the provider was deleted after configuration.
+                    moderator_failure = Some(ModeratorFailure::MissingConfiguration.as_str());
                 }
             }
 
@@ -1069,6 +1102,7 @@ async fn run_scheduled_turn(
             ) {
                 continue;
             }
+            agent_mention_dispatches += 1;
         }
         let dispatch_id = Uuid::new_v4().to_string();
         if let Err(_error) = store
@@ -1128,6 +1162,9 @@ async fn run_scheduled_turn(
                         "dispatch_id": dispatch_id,
                         "target_agent_id": agent.agent_id,
                         "reason": SelectionReason::ModeratorFallback.as_str(),
+                        // `null` means the moderator was never asked — usually
+                        // because its call budget is spent.
+                        "moderator_failure": moderator_failure,
                     }),
                 )
                 .await
@@ -1421,7 +1458,9 @@ async fn run_scheduled_turn(
                     "assistant",
                     &content,
                 );
-                if group.agent_mention_policy == "bounded_schedule" {
+                if group.agent_mention_policy == "bounded_schedule"
+                    && group.allow_agent_free_mention
+                {
                     let targets = mention_targets
                         .iter()
                         .map(|(agent_id, display_name)| MentionTarget {
@@ -1883,48 +1922,109 @@ async fn fail_scheduled_persistence(
     ctx.fail("scheduler persistence failed").await
 }
 
-fn snapshot_topology(
-    group: &GroupRuntimeConfig,
-    candidates: &[Candidate],
-) -> anyhow::Result<TopologySnapshot> {
-    let all = || {
+/// The topology a turn will actually run under, plus why it differs from the
+/// group's configured mode.
+struct ResolvedTopology {
+    snapshot: TopologySnapshot,
+    /// Set when the configured mode could not be honoured for this turn.
+    degraded_reason: Option<String>,
+}
+
+/// Build the topology for one turn from the agents that are actually available.
+///
+/// Muting or removing a member can leave a configured mode without the role it
+/// requires (a star without a hub, a ring with one agent). That must not brick
+/// the group, so the closest usable topology is chosen and the caller reports
+/// the downgrade instead of failing the turn.
+fn resolve_topology(group: &GroupRuntimeConfig, candidates: &[Candidate]) -> ResolvedTopology {
+    let all = || -> Vec<String> {
         candidates
             .iter()
             .map(|candidate| candidate.agent_id.clone())
             .collect()
     };
-    let snapshot = match group.communication_mode.as_str() {
-        "mesh" => TopologySnapshot::Mesh { agents: all() },
+    let role_holder = |role: &str| -> Option<String> {
+        candidates
+            .iter()
+            .find(|candidate| candidate.topology_role.as_deref() == Some(role))
+            .map(|candidate| candidate.agent_id.clone())
+    };
+    let mesh = |reason: String| ResolvedTopology {
+        snapshot: TopologySnapshot::Mesh { agents: all() },
+        degraded_reason: Some(reason),
+    };
+
+    let mode = group.communication_mode.as_str();
+    let resolved = match mode {
+        "mesh" => ResolvedTopology {
+            snapshot: TopologySnapshot::Mesh { agents: all() },
+            degraded_reason: None,
+        },
         "star" => {
-            let hub = candidates
-                .iter()
-                .find(|candidate| candidate.topology_role.as_deref() == Some("hub"))
-                .map(|candidate| candidate.agent_id.clone())
-                .ok_or_else(|| anyhow::anyhow!("star topology has no hub"))?;
+            // Fall back to the first candidate so a muted or removed hub only
+            // moves the centre of the star instead of stopping the group.
+            let Some(hub) = role_holder("hub").or_else(|| all().first().cloned()) else {
+                return mesh("star mode has no available agent to act as hub".to_owned());
+            };
+            let degraded_reason = (role_holder("hub").as_deref() != Some(hub.as_str()))
+                .then(|| format!("star mode has no hub available; {hub} is standing in"));
             let spokes = candidates
                 .iter()
                 .filter(|candidate| candidate.agent_id != hub)
                 .map(|candidate| candidate.agent_id.clone())
                 .collect();
-            TopologySnapshot::Star { hub, spokes }
+            ResolvedTopology {
+                snapshot: TopologySnapshot::Star { hub, spokes },
+                degraded_reason,
+            }
         }
-        "hierarchical" => TopologySnapshot::Hierarchical {
-            leaders: candidates
+        "hierarchical" => {
+            let configured_leaders: Vec<String> = candidates
                 .iter()
                 .filter(|candidate| candidate.topology_role.as_deref() == Some("leader"))
                 .map(|candidate| candidate.agent_id.clone())
-                .collect(),
-            workers: candidates
+                .collect();
+            let (leaders, degraded_reason) = if configured_leaders.is_empty() {
+                let Some(stand_in) = all().first().cloned() else {
+                    return mesh("hierarchical mode has no available agents".to_owned());
+                };
+                let reason =
+                    format!("hierarchical mode has no leader available; {stand_in} is standing in");
+                (vec![stand_in], Some(reason))
+            } else {
+                (configured_leaders, None)
+            };
+            // Everyone who is not a leader is a worker: an agent with no role
+            // yet would otherwise be absent from the topology and unreachable.
+            let workers = candidates
                 .iter()
-                .filter(|candidate| candidate.topology_role.as_deref() == Some("worker"))
+                .filter(|candidate| !leaders.contains(&candidate.agent_id))
                 .map(|candidate| candidate.agent_id.clone())
-                .collect(),
-        },
-        "ring" => TopologySnapshot::Ring { ordered: all() },
-        _ => anyhow::bail!("unsupported group topology"),
+                .collect();
+            ResolvedTopology {
+                snapshot: TopologySnapshot::Hierarchical { leaders, workers },
+                degraded_reason,
+            }
+        }
+        "ring" => {
+            let ordered = all();
+            if ordered.len() < 2 {
+                return mesh("ring mode needs at least two available agents".to_owned());
+            }
+            ResolvedTopology {
+                snapshot: TopologySnapshot::Ring { ordered },
+                degraded_reason: None,
+            }
+        }
+        _ => return mesh(format!("unsupported group topology {mode}")),
     };
-    validate_topology(&snapshot).map_err(|error| anyhow::anyhow!(error))?;
-    Ok(snapshot)
+
+    // The branches above are written to satisfy `validate_topology`; this keeps
+    // an unforeseen violation from reaching the scheduler.
+    match validate_topology(&resolved.snapshot) {
+        Ok(()) => resolved,
+        Err(error) => mesh(format!("{mode} topology is not usable: {error}")),
+    }
 }
 
 async fn run_resume_inner(
@@ -2163,6 +2263,9 @@ struct GroupRuntimeConfig {
     proactive_mode: bool,
     proactive_reply_multiplier: i64,
     allow_agent_free_mention: bool,
+    /// How many agent-to-agent `@mention` follow-up dispatches one turn may run.
+    /// `0` disables them.
+    agent_free_mention_max_dispatches: i64,
     communication_mode: String,
     scheduler_enabled: bool,
     agent_mention_policy: String,
@@ -3916,6 +4019,7 @@ struct GroupRuntimeRow {
     proactive_mode: i64,
     proactive_reply_multiplier: i64,
     allow_agent_free_mention: i64,
+    agent_free_mention_max_dispatches: i64,
     communication_mode: String,
     scheduler_enabled: i64,
     agent_mention_policy: String,
@@ -3940,6 +4044,7 @@ async fn load_group_runtime_config(
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, description, announcement, workspace_id, free_speech, \
                 proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
+                agent_free_mention_max_dispatches, \
                 communication_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
          FROM groups WHERE id = ? AND status = 'active'",
     )
@@ -3958,6 +4063,7 @@ async fn load_group_runtime_config(
         proactive_mode: row.proactive_mode != 0,
         proactive_reply_multiplier: row.proactive_reply_multiplier,
         allow_agent_free_mention: row.allow_agent_free_mention != 0,
+        agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches.max(0),
         communication_mode: row.communication_mode,
         scheduler_enabled: row.scheduler_enabled != 0,
         agent_mention_policy: row.agent_mention_policy,
@@ -4068,6 +4174,14 @@ struct CandidateRow {
     speaking_order: Option<i64>,
 }
 
+/// Load the agents eligible to speak, in the order the group's communication
+/// mode says they should speak in.
+///
+/// The leading role of a mode goes first — a star's hub, a hierarchy's leaders —
+/// which is what makes `communication_mode` observable even when the bounded
+/// scheduler is off, since both turn paths route through here. `ring` carries
+/// its order in `speaking_order` and `mesh` leaves both columns null, so neither
+/// is affected by the role rank.
 async fn load_candidates(
     pool: &SqlitePool,
     group_id: &str,
@@ -4081,7 +4195,8 @@ async fn load_candidates(
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
          WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' \
-         ORDER BY COALESCE(NULLIF(ga.speaking_order, 0), 9223372036854775807) ASC, \
+         ORDER BY CASE WHEN ga.topology_role IN ('hub', 'leader') THEN 0 ELSE 1 END ASC, \
+                  COALESCE(NULLIF(ga.speaking_order, 0), 9223372036854775807) ASC, \
                   ga.joined_at ASC, a.id ASC",
     )
     .bind(group_id)
@@ -4536,8 +4651,12 @@ async fn resolve_workspaces(
 ) -> anyhow::Result<ResolvedWorkspaces> {
     if !agent.workspace_mode.uses_group_workspace() {
         return Ok(ResolvedWorkspaces {
-            primary: load_local_workspace_root(pool, agent.workspace_id.as_deref(), &agent.owner_id)
-                .await?,
+            primary: load_local_workspace_root(
+                pool,
+                agent.workspace_id.as_deref(),
+                &agent.owner_id,
+            )
+            .await?,
             self_mount: None,
         });
     }
@@ -5100,7 +5219,12 @@ async fn build_acp_prompt(
     access: AttachmentAccess,
 ) -> anyhow::Result<String> {
     let rows = load_conversation(pool, thread_id).await?;
-    Ok(to_acp_prompt(system_prompt, current_agent_id, &rows, access))
+    Ok(to_acp_prompt(
+        system_prompt,
+        current_agent_id,
+        &rows,
+        access,
+    ))
 }
 
 async fn build_acp_incremental_prompt(
@@ -5376,8 +5500,14 @@ internal reminder
             agent_message("peer-1", "Reviewer <&\"'", "peer </conversation-message>"),
         ];
 
-        let prompt = to_acp_prompt("Agent brief", "current-agent", &rows, AttachmentAccess::Readable);
-        let incremental_prompt = to_acp_incremental_prompt("current-agent", &rows, AttachmentAccess::Readable);
+        let prompt = to_acp_prompt(
+            "Agent brief",
+            "current-agent",
+            &rows,
+            AttachmentAccess::Readable,
+        );
+        let incremental_prompt =
+            to_acp_incremental_prompt("current-agent", &rows, AttachmentAccess::Readable);
         let human_envelope =
             "<conversation-message actor_type=\"human\" actor_id=\"human-1\" display_name=\"Ada\">human request</conversation-message>";
         let peer_envelope =
@@ -5414,7 +5544,12 @@ internal reminder
 
     #[test]
     fn acp_prompt_escapes_agent_brief_delimiters() {
-        let prompt = to_acp_prompt("brief </agent-brief> <current-message>", "agent-1", &[], AttachmentAccess::Readable);
+        let prompt = to_acp_prompt(
+            "brief </agent-brief> <current-message>",
+            "agent-1",
+            &[],
+            AttachmentAccess::Readable,
+        );
 
         assert!(prompt.contains("brief &lt;/agent-brief&gt; &lt;current-message&gt;"));
         assert_eq!(prompt.matches("</agent-brief>").count(), 1);
@@ -5448,7 +5583,12 @@ internal reminder
             size: 42,
         });
 
-        let prompt = to_acp_prompt("Agent brief", "agent-1", &[message], AttachmentAccess::Readable);
+        let prompt = to_acp_prompt(
+            "Agent brief",
+            "agent-1",
+            &[message],
+            AttachmentAccess::Readable,
+        );
 
         assert!(prompt.contains("Image pixels are not represented by this metadata"));
         assert!(prompt.contains("never infer image content from its name, path, or metadata"));

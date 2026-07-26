@@ -1128,11 +1128,10 @@ async fn group_create_without_workspace_id_creates_local_workspace_from_settings
     // The directory leads with a slug of the group name so it is recognisable
     // in a file manager, and keeps a short id so two same-named groups differ.
     let short_id: String = group_id.chars().filter(|ch| *ch != '-').take(8).collect();
-    let expected_path =
-        std::fs::canonicalize(root.path().join(format!("auto-ws-{short_id}")))
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+    let expected_path = std::fs::canonicalize(root.path().join(format!("auto-ws-{short_id}")))
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     assert!(std::path::Path::new(&expected_path).is_dir());
 
     let workspace = sqlx::query_as::<_, (String, String, Option<String>)>(
@@ -4067,7 +4066,9 @@ async fn group_create_initial_agents_inserts_topology_defaults() {
                 assert_eq!(second.speaking_order, None);
             }
             "hierarchical" => {
-                assert_eq!(first.topology_role.as_deref(), Some("worker"));
+                // The runtime cannot schedule a leaderless hierarchy, so the
+                // first agent takes the role.
+                assert_eq!(first.topology_role.as_deref(), Some("leader"));
                 assert_eq!(second.topology_role.as_deref(), Some("worker"));
                 assert_eq!(first.speaking_order, None);
                 assert_eq!(second.speaking_order, None);
@@ -4703,7 +4704,8 @@ async fn group_topology_agent_patch_validates_star_hierarchical_and_ring() {
     let hierarchical_group =
         create_group_with_initial_agents(&app, &token, &workspace, "hierarchical", &[]).await;
     let hierarchical_group_id = hierarchical_group["id"].as_str().unwrap();
-    let (status, worker) = send(
+    // The first agent takes the leader role a hierarchy cannot run without.
+    let (status, leader) = send(
         &app,
         authed_json(
             "POST",
@@ -4714,19 +4716,77 @@ async fn group_topology_agent_patch_validates_star_hierarchical_and_ring() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(leader["topology_role"], "leader");
+    let (status, worker) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents"),
+            &token,
+            json!({"agent_id": agent_b}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
     assert_eq!(worker["topology_role"], "worker");
-    let (status, leader) = send(
+    let (status, promoted) = send(
         &app,
         authed_json(
             "PATCH",
-            &format!("/api/v2/groups/{hierarchical_group_id}/agents/{agent_a}/topology"),
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents/{agent_b}/topology"),
             &token,
             json!({"topology_role": "leader"}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(leader["topology_role"], "leader");
+    assert_eq!(promoted["topology_role"], "leader");
+    // Demoting one of two leaders is fine…
+    let (status, demoted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents/{agent_b}/topology"),
+            &token,
+            json!({"topology_role": "worker"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(demoted["topology_role"], "worker");
+    // …but demoting the last one would leave a hierarchy nothing can schedule.
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents/{agent_a}/topology"),
+            &token,
+            json!({"topology_role": "worker"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    let (status, hierarchical_list) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{hierarchical_group_id}/agents"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        hierarchical_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["topology_role"] == "leader")
+            .count(),
+        1,
+        "the rejected demotion must roll back"
+    );
     let (status, body) = send(
         &app,
         authed_json(
@@ -4796,6 +4856,48 @@ async fn group_topology_agent_patch_validates_star_hierarchical_and_ring() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["code"], "invalid_input");
+    }
+}
+
+#[tokio::test]
+async fn removing_the_leading_agent_reassigns_the_topology_role() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-topology-removal@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent_a = create_agent(&app, &token, &workspace, "Alpha").await;
+    let agent_b = create_agent(&app, &token, &workspace, "Beta").await;
+
+    for (mode, role) in [("star", "hub"), ("hierarchical", "leader")] {
+        let group =
+            create_group_with_initial_agents(&app, &token, &workspace, mode, &[&agent_a, &agent_b])
+                .await;
+        let group_id = group["id"].as_str().unwrap();
+        let agents_url = format!("/api/v2/groups/{group_id}/agents");
+
+        let (status, listed) = send(&app, authed("GET", &agents_url, &token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let holder = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["topology_role"] == role)
+            .expect("a freshly created group carries the role its mode requires");
+        assert_eq!(holder["agent_id"], agent_a.as_str());
+
+        let (status, _) = send(
+            &app,
+            authed("DELETE", &format!("{agents_url}/{agent_a}"), &token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Losing the hub or the last leader must not leave the group without one.
+        let (status, remaining) = send(&app, authed("GET", &agents_url, &token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let remaining = remaining.as_array().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0]["agent_id"], agent_b.as_str());
+        assert_eq!(remaining[0]["topology_role"], role);
     }
 }
 

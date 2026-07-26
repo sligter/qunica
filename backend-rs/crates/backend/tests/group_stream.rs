@@ -1054,7 +1054,12 @@ async fn conversation_identity_llm_preserves_speakers_and_escapes_untrusted_cont
     .await;
 
     let rows = load_conversation(state.db.pool(), &thread).await.unwrap();
-    let messages = to_llm_messages("system prompt", &current_agent, &rows, AttachmentAccess::Readable);
+    let messages = to_llm_messages(
+        "system prompt",
+        &current_agent,
+        &rows,
+        AttachmentAccess::Readable,
+    );
 
     assert_eq!(messages[0].role, "system");
     assert_eq!(messages[0].content, "system prompt");
@@ -1147,8 +1152,18 @@ async fn conversation_identity_acp_and_llm_share_speaker_semantics() {
     .await;
 
     let rows = load_conversation(state.db.pool(), &thread).await.unwrap();
-    let llm = to_llm_messages("system prompt", &current_agent, &rows, AttachmentAccess::Readable);
-    let acp = to_acp_prompt("system prompt", &current_agent, &rows, AttachmentAccess::Readable);
+    let llm = to_llm_messages(
+        "system prompt",
+        &current_agent,
+        &rows,
+        AttachmentAccess::Readable,
+    );
+    let acp = to_acp_prompt(
+        "system prompt",
+        &current_agent,
+        &rows,
+        AttachmentAccess::Readable,
+    );
 
     let peer_envelope = &llm[2].content;
     let human_envelope = &llm[3].content;
@@ -6527,4 +6542,460 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
         system_prompt.contains("Bash runs in the primary root only"),
         "got: {system_prompt}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Communication topologies
+// ---------------------------------------------------------------------------
+
+const OK_SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\ndata: [DONE]\n";
+const MENTION_SSE: &str =
+    "data: {\"choices\":[{\"delta\":{\"content\":\"over to @Bravo\"}}]}\ndata: [DONE]\n";
+
+/// Set a group agent's topology fields directly: the seeding helpers bind
+/// agents without going through the topology API.
+async fn set_agent_topology(
+    state: &AppState,
+    group_id: &str,
+    agent_id: &str,
+    topology_role: Option<&str>,
+    speaking_order: Option<i64>,
+) {
+    sqlx::query(
+        "UPDATE group_agents SET topology_role = ?, speaking_order = ? \
+         WHERE group_id = ? AND agent_id = ?",
+    )
+    .bind(topology_role)
+    .bind(speaking_order)
+    .bind(group_id)
+    .bind(agent_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+}
+
+async fn mute_group_agent(app: &Router, token: &str, group_id: &str, agent_id: &str) {
+    let (status, _) = send(
+        app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent_id}/mute"),
+            token,
+            json!({"muted": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// Names of the agents that were dispatched, in dispatch order.
+async fn speaker_order(state: &AppState, group_id: &str) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT a.name FROM agent_dispatches d \
+         JOIN group_turns t ON t.id = d.turn_id \
+         JOIN agents a ON a.id = d.target_agent_id \
+         WHERE t.group_id = ? \
+         ORDER BY d.created_at, d.rowid",
+    )
+    .bind(group_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn star_mode_lets_the_hub_speak_first_even_when_it_joined_last() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "topology-star-order@example.com").await;
+    let owner = owner_id(&state, "topology-star-order@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true, "communication_mode": "star"}),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Spoke",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let hub = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Hub",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    set_agent_topology(&state, &group, &hub, Some("hub"), None).await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    assert_eq!(kinds(&events).last().unwrap(), "done");
+    assert_eq!(speaker_order(&state, &group).await, ["Hub", "Spoke"]);
+}
+
+#[tokio::test]
+async fn hierarchical_mode_lets_leaders_speak_before_workers() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "topology-hierarchy-order@example.com").await;
+    let owner = owner_id(&state, "topology-hierarchy-order@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "communication_mode": "hierarchical"
+        }),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    let worker = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Worker",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let leader = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Leader",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    set_agent_topology(&state, &group, &worker, Some("worker"), None).await;
+    set_agent_topology(&state, &group, &leader, Some("leader"), None).await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    assert_eq!(kinds(&events).last().unwrap(), "done");
+    assert_eq!(speaker_order(&state, &group).await, ["Leader", "Worker"]);
+}
+
+#[tokio::test]
+async fn ring_mode_follows_the_configured_speaking_order() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "topology-ring-order@example.com").await;
+    let owner = owner_id(&state, "topology-ring-order@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true, "communication_mode": "ring"}),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    for (index, name) in ["First", "Second", "Third"].iter().enumerate() {
+        let agent = seed_agent(
+            &state,
+            &owner,
+            &group,
+            &provider,
+            name,
+            &format!("2024-01-0{}T00:00:00Z", index + 1),
+        )
+        .await;
+        // The reverse of join order, so only `speaking_order` can produce the
+        // expected sequence.
+        set_agent_topology(&state, &group, &agent, None, Some(3 - index as i64)).await;
+    }
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    assert_eq!(kinds(&events).last().unwrap(), "done");
+    assert_eq!(
+        speaker_order(&state, &group).await,
+        ["Third", "Second", "First"]
+    );
+}
+
+#[tokio::test]
+async fn muting_the_star_hub_degrades_the_topology_instead_of_failing_the_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "topology-star-muted-hub@example.com").await;
+    let owner = owner_id(&state, "topology-star-muted-hub@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true, "communication_mode": "star"}),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    let hub = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Hub",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Spoke",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    set_agent_topology(&state, &group, &hub, Some("hub"), None).await;
+    mute_group_agent(&app, &token, &group, &hub).await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    let event_kinds = kinds(&events);
+    assert!(
+        !event_kinds.iter().any(|kind| kind == "error"),
+        "a muted hub must not fail the turn: {event_kinds:?}"
+    );
+    let warnings = payloads_of_kind(&events, StreamEventKind::Warning);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["code"], "topology_degraded");
+    assert_eq!(speaker_order(&state, &group).await, ["Spoke"]);
+    let turn_status: String =
+        sqlx::query_scalar("SELECT status FROM group_turns WHERE group_id = ?")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(turn_status, "completed");
+}
+
+#[tokio::test]
+async fn ring_mode_with_one_available_agent_still_runs_the_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "topology-ring-single@example.com").await;
+    let owner = owner_id(&state, "topology-ring-single@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({"free_speech": true, "scheduler_enabled": true, "communication_mode": "ring"}),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Only",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    let event_kinds = kinds(&events);
+    assert!(
+        !event_kinds.iter().any(|kind| kind == "error"),
+        "a one-agent ring must not fail the turn: {event_kinds:?}"
+    );
+    let warnings = payloads_of_kind(&events, StreamEventKind::Warning);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["code"], "topology_degraded");
+    assert_eq!(speaker_order(&state, &group).await, ["Only"]);
+}
+
+#[tokio::test]
+async fn hierarchical_mode_without_a_leader_promotes_a_stand_in() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "topology-hierarchy-leaderless@example.com").await;
+    let owner = owner_id(&state, "topology-hierarchy-leaderless@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "communication_mode": "hierarchical"
+        }),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    for (index, name) in ["Worker A", "Worker B"].iter().enumerate() {
+        let agent = seed_agent(
+            &state,
+            &owner,
+            &group,
+            &provider,
+            name,
+            &format!("2024-01-0{}T00:00:00Z", index + 1),
+        )
+        .await;
+        set_agent_topology(&state, &group, &agent, Some("worker"), None).await;
+    }
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "hello"}),
+    )
+    .await;
+
+    let event_kinds = kinds(&events);
+    assert!(
+        !event_kinds.iter().any(|kind| kind == "error"),
+        "a leaderless hierarchy must not fail the turn: {event_kinds:?}"
+    );
+    let warnings = payloads_of_kind(&events, StreamEventKind::Warning);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["code"], "topology_degraded");
+    assert_eq!(
+        speaker_order(&state, &group).await,
+        ["Worker A", "Worker B"]
+    );
+}
+
+#[tokio::test]
+async fn agent_mention_follow_ups_respect_the_group_dispatch_cap() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "mention-cap@example.com").await;
+    let owner = owner_id(&state, "mention-cap@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+            "agent_free_mention_max_dispatches": 0
+        }),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(MENTION_SSE).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bravo",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha start"}),
+    )
+    .await;
+
+    assert!(!kinds(&events).iter().any(|kind| kind == "error"));
+    // A cap of zero disables agent-to-agent follow-ups entirely.
+    assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
+}
+
+#[tokio::test]
+async fn agent_mention_follow_ups_stop_when_free_mention_is_disabled() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "mention-disabled@example.com").await;
+    let owner = owner_id(&state, "mention-disabled@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "scheduler_enabled": true,
+            "agent_mention_policy": "bounded_schedule",
+            "allow_agent_free_mention": false
+        }),
+    )
+    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider(MENTION_SSE).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Bravo",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha start"}),
+    )
+    .await;
+
+    assert!(!kinds(&events).iter().any(|kind| kind == "error"));
+    assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
 }

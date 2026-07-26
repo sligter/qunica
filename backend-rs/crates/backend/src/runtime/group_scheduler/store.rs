@@ -32,61 +32,49 @@ impl SchedulerStore {
         Self { pool, write_lock }
     }
 
-    pub async fn create_turn(&self, input: NewTurn) -> Result<TurnSnapshot, SchedulerStoreError> {
+    /// Supersede the thread's active turn (if any) and create the replacement in
+    /// one transaction.
+    ///
+    /// Doing this as two calls would let two concurrent sends both observe "no
+    /// active turn" and race on the partial unique index, failing the later send
+    /// instead of letting it take over.
+    pub async fn supersede_and_create_turn(
+        &self,
+        input: NewTurn,
+    ) -> Result<(Option<TurnSnapshot>, TurnSnapshot), SchedulerStoreError> {
         let config_snapshot_json = serde_json::to_string(&input.config_snapshot)?;
         let topology_snapshot_json = serde_json::to_string(&input.topology_snapshot)?;
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
         let mut tx = self.pool.begin().await?;
 
-        let result = sqlx::query(
-            "INSERT INTO group_turns \
-             (id, thread_id, group_id, trigger_message_id, status, scheduler_strategy, \
-              config_snapshot_json, topology_snapshot_json, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let superseded = supersede_active_turn_in_tx(&mut tx, &input.thread_id, &now).await?;
+        let created = insert_turn_in_tx(
+            &mut tx,
+            &input,
+            &config_snapshot_json,
+            &topology_snapshot_json,
+            &now,
         )
-        .bind(&input.id)
-        .bind(&input.thread_id)
-        .bind(&input.group_id)
-        .bind(&input.trigger_message_id)
-        .bind(TurnStatus::Pending.as_str())
-        .bind(&input.scheduler_strategy)
-        .bind(config_snapshot_json)
-        .bind(topology_snapshot_json)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await;
+        .await?;
+        tx.commit().await?;
+        Ok((superseded, created))
+    }
 
-        if let Err(error) = result {
-            if is_active_turn_unique_violation(&error) {
-                return Err(SchedulerStoreError::ActiveTurnExists {
-                    thread_id: input.thread_id,
-                });
-            }
-            return Err(error.into());
-        }
-
-        if let Some(trigger_message_id) = input.trigger_message_id.as_deref() {
-            let linked = sqlx::query(
-                "UPDATE messages \
-                 SET turn_id = ? \
-                 WHERE id = ? AND thread_id = ? AND group_id = ?",
-            )
-            .bind(&input.id)
-            .bind(trigger_message_id)
-            .bind(&input.thread_id)
-            .bind(&input.group_id)
-            .execute(&mut *tx)
-            .await?;
-            if linked.rows_affected() != 1 {
-                return Err(SchedulerStoreError::InvalidInput(
-                    "turn trigger message does not belong to its thread and group".to_owned(),
-                ));
-            }
-        }
-
-        let snapshot = fetch_turn_in_tx(&mut tx, &input.id).await?;
+    pub async fn create_turn(&self, input: NewTurn) -> Result<TurnSnapshot, SchedulerStoreError> {
+        let config_snapshot_json = serde_json::to_string(&input.config_snapshot)?;
+        let topology_snapshot_json = serde_json::to_string(&input.topology_snapshot)?;
+        let now = now_rfc3339();
+        let _guard = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+        let snapshot = insert_turn_in_tx(
+            &mut tx,
+            &input,
+            &config_snapshot_json,
+            &topology_snapshot_json,
+            &now,
+        )
+        .await?;
         tx.commit().await?;
         Ok(snapshot)
     }
@@ -144,30 +132,7 @@ impl SchedulerStore {
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
         let mut tx = self.pool.begin().await?;
-        let turn_id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM group_turns \
-             WHERE thread_id = ? AND status IN ('pending', 'running', 'waiting_for_user') \
-             ORDER BY created_at, rowid LIMIT 1",
-        )
-        .bind(thread_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let snapshot = if let Some(turn_id) = turn_id {
-            let current = fetch_turn_in_tx(&mut tx, &turn_id).await?;
-            Some(
-                transition_turn_in_tx(
-                    &mut tx,
-                    &turn_id,
-                    current.status,
-                    TurnStatus::Superseded,
-                    Some(TurnReason::Superseded),
-                    &now,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        let snapshot = supersede_active_turn_in_tx(&mut tx, thread_id, &now).await?;
         tx.commit().await?;
         Ok(snapshot)
     }
@@ -626,6 +591,94 @@ pub enum SchedulerStoreError {
     },
     #[error("invalid scheduler input: {0}")]
     InvalidInput(String),
+}
+
+/// Insert one `pending` turn and link its trigger message.
+async fn insert_turn_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    input: &NewTurn,
+    config_snapshot_json: &str,
+    topology_snapshot_json: &str,
+    now: &str,
+) -> Result<TurnSnapshot, SchedulerStoreError> {
+    let result = sqlx::query(
+        "INSERT INTO group_turns \
+         (id, thread_id, group_id, trigger_message_id, status, scheduler_strategy, \
+          config_snapshot_json, topology_snapshot_json, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&input.id)
+    .bind(&input.thread_id)
+    .bind(&input.group_id)
+    .bind(&input.trigger_message_id)
+    .bind(TurnStatus::Pending.as_str())
+    .bind(&input.scheduler_strategy)
+    .bind(config_snapshot_json)
+    .bind(topology_snapshot_json)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await;
+
+    if let Err(error) = result {
+        if is_active_turn_unique_violation(&error) {
+            return Err(SchedulerStoreError::ActiveTurnExists {
+                thread_id: input.thread_id.clone(),
+            });
+        }
+        return Err(error.into());
+    }
+
+    if let Some(trigger_message_id) = input.trigger_message_id.as_deref() {
+        let linked = sqlx::query(
+            "UPDATE messages \
+             SET turn_id = ? \
+             WHERE id = ? AND thread_id = ? AND group_id = ?",
+        )
+        .bind(&input.id)
+        .bind(trigger_message_id)
+        .bind(&input.thread_id)
+        .bind(&input.group_id)
+        .execute(&mut **tx)
+        .await?;
+        if linked.rows_affected() != 1 {
+            return Err(SchedulerStoreError::InvalidInput(
+                "turn trigger message does not belong to its thread and group".to_owned(),
+            ));
+        }
+    }
+
+    fetch_turn_in_tx(tx, &input.id).await
+}
+
+/// Mark the thread's one durable active turn as superseded, if it has one.
+async fn supersede_active_turn_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: &str,
+    now: &str,
+) -> Result<Option<TurnSnapshot>, SchedulerStoreError> {
+    let turn_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM group_turns \
+         WHERE thread_id = ? AND status IN ('pending', 'running', 'waiting_for_user') \
+         ORDER BY created_at, rowid LIMIT 1",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(turn_id) = turn_id else {
+        return Ok(None);
+    };
+    let current = fetch_turn_in_tx(tx, &turn_id).await?;
+    let snapshot = transition_turn_in_tx(
+        tx,
+        &turn_id,
+        current.status,
+        TurnStatus::Superseded,
+        Some(TurnReason::Superseded),
+        now,
+    )
+    .await?;
+    Ok(Some(snapshot))
 }
 
 async fn fetch_turn_in_tx(
