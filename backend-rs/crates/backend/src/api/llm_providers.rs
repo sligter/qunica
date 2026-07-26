@@ -5,17 +5,19 @@ use axum::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::llm::{
-    discover_models, ModelCatalogError, ModelInfo, ProviderConfig, MODEL_CATALOG_TIMEOUT,
+    discover_models, ModelCatalogError, ModelInfo, ProviderConfig, ProviderModelConfig,
+    MODEL_CATALOG_TIMEOUT,
 };
 
 const PROVIDER_COLUMNS: &str = "id, owner_id, name, kind, base_url, api_key, default_model, \
      context_window_tokens, context_output_reserve_ratio, description, reasoning_passback, \
-     status, created_at, updated_at";
+     models_json, status, created_at, updated_at";
 
 const VALID_KINDS: [&str; 4] = [
     "openai-compatible",
@@ -40,6 +42,8 @@ pub struct CreateRequest {
     description: Option<String>,
     #[serde(default)]
     reasoning_passback: Option<bool>,
+    #[serde(default)]
+    models: Option<Vec<ProviderModelConfig>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +66,18 @@ pub struct UpdateRequest {
     description: Option<Option<String>>,
     #[serde(default)]
     reasoning_passback: Option<bool>,
+    #[serde(default)]
+    models: Option<Vec<ProviderModelConfig>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiscoverRequest {
+    kind: String,
+    #[serde(default)]
+    base_url: Option<String>,
+    api_key: String,
+    #[serde(default)]
+    default_model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +92,7 @@ pub struct ProviderResponse {
     context_output_reserve_ratio: Option<f64>,
     description: Option<String>,
     reasoning_passback: bool,
+    models: Vec<ProviderModelConfig>,
     status: String,
     created_at: String,
 }
@@ -93,6 +110,7 @@ struct ProviderRow {
     context_output_reserve_ratio: Option<f64>,
     description: Option<String>,
     reasoning_passback: i64,
+    models_json: Option<String>,
     status: String,
     created_at: String,
     #[allow(dead_code)]
@@ -101,6 +119,7 @@ struct ProviderRow {
 
 impl From<ProviderRow> for ProviderResponse {
     fn from(row: ProviderRow) -> Self {
+        let models = stored_models(&row);
         Self {
             id: row.id,
             name: row.name,
@@ -112,6 +131,7 @@ impl From<ProviderRow> for ProviderResponse {
             context_output_reserve_ratio: row.context_output_reserve_ratio,
             description: row.description,
             reasoning_passback: row.reasoning_passback != 0,
+            models,
             status: row.status,
             created_at: row.created_at,
         }
@@ -134,6 +154,21 @@ pub async fn create(
     validate_reserve_ratio(body.context_output_reserve_ratio)?;
     let description = normalize_nullable_text(body.description.as_deref());
     let reasoning_passback = body.reasoning_passback.unwrap_or(false);
+    let models = normalize_models(
+        body.models.unwrap_or_else(|| {
+            vec![ProviderModelConfig {
+                id: default_model.clone(),
+                context_window_tokens: body.context_window_tokens,
+                context_output_reserve_ratio: body.context_output_reserve_ratio,
+            }]
+        }),
+        &default_model,
+    )?;
+    let default_config = models
+        .iter()
+        .find(|model| model.id == default_model)
+        .expect("normalized models contain default");
+    let models_json = serialize_models(&models)?;
 
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
@@ -142,8 +177,8 @@ pub async fn create(
         "INSERT INTO llm_providers \
          (id, owner_id, name, kind, base_url, api_key, default_model, \
           context_window_tokens, context_output_reserve_ratio, description, \
-          reasoning_passback, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+          reasoning_passback, models_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
@@ -152,10 +187,11 @@ pub async fn create(
     .bind(&base_url)
     .bind(&api_key)
     .bind(&default_model)
-    .bind(body.context_window_tokens)
-    .bind(body.context_output_reserve_ratio)
+    .bind(default_config.context_window_tokens)
+    .bind(default_config.context_output_reserve_ratio)
     .bind(&description)
     .bind(if reasoning_passback { 1_i64 } else { 0_i64 })
+    .bind(&models_json)
     .bind(&now)
     .bind(&now)
     .execute(state.db.pool())
@@ -249,13 +285,38 @@ pub async fn update(
     let reasoning_passback = body
         .reasoning_passback
         .unwrap_or(existing.reasoning_passback != 0);
+    let mut models = match body.models.as_ref() {
+        Some(models) => normalize_models(models.clone(), &default_model)?,
+        None => stored_models(&existing),
+    };
+    if !models.iter().any(|model| model.id == default_model) {
+        models.push(ProviderModelConfig {
+            id: default_model.clone(),
+            context_window_tokens,
+            context_output_reserve_ratio,
+        });
+    }
+    if body.models.is_none() {
+        if let Some(model) = models.iter_mut().find(|model| model.id == default_model) {
+            model.context_window_tokens = context_window_tokens;
+            model.context_output_reserve_ratio = context_output_reserve_ratio;
+        }
+    }
+    let models = normalize_models(models, &default_model)?;
+    let default_config = models
+        .iter()
+        .find(|model| model.id == default_model)
+        .expect("normalized models contain default");
+    let context_window_tokens = default_config.context_window_tokens;
+    let context_output_reserve_ratio = default_config.context_output_reserve_ratio;
+    let models_json = serialize_models(&models)?;
 
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE llm_providers SET \
          name = ?, kind = ?, base_url = ?, api_key = ?, default_model = ?, \
          context_window_tokens = ?, context_output_reserve_ratio = ?, description = ?, \
-         reasoning_passback = ?, updated_at = ? \
+         reasoning_passback = ?, models_json = ?, updated_at = ? \
          WHERE id = ? AND owner_id = ?",
     )
     .bind(&name)
@@ -267,6 +328,7 @@ pub async fn update(
     .bind(context_output_reserve_ratio)
     .bind(&description)
     .bind(if reasoning_passback { 1_i64 } else { 0_i64 })
+    .bind(&models_json)
     .bind(&now)
     .bind(&provider_id)
     .bind(&owner_id)
@@ -321,6 +383,33 @@ pub async fn models(
         context_window_tokens: provider.context_window_tokens,
         context_output_reserve_ratio: provider.context_output_reserve_ratio,
     };
+    Ok(Json(discover_provider_models(config).await?))
+}
+
+pub async fn discover(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DiscoverRequest>,
+) -> Result<Json<Vec<ModelInfo>>, ApiError> {
+    current_user_id(&headers, &state.auth.secret_key)?;
+    let config = ProviderConfig {
+        kind: validate_kind(&body.kind)?,
+        base_url: normalize_nullable_text(body.base_url.as_deref()),
+        api_key: validate_api_key(&body.api_key)?,
+        default_model: body
+            .default_model
+            .as_deref()
+            .map(validate_default_model)
+            .transpose()?
+            .unwrap_or_default(),
+        reasoning_passback: false,
+        context_window_tokens: None,
+        context_output_reserve_ratio: None,
+    };
+    Ok(Json(discover_provider_models(config).await?))
+}
+
+async fn discover_provider_models(config: ProviderConfig) -> Result<Vec<ModelInfo>, ApiError> {
     let client = reqwest::Client::builder()
         .timeout(MODEL_CATALOG_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -330,7 +419,7 @@ pub async fn models(
     let models = discover_models(&client, &config)
         .await
         .map_err(model_catalog_api_error)?;
-    Ok(Json(models))
+    Ok(models)
 }
 
 fn model_catalog_api_error(error: ModelCatalogError) -> ApiError {
@@ -425,6 +514,53 @@ fn validate_reserve_ratio(value: Option<f64>) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+fn normalize_models(
+    models: Vec<ProviderModelConfig>,
+    default_model: &str,
+) -> Result<Vec<ProviderModelConfig>, ApiError> {
+    if models.is_empty() {
+        return Err(ApiError::invalid_input(
+            "models must contain at least one model",
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(models.len());
+    for model in models {
+        let id = validate_default_model(&model.id)?;
+        validate_context_window(model.context_window_tokens)?;
+        validate_reserve_ratio(model.context_output_reserve_ratio)?;
+        if !seen.insert(id.clone()) {
+            return Err(ApiError::invalid_input("model ids must be unique"));
+        }
+        normalized.push(ProviderModelConfig { id, ..model });
+    }
+    if !seen.contains(default_model) {
+        return Err(ApiError::invalid_input(
+            "default_model must be present in models",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn stored_models(row: &ProviderRow) -> Vec<ProviderModelConfig> {
+    row.models_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Vec<ProviderModelConfig>>(raw).ok())
+        .filter(|models| !models.is_empty())
+        .unwrap_or_else(|| {
+            vec![ProviderModelConfig {
+                id: row.default_model.clone(),
+                context_window_tokens: row.context_window_tokens,
+                context_output_reserve_ratio: row.context_output_reserve_ratio,
+            }]
+        })
+}
+
+fn serialize_models(models: &[ProviderModelConfig]) -> Result<String, ApiError> {
+    serde_json::to_string(models)
+        .map_err(|_| ApiError::internal("failed to serialize provider models"))
 }
 
 fn normalize_nullable_text(raw: Option<&str>) -> Option<String> {

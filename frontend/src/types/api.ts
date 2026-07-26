@@ -234,6 +234,12 @@ export type ProviderKind =
   | 'anthropic-compatible'
   | 'gemini'
 
+export interface ProviderModelConfig {
+  id: string
+  context_window_tokens: number | null
+  context_output_reserve_ratio: number | null
+}
+
 export interface LLMProviderRead {
   id: string
   name: string
@@ -245,6 +251,7 @@ export interface LLMProviderRead {
   context_output_reserve_ratio: number | null
   description: string | null
   reasoning_passback: boolean
+  models?: ProviderModelConfig[]
   status: string
   created_at: string
 }
@@ -259,6 +266,7 @@ export interface LLMProviderCreate {
   context_output_reserve_ratio?: number | null
   description?: string | null
   reasoning_passback?: boolean
+  models?: ProviderModelConfig[]
 }
 
 export interface LLMProviderUpdate {
@@ -271,6 +279,7 @@ export interface LLMProviderUpdate {
   context_output_reserve_ratio?: number | null
   description?: string | null
   reasoning_passback?: boolean
+  models?: ProviderModelConfig[]
 }
 
 export interface SkillFileInfo {

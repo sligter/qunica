@@ -26,6 +26,7 @@ pub use ag_swarmer_domain::runtime::{
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 
@@ -40,6 +41,28 @@ pub struct ProviderConfig {
     pub context_window_tokens: Option<i64>,
     /// Fraction of the window reserved for model output (0.0..=1.0).
     pub context_output_reserve_ratio: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ProviderModelConfig {
+    pub id: String,
+    #[serde(default)]
+    pub context_window_tokens: Option<i64>,
+    #[serde(default)]
+    pub context_output_reserve_ratio: Option<f64>,
+}
+
+pub fn model_context_config(models_json: Option<&str>, model: &str) -> (Option<i64>, Option<f64>) {
+    models_json
+        .and_then(|raw| serde_json::from_str::<Vec<ProviderModelConfig>>(raw).ok())
+        .and_then(|models| models.into_iter().find(|item| item.id == model))
+        .map(|item| {
+            (
+                item.context_window_tokens,
+                item.context_output_reserve_ratio,
+            )
+        })
+        .unwrap_or((None, None))
 }
 
 /// A streaming chat completion provider.
@@ -177,4 +200,23 @@ pub(crate) fn sse_data(line: &str) -> Option<&str> {
         return None;
     }
     Some(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_context_config;
+
+    #[test]
+    fn model_context_config_uses_the_selected_model() {
+        let raw = r#"[
+            {"id":"small","context_window_tokens":32000,"context_output_reserve_ratio":0.2},
+            {"id":"large","context_window_tokens":128000,"context_output_reserve_ratio":0.3}
+        ]"#;
+
+        assert_eq!(
+            model_context_config(Some(raw), "large"),
+            (Some(128000), Some(0.3))
+        );
+        assert_eq!(model_context_config(Some(raw), "missing"), (None, None));
+    }
 }

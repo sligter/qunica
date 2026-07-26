@@ -4751,6 +4751,7 @@ struct ProviderRow {
     reasoning_passback: i64,
     context_window_tokens: Option<i64>,
     context_output_reserve_ratio: Option<f64>,
+    models_json: Option<String>,
 }
 
 async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Result<ProviderConfig> {
@@ -4760,7 +4761,7 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!("agent has no llm provider configured"))?;
     let row: Option<ProviderRow> = sqlx::query_as(
         "SELECT kind, base_url, api_key, default_model, reasoning_passback, \
-                context_window_tokens, context_output_reserve_ratio \
+                context_window_tokens, context_output_reserve_ratio, models_json \
          FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
     .bind(provider_id)
@@ -4768,6 +4769,9 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
     .fetch_optional(pool)
     .await?;
     let row = row.ok_or_else(|| anyhow::anyhow!("agent llm provider not found"))?;
+    let model = model_from_config(&agent.model_config_json, &row.default_model);
+    let (model_window, model_reserve) =
+        crate::llm::model_context_config(row.models_json.as_deref(), &model);
 
     // Agent-level overrides in model_config_json win over the provider defaults.
     let (window_override, reserve_override) =
@@ -4779,8 +4783,12 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
         api_key: row.api_key,
         default_model: row.default_model,
         reasoning_passback: row.reasoning_passback != 0,
-        context_window_tokens: window_override.or(row.context_window_tokens),
-        context_output_reserve_ratio: reserve_override.or(row.context_output_reserve_ratio),
+        context_window_tokens: window_override
+            .or(model_window)
+            .or(row.context_window_tokens),
+        context_output_reserve_ratio: reserve_override
+            .or(model_reserve)
+            .or(row.context_output_reserve_ratio),
     })
 }
 

@@ -155,7 +155,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
     ? mentionPolicy
     : `${UNKNOWN_POLICY_PREFIX}${mentionPolicy}`
   const models = useProviderModels(selectedProviderId ?? undefined)
-
   const activeProviders = useMemo(
     () => (providers.data ?? []).filter((provider) => provider.status === 'active'),
     [providers.data],
@@ -178,6 +177,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
         context_output_reserve_ratio: null,
         description: null,
         reasoning_passback: false,
+        models: [],
         status: 'unavailable',
         created_at: '',
       },
@@ -185,10 +185,25 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   }, [activeProviders, selectedProviderId, selectedProviderIsActive, t])
 
   const modelOptions = useMemo(() => {
-    const available = models.data ?? []
+    const provider = providerOptions.find((item) => item.id === selectedProviderId)
+    const configured = provider?.models ?? (
+      provider?.default_model
+        ? [{
+            id: provider.default_model,
+            context_window_tokens: provider.context_window_tokens,
+            context_output_reserve_ratio: provider.context_output_reserve_ratio,
+          }]
+        : []
+    )
+    const available = configured.map((configuredModel) =>
+      models.data?.find((model) => model.id === configuredModel.id) ?? {
+        id: configuredModel.id,
+        name: configuredModel.id,
+      },
+    )
     if (!selectedModel || available.some((model) => model.id === selectedModel)) return available
     return [{ id: selectedModel, name: t('scheduler.savedModel', { id: selectedModel }) }, ...available]
-  }, [models.data, selectedModel, t])
+  }, [models.data, providerOptions, selectedModel, selectedProviderId, t])
 
   // Query invalidation refreshes the group after other settings save. Keep this
   // independent form intact until it is pristine or this form saved successfully.

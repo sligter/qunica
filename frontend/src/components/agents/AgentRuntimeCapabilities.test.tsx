@@ -43,6 +43,11 @@ const mocks = vi.hoisted(() => ({
       context_output_reserve_ratio: null,
       description: null,
       reasoning_passback: false,
+      models: [{
+        id: 'provider-live',
+        context_window_tokens: null,
+        context_output_reserve_ratio: null,
+      }],
       status: 'active',
       created_at: '2026-07-16T00:00:00Z',
     },

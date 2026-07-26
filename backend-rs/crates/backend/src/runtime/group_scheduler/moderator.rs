@@ -72,6 +72,7 @@ struct ProviderRow {
     reasoning_passback: i64,
     context_window_tokens: Option<i64>,
     context_output_reserve_ratio: Option<f64>,
+    models_json: Option<String>,
 }
 
 pub async fn select_with_moderator(
@@ -121,7 +122,7 @@ async fn resolve_provider(
 ) -> Result<ProviderConfig, ModeratorFailure> {
     let row: Option<ProviderRow> = sqlx::query_as(
         "SELECT kind, base_url, api_key, default_model, reasoning_passback, \
-                context_window_tokens, context_output_reserve_ratio \
+                context_window_tokens, context_output_reserve_ratio, models_json \
         FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
     .bind(&config.provider_id)
@@ -130,6 +131,8 @@ async fn resolve_provider(
     .await
     .map_err(|_| ModeratorFailure::ProviderUnavailable)?;
     let row = row.ok_or(ModeratorFailure::ProviderUnavailable)?;
+    let (model_window, model_reserve) =
+        crate::llm::model_context_config(row.models_json.as_deref(), &config.model);
 
     Ok(ProviderConfig {
         kind: row.kind,
@@ -137,8 +140,8 @@ async fn resolve_provider(
         api_key: row.api_key,
         default_model: row.default_model,
         reasoning_passback: row.reasoning_passback != 0,
-        context_window_tokens: row.context_window_tokens,
-        context_output_reserve_ratio: row.context_output_reserve_ratio,
+        context_window_tokens: model_window.or(row.context_window_tokens),
+        context_output_reserve_ratio: model_reserve.or(row.context_output_reserve_ratio),
     })
 }
 

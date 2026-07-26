@@ -120,6 +120,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(llm_providers::create).get(llm_providers::list),
         )
         .route(
+            "/api/v2/llm-providers/discover-models",
+            axum::routing::post(llm_providers::discover),
+        )
+        .route(
             "/api/v2/llm-providers/:provider_id",
             get(llm_providers::get)
                 .patch(llm_providers::update)

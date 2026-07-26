@@ -39,6 +39,11 @@ const mocks = vi.hoisted(() => ({
       context_output_reserve_ratio: null,
       description: null,
       reasoning_passback: false,
+      models: [{
+        id: 'gpt-test',
+        context_window_tokens: null,
+        context_output_reserve_ratio: null,
+      }],
       status: 'active',
       created_at: '2026-01-01T00:00:00Z',
     },
@@ -53,6 +58,11 @@ const mocks = vi.hoisted(() => ({
       context_output_reserve_ratio: null,
       description: null,
       reasoning_passback: false,
+      models: [{
+        id: 'gpt-secondary',
+        context_window_tokens: null,
+        context_output_reserve_ratio: null,
+      }],
       status: 'active',
       created_at: '2026-01-01T00:00:00Z',
     },

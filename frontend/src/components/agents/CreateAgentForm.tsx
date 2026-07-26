@@ -168,8 +168,24 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
     [acpRuntimePresets.data?.presets],
   )
   const selectedProviderId = form.watch('llm_provider_id') || undefined
-  const providerModels = useProviderModels(
+  const selectedProvider = providers.data?.find((provider) => provider.id === selectedProviderId)
+  const configuredModels = selectedProvider?.models ?? (
+    selectedProvider
+      ? [{
+          id: selectedProvider.default_model,
+          context_window_tokens: selectedProvider.context_window_tokens,
+          context_output_reserve_ratio: selectedProvider.context_output_reserve_ratio,
+        }]
+      : []
+  )
+  const providerCatalog = useProviderModels(
     runtimeKind === 'llm_chat' ? selectedProviderId : undefined,
+  )
+  const providerModels = configuredModels.map((configured) =>
+    providerCatalog.data?.find((model) => model.id === configured.id) ?? {
+      id: configured.id,
+      name: configured.id,
+    },
   )
   const acpCapabilities = useCommittedAcpRuntimeCapabilities(
     {
@@ -466,15 +482,15 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
             id="agent-model"
             label={t('agents:fields.model')}
             value={form.watch('model') ?? ''}
-            options={(providerModels.data ?? []).map((model) => ({
+            options={providerModels.map((model) => ({
               value: model.id,
               label: model.name,
             }))}
             placeholder={t('agents:states.providerDefault')}
             onChange={(value) => form.setValue('model', value)}
-            isLoading={providerModels.isFetching}
+            isLoading={providerCatalog.isFetching}
             warning={
-              providerModels.isError
+              providerCatalog.isError
                 ? t('agents:errors.providerModels')
                 : null
             }

@@ -316,6 +316,80 @@ async fn providers_settings_provider_crud_is_owner_scoped_and_masks_key() {
 }
 
 #[tokio::test]
+async fn providers_settings_provider_multi_model_context_is_persisted() {
+    let app = app().await;
+    let token = register_and_login(&app, "provider-models@example.com").await;
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers",
+            &token,
+            json!({
+                "name": "Multi",
+                "kind": "openai-compatible",
+                "base_url": "https://llm.example.test/v1",
+                "api_key": "multi-secret",
+                "default_model": "model-b",
+                "models": [
+                    {
+                        "id": "model-a",
+                        "context_window_tokens": 32000,
+                        "context_output_reserve_ratio": 0.2
+                    },
+                    {
+                        "id": "model-b",
+                        "context_window_tokens": 128000,
+                        "context_output_reserve_ratio": 0.3
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["models"].as_array().unwrap().len(), 2);
+    assert_eq!(created["models"][1]["id"], "model-b");
+    assert_eq!(created["models"][1]["context_window_tokens"], 128000);
+    assert_eq!(created["context_window_tokens"], 128000);
+    assert_eq!(created["context_output_reserve_ratio"], 0.3);
+
+    let provider_id = created["id"].as_str().unwrap();
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/llm-providers/{provider_id}"),
+            &token,
+            json!({
+                "default_model": "model-a",
+                "models": created["models"]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["default_model"], "model-a");
+    assert_eq!(updated["context_window_tokens"], 32000);
+
+    let (status, duplicate) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/llm-providers/{provider_id}"),
+            &token,
+            json!({
+                "models": [{"id": "same"}, {"id": "same"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(duplicate["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
 async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fields() {
     let app = app().await;
     let token = register_and_login(&app, "provider-patch@example.com").await;
@@ -480,6 +554,42 @@ async fn providers_settings_provider_models_openai_discovers_normalizes_and_auth
         Some("Bearer openai-secret")
     );
     assert!(captures[0].headers.get("x-api-key").is_none());
+}
+
+#[tokio::test]
+async fn providers_settings_discovers_models_before_provider_is_saved() {
+    let (base_url, captures) = catalog_server(
+        StatusCode::OK,
+        json!({"data": [{"id": "model-b"}, {"id": "model-a"}]}).to_string(),
+    )
+    .await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-discover-unsaved@example.com").await;
+
+    let (status, models) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers/discover-models",
+            &token,
+            json!({
+                "kind": "openai-compatible",
+                "base_url": base_url,
+                "api_key": "unsaved-secret"
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(models[0]["id"], "model-a");
+    assert_eq!(models[1]["id"], "model-b");
+    let captures = captures.lock().await;
+    assert_eq!(captures.len(), 1);
+    assert_eq!(
+        captures[0].headers["authorization"],
+        "Bearer unsaved-secret"
+    );
 }
 
 #[tokio::test]

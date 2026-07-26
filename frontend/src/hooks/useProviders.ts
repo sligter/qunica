@@ -7,6 +7,7 @@ import type {
   LLMProviderRead,
   LLMProviderUpdate,
   ModelInfo,
+  ProviderKind,
 } from '@/types/api'
 
 export function useProviders() {
@@ -85,5 +86,22 @@ export function useProviderModels(providerId: string | undefined) {
       }),
     enabled: token !== null && !!providerId,
     staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useDiscoverProviderModels() {
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: (data: {
+      kind: ProviderKind
+      base_url?: string | null
+      api_key: string
+      default_model?: string | null
+    }) =>
+      fetchJson<ModelInfo[]>('/llm-providers/discover-models', {
+        token,
+        method: 'POST',
+        body: data,
+      }),
   })
 }

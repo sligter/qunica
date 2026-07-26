@@ -101,6 +101,35 @@ export function ProviderDetailPage() {
           </Field>
         </section>
 
+        <section className="space-y-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            {t('providers:models.title')}
+          </h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(p.models ?? []).map((model) => (
+              <div key={model.id} className="rounded-md border border-border p-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{model.id}</span>
+                  {model.id === p.default_model && (
+                    <Badge variant="secondary">{t('providers:models.default')}</Badge>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t('providers:fields.contextWindow')}: {
+                    model.context_window_tokens !== null
+                      ? formatNumber(model.context_window_tokens, i18n.resolvedLanguage as Language)
+                      : t('providers:states.auto')
+                  } · {t('providers:fields.outputReserve')}: {
+                    model.context_output_reserve_ratio !== null
+                      ? `${Math.round(model.context_output_reserve_ratio * 100)}%`
+                      : '30%'
+                  }
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {p.description && (
           <section className="space-y-2">
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">

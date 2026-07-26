@@ -4,12 +4,16 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { useTranslation } from 'react-i18next'
 
+import {
+  ProviderModelsField,
+  type ProviderModelDraft,
+} from '@/components/providers/ProviderModelsField'
 import { ReasoningPassbackControl } from '@/components/providers/ReasoningPassbackControl'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { useUpdateProvider } from '@/hooks/useProviders'
+import { useProviderModels, useUpdateProvider } from '@/hooks/useProviders'
 import { ApiError } from '@/lib/api-v2/client'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
@@ -20,12 +24,6 @@ function createSchema(required: string) { return z.object({
   kind: z.enum(['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().optional(),
-  default_model: z.string().min(1, required),
-  context_window_tokens: z.preprocess(
-    (value) => (value === '' || Number.isNaN(value) ? undefined : value),
-    z.number().int().min(1).optional(),
-  ),
-  context_output_reserve_percent: z.number().min(1).max(90),
   description: z.string().optional(),
   reasoning_passback: z.boolean(),
 }) }
@@ -51,7 +49,23 @@ function baseUrlPlaceholder(kind: ProviderKind): string {
 export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
   const { t, i18n } = useTranslation('providers')
   const update = useUpdateProvider(provider.id)
+  const catalog = useProviderModels(provider.id)
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
+  const [models, setModels] = useState<ProviderModelDraft[]>(
+    (provider.models ?? [{
+      id: provider.default_model,
+      context_window_tokens: provider.context_window_tokens,
+      context_output_reserve_ratio: provider.context_output_reserve_ratio,
+    }]).map((model) => ({
+      id: model.id,
+      context_window_tokens: model.context_window_tokens ?? undefined,
+      context_output_reserve_percent:
+        model.context_output_reserve_ratio !== null
+          ? Math.round(model.context_output_reserve_ratio * 100)
+          : 30,
+    })),
+  )
+  const [defaultModel, setDefaultModel] = useState(provider.default_model)
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
   const validationLanguage = useRef(i18n.resolvedLanguage)
 
@@ -62,12 +76,6 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
       kind: provider.kind,
       base_url: provider.base_url ?? '',
       api_key: '',
-      default_model: provider.default_model,
-      context_window_tokens: provider.context_window_tokens ?? undefined,
-      context_output_reserve_percent:
-        provider.context_output_reserve_ratio !== null
-          ? Math.round(provider.context_output_reserve_ratio * 100)
-          : 30,
       description: provider.description ?? '',
       reasoning_passback: provider.reasoning_passback,
     },
@@ -85,15 +93,30 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
+    const normalizedModels = models.map((model) => ({ ...model, id: model.id.trim() }))
+    if (normalizedModels.some((model) => !model.id)) {
+      setSubmitError(messageError(t('models.required')))
+      return
+    }
+    if (new Set(normalizedModels.map((model) => model.id)).size !== normalizedModels.length) {
+      setSubmitError(messageError(t('models.duplicate')))
+      return
+    }
+    const resolvedDefault = normalizedModels.some((model) => model.id === defaultModel)
+      ? defaultModel
+      : normalizedModels[0].id
     try {
       const updated = await update.mutateAsync({
         name: values.name,
         kind: values.kind,
         base_url: values.base_url || null,
         api_key: values.api_key ? values.api_key : undefined,
-        default_model: values.default_model,
-        context_window_tokens: values.context_window_tokens ?? null,
-        context_output_reserve_ratio: values.context_output_reserve_percent / 100,
+        default_model: resolvedDefault,
+        models: normalizedModels.map((model) => ({
+          id: model.id,
+          context_window_tokens: model.context_window_tokens ?? null,
+          context_output_reserve_ratio: model.context_output_reserve_percent / 100,
+        })),
         description: values.description || null,
         reasoning_passback: values.reasoning_passback,
       })
@@ -161,54 +184,16 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
         </p>
       </div>
 
-      <div className="space-y-1.5">
-        <Label htmlFor={`provider-model-${provider.id}`}>{t('fields.defaultModel')}</Label>
-        <Input
-          id={`provider-model-${provider.id}`}
-          placeholder={t(`kinds.${KIND_KEYS[kind]}.modelPlaceholder`)}
-          {...form.register('default_model')}
-        />
-        {form.formState.errors.default_model && (
-          <p className="text-xs text-destructive">
-            {form.formState.errors.default_model.message}
-          </p>
-        )}
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor={`provider-context-window-${provider.id}`}>
-            {t('fields.contextWindowTokens')}
-          </Label>
-          <Input
-            id={`provider-context-window-${provider.id}`}
-            type="number"
-            min={1}
-            placeholder={t('form.autoFromModel')}
-            {...form.register('context_window_tokens', { valueAsNumber: true })}
-          />
-          {form.formState.errors.context_window_tokens && (
-            <p className="text-xs text-destructive">
-              {form.formState.errors.context_window_tokens.message}
-            </p>
-          )}
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`provider-output-reserve-${provider.id}`}>{t('fields.outputReservePercent')}</Label>
-          <Input
-            id={`provider-output-reserve-${provider.id}`}
-            type="number"
-            min={1}
-            max={90}
-            {...form.register('context_output_reserve_percent', { valueAsNumber: true })}
-          />
-          {form.formState.errors.context_output_reserve_percent && (
-            <p className="text-xs text-destructive">
-              {form.formState.errors.context_output_reserve_percent.message}
-            </p>
-          )}
-        </div>
-      </div>
+      <ProviderModelsField
+        models={models}
+        defaultModel={defaultModel}
+        catalog={catalog.data}
+        isLoadingCatalog={catalog.isFetching}
+        catalogError={catalog.isError}
+        onChange={setModels}
+        onDefaultChange={setDefaultModel}
+        onRefreshCatalog={() => void catalog.refetch()}
+      />
 
       {kind === 'openai-compatible' && (
         <ReasoningPassbackControl
