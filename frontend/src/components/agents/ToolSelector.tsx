@@ -7,6 +7,8 @@ import type {
   WorkspaceBackendType,
 } from '@/types/api'
 import { McpToolSelector } from '@/components/agents/McpToolSelector'
+import { EntityPicker } from '@/components/ui/entity-picker'
+import { PageState } from '@/components/ui/page-state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 
@@ -74,14 +76,12 @@ export function ToolSelector({
     })
   }
 
-  const toggleAssistantAgent = (agentId: string) => {
-    const current = value.assistant_agents ?? []
-    const exists = current.some((selection) => selection.agent_id === agentId && selection.enabled)
+  // The picker speaks in plain ids; the stored shape is a list of records, so
+  // the mapping lives here rather than leaking that shape into the picker.
+  const setAssistantAgents = (agentIds: string[]) => {
     onChange({
       ...value,
-      assistant_agents: exists
-        ? current.filter((selection) => selection.agent_id !== agentId)
-        : [...current.filter((selection) => selection.agent_id !== agentId), { agent_id: agentId, enabled: true }],
+      assistant_agents: agentIds.map((agent_id) => ({ agent_id, enabled: true })),
     })
   }
 
@@ -94,40 +94,24 @@ export function ToolSelector({
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-muted-foreground">{t('tools.agentAsTool')}</p>
-        <div className="rounded-md border border-border bg-background p-3">
-          <p className="text-xs text-muted-foreground">
-            {t('tools.agentAsToolDescription')}
-          </p>
-          {selectableAgents.length === 0 ? (
-            <p className="mt-2 text-2xs text-muted-foreground">{t('tools.noAgents')}</p>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {selectableAgents.map((agent) => {
-                const checked = (value.assistant_agents ?? []).some(
-                  (selection) => selection.agent_id === agent.id && selection.enabled,
-                )
-                return (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => toggleAssistantAgent(agent.id)}
-                    className={cn(
-                      'rounded-md border px-3 py-2 text-left text-xs transition-colors',
-                      checked
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background hover:bg-muted',
-                    )}
-                  >
-                    <span className="block font-medium">@{agent.name}</span>
-                    {agent.description && (
-                      <span className="block max-w-48 truncate opacity-75">{agent.description}</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </div>
+        <p className="text-xs text-muted-foreground">{t('tools.agentAsToolDescription')}</p>
+        <EntityPicker
+          label={t('tools.agentAsTool')}
+          searchPlaceholder={t('form.searchAgents')}
+          items={selectableAgents.map((agent) => ({
+            id: agent.id,
+            label: `@${agent.name}`,
+            meta: agent.description ?? undefined,
+          }))}
+          selectedIds={(value.assistant_agents ?? [])
+            .filter((selection) => selection.enabled)
+            .map((selection) => selection.agent_id)}
+          onChange={setAssistantAgents}
+          countLabel={(total, selected) =>
+            t('form.agentCount', { total, selected, count: total })
+          }
+          empty={<PageState inset icon={null} title={t('tools.noAgents')} />}
+        />
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-muted-foreground">{t('tools.mcp.title')}</p>

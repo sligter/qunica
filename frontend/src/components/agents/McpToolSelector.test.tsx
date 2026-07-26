@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { PropsWithChildren, ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -87,6 +87,24 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+
+/** The server list, scoped so tool checkboxes cannot be picked up by mistake. */
+function serverList() {
+  return within(screen.getByRole('group', { name: 'MCP servers' }))
+}
+
+/** The nested per-tool list, which only exists while a server is expanded. */
+function toolList() {
+  return within(screen.getByRole('group', { name: 'MCP tools' }))
+}
+
+/** Expand the narrow-tools disclosure on the only server row. */
+async function expandTools(label: string) {
+  await userEvent.click(screen.getByRole('button', { name: new RegExp(label) }))
+  await waitFor(() => expect(screen.getByRole('group', { name: 'MCP tools' })).toBeTruthy())
+  return toolList().getAllByRole('checkbox') as HTMLInputElement[]
+}
+
 describe('McpToolSelector', () => {
   it('shows the tool prefix an agent would call, so the naming is not a surprise', () => {
     mocks.toolsQuery.mockReturnValue({ isLoading: false, error: null, data: undefined })
@@ -105,7 +123,7 @@ describe('McpToolSelector', () => {
     render(<McpToolSelector servers={[server()]} value={[]} onChange={onChange} />, {
       wrapper,
     })
-    await userEvent.click(screen.getByRole('button', { pressed: false }))
+    await userEvent.click(serverList().getByRole('checkbox'))
 
     expect(onChange).toHaveBeenCalledWith([
       { server_id: 'srv-a', enabled: true, tools: [] },
@@ -140,10 +158,8 @@ describe('McpToolSelector', () => {
     render(<McpToolSelector servers={[server()]} value={selected} onChange={vi.fn()} />, {
       wrapper,
     })
-    await userEvent.click(screen.getByText('All tools'))
+    const boxes = await expandTools('All tools')
 
-    await waitFor(() => expect(screen.getByText('create_issue')).toBeTruthy())
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
     expect(boxes).toHaveLength(2)
     // An empty selection means "all", so every box reads as checked rather than
     // presenting an all-empty list the operator would have to re-tick.
@@ -165,9 +181,7 @@ describe('McpToolSelector', () => {
       <McpToolSelector servers={[server()]} value={selected} onChange={onChange} />,
       { wrapper },
     )
-    await userEvent.click(screen.getByText('2 tools'))
-    await waitFor(() => expect(screen.getByText('list_issues')).toBeTruthy())
-    const boxes = screen.getAllByRole('checkbox')
+    const boxes = await expandTools('2 tools')
     await userEvent.click(boxes[1]!)
 
     expect(onChange).toHaveBeenCalledWith([
@@ -188,7 +202,7 @@ describe('McpToolSelector', () => {
     render(<McpToolSelector servers={[server()]} value={selected} onChange={vi.fn()} />, {
       wrapper,
     })
-    await userEvent.click(screen.getByText('All tools'))
+    await userEvent.click(screen.getByRole('button', { name: /All tools/ }))
 
     await waitFor(() => expect(screen.getByText('connection refused')).toBeTruthy())
   })
@@ -248,9 +262,7 @@ describe('McpToolSelector tool narrowing regressions', () => {
   ]
 
   async function expandAllToolsRow() {
-    await userEvent.click(screen.getByText('All tools'))
-    await waitFor(() => expect(screen.getByText('create_issue')).toBeTruthy())
-    return screen.getAllByRole('checkbox') as HTMLInputElement[]
+    return expandTools('All tools')
   }
 
   it('unchecking from the default state removes that tool instead of selecting it', async () => {
@@ -282,9 +294,7 @@ describe('McpToolSelector tool narrowing regressions', () => {
       { wrapper },
     )
 
-    await userEvent.click(screen.getByText('1 tool'))
-    await waitFor(() => expect(screen.getByText('create_issue')).toBeTruthy())
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    const boxes = await expandTools('1 tool')
     // The only checked box is create_issue; unchecking it leaves nothing.
     await userEvent.click(boxes[0]!)
 
@@ -303,9 +313,7 @@ describe('McpToolSelector tool narrowing regressions', () => {
       { wrapper },
     )
 
-    await userEvent.click(screen.getByText('1 tool'))
-    await waitFor(() => expect(screen.getByText('list_issues')).toBeTruthy())
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    const boxes = await expandTools('1 tool')
     await userEvent.click(boxes[1]!)
 
     expect(onChange).toHaveBeenCalledWith([

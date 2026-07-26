@@ -3,8 +3,9 @@ import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
+import { EntityPicker } from '@/components/ui/entity-picker'
+import { PageState } from '@/components/ui/page-state'
 import { useMcpServerTools } from '@/hooks/useMcpServers'
-import { cn } from '@/lib/utils'
 import type { AgentMcpServerSelection, McpServerRead } from '@/types/api'
 
 interface McpToolSelectorProps {
@@ -28,11 +29,18 @@ export function McpToolSelector({ servers, value, onChange }: McpToolSelectorPro
   const selectionFor = (serverId: string): AgentMcpServerSelection | undefined =>
     value.find((entry) => entry.server_id === serverId && entry.enabled)
 
-  const toggleServer = (serverId: string) => {
-    const enabled = selectionFor(serverId) !== undefined
-    const without = value.filter((entry) => entry.server_id !== serverId)
-    onChange(enabled ? without : [...without, { server_id: serverId, enabled: true, tools: [] }])
-    if (enabled && expanded === serverId) setExpanded(null)
+  const setSelectedServers = (serverIds: string[]) => {
+    const next = serverIds.map(
+      (server_id) =>
+        value.find((entry) => entry.server_id === server_id) ?? {
+          server_id,
+          enabled: true,
+          tools: [],
+        },
+    )
+    onChange(next)
+    // A server that is no longer selected has nothing to narrow.
+    if (expanded && !serverIds.includes(expanded)) setExpanded(null)
   }
 
   const setTools = (serverId: string, tools: string[]) => {
@@ -43,83 +51,83 @@ export function McpToolSelector({ servers, value, onChange }: McpToolSelectorPro
     )
   }
 
-  if (servers.length === 0) {
-    return (
-      <div className="rounded-md border border-border bg-background p-3">
-        <p className="text-xs text-muted-foreground">{t('tools.mcp.none')}</p>
-        <Link
-          to="/mcp-servers/new"
-          className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
-        >
-          {t('tools.mcp.configure')}
-        </Link>
-      </div>
-    )
+  const deselectServer = (serverId: string) => {
+    onChange(value.filter((entry) => entry.server_id !== serverId))
+    setExpanded(null)
   }
+
+  const selectedIds = value
+    .filter((entry) => entry.enabled)
+    .map((entry) => entry.server_id)
 
   return (
     <div className="space-y-2">
-      {servers.map((server) => {
-        const selection = selectionFor(server.id)
-        const isOpen = expanded === server.id
-        return (
-          <div
-            key={server.id}
-            className={cn(
-              'rounded-md border transition-colors',
-              selection ? 'border-primary bg-primary/5' : 'border-border bg-background',
-            )}
-          >
-            <div className="flex items-start gap-3 p-3">
-              <button
-                type="button"
-                onClick={() => toggleServer(server.id)}
-                className="min-w-0 flex-1 text-left"
-                aria-pressed={selection !== undefined}
+      <EntityPicker
+        label={t('tools.mcp.title')}
+        searchPlaceholder={t('form.searchMcpServers')}
+        items={servers.map((server) => ({
+          id: server.id,
+          label: server.name,
+          // The slug is the scannable identity: it is literally what lands in
+          // the model's tool namespace.
+          meta: `mcp__${server.slug}__*`,
+          keywords: server.description ?? undefined,
+          disabledReason: server.enabled
+            ? undefined
+            : t('tools.mcp.serverDisabled'),
+          trailing: selectionFor(server.id) ? (
+            <button
+              type="button"
+              onClick={() =>
+                setExpanded(expanded === server.id ? null : server.id)
+              }
+              aria-expanded={expanded === server.id}
+              className="flex items-center gap-1 text-2xs text-muted-foreground hover:text-foreground"
+            >
+              {expanded === server.id ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              {(selectionFor(server.id)?.tools ?? []).length > 0
+                ? t('tools.mcp.selectedCount', {
+                    count: selectionFor(server.id)!.tools!.length,
+                  })
+                : t('tools.mcp.allTools')}
+            </button>
+          ) : undefined,
+        }))}
+        selectedIds={selectedIds}
+        onChange={setSelectedServers}
+        countLabel={(total, selected) =>
+          t('form.mcpServerCount', { total, selected, count: total })
+        }
+        empty={
+          <PageState
+            inset
+            icon={null}
+            title={t('tools.mcp.none')}
+            action={
+              <Link
+                to="/mcp-servers/new"
+                className="text-xs font-medium text-primary hover:underline"
               >
-                <span className="block text-sm font-medium">{server.name}</span>
-                <span className="mt-1 block font-mono text-2xs text-muted-foreground">
-                  mcp__{server.slug}__*
-                </span>
-                {server.description ? (
-                  <span className="mt-1 block text-xs text-muted-foreground">
-                    {server.description}
-                  </span>
-                ) : null}
-                {!server.enabled ? (
-                  <span className="mt-1 block text-2xs font-medium text-warning-foreground">
-                    {t('tools.mcp.serverDisabled')}
-                  </span>
-                ) : null}
-              </button>
-              {selection ? (
-                <button
-                  type="button"
-                  onClick={() => setExpanded(isOpen ? null : server.id)}
-                  className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                >
-                  {isOpen ? (
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  )}
-                  {selection.tools && selection.tools.length > 0
-                    ? t('tools.mcp.selectedCount', { count: selection.tools.length })
-                    : t('tools.mcp.allTools')}
-                </button>
-              ) : null}
-            </div>
-            {selection && isOpen ? (
-              <McpToolList
-                serverId={server.id}
-                selected={selection.tools ?? []}
-                onChange={(tools) => setTools(server.id, tools)}
-                onDeselectServer={() => toggleServer(server.id)}
-              />
-            ) : null}
-          </div>
-        )
-      })}
+                {t('tools.mcp.configure')}
+              </Link>
+            }
+          />
+        }
+      />
+      {expanded && selectionFor(expanded) ? (
+        <div className="rounded-md border border-border bg-background">
+          <McpToolList
+            serverId={expanded}
+            selected={selectionFor(expanded)?.tools ?? []}
+            onChange={(tools) => setTools(expanded, tools)}
+            onDeselectServer={() => deselectServer(expanded)}
+          />
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -170,19 +178,17 @@ function McpToolList({
 
   const allNames = tools.map((tool) => tool.name)
 
-  const toggle = (name: string) => {
-    // Expand the "all" sentinel before toggling. Without this, unchecking a box
-    // from the default state falls through to the "add" branch and narrows the
-    // agent to exactly the tool the operator was trying to remove.
-    const current = selected.length === 0 ? allNames : selected
-    const next = current.includes(name)
-      ? current.filter((entry) => entry !== name)
-      : [...current, name]
+  // The picker has no notion of the "all" sentinel, so expand it on the way in
+  // and collapse it on the way out. Without expanding, every box would render
+  // unchecked in the default state and the first click would read as an add
+  // rather than a removal.
+  const expanded = selected.length === 0 ? allNames : selected
 
+  const setSelection = (next: string[]) => {
     if (next.length === 0) {
       // An empty list already means "all", so it cannot also mean "none".
-      // Unchecking the last tool means the agent should not use this server,
-      // which is what deselecting it says unambiguously.
+      // Clearing every tool means the agent should not use this server, which
+      // is what deselecting it says unambiguously.
       onDeselectServer()
       return
     }
@@ -193,47 +199,28 @@ function McpToolList({
   }
 
   return (
-    <div className="space-y-2 border-t border-border px-3 py-3">
-      <div className="flex items-center justify-between">
-        <p className="text-2xs text-muted-foreground">{t('tools.mcp.narrowHint')}</p>
-        {selected.length > 0 ? (
-          <button
-            type="button"
-            onClick={() => onChange([])}
-            className="text-2xs font-medium text-primary hover:underline"
-          >
-            {t('tools.mcp.selectAll')}
-          </button>
-        ) : null}
-      </div>
-      <div className="grid gap-1.5 sm:grid-cols-2">
-        {tools.map((tool) => {
-          // No explicit selection means every tool is exposed, so every box
-          // reads as checked rather than showing an all-empty list.
-          const checked = selected.length === 0 || selected.includes(tool.name)
-          return (
-            <label
-              key={tool.name}
-              className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted"
-            >
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={checked}
-                onChange={() => toggle(tool.name)}
-              />
-              <span className="min-w-0">
-                <span className="block font-mono">{tool.name}</span>
-                {tool.description ? (
-                  <span className="block truncate text-muted-foreground">
-                    {tool.description}
-                  </span>
-                ) : null}
-              </span>
-            </label>
-          )
-        })}
-      </div>
+    <div className="space-y-2 px-3 py-3">
+      <p className="text-2xs text-muted-foreground">{t('tools.mcp.narrowHint')}</p>
+      <EntityPicker
+        label={t('tools.mcp.toolList')}
+        searchPlaceholder={t('tools.mcp.searchTools')}
+        items={tools.map((tool) => ({
+          id: tool.name,
+          label: tool.name,
+          monoLabel: true,
+          meta: tool.description || undefined,
+          keywords: tool.exposed_name,
+        }))}
+        selectedIds={expanded}
+        onChange={setSelection}
+        countLabel={(total, selectedCount) =>
+          t('tools.mcp.toolCount', {
+            total,
+            selected: selectedCount,
+            count: total,
+          })
+        }
+      />
     </div>
   )
 }

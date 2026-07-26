@@ -23,6 +23,7 @@ import {
   normalizeAgentTemperature,
 } from '@/components/agents/defaults'
 import { isThinkingLevel, thinkingLevelValues } from '@/components/agents/thinkingLevel'
+import { SkillPicker } from '@/components/agents/SkillPicker'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
 import { useCommittedAcpRuntimeCapabilities } from '@/components/agents/useCommittedAcpRuntimeCapabilities'
@@ -236,12 +237,6 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
     },
     [acpCapabilities, form],
   )
-
-  const toggleSkill = (id: string) => {
-    setSelectedSkillIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    )
-  }
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
@@ -599,40 +594,13 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         description={t('agents:form.skillsDescription')}
         contentClassName="space-y-2"
       >
-        {skills.data && skills.data.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            {t('agents:form.noSkillsEdit')}
-          </p>
-        )}
-        {skills.data && skills.data.length > 0 && (
-          <ul className="flex flex-wrap gap-2">
-            {skills.data.map((s) => {
-              const checked = selectedSkillIds.includes(s.id)
-              return (
-                <li key={s.id}>
-                  <button
-                    type="button"
-                    onClick={() => toggleSkill(s.id)}
-                    title={s.description ?? undefined}
-                    className={cn(
-                      'rounded-md border px-3 py-1 text-left text-xs transition-colors',
-                      checked
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background hover:bg-muted',
-                    )}
-                  >
-                    <span className="block font-medium">{s.name}</span>
-                    {s.description && (
-                      <span className="block max-w-48 truncate opacity-75">
-                        {s.description}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        )}
+        <SkillPicker
+          skills={skills.data ?? []}
+          isLoading={skills.isLoading}
+          selectedIds={selectedSkillIds}
+          onChange={setSelectedSkillIds}
+          emptyText={t('agents:form.noSkillsEdit')}
+        />
       </Panel>
 
       {localizedErrorText(submitError, t) && (
