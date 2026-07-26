@@ -3,13 +3,15 @@
 //! [`group`] holds the turn orchestration (routing, fan-out, terminal events);
 //! [`agent_as_tool`] resolves visible group handoffs; [`sequence`] holds the
 //! per-thread monotonic sequence allocator and durable persistence used by the
-//! runtime.
+//! runtime; [`workspace_scope`] decides which workspace roots a group agent may
+//! address.
 
 pub mod agent_as_tool;
 pub mod conversation_context;
 pub mod group;
 pub mod group_scheduler;
 pub mod sequence;
+pub mod workspace_scope;
 
 pub use group::{run_group_turn, RuntimeServices, TurnOutcome, TurnRequest};
 

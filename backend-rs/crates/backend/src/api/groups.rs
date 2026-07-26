@@ -29,6 +29,7 @@ use crate::git::{
 use crate::llm::{
     build_provider, model_from_config, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
 };
+use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{resolve_workspace_path, ToolError};
 
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
@@ -196,6 +197,9 @@ pub struct UpdateRequest {
 pub struct GroupAgentAddRequest {
     agent_id: String,
     #[serde(default)]
+    workspace_mode: Option<String>,
+    /// Legacy alias for `workspace_mode`; `true` is `group`, `false` is `self`.
+    #[serde(default)]
     share_group_workspace: Option<bool>,
 }
 
@@ -230,7 +234,11 @@ pub struct GroupAgentTopologyRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct GroupAgentWorkspaceSharingRequest {
-    share_group_workspace: bool,
+    #[serde(default)]
+    workspace_mode: Option<String>,
+    /// Legacy alias for `workspace_mode`; `true` is `group`, `false` is `self`.
+    #[serde(default)]
+    share_group_workspace: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -374,6 +382,8 @@ pub struct GroupAgentResponse {
     topology_role: Option<String>,
     speaking_order: Option<i64>,
     response_mode: String,
+    workspace_mode: String,
+    /// Derived from `workspace_mode`, kept so older clients keep working.
     share_group_workspace: bool,
     context_usage: Option<Value>,
     status: String,
@@ -752,7 +762,7 @@ impl From<GroupRow> for GroupResponse {
 impl From<GroupAgentRow> for GroupAgentResponse {
     fn from(row: GroupAgentRow) -> Self {
         let id = format!("{}:{}", row.group_id, row.agent_id);
-        let share_group_workspace = group_workspace_shared(row.context_scope_json.as_deref());
+        let workspace_mode = WorkspaceMode::from_context_scope(row.context_scope_json.as_deref());
         Self {
             id,
             group_id: row.group_id,
@@ -762,7 +772,8 @@ impl From<GroupAgentRow> for GroupAgentResponse {
             topology_role: row.topology_role,
             speaking_order: row.speaking_order,
             response_mode: row.response_mode,
-            share_group_workspace,
+            workspace_mode: workspace_mode.as_str().to_string(),
+            share_group_workspace: workspace_mode.uses_group_workspace(),
             context_usage: None,
             status: row.status,
             joined_at: row.joined_at,
@@ -919,6 +930,7 @@ pub async fn create(
     .await
     .map_err(|_| ApiError::internal("failed to create owner membership"))?;
 
+    let default_context_scope = context_scope_with_workspace_mode(None, WorkspaceMode::default())?;
     for (position, agent_id) in initial_agents.iter().enumerate() {
         let (topology_role, speaking_order) = initial_agent_topology(&communication_mode, position);
         let joined_at = now_plus_rfc3339(position as i64);
@@ -932,7 +944,7 @@ pub async fn create(
         .bind(agent_id)
         .bind(topology_role)
         .bind(speaking_order)
-        .bind(r#"{"share_group_workspace":true}"#)
+        .bind(&default_context_scope)
         .bind(&joined_at)
         .bind(&joined_at)
         .execute(&mut *tx)
@@ -2319,9 +2331,13 @@ pub async fn add_group_agent(
     let (topology_role, speaking_order) =
         new_agent_topology(&mut tx, &group_id, &group.communication_mode).await?;
     let existing_context_scope = existing.as_ref().and_then(|row| row.1.as_deref());
-    let context_scope_json = context_scope_with_group_workspace(
+    let context_scope_json = context_scope_with_workspace_mode(
         existing_context_scope,
-        body.share_group_workspace.unwrap_or(true),
+        requested_workspace_mode(
+            body.workspace_mode.as_deref(),
+            body.share_group_workspace,
+            WorkspaceMode::default(),
+        )?,
     )?;
 
     if existing.is_some() {
@@ -2456,9 +2472,13 @@ pub async fn set_group_agent_workspace_sharing(
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let existing = load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
 
-    let context_scope_json = context_scope_with_group_workspace(
+    let context_scope_json = context_scope_with_workspace_mode(
         existing.context_scope_json.as_deref(),
-        body.share_group_workspace,
+        requested_workspace_mode(
+            body.workspace_mode.as_deref(),
+            body.share_group_workspace,
+            WorkspaceMode::from_context_scope(existing.context_scope_json.as_deref()),
+        )?,
     )?;
     let now = now_rfc3339();
     sqlx::query(
@@ -3315,37 +3335,33 @@ fn json_list_to_db(values: Vec<String>) -> Result<String, ApiError> {
         .map_err(|_| ApiError::internal("failed to serialize group id list"))
 }
 
-fn group_workspace_shared(raw: Option<&str>) -> bool {
-    raw.and_then(|value| serde_json::from_str::<Value>(value).ok())
-        .and_then(|value| value.get("share_group_workspace").and_then(Value::as_bool))
-        == Some(true)
+/// Resolve the workspace mode a request asks for.
+///
+/// An explicit `workspace_mode` wins; the legacy `share_group_workspace`
+/// boolean is honoured for older clients; absent means `default`.
+fn requested_workspace_mode(
+    workspace_mode: Option<&str>,
+    share_group_workspace: Option<bool>,
+    default: WorkspaceMode,
+) -> Result<WorkspaceMode, ApiError> {
+    if let Some(raw) = workspace_mode {
+        return WorkspaceMode::parse(raw).ok_or_else(|| {
+            ApiError::invalid_input("workspace_mode must be group, group_and_self, or self")
+        });
+    }
+    Ok(match share_group_workspace {
+        Some(true) => WorkspaceMode::Group,
+        Some(false) => WorkspaceMode::SelfOnly,
+        None => default,
+    })
 }
 
-fn context_scope_with_group_workspace(
+fn context_scope_with_workspace_mode(
     raw: Option<&str>,
-    share: bool,
+    mode: WorkspaceMode,
 ) -> Result<Option<String>, ApiError> {
-    let mut object = raw
-        .and_then(|value| serde_json::from_str::<Value>(value).ok())
-        .and_then(|value| match value {
-            Value::Object(object) => Some(object),
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    if share {
-        object.insert("share_group_workspace".to_string(), Value::Bool(true));
-    } else {
-        object.remove("share_group_workspace");
-    }
-
-    if object.is_empty() {
-        Ok(None)
-    } else {
-        serde_json::to_string(&Value::Object(object))
-            .map(Some)
-            .map_err(|_| ApiError::internal("failed to serialize context scope"))
-    }
+    mode.to_context_scope(raw)
+        .map_err(|_| ApiError::internal("failed to serialize context scope"))
 }
 
 async fn normalize_group_agent_topology(

@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   group: null as GroupRead | null,
   groupAgents: [] as GroupAgentRead[],
   groupMembers: [] as GroupMemberRead[],
+  agents: [] as { id: string; workspace_id: string | null }[],
+  workspaces: [] as { id: string; local_path: string | null }[],
+  setWorkspaceMode: vi.fn(),
   mutateAsync: vi.fn(),
   clearMutateAsync: vi.fn(),
   deleteMutateAsync: vi.fn(),
@@ -43,7 +46,9 @@ vi.mock('@/pages/group/GroupSchedulerSettingsSection', () => ({
   GroupSchedulerSettingsSection: () => <div>scheduler section</div>,
 }))
 
-vi.mock('@/hooks/useAgents', () => ({ useAgents: () => ({ data: [], isLoading: false }) }))
+vi.mock('@/hooks/useAgents', () => ({
+  useAgents: () => ({ data: mocks.agents, isLoading: false }),
+}))
 vi.mock('@/hooks/useCreateGroup', () => ({
   useCreateGroup: () => ({ isPending: false, mutateAsync: mocks.mutateAsync }),
 }))
@@ -104,11 +109,14 @@ vi.mock('@/hooks/useGroupMembers', () => ({
 vi.mock('@/hooks/useAddAgentToGroup', () => ({
   useAddAgentToGroup: () => ({ isPending: false, mutate: vi.fn() }),
 }))
+vi.mock('@/hooks/useWorkspaces', () => ({
+  useWorkspaces: () => ({ data: mocks.workspaces, isLoading: false }),
+}))
 vi.mock('@/hooks/useGroupAgentActions', () => ({
   useMuteGroupAgent: () => ({ isPending: false, mutate: vi.fn() }),
   useRemoveGroupAgent: () => ({ isPending: false, mutate: vi.fn() }),
   useSetGroupAgentTopology: () => ({ isPending: false, mutate: vi.fn() }),
-  useSetGroupAgentWorkspaceSharing: () => ({ isPending: false, mutate: vi.fn() }),
+  useSetGroupAgentWorkspaceMode: () => ({ isPending: false, mutate: mocks.setWorkspaceMode }),
 }))
 vi.mock('@/hooks/useDeleteGroup', () => ({
   useDeleteGroup: () => ({ isPending: false, mutateAsync: mocks.deleteMutateAsync }),
@@ -184,6 +192,7 @@ const groupAgent: GroupAgentRead = {
   topology_role: null,
   speaking_order: null,
   response_mode: 'default',
+  workspace_mode: 'self',
   share_group_workspace: false,
   context_usage: null,
   status: 'active',
@@ -199,6 +208,9 @@ describe('group management i18n', () => {
     mocks.group = group
     mocks.groupAgents = []
     mocks.groupMembers = []
+    mocks.agents = []
+    mocks.workspaces = []
+    mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
     mocks.clearMutateAsync.mockReset()
     mocks.deleteMutateAsync.mockReset()
@@ -315,6 +327,66 @@ describe('group management i18n', () => {
     )
 
     expect(screen.getByText('2 people and agents in this group.')).toBeVisible()
+  })
+
+  it('offers the three workspace modes and shows where each one resolves', async () => {
+    const user = userEvent.setup()
+    mocks.group = { ...group, workspace_id: 'ws-group' }
+    mocks.groupAgents = [{ ...groupAgent, workspace_mode: 'group_and_self' }]
+    mocks.agents = [{ id: 'agent-1', workspace_id: 'ws-own' }]
+    mocks.workspaces = [
+      { id: 'ws-group', local_path: 'D:/groups/alpha' },
+      { id: 'ws-own', local_path: 'D:/agents/one' },
+    ]
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    // A non-default mode is tagged on the row; the default would not be.
+    expect(screen.getByText('Group + its own folder')).toBeVisible()
+    await user.click(screen.getByText('Agent One').closest('button')!)
+
+    const select = screen.getByRole('combobox', { name: 'Workspace access' })
+    expect(select).toHaveValue('group_and_self')
+    for (const label of ['Group workspace', 'Group + its own folder', 'Its own folder only']) {
+      expect(within(select).getByRole('option', { name: label })).toBeInTheDocument()
+    }
+    // Both resolved roots are visible, so the consequence of the mode is not hidden.
+    expect(screen.getByText('Plain paths resolve in: D:/groups/alpha')).toBeVisible()
+    expect(screen.getByText('Mounted at ~self/: D:/agents/one')).toBeVisible()
+
+    await user.selectOptions(select, 'self')
+    expect(mocks.setWorkspaceMode).toHaveBeenCalledWith(
+      { groupId: 'group-1', agentId: 'agent-1', workspaceMode: 'self' },
+      expect.anything(),
+    )
+  })
+
+  it('resolves plain paths to the agent folder when the agent is isolated', async () => {
+    const user = userEvent.setup()
+    mocks.group = { ...group, workspace_id: 'ws-group' }
+    mocks.groupAgents = [groupAgent]
+    mocks.agents = [{ id: 'agent-1', workspace_id: 'ws-own' }]
+    mocks.workspaces = [
+      { id: 'ws-group', local_path: 'D:/groups/alpha' },
+      { id: 'ws-own', local_path: 'D:/agents/one' },
+    ]
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByText('Agent One').closest('button')!)
+    expect(screen.getByText('Plain paths resolve in: D:/agents/one')).toBeVisible()
+    expect(screen.queryByText(/Mounted at/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Isolated: group files and message attachments are out of reach, and its output stays out of the group workspace.',
+      ),
+    ).toBeVisible()
   })
 
   it('does not mislabel a null hierarchical topology role as Worker', async () => {

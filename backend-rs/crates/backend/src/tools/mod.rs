@@ -22,8 +22,8 @@ pub mod workspace;
 pub use executor::ToolExecutor;
 pub use path_safety::resolve_workspace_path;
 pub use workspace::{
-    WorkspaceTools, MAX_FILE_BYTES, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
-    MAX_WRITE_BYTES,
+    WorkspaceMount, WorkspaceTools, MAX_FILE_BYTES, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,
+    MAX_READ_LINES, MAX_WRITE_BYTES, SELF_MOUNT_NAME,
 };
 
 use serde_json::Value;

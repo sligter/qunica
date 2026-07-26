@@ -14,7 +14,7 @@ const agent: GroupAgentRead = {
   topology_role: null,
   speaking_order: null,
   response_mode: 'normal',
-  share_group_workspace: false,
+  workspace_mode: 'self', share_group_workspace: false,
   context_usage: null,
   status: 'idle',
   joined_at: '2026-07-18T00:00:00Z',

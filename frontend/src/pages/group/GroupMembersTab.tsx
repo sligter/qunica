@@ -11,12 +11,13 @@ import { useAgents } from '@/hooks/useAgents'
 import { useGroup } from '@/hooks/useGroups'
 import { useAddGroupMember, useGroupMemberCandidates, useGroupMembers, useMuteGroupMember, useRemoveGroupMember } from '@/hooks/useGroupMembers'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
-import { useMuteGroupAgent, useRemoveGroupAgent, useSetGroupAgentTopology, useSetGroupAgentWorkspaceSharing } from '@/hooks/useGroupAgentActions'
+import { useMuteGroupAgent, useRemoveGroupAgent, useSetGroupAgentTopology, useSetGroupAgentWorkspaceMode } from '@/hooks/useGroupAgentActions'
+import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { AgentRead, GroupAgentRead, GroupCommunicationMode, GroupMemberRead, GroupTopologyRole, UserRead } from '@/types/api'
+import type { AgentRead, GroupAgentRead, GroupCommunicationMode, GroupMemberRead, GroupTopologyRole, GroupWorkspaceMode, UserRead } from '@/types/api'
 
 type Filter = 'all' | 'human' | 'agent' | 'muted'
 type Entry = { kind: 'human'; member: GroupMemberRead } | { kind: 'agent'; agent: GroupAgentRead; muted: boolean }
@@ -45,6 +46,37 @@ function isTopologyRole(value: string): value is GroupTopologyRole {
   return topologyRoles.some((role) => role === value)
 }
 
+const workspaceModeKeys = {
+  group: 'members.workspaceModes.group',
+  group_and_self: 'members.workspaceModes.groupAndSelf',
+  self: 'members.workspaceModes.self',
+} as const satisfies Record<GroupWorkspaceMode, string>
+const workspaceModeHintKeys = {
+  group: 'members.workspaceModes.groupHint',
+  group_and_self: 'members.workspaceModes.groupAndSelfHint',
+  self: 'members.workspaceModes.selfHint',
+} as const satisfies Record<GroupWorkspaceMode, string>
+const workspaceModes = Object.keys(workspaceModeKeys) as GroupWorkspaceMode[]
+
+function isWorkspaceMode(value: string): value is GroupWorkspaceMode {
+  return workspaceModes.some((mode) => mode === value)
+}
+
+/** Resolve the local paths an agent addresses under its current mode. */
+function useAgentWorkspacePaths(groupId: string, agentId: string, mode: GroupWorkspaceMode) {
+  const group = useGroup(groupId)
+  const agents = useAgents()
+  const workspaces = useWorkspaces()
+  const localPath = (workspaceId: string | null | undefined) =>
+    (workspaces.data ?? []).find((workspace) => workspace.id === workspaceId)?.local_path ?? null
+  const own = localPath((agents.data ?? []).find((agent) => agent.id === agentId)?.workspace_id)
+  const shared = localPath(group.data?.workspace_id)
+  return {
+    primary: mode === 'self' ? own : shared,
+    mount: mode === 'group_and_self' ? own : null,
+  }
+}
+
 function entryKey(entry: Entry) { return `${entry.kind}:${entry.kind === 'agent' ? entry.agent.agent_id : entry.member.user_id}` }
 function entryName(entry: Entry) { return entry.kind === 'agent' ? entry.agent.display_name : entry.member.display_name }
 function entryMuted(entry: Entry) { return entry.kind === 'agent' ? entry.muted : entry.member.is_muted }
@@ -58,8 +90,45 @@ function AddUser({ user, groupId }: { user: UserRead; groupId: string }) {
 function AddAgent({ agent, groupId }: { agent: AgentRead; groupId: string }) {
   const { t } = useTranslation('groups')
   const add = useAddAgentToGroup()
-  const [share, setShare] = useState(true)
-  return <li className="flex items-start justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{agent.name}</p><p className="truncate text-xs text-muted-foreground">{agent.description || t('members.noDescription')}</p><label className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={share} onChange={(event) => setShare(event.target.checked)} />{t('members.allowWorkspace')}</label></div><Button size="sm" onClick={() => add.mutate({ groupId, agentId: agent.id, shareGroupWorkspace: share })} disabled={add.isPending}>{add.isPending ? t('members.adding') : t('members.add')}</Button></li>
+  const [workspaceMode, setWorkspaceMode] = useState<GroupWorkspaceMode>('group')
+  return <li className="flex items-start justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{agent.name}</p><p className="truncate text-xs text-muted-foreground">{agent.description || t('members.noDescription')}</p><label className="mt-1.5 block space-y-1 text-xs text-muted-foreground"><span>{t('members.allowWorkspace')}</span><select aria-label={t('members.workspaceAccess')} className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs" value={workspaceMode} onChange={(event) => { if (isWorkspaceMode(event.target.value)) setWorkspaceMode(event.target.value) }}>{workspaceModes.map((value) => <option key={value} value={value}>{t(workspaceModeKeys[value])}</option>)}</select></label></div><Button size="sm" onClick={() => add.mutate({ groupId, agentId: agent.id, workspaceMode })} disabled={add.isPending}>{add.isPending ? t('members.adding') : t('members.add')}</Button></li>
+}
+
+/**
+ * Pick which workspace roots this agent addresses, and show where they land.
+ * The resolved paths matter: an isolated agent silently stops seeing group
+ * files, so the consequence of the choice has to be visible next to it.
+ */
+function AgentWorkspaceAccess({ groupId, agent, onError }: { groupId: string; agent: GroupAgentRead; onError: (error: unknown) => void }) {
+  const { t } = useTranslation('groups')
+  const setWorkspaceMode = useSetGroupAgentWorkspaceMode()
+  const mode = agent.workspace_mode
+  const { primary, mount } = useAgentWorkspacePaths(groupId, agent.agent_id, mode)
+  const notConfigured = t('members.workspaceNotConfigured')
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="text-sm font-medium">{t('members.workspaceAccess')}</p>
+        <p className="text-xs text-muted-foreground">{t('members.workspaceAccessDescription')}</p>
+      </div>
+      <select
+        aria-label={t('members.workspaceAccess')}
+        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+        value={mode}
+        disabled={setWorkspaceMode.isPending}
+        onChange={(event) => {
+          const next = event.target.value
+          if (!isWorkspaceMode(next) || next === mode) return
+          setWorkspaceMode.mutate({ groupId, agentId: agent.agent_id, workspaceMode: next }, { onError })
+        }}
+      >
+        {workspaceModes.map((value) => <option key={value} value={value}>{t(workspaceModeKeys[value])}</option>)}
+      </select>
+      <p className="text-xs text-muted-foreground">{t(workspaceModeHintKeys[mode])}</p>
+      <p className="truncate text-[11px] text-muted-foreground" title={primary ?? undefined}>{t('members.workspacePrimary', { location: primary ?? notConfigured })}</p>
+      {mount ? <p className="truncate text-[11px] text-muted-foreground" title={mount}>{t('members.workspaceMount', { location: mount })}</p> : null}
+    </div>
+  )
 }
 
 function EntryRow({ entry, active, mode, onSelect }: { entry: Entry; active: boolean; mode: GroupCommunicationMode; onSelect: () => void }) {
@@ -72,8 +141,10 @@ function EntryRow({ entry, active, mode, onSelect }: { entry: Entry; active: boo
       ? t(topologyRoleKeys[topologyRole])
       : t('members.unknownTopologyRole', { value: topologyRole })
     : false
+  // Only non-default workspace modes get a tag; badging the default is noise.
+  const workspaceTag = agent && entry.agent.workspace_mode !== 'group' && t(workspaceModeKeys[entry.agent.workspace_mode])
   const tags = (agent
-    ? [entry.muted && t('members.muted'), entry.agent.share_group_workspace && t('members.workspace'), mode === 'star' && entry.agent.topology_role === 'hub' && t('members.hub'), hierarchicalTag, mode === 'ring' && entry.agent.speaking_order !== null && `#${formatNumber(entry.agent.speaking_order, language)}`]
+    ? [entry.muted && t('members.muted'), workspaceTag, mode === 'star' && entry.agent.topology_role === 'hub' && t('members.hub'), hierarchicalTag, mode === 'ring' && entry.agent.speaking_order !== null && `#${formatNumber(entry.agent.speaking_order, language)}`]
     : [entry.member.is_muted && t('members.muted')]
   ).filter((tag): tag is string => Boolean(tag))
   const rawRole = agent ? entry.agent.role : entry.member.role
@@ -88,7 +159,6 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
   const removeHuman = useRemoveGroupMember()
   const muteAgent = useMuteGroupAgent()
   const removeAgent = useRemoveGroupAgent()
-  const sharing = useSetGroupAgentWorkspaceSharing()
   const topology = useSetGroupAgentTopology()
   const [error, setError] = useState<{ key: string; detail?: string } | null>(null)
   const [confirm, setConfirm] = useState(false)
@@ -156,10 +226,7 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
       </div>
       {agent ? (
         <div className="space-y-4 border-t border-border pt-4">
-          <div className="flex items-center justify-between gap-3">
-            <div><p className="text-sm font-medium">{t('members.groupWorkspace')}</p><p className="text-xs text-muted-foreground">{t('members.sharedWorkspaceAccess')}</p></div>
-            <Button size="sm" variant="outline" disabled={sharing.isPending} onClick={() => sharing.mutate({ groupId, agentId: entry.agent.agent_id, shareGroupWorkspace: !entry.agent.share_group_workspace }, { onError: fail('members.errors.workspace') })}>{entry.agent.share_group_workspace ? t('members.unshare') : t('members.share')}</Button>
-          </div>
+          <AgentWorkspaceAccess groupId={groupId} agent={entry.agent} onError={fail('members.errors.workspace')} />
           {mode === 'star' ? <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">{t('members.starTopology')}</p><p className="text-xs text-muted-foreground">{t('members.setAsHub')}</p></div><Button size="sm" variant={entry.agent.topology_role === 'hub' ? 'default' : 'outline'} disabled={topology.isPending || entry.agent.topology_role === 'hub'} onClick={() => updateTopology('hub', null)}>{entry.agent.topology_role === 'hub' ? t(topologyRoleKeys.hub) : t('members.makeHub')}</Button></div> : null}
           {mode === 'hierarchical' ? <label className="block space-y-1.5 text-sm font-medium">{t('members.hierarchyRole')}<select className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={topologyRole ?? NO_TOPOLOGY_ROLE} disabled={topology.isPending} onChange={(event) => { const role = event.target.value; if (role === 'leader' || role === 'worker') updateTopology(role, null) }}><option value={NO_TOPOLOGY_ROLE} disabled>{t('members.noTopologyRole')}</option>{topologyRole && topologyRole !== 'leader' && topologyRole !== 'worker' ? <option value={topologyRole}>{isTopologyRole(topologyRole) ? t(topologyRoleKeys[topologyRole]) : t('members.unknownTopologyRole', { value: topologyRole })}</option> : null}<option value="leader">{t(topologyRoleKeys.leader)}</option><option value="worker">{t(topologyRoleKeys.worker)}</option></select></label> : null}
           {mode === 'ring' ? <label className="block space-y-1.5 text-sm font-medium">{t('members.speakingOrder')}<Input type="number" min={1} value={entry.agent.speaking_order ?? ''} disabled={topology.isPending} onChange={(event) => updateTopology(null, event.target.value === '' ? null : Number(event.target.value))} /></label> : null}

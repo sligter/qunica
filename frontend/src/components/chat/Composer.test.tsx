@@ -41,7 +41,7 @@ const groupAgents: GroupAgentRead[] = [
     topology_role: null,
     speaking_order: null,
     response_mode: 'default',
-    share_group_workspace: false,
+    workspace_mode: 'self', share_group_workspace: false,
     context_usage: null,
     status: 'active',
     joined_at: '2026-07-18T00:00:00Z',

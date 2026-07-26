@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    bash, controlled, http, MountedSkill, ToolError, ToolResult, ToolStatus, WorkspaceTools,
-    MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
+    bash, controlled, http, MountedSkill, ToolError, ToolResult, ToolStatus, WorkspaceMount,
+    WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
 /// Executes workspace and network tools by name with JSON arguments.
@@ -38,8 +38,19 @@ impl ToolExecutor {
         workspace_root: Option<PathBuf>,
         mounted_skills: Vec<MountedSkill>,
     ) -> Result<Self, ToolError> {
+        Self::new_with_mounts(workspace_root, Vec::new(), mounted_skills)
+    }
+
+    /// Build an executor whose primary root is `workspace_root`, with `mounts`
+    /// addressable by name and the given mounted skills. Mounts without a
+    /// primary root are dropped: there is no address space to hang them off.
+    pub fn new_with_mounts(
+        workspace_root: Option<PathBuf>,
+        mounts: Vec<WorkspaceMount>,
+        mounted_skills: Vec<MountedSkill>,
+    ) -> Result<Self, ToolError> {
         let workspace = match workspace_root {
-            Some(root) => Some(WorkspaceTools::new(root)?),
+            Some(root) => Some(WorkspaceTools::with_mounts(root, mounts)?),
             None => None,
         };
         Ok(Self {
@@ -61,9 +72,17 @@ impl ToolExecutor {
         }
     }
 
-    /// The bound workspace root, if any.
+    /// The bound primary workspace root, if any.
     pub fn workspace_root(&self) -> Option<&Path> {
         self.workspace.as_ref().map(WorkspaceTools::root)
+    }
+
+    /// The named mounts retained alongside the primary root.
+    pub fn workspace_mounts(&self) -> &[WorkspaceMount] {
+        self.workspace
+            .as_ref()
+            .map(WorkspaceTools::mounts)
+            .unwrap_or_default()
     }
 
     /// Execute `name` with `args`, returning a model-safe [`ToolResult`]. Never
@@ -171,6 +190,8 @@ impl ToolExecutor {
                 let limit = arg_usize(&args, "limit", MAX_GREP_RESULTS);
                 run_blocking(move || workspace.grep(&pattern, &path, limit)).await
             }
+            // `Bash` runs in the primary root only: its command guard is built
+            // around a single root, so mounts are not reachable from a shell.
             "Bash" => {
                 let command = arg_str(&args, "command")?.to_string();
                 let timeout_seconds =

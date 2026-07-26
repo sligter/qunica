@@ -425,6 +425,15 @@ export interface GroupMuteUpdate {
   muted: boolean
 }
 
+/**
+ * Which workspace roots a group agent may address during a turn.
+ *
+ * - `group`: the group workspace only.
+ * - `group_and_self`: the group workspace, plus its own mounted at `~self/`.
+ * - `self`: its own workspace only; group files and attachments are out of reach.
+ */
+export type GroupWorkspaceMode = 'group' | 'group_and_self' | 'self'
+
 export interface GroupAgentRead {
   id: string
   group_id: string
@@ -434,6 +443,8 @@ export interface GroupAgentRead {
   topology_role: GroupTopologyRole | null
   speaking_order: number | null
   response_mode: string
+  workspace_mode: GroupWorkspaceMode
+  /** Derived from `workspace_mode`: true unless the agent is isolated. */
   share_group_workspace: boolean
   context_usage: ContextUsage | null
   status: string
@@ -442,7 +453,7 @@ export interface GroupAgentRead {
 
 export interface GroupAgentAdd {
   agent_id: string
-  share_group_workspace?: boolean
+  workspace_mode?: GroupWorkspaceMode
 }
 
 export interface GroupAgentTopologyUpdate {
@@ -451,7 +462,7 @@ export interface GroupAgentTopologyUpdate {
 }
 
 export interface GroupAgentWorkspaceSharingUpdate {
-  share_group_workspace: boolean
+  workspace_mode: GroupWorkspaceMode
 }
 
 export interface ClearGroupMessagesResponse {

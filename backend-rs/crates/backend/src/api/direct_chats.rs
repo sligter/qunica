@@ -16,6 +16,7 @@ use crate::api::{
     },
     AppState,
 };
+use crate::runtime::workspace_scope::WorkspaceMode;
 
 const SELECT_DIRECT_CHAT: &str = "SELECT g.id, g.name AS title, g.title_source, \
     g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, \
@@ -96,8 +97,13 @@ pub async fn create(
     sqlx::query("INSERT INTO group_members (group_id, user_id, role, status, joined_at) VALUES (?, ?, 'owner', 'active', ?)")
         .bind(&id).bind(&owner_id).bind(&now).execute(&mut *tx).await
         .map_err(|_| ApiError::internal("failed to create direct chat membership"))?;
-    sqlx::query("INSERT INTO group_agents (group_id, agent_id, response_mode, context_scope_json, status, joined_at, updated_at) VALUES (?, ?, 'default', '{\"share_group_workspace\":true}', 'active', ?, ?)")
-        .bind(&id).bind(&agent.id).bind(&now).bind(&now).execute(&mut *tx).await
+    // The conversation workspace is a copy of the agent's own binding, so the
+    // default `group` mode points the agent right back at its own directory.
+    let context_scope_json = WorkspaceMode::default()
+        .to_context_scope(None)
+        .map_err(|_| ApiError::internal("failed to serialize context scope"))?;
+    sqlx::query("INSERT INTO group_agents (group_id, agent_id, response_mode, context_scope_json, status, joined_at, updated_at) VALUES (?, ?, 'default', ?, 'active', ?, ?)")
+        .bind(&id).bind(&agent.id).bind(&context_scope_json).bind(&now).bind(&now).execute(&mut *tx).await
         .map_err(|_| ApiError::internal("failed to bind direct chat agent"))?;
     sqlx::query("INSERT INTO threads (id, group_id, agent_id, status, next_seq, created_at, updated_at) VALUES (?, ?, NULL, 'active', 1, ?, ?)")
         .bind(Uuid::new_v4().to_string()).bind(&id).bind(&now).bind(&now).execute(&mut *tx).await

@@ -4545,6 +4545,86 @@ async fn group_agents_workspace_sharing_toggles_response() {
 }
 
 #[tokio::test]
+async fn group_agents_workspace_mode_round_trips_and_derives_the_legacy_flag() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-agents-workspace-mode@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    // Adding without a mode uses the default: the group workspace.
+    let (status, added) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": agent}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(added["workspace_mode"], "group");
+    assert_eq!(added["share_group_workspace"], true);
+
+    // Mounting the agent's own workspace still counts as using the group's.
+    let (status, mounted) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"workspace_mode": "group_and_self"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(mounted["workspace_mode"], "group_and_self");
+    assert_eq!(mounted["share_group_workspace"], true);
+
+    let (status, isolated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"workspace_mode": "self"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(isolated["workspace_mode"], "self");
+    assert_eq!(isolated["share_group_workspace"], false);
+
+    // The legacy boolean still drives the mode for older clients.
+    let (status, legacy) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"share_group_workspace": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(legacy["workspace_mode"], "group");
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"workspace_mode": "everything"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn group_topology_agent_patch_validates_star_hierarchical_and_ring() {
     let app = app().await;
     let token = register_and_login(&app, "group-topology-agent@example.com").await;

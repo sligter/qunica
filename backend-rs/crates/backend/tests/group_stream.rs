@@ -18,7 +18,9 @@ use std::{
 use ag_swarmer_backend::{
     api::{router_with_state_for_tests, AppState},
     runtime::{
-        conversation_context::{load_conversation, to_acp_prompt, to_llm_messages},
+        conversation_context::{
+            load_conversation, to_acp_prompt, to_llm_messages, AttachmentAccess,
+        },
         group::{run_thread_resume, ResumeRequest},
         run_group_turn, RuntimeServices, StreamEventKind, TurnOutcome, TurnRequest,
     },
@@ -1052,7 +1054,7 @@ async fn conversation_identity_llm_preserves_speakers_and_escapes_untrusted_cont
     .await;
 
     let rows = load_conversation(state.db.pool(), &thread).await.unwrap();
-    let messages = to_llm_messages("system prompt", &current_agent, &rows);
+    let messages = to_llm_messages("system prompt", &current_agent, &rows, AttachmentAccess::Readable);
 
     assert_eq!(messages[0].role, "system");
     assert_eq!(messages[0].content, "system prompt");
@@ -1145,8 +1147,8 @@ async fn conversation_identity_acp_and_llm_share_speaker_semantics() {
     .await;
 
     let rows = load_conversation(state.db.pool(), &thread).await.unwrap();
-    let llm = to_llm_messages("system prompt", &current_agent, &rows);
-    let acp = to_acp_prompt("system prompt", &current_agent, &rows);
+    let llm = to_llm_messages("system prompt", &current_agent, &rows, AttachmentAccess::Readable);
+    let acp = to_acp_prompt("system prompt", &current_agent, &rows, AttachmentAccess::Readable);
 
     let peer_envelope = &llm[2].content;
     let human_envelope = &llm[3].content;
@@ -1337,12 +1339,19 @@ async fn vision_attachment_png_is_native_by_default_and_can_be_disabled() {
 
     let requests = requests.lock().await;
     assert_eq!(requests.len(), 2);
+    // The vision agent is isolated in its own workspace, which happens to hold a
+    // decoy `uploads/diagram.png`. It is told about the attachment but is given
+    // no relative path, because that path would resolve to the decoy.
     let vision_content = &requests[0]["messages"][1]["content"];
     assert_eq!(vision_content[0]["type"], "text");
     assert!(vision_content[0]["text"]
         .as_str()
         .unwrap()
-        .contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" path=\"uploads/diagram.png\">"));
+        .contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" accessible=\"false\">"));
+    assert!(!vision_content[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("path=\"uploads/diagram.png\""));
     assert!(vision_content[0]["text"]
         .as_str()
         .unwrap()
@@ -1353,11 +1362,12 @@ async fn vision_attachment_png_is_native_by_default_and_can_be_disabled() {
         "data:image/png;base64,AQIDBA=="
     );
 
+    // The text agent shares the group workspace, so its relative path is real.
     let text_content = &requests[1]["messages"][1]["content"];
     assert!(text_content
         .as_str()
         .unwrap()
-        .contains("workspace-attachment"));
+        .contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" path=\"uploads/diagram.png\">"));
     assert!(!text_content.to_string().contains("image_url"));
     assert!(!text_content.to_string().contains("AQIDBA=="));
 }
@@ -6437,4 +6447,84 @@ async fn group_stream_no_routed_agents_ends_in_silence() {
     assert!(!kinds.contains(&"agent_start".to_string()));
     assert!(kinds.contains(&"silence".to_string()));
     assert_eq!(kinds.last().unwrap(), "done");
+}
+
+#[tokio::test]
+async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "workspace-mount@example.com").await;
+    let owner = owner_id(&state, "workspace-mount@example.com").await;
+    let (group_root, group_workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(group_root.path().join("brief.md"), "shared brief\n").unwrap();
+    let group = create_group(&app, &token, &group_workspace, json!({"free_speech": true})).await;
+
+    let (provider_url, requests) =
+        recording_fake_provider_sequence(vec![text_body("acknowledged")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Mounted",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let (own_root, own_workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(own_root.path().join("template.md"), "private template\n").unwrap();
+    sqlx::query("UPDATE agents SET workspace_id = ? WHERE id = ?")
+        .bind(&own_workspace)
+        .bind(&agent)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE group_agents SET context_scope_json = '{\"workspace_mode\":\"group_and_self\"}' \
+         WHERE group_id = ? AND agent_id = ?",
+    )
+    .bind(&group)
+    .bind(&agent)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "Use the brief."}),
+    )
+    .await;
+    assert_eq!(events.last().unwrap()["kind"], "done");
+
+    let requests = requests.lock().await;
+    let system_prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system_prompt.contains("- mode: group_and_self"),
+        "got: {system_prompt}"
+    );
+    // The group workspace is primary; the agent's own workspace is the mount.
+    assert!(
+        system_prompt.contains(&format!(
+            "- primary (plain relative paths resolve here): {}",
+            std::fs::canonicalize(group_root.path())
+                .unwrap()
+                .to_string_lossy()
+        )),
+        "got: {system_prompt}"
+    );
+    assert!(
+        system_prompt.contains(&format!(
+            "- mount ~self/ (your own workspace): {}",
+            std::fs::canonicalize(own_root.path())
+                .unwrap()
+                .to_string_lossy()
+        )),
+        "got: {system_prompt}"
+    );
+    assert!(
+        system_prompt.contains("Bash runs in the primary root only"),
+        "got: {system_prompt}"
+    );
 }

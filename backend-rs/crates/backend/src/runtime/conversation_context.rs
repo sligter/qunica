@@ -3,6 +3,11 @@
 //! Message content from humans and peer agents is untrusted. Renderers preserve
 //! the speaker identity in an escaped host-controlled envelope; only the
 //! current agent's own history is represented as assistant output.
+//!
+//! Attachment paths are relative to the *conversation* workspace, so a renderer
+//! must be told whether the reading agent can actually address that root — see
+//! [`AttachmentAccess`]. Handing an isolated agent a bare relative path would
+//! silently resolve it under a different root.
 
 use crate::llm::ChatMessage;
 use serde::Deserialize;
@@ -15,6 +20,17 @@ pub struct ConversationAttachment {
     pub name: String,
     pub mime_type: String,
     pub size: i64,
+}
+
+/// Whether the agent being prompted can read the conversation workspace that
+/// attachment paths are relative to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentAccess {
+    /// The conversation workspace is addressable; render the relative path.
+    Readable,
+    /// The agent runs somewhere else entirely; render the attachment as
+    /// metadata only, with no path it could resolve against the wrong root.
+    Unreachable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,13 +177,14 @@ pub fn to_llm_messages(
     system_prompt: &str,
     current_agent_id: &str,
     rows: &[ConversationMessage],
+    access: AttachmentAccess,
 ) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
     messages.extend(rows.iter().map(|row| match &row.actor {
         ConversationActor::Agent { id, .. } if id == current_agent_id => {
             ChatMessage::text("assistant", row.content.clone())
         }
-        _ => ChatMessage::text("user", render_untrusted_message(row)),
+        _ => ChatMessage::text("user", render_untrusted_message(row, access)),
     }));
     messages
 }
@@ -178,6 +195,7 @@ pub fn to_acp_prompt(
     system_prompt: &str,
     current_agent_id: &str,
     rows: &[ConversationMessage],
+    access: AttachmentAccess,
 ) -> String {
     let current_human_index = rows.last().and_then(|row| {
         matches!(row.actor, ConversationActor::Human { .. }).then_some(rows.len() - 1)
@@ -197,14 +215,14 @@ pub fn to_acp_prompt(
         if Some(index) == current_human_index {
             continue;
         }
-        prompt.push_str(&render_acp_history_message(row, current_agent_id));
+        prompt.push_str(&render_acp_history_message(row, current_agent_id, access));
         prompt.push('\n');
     }
     prompt.push_str("</conversation>\n\n");
 
     if let Some(index) = current_human_index {
         prompt.push_str("<current-message>\n");
-        prompt.push_str(&render_untrusted_message(&rows[index]));
+        prompt.push_str(&render_untrusted_message(&rows[index], access));
         prompt.push_str("\n</current-message>\n");
     }
 
@@ -214,11 +232,15 @@ pub fn to_acp_prompt(
 
 /// Render the latest non-self message for an existing ACP session. The same
 /// identity-bearing envelope used by the full transcript is retained.
-pub fn to_acp_incremental_prompt(current_agent_id: &str, rows: &[ConversationMessage]) -> String {
+pub fn to_acp_incremental_prompt(
+    current_agent_id: &str,
+    rows: &[ConversationMessage],
+    access: AttachmentAccess,
+) -> String {
     let current_message = rows
         .iter()
         .rfind(|row| !is_current_agent(row, current_agent_id))
-        .map(render_untrusted_message)
+        .map(|row| render_untrusted_message(row, access))
         .unwrap_or_default();
 
     format!(
@@ -233,21 +255,25 @@ fn is_current_agent(row: &ConversationMessage, current_agent_id: &str) -> bool {
     )
 }
 
-fn render_acp_history_message(row: &ConversationMessage, current_agent_id: &str) -> String {
+fn render_acp_history_message(
+    row: &ConversationMessage,
+    current_agent_id: &str,
+    access: AttachmentAccess,
+) -> String {
     if is_current_agent(row, current_agent_id) {
         format!("assistant: {}", escape_xml(&row.content))
     } else {
-        render_untrusted_message(row)
+        render_untrusted_message(row, access)
     }
 }
 
-fn render_untrusted_message(row: &ConversationMessage) -> String {
+fn render_untrusted_message(row: &ConversationMessage, access: AttachmentAccess) -> String {
     let (actor_type, actor_id, display_name) = match &row.actor {
         ConversationActor::Human { id, display_name } => ("human", id, display_name),
         ConversationActor::Agent { id, display_name } => ("agent", id, display_name),
     };
 
-    let attachment_references = render_attachment_references(&row.attachments);
+    let attachment_references = render_attachment_references(&row.attachments, access);
     format!(
         "<conversation-message actor_type=\"{actor_type}\" actor_id=\"{}\" display_name=\"{}\">{}{attachment_references}</conversation-message>",
         escape_xml(actor_id),
@@ -256,26 +282,58 @@ fn render_untrusted_message(row: &ConversationMessage) -> String {
     )
 }
 
-fn render_attachment_references(attachments: &[ConversationAttachment]) -> String {
+fn render_attachment_references(
+    attachments: &[ConversationAttachment],
+    access: AttachmentAccess,
+) -> String {
     if attachments.is_empty() {
         return String::new();
     }
     let entries = attachments
         .iter()
-        .map(|attachment| {
-            let instruction = if attachment.mime_type.starts_with("image/") {
+        .map(|attachment| render_attachment_reference(attachment, access))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("\n<workspace-attachments>\n{entries}\n</workspace-attachments>")
+}
+
+/// Render one attachment. An unreachable attachment carries no `path`: the
+/// relative path is meaningful only inside the conversation workspace, and an
+/// agent addressing a different root would resolve it to the wrong file.
+fn render_attachment_reference(
+    attachment: &ConversationAttachment,
+    access: AttachmentAccess,
+) -> String {
+    let is_image = attachment.mime_type.starts_with("image/");
+    let common = format!(
+        "name=\"{}\" mime_type=\"{}\" size=\"{}\"",
+        escape_xml(&attachment.name),
+        escape_xml(&attachment.mime_type),
+        attachment.size,
+    );
+    match access {
+        AttachmentAccess::Unreachable => {
+            let instruction = if is_image {
+                "This image was shared in the conversation workspace, which your isolated workspace cannot address. Judge it only from a separately supplied native image input; never infer its content from this metadata."
+            } else {
+                "This file lives in the conversation workspace, which your isolated workspace cannot address. Do not guess its contents; say you cannot read it, or ask for it to be shared another way."
+            };
+            format!(
+                "<workspace-attachment {common} accessible=\"false\">{instruction}</workspace-attachment>"
+            )
+        }
+        AttachmentAccess::Readable => {
+            let instruction = if is_image {
                 "Image pixels are not represented by this metadata. Make visual or OCR claims only from a separately supplied native image input; never infer image content from its name, path, or metadata."
             } else {
                 "Use workspace tools to read this file when its contents are needed."
             };
             format!(
-                "<workspace-attachment name=\"{}\" mime_type=\"{}\" size=\"{}\" path=\"{}\">{instruction}</workspace-attachment>",
-                escape_xml(&attachment.name), escape_xml(&attachment.mime_type), attachment.size, escape_xml(&attachment.path)
+                "<workspace-attachment {common} path=\"{}\">{instruction}</workspace-attachment>",
+                escape_xml(&attachment.path)
             )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("\n<workspace-attachments>\n{entries}\n</workspace-attachments>")
+        }
+    }
 }
 
 pub(crate) fn sanitize_acp_agent_brief(system_prompt: &str) -> String {

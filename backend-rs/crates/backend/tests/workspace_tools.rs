@@ -8,7 +8,8 @@
 use std::path::Path;
 
 use ag_swarmer_backend::tools::{
-    resolve_workspace_path, ToolExecutor, ToolStatus, WorkspaceTools, MAX_READ_LINES,
+    resolve_workspace_path, ToolExecutor, ToolStatus, WorkspaceMount, WorkspaceTools,
+    MAX_READ_LINES, SELF_MOUNT_NAME,
 };
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -509,4 +510,167 @@ async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
     assert_eq!(needs_ws.status, ToolStatus::WorkspaceRequired);
     let payload: Value = serde_json::from_str(&needs_ws.output).unwrap();
     assert_eq!(payload["status"], "WORKSPACE_REQUIRED");
+}
+
+// ---------------------------------------------------------------------------
+// Named mounts: the agent's own workspace alongside the conversation's
+// ---------------------------------------------------------------------------
+
+/// Build a primary root plus a `~self` mount, each with one marker file.
+fn mounted_pair() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceTools) {
+    let primary = tempdir().unwrap();
+    let own = tempdir().unwrap();
+    std::fs::write(primary.path().join("shared.md"), "shared note\n").unwrap();
+    std::fs::create_dir(own.path().join("templates")).unwrap();
+    std::fs::write(
+        own.path().join("templates/letter.md"),
+        "private template\n",
+    )
+    .unwrap();
+    let mount = WorkspaceMount::new(SELF_MOUNT_NAME, own.path()).unwrap();
+    let tools = WorkspaceTools::with_mounts(primary.path(), vec![mount]).unwrap();
+    (primary, own, tools)
+}
+
+#[test]
+fn workspace_tools_mount_reads_both_roots_in_one_address_space() {
+    let (_primary, _own, tools) = mounted_pair();
+
+    let shared = tools.read("shared.md", 1, MAX_READ_LINES).unwrap();
+    assert!(shared.output.contains("shared note"));
+
+    let private = tools
+        .read("~self/templates/letter.md", 1, MAX_READ_LINES)
+        .unwrap();
+    assert!(private.output.contains("private template"));
+}
+
+#[test]
+fn workspace_tools_mount_writes_and_edits_report_the_mounted_address() {
+    let (primary, own, tools) = mounted_pair();
+
+    let written = tools.write("~self/notes/todo.md", "one\n").unwrap();
+    assert!(
+        written.output.contains("~self/notes/todo.md"),
+        "write must echo the address the caller can read back, got: {}",
+        written.output
+    );
+    assert!(own.path().join("notes/todo.md").is_file());
+    assert!(
+        !primary.path().join("notes").exists(),
+        "a mounted write must not land in the primary root"
+    );
+
+    let edited = tools.edit("~self/notes/todo.md", "one", "two", false).unwrap();
+    assert!(edited.output.contains("~self/notes/todo.md"));
+    assert_eq!(
+        std::fs::read_to_string(own.path().join("notes/todo.md")).unwrap(),
+        "two\n"
+    );
+}
+
+#[test]
+fn workspace_tools_mount_glob_and_grep_prefix_mounted_matches() {
+    let (_primary, _own, tools) = mounted_pair();
+
+    let all = tools.glob("**/*.md", 100).unwrap().output;
+    assert!(all.contains("shared.md"), "got: {all}");
+    assert!(all.contains("~self/templates/letter.md"), "got: {all}");
+    // Primary results sort ahead of mounted ones.
+    assert!(all.find("shared.md") < all.find("~self/"), "got: {all}");
+
+    // A mount-scoped pattern selects only that root.
+    let scoped = tools.glob("~self/**/*.md", 100).unwrap().output;
+    assert_eq!(scoped, "~self/templates/letter.md");
+
+    let matches = tools.grep("note|template", "**/*.md", 100).unwrap().output;
+    assert!(matches.contains("shared.md:1:shared note"), "got: {matches}");
+    assert!(
+        matches.contains("~self/templates/letter.md:1:private template"),
+        "got: {matches}"
+    );
+}
+
+#[test]
+fn workspace_tools_mount_enforces_containment_on_the_mounted_root() {
+    let (_primary, _own, tools) = mounted_pair();
+
+    for unsafe_path in [
+        "~self/../escape.txt",
+        "~self/a/../../b",
+        "~self/C:/tmp/x",
+        "~self//etc/passwd",
+    ] {
+        assert!(
+            tools.read(unsafe_path, 1, MAX_READ_LINES).is_err(),
+            "expected `{unsafe_path}` to be rejected"
+        );
+    }
+    // The bare mount name is a directory, not a file.
+    assert!(tools.read("~self", 1, MAX_READ_LINES).is_err());
+}
+
+#[test]
+fn workspace_tools_mount_name_must_match_a_whole_segment() {
+    let primary = tempdir().unwrap();
+    let own = tempdir().unwrap();
+    std::fs::create_dir(primary.path().join("~selfish")).unwrap();
+    std::fs::write(primary.path().join("~selfish/x.md"), "primary file\n").unwrap();
+    let tools = WorkspaceTools::with_mounts(
+        primary.path(),
+        vec![WorkspaceMount::new(SELF_MOUNT_NAME, own.path()).unwrap()],
+    )
+    .unwrap();
+
+    // `~selfish` shares a prefix with `~self` but is an ordinary primary path.
+    let read = tools.read("~selfish/x.md", 1, MAX_READ_LINES).unwrap();
+    assert!(read.output.contains("primary file"));
+}
+
+#[test]
+fn workspace_tools_mount_inside_the_primary_root_is_dropped() {
+    let primary = tempdir().unwrap();
+    let nested = primary.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("x.md"), "nested\n").unwrap();
+
+    let tools = WorkspaceTools::with_mounts(
+        primary.path(),
+        vec![WorkspaceMount::new(SELF_MOUNT_NAME, &nested).unwrap()],
+    )
+    .unwrap();
+
+    assert!(
+        tools.mounts().is_empty(),
+        "a mount already addressable from the primary root must be dropped"
+    );
+    // The file is still reachable by its ordinary relative path, exactly once.
+    assert_eq!(tools.glob("**/*.md", 100).unwrap().output, "nested/x.md");
+}
+
+#[tokio::test]
+async fn workspace_tools_executor_exposes_mounts_to_file_tools_but_not_bash() {
+    let primary = tempdir().unwrap();
+    let own = tempdir().unwrap();
+    std::fs::write(own.path().join("secret-plan.md"), "mounted\n").unwrap();
+
+    let executor = ToolExecutor::new_with_mounts(
+        Some(primary.path().to_path_buf()),
+        vec![WorkspaceMount::new(SELF_MOUNT_NAME, own.path()).unwrap()],
+        Vec::new(),
+    )
+    .unwrap();
+
+    let read = executor
+        .execute("Read", json!({ "file_path": "~self/secret-plan.md" }))
+        .await;
+    assert_eq!(read.status, ToolStatus::Completed);
+    assert!(read.output.contains("mounted"));
+
+    // Bash stays bound to the primary root; the mount is not its cwd.
+    assert_eq!(
+        executor.workspace_root().map(Path::to_path_buf),
+        Some(std::fs::canonicalize(primary.path()).unwrap())
+    );
+    assert_eq!(executor.workspace_mounts().len(), 1);
 }
