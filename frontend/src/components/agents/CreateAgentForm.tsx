@@ -38,6 +38,7 @@ import { Switch } from '@/components/ui/switch'
 import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
+import { useMcpServers } from '@/hooks/useMcpServers'
 import { useCreateAgent } from '@/hooks/useCreateAgent'
 import { useProviderModels, useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
@@ -110,6 +111,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
   const workspaces = useWorkspaces()
   const builtinTools = useBuiltinTools()
   const agents = useAgents()
+  const mcpServers = useMcpServers()
   const acpRuntimePresets = useAcpRuntimePresets()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [submittedName, setSubmittedName] = useState<string | null>(null)
@@ -603,6 +605,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                 value={currentToolConfig}
                 workspaceBackendType={selectedWorkspace?.backend_type ?? 'local'}
                 agents={agents.data ?? []}
+                mcpServers={mcpServers.data ?? []}
                 onChange={setToolConfig}
               />
             )}

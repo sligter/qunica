@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod git;
 pub mod llm;
+pub mod mcp;
 mod process;
 pub mod runtime;
 pub mod server;

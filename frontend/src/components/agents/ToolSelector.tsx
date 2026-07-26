@@ -1,4 +1,12 @@
-import type { AgentRead, AgentToolConfig, BuiltinToolRead, ToolPolicy, WorkspaceBackendType } from '@/types/api'
+import type {
+  AgentRead,
+  AgentToolConfig,
+  BuiltinToolRead,
+  McpServerRead,
+  ToolPolicy,
+  WorkspaceBackendType,
+} from '@/types/api'
+import { McpToolSelector } from '@/components/agents/McpToolSelector'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 
@@ -17,6 +25,8 @@ interface ToolSelectorProps {
   value: AgentToolConfig
   workspaceBackendType: WorkspaceBackendType
   agents?: AgentRead[]
+  /** MCP servers the owner has configured, offered alongside the built-ins. */
+  mcpServers?: McpServerRead[]
   currentAgentId?: string
   onChange: (next: AgentToolConfig) => void
 }
@@ -37,6 +47,7 @@ export function ToolSelector({
   value,
   workspaceBackendType,
   agents = [],
+  mcpServers = [],
   currentAgentId,
   onChange,
 }: ToolSelectorProps) {
@@ -117,6 +128,15 @@ export function ToolSelector({
             </div>
           )}
         </div>
+      </div>
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-muted-foreground">{t('tools.mcp.title')}</p>
+        <p className="text-xs text-muted-foreground">{t('tools.mcp.description')}</p>
+        <McpToolSelector
+          servers={mcpServers}
+          value={value.mcp_servers ?? []}
+          onChange={(next) => onChange({ ...value, mcp_servers: next })}
+        />
       </div>
       {POLICY_ORDER.map((policy) => {
         const policyTools = tools.filter((tool) => tool.policy === policy)

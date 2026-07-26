@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   Plug,
   Search,
+  Server,
   Settings,
   Sparkles,
   Trash2,
@@ -66,13 +67,14 @@ const GroupFormDialog = lazy(() =>
 
 interface LibraryItem {
   to: string
-  key: 'agents' | 'providers' | 'skills' | 'workspaces'
+  key: 'agents' | 'providers' | 'mcpServers' | 'skills' | 'workspaces'
   icon: typeof Bot
 }
 
 const libraryItems: LibraryItem[] = [
   { to: '/agents', key: 'agents', icon: Bot },
   { to: '/providers', key: 'providers', icon: Plug },
+  { to: '/mcp-servers', key: 'mcpServers', icon: Server },
   { to: '/skills', key: 'skills', icon: Sparkles },
   { to: '/workspaces', key: 'workspaces', icon: Folder },
 ]

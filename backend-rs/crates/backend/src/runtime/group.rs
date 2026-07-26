@@ -26,7 +26,13 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::{collections::HashSet, future::Future, io::Read, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    future::Future,
+    io::Read,
+    path::PathBuf,
+    time::Duration,
+};
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -64,9 +70,10 @@ use crate::runtime::group_scheduler::{
     NewDispatch, NewTurn, SchedulerDecision, SchedulerDispatch, SchedulerStore, SelectionReason,
     TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
 };
+use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{
-    MountedSkill, ToolExecutor, ToolResult, ToolStatus, WorkspaceMount, SELF_MOUNT_NAME,
+    McpMount, MountedSkill, ToolExecutor, ToolResult, ToolStatus, WorkspaceMount, SELF_MOUNT_NAME,
 };
 
 const MAX_TOOL_ROUNDS: usize = 24;
@@ -92,6 +99,9 @@ const RESUME_CONTINUATION_PROMPT: &str =
 pub struct RuntimeServices {
     pub pool: SqlitePool,
     pub write_lock: Arc<Mutex<()>>,
+    /// Pooled MCP connections, shared process-wide so a stdio server is spawned
+    /// once rather than once per turn.
+    pub mcp: Arc<McpManager>,
     active_turns: ActiveTurnRegistry,
     // Retained for direct runtime tests that exercise the pre-registry
     // cancellation hook. HTTP cancellation uses `active_turns` instead.
@@ -103,6 +113,7 @@ impl RuntimeServices {
         Self {
             pool,
             write_lock,
+            mcp: McpManager::shared(),
             active_turns: ActiveTurnRegistry::new(),
             cancellation: None,
         }
@@ -2509,7 +2520,7 @@ async fn run_agent_turn(
         .map_err(StepErr::Db)?;
     let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
     let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
-    let invocation = build_invocation_context(&services.pool, ctx, agent, group)
+    let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
     let conversation_workspace_root = resolve_group_workspace_root(&services.pool, group)
@@ -2791,7 +2802,7 @@ async fn run_acp_agent_turn(
         .and_then(|value| serde_json::from_str::<Value>(value).ok());
     let mut config = normalize_acp_runtime(raw.as_ref()).map_err(|err| StepErr::Db(err.into()))?;
     canonicalize_codex_acp_runtime(&mut config);
-    let invocation = build_invocation_context(&services.pool, ctx, agent, group)
+    let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
     let cwd = invocation.workspace_root.clone().ok_or_else(|| {
@@ -4419,24 +4430,39 @@ fn parse_string_set(raw: Option<&str>) -> HashSet<String> {
 }
 
 async fn build_invocation_context(
-    pool: &SqlitePool,
+    services: &RuntimeServices,
     ctx: &StreamCtx,
     agent: &Candidate,
     group: &GroupRuntimeConfig,
 ) -> anyhow::Result<InvocationContext> {
+    let pool = &services.pool;
     let enabled_tools = enabled_tool_names(agent.tool_config_json.as_deref());
     let mounted_skills = load_mounted_skills(pool, agent).await?;
     let workspaces = resolve_workspaces(pool, agent, group).await?;
+    let mcp = resolve_mcp_tools(services, agent).await;
     let executor = ToolExecutor::new_with_mounts(
         workspaces.primary.clone(),
         workspaces.mounts(),
         mounted_skills.clone(),
     )
-    .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?;
-    let tools = enabled_tools
+    .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?
+    .with_mcp(services.mcp.clone(), mcp);
+
+    let mut tools = enabled_tools
         .iter()
         .filter_map(|name| tool_definition(name))
         .collect::<Vec<_>>();
+    tools.extend(
+        executor
+            .mcp_mount()
+            .bindings()
+            .map(mcp_tool_definition)
+            .collect::<Vec<_>>(),
+    );
+    // Keep the provider tool list stable across turns: `bindings()` iterates a
+    // hash map, and a list that reshuffles every turn defeats prompt caching.
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+
     // Render the prompt from what the executor actually retained, not from what
     // the mode asked for: a mount can be dropped as unusable or redundant, and
     // advertising one the tools do not have would be a lie the agent acts on.
@@ -4457,6 +4483,157 @@ async fn build_invocation_context(
         executor,
         workspace_root: workspaces.primary,
     })
+}
+
+/// Connect to the agent's enabled MCP servers and list their tools.
+///
+/// A server that is unreachable contributes no tools and one failure line. It
+/// never aborts the turn: an agent with a broken weather server should still be
+/// able to answer with everything else it has.
+async fn resolve_mcp_tools(services: &RuntimeServices, agent: &Candidate) -> McpMount {
+    let selections = enabled_mcp_selections(agent.tool_config_json.as_deref());
+    if selections.is_empty() {
+        return McpMount::default();
+    }
+
+    let server_ids: Vec<String> = selections
+        .iter()
+        .map(|selection| selection.server_id.clone())
+        .collect();
+    let rows =
+        match crate::mcp::store::load_active_servers(&services.pool, &agent.owner_id, &server_ids)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    agent_id = %agent.agent_id,
+                    %error,
+                    "could not load the agent's MCP servers"
+                );
+                return McpMount::default();
+            }
+        };
+
+    let mut bindings: Vec<McpToolBinding> = Vec::new();
+    let mut configs: Vec<McpServerConfig> = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
+
+    for row in rows {
+        let config = row.to_config();
+        // A per-agent tool selection narrows the server's own allowlist further,
+        // so an agent can be given one tool from a server that exposes twenty.
+        let selection = selections
+            .iter()
+            .find(|selection| selection.server_id == config.id);
+        let allowed = selection.map(|selection| selection.tools.clone()).unwrap_or_default();
+
+        match services.mcp.list_bindings(&config).await {
+            Ok(server_bindings) => {
+                let kept = server_bindings.into_iter().filter(|binding| {
+                    allowed.is_empty() || allowed.iter().any(|name| name == &binding.tool_name)
+                });
+                bindings.extend(kept);
+                configs.push(config);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    agent_id = %agent.agent_id,
+                    server = %config.name,
+                    %error,
+                    "could not list MCP tools"
+                );
+                failures.push((config.name.clone(), error.to_string()));
+            }
+        }
+    }
+
+    McpMount::new(bindings, configs, failures)
+}
+
+/// Build the provider tool definition for one MCP tool.
+///
+/// The description names the originating server, because two servers can offer
+/// tools with the same purpose and the model needs to be able to tell them apart
+/// from the tool list alone.
+fn mcp_tool_definition(binding: &McpToolBinding) -> ToolDefinition {
+    let description = if binding.description.is_empty() {
+        format!("Tool '{}' from MCP server '{}'.", binding.tool_name, binding.server_name)
+    } else {
+        format!("[MCP: {}] {}", binding.server_name, binding.description)
+    };
+    ToolDefinition {
+        name: binding.exposed_name.clone(),
+        description,
+        input_schema: binding.input_schema.clone(),
+    }
+}
+
+/// One agent's selection of a configured MCP server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct McpSelection {
+    server_id: String,
+    /// Server-side tool names to expose; empty means every tool the server has.
+    tools: Vec<String>,
+}
+
+/// Read the `mcp_servers` section of an agent's tool config.
+///
+/// The shape is `{"mcp_servers":[{"server_id":"…","enabled":true,"tools":["…"]}]}`.
+/// A bare string entry is accepted as shorthand for "this server, all tools",
+/// which keeps hand-written configs workable.
+fn enabled_mcp_selections(raw: Option<&str>) -> Vec<McpSelection> {
+    let Some(value) = raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) else {
+        return Vec::new();
+    };
+    let Some(entries) = value.get("mcp_servers").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut selections: Vec<McpSelection> = Vec::new();
+    for entry in entries {
+        let (server_id, tools) = match entry {
+            Value::String(server_id) => (server_id.clone(), Vec::new()),
+            Value::Object(_) => {
+                if !entry
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                let Some(server_id) = entry
+                    .get("server_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                let tools = entry
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .map(|names| {
+                        names
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (server_id.to_string(), tools)
+            }
+            _ => continue,
+        };
+        if selections
+            .iter()
+            .any(|selection| selection.server_id == server_id)
+        {
+            continue;
+        }
+        selections.push(McpSelection { server_id, tools });
+    }
+    selections
 }
 
 async fn build_agent_system_prompt(
@@ -4516,6 +4693,7 @@ async fn build_agent_system_prompt(
         format!("Roster:\n{roster}"),
         render_workspace_section(agent.workspace_mode, executor),
         format!("Enabled provider-native tools: {tools}"),
+        render_mcp_section(executor),
         format!("Mounted skills:\n{skill_lines}"),
         "Only provider-native tool calls listed above may execute. Literal XML or pseudo-tool text is not executable tool work.".to_string(),
     ];
@@ -4525,6 +4703,37 @@ async fn build_agent_system_prompt(
         ));
     }
     Ok(sections.join("\n\n"))
+}
+
+/// Render the MCP section of the system prompt.
+///
+/// Tools are grouped by server so the model can see which capabilities travel
+/// together. Servers that failed to connect are named with their reason, because
+/// an agent told to "use the GitHub server" needs to know the server is down
+/// rather than repeatedly hunting for a tool that is not in its list.
+fn render_mcp_section(executor: &ToolExecutor) -> String {
+    let mount = executor.mcp_mount();
+    if mount.is_empty() {
+        return "MCP servers: none".to_string();
+    }
+
+    let mut by_server: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for binding in mount.bindings() {
+        by_server
+            .entry(binding.server_name.clone())
+            .or_default()
+            .push(binding.exposed_name.clone());
+    }
+
+    let mut lines = vec!["MCP servers:".to_string()];
+    for (server, mut tools) in by_server {
+        tools.sort();
+        lines.push(format!("- {server}: {}", tools.join(", ")));
+    }
+    for (server, reason) in mount.failures() {
+        lines.push(format!("- {server}: unavailable this turn ({reason})"));
+    }
+    lines.join("\n")
 }
 
 /// Render the workspace section of the system prompt: which root plain
@@ -5406,6 +5615,171 @@ mod tests {
             persistence.disposition(),
             CandidateLoadDisposition::FailTurn
         );
+    }
+
+    #[test]
+    fn mcp_selections_read_enabled_servers_and_their_tool_narrowing() {
+        let raw = r#"{
+            "tools": {"read": {"enabled": true}},
+            "mcp_servers": [
+                {"server_id":"srv-a","enabled":true,"tools":["search"]},
+                {"server_id":"srv-b","enabled":true},
+                {"server_id":"srv-c","enabled":false}
+            ]
+        }"#;
+
+        let selections = enabled_mcp_selections(Some(raw));
+
+        assert_eq!(selections.len(), 2);
+        assert_eq!(selections[0].server_id, "srv-a");
+        assert_eq!(selections[0].tools, vec!["search"]);
+        // No `tools` key means every tool the server exposes.
+        assert_eq!(selections[1].server_id, "srv-b");
+        assert!(selections[1].tools.is_empty());
+    }
+
+    #[test]
+    fn mcp_selections_accept_bare_server_ids() {
+        let selections = enabled_mcp_selections(Some(r#"{"mcp_servers":["srv-a","srv-a"]}"#));
+
+        assert_eq!(selections.len(), 1);
+        assert_eq!(selections[0].server_id, "srv-a");
+        assert!(selections[0].tools.is_empty());
+    }
+
+    #[test]
+    fn mcp_selections_are_empty_without_the_section() {
+        assert!(enabled_mcp_selections(None).is_empty());
+        assert!(enabled_mcp_selections(Some("not json")).is_empty());
+        assert!(enabled_mcp_selections(Some(r#"{"tools":{}}"#)).is_empty());
+        // Entries with no usable server id are dropped, not counted as blanks.
+        assert!(enabled_mcp_selections(Some(r#"{"mcp_servers":[{"enabled":true},{"server_id":"  "}]}"#)).is_empty());
+    }
+
+    #[test]
+    fn mcp_selections_do_not_disable_the_builtin_tool_list() {
+        // The two sections are read independently, so adding MCP servers must
+        // not change which built-in tools an agent keeps.
+        let raw = r#"{"tools":{"read":{"enabled":true}},"mcp_servers":[{"server_id":"srv-a"}]}"#;
+        assert_eq!(enabled_tool_names(Some(raw)), vec!["Read".to_string()]);
+    }
+
+    #[test]
+    fn mcp_tool_definitions_name_their_server() {
+        let binding = McpToolBinding {
+            exposed_name: "mcp__github__create_issue".to_string(),
+            server_id: "srv-a".to_string(),
+            server_name: "GitHub".to_string(),
+            tool_name: "create_issue".to_string(),
+            description: "Open an issue.".to_string(),
+            input_schema: json!({"type":"object","properties":{}}),
+        };
+
+        let definition = mcp_tool_definition(&binding);
+
+        assert_eq!(definition.name, "mcp__github__create_issue");
+        assert_eq!(definition.description, "[MCP: GitHub] Open an issue.");
+    }
+
+    #[test]
+    fn mcp_tool_definitions_describe_tools_the_server_did_not_document() {
+        let binding = McpToolBinding {
+            exposed_name: "mcp__github__ping".to_string(),
+            server_id: "srv-a".to_string(),
+            server_name: "GitHub".to_string(),
+            tool_name: "ping".to_string(),
+            description: String::new(),
+            input_schema: json!({"type":"object","properties":{}}),
+        };
+
+        assert_eq!(
+            mcp_tool_definition(&binding).description,
+            "Tool 'ping' from MCP server 'GitHub'."
+        );
+    }
+
+    #[test]
+    fn the_mcp_prompt_section_groups_tools_and_names_unreachable_servers() {
+        let executor = ToolExecutor::without_workspace().with_mcp(
+            McpManager::shared(),
+            McpMount::new(
+                vec![McpToolBinding {
+                    exposed_name: "mcp__github__create_issue".to_string(),
+                    server_id: "srv-a".to_string(),
+                    server_name: "GitHub".to_string(),
+                    tool_name: "create_issue".to_string(),
+                    description: String::new(),
+                    input_schema: json!({}),
+                }],
+                vec![McpServerConfig {
+                    id: "srv-a".to_string(),
+                    name: "GitHub".to_string(),
+                    transport: crate::mcp::McpTransportKind::Stdio,
+                    command: Some("node".to_string()),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                    url: None,
+                    headers: BTreeMap::new(),
+                    timeout_seconds: 60,
+                    tool_filter: Vec::new(),
+                }],
+                vec![("Weather".to_string(), "connection refused".to_string())],
+            ),
+        );
+
+        let section = render_mcp_section(&executor);
+
+        assert!(section.contains("- GitHub: mcp__github__create_issue"), "{section}");
+        assert!(
+            section.contains("- Weather: unavailable this turn (connection refused)"),
+            "{section}"
+        );
+    }
+
+    #[test]
+    fn the_mcp_prompt_section_says_none_when_nothing_is_mounted() {
+        assert_eq!(
+            render_mcp_section(&ToolExecutor::without_workspace()),
+            "MCP servers: none"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binding_without_its_server_config_is_not_callable() {
+        // `McpMount::new` drops bindings whose server was deleted between the
+        // listing and the call, so the model cannot address a tool that has no
+        // route to a server.
+        let executor = ToolExecutor::without_workspace().with_mcp(
+            McpManager::shared(),
+            McpMount::new(
+                vec![McpToolBinding {
+                    exposed_name: "mcp__gone__tool".to_string(),
+                    server_id: "deleted".to_string(),
+                    server_name: "Gone".to_string(),
+                    tool_name: "tool".to_string(),
+                    description: String::new(),
+                    input_schema: json!({}),
+                }],
+                Vec::new(),
+                Vec::new(),
+            ),
+        );
+
+        assert!(executor.mcp_mount().is_empty());
+        let result = executor.execute("mcp__gone__tool", json!({})).await;
+        assert_eq!(result.status, ToolStatus::Failed);
+        assert!(result.output.contains("unavailable"), "{}", result.output);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_names_are_unknown_when_no_server_is_mounted() {
+        let executor = ToolExecutor::without_workspace();
+
+        let result = executor.execute("mcp__github__create_issue", json!({})).await;
+
+        assert_eq!(result.status, ToolStatus::SetupRequired);
+        assert!(result.output.contains("MCP server"), "{}", result.output);
     }
 
     fn human_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {

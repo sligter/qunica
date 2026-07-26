@@ -37,6 +37,7 @@ import { Switch } from '@/components/ui/switch'
 import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
+import { useMcpServers } from '@/hooks/useMcpServers'
 import { useProviderModels, useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { useUpdateAgent } from '@/hooks/useUpdateAgent'
@@ -111,6 +112,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const workspaces = useWorkspaces()
   const builtinTools = useBuiltinTools()
   const agents = useAgents()
+  const mcpServers = useMcpServers()
   const acpRuntimePresets = useAcpRuntimePresets()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
@@ -582,6 +584,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                 value={currentToolConfig}
                 workspaceBackendType={selectedWorkspace?.backend_type ?? 'local'}
                 agents={agents.data ?? []}
+                mcpServers={mcpServers.data ?? []}
                 currentAgentId={agent.id}
                 onChange={setToolConfig}
               />

@@ -35,6 +35,7 @@ AG Swarmer 是一个以“群组”为核心交互容器的多 Agent 协作工�
 - 群组 workspace 文件浏览。
 - LLM provider 配置。
 - Skills 管理和注入。
+- MCP 工具接入：stdio、Streamable HTTP、SSE 三种传输协议。
 - 外部 CLI Agent runtime：
   - Codex CLI：`codex exec --sandbox danger-full-access <prompt>`
   - Claude Code：`claude -p --output-format stream-json --permission-mode bypassPermissions --max-turns <n> <prompt>`
@@ -45,6 +46,24 @@ AG Swarmer 是一个以“群组”为核心交互容器的多 Agent 协作工�
   - 系统托盘常驻。
   - 原生目录选择。
   - 免安装 zip。
+
+### MCP 工具
+
+在资源库的 **MCP 服务** 中登记 Model Context Protocol 服务后，Agent 就可以像调用内置工具一样调用它提供的工具。支持三种标准传输协议：
+
+| 协议 | 说明 |
+| --- | --- |
+| `stdio` | 启动本地进程，通过其 stdin/stdout 收发按行分隔的 JSON-RPC 2.0 消息。 |
+| `Streamable HTTP` | 单个 HTTP 端点，POST JSON-RPC，服务端返回 `application/json` 或 `text/event-stream`；会话通过 `Mcp-Session-Id` 保持。 |
+| `SSE`（旧版） | GET 打开事件流，服务端用 `endpoint` 事件告知消息端点，之后 POST 请求、响应从事件流返回。 |
+
+工具命名与生效方式：
+
+- 服务的工具会以 `mcp__<服务名 slug>__<工具名>` 的形式暴露给模型，因此不同服务的同名工具不会互相冲突。
+- 每个服务可以配置工具白名单；每个 Agent 还可以在自己的工具设置里进一步只选其中一部分。
+- 保存前可以点击“测试连接”，直接看到该服务实际暴露了哪些工具。
+- 连接不上的服务只会让它自己的工具在本回合缺席，并在系统提示里注明原因，不会让整个回合失败。
+- stdio 服务会继承当前进程的环境变量，并叠加配置中的环境变量覆盖项；HTTP 服务的请求头值在接口返回时以掩码显示。
 
 ### 工作区文件引用与预览
 

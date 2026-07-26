@@ -6,6 +6,7 @@ import { LegacyDetailRedirect } from '@/components/layout/LegacyDetailRedirect'
 import { RequireAuth } from '@/components/layout/RequireAuth'
 import { AgentsListColumn } from '@/components/layout/AgentsListColumn'
 import { EntityLayout } from '@/components/layout/EntityLayout'
+import { McpServersListColumn } from '@/components/layout/McpServersListColumn'
 import { ProvidersListColumn } from '@/components/layout/ProvidersListColumn'
 import { SettingsLayout } from '@/components/layout/SettingsLayout'
 import { SkillsListColumn } from '@/components/layout/SkillsListColumn'
@@ -38,6 +39,15 @@ const ProviderDetailPage = lazy(() =>
 )
 const ProvidersIndexPage = lazy(() =>
   import('@/pages/providers/ProvidersIndexPage').then((m) => ({ default: m.ProvidersIndexPage })),
+)
+const McpServerCreatePage = lazy(() =>
+  import('@/pages/mcp/McpServerCreatePage').then((m) => ({ default: m.McpServerCreatePage })),
+)
+const McpServerDetailPage = lazy(() =>
+  import('@/pages/mcp/McpServerDetailPage').then((m) => ({ default: m.McpServerDetailPage })),
+)
+const McpServersIndexPage = lazy(() =>
+  import('@/pages/mcp/McpServersIndexPage').then((m) => ({ default: m.McpServersIndexPage })),
 )
 const SkillCreatePage = lazy(() =>
   import('@/pages/skills/SkillCreatePage').then((m) => ({ default: m.SkillCreatePage })),
@@ -107,6 +117,20 @@ export const router = createBrowserRouter([
               { index: true, element: <ProvidersIndexPage /> },
               { path: 'new', element: <ProviderCreatePage /> },
               { path: ':providerId', element: <ProviderDetailPage /> },
+            ],
+          },
+          {
+            path: '/mcp-servers',
+            element: (
+              <EntityLayout
+                titleKey="mcpServers"
+                list={<McpServersListColumn width={ENTITY_LIST_WIDTH} />}
+              />
+            ),
+            children: [
+              { index: true, element: <McpServersIndexPage /> },
+              { path: 'new', element: <McpServerCreatePage /> },
+              { path: ':serverId', element: <McpServerDetailPage /> },
             ],
           },
           {

@@ -84,9 +84,72 @@ export interface AgentAssistantToolSelection {
   enabled: boolean
 }
 
+/** One MCP server an agent may call, optionally narrowed to specific tools. */
+export interface AgentMcpServerSelection {
+  server_id: string
+  enabled: boolean
+  /** Server-side tool names to expose; omitted or empty means every tool. */
+  tools?: string[]
+}
+
 export interface AgentToolConfig {
   tools: Record<string, AgentToolSelection>
   assistant_agents?: AgentAssistantToolSelection[]
+  mcp_servers?: AgentMcpServerSelection[]
+}
+
+export type McpTransport = 'stdio' | 'sse' | 'streamable-http'
+
+export interface McpServerRead {
+  id: string
+  name: string
+  description: string | null
+  transport: McpTransport
+  /** Slug used to namespace this server's tools as `mcp__<slug>__<tool>`. */
+  slug: string
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  cwd: string | null
+  url: string | null
+  /** Header values come back masked; sending them back would store the mask. */
+  headers_masked: Record<string, string>
+  timeout_seconds: number
+  tool_filter: string[]
+  enabled: boolean
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface McpServerCreate {
+  name: string
+  transport: McpTransport
+  description?: string | null
+  command?: string | null
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string | null
+  url?: string | null
+  headers?: Record<string, string>
+  timeout_seconds?: number
+  tool_filter?: string[]
+  enabled?: boolean
+}
+
+export type McpServerUpdate = Partial<McpServerCreate>
+
+export interface McpDiscoveredTool {
+  name: string
+  exposed_name: string
+  description: string
+}
+
+export interface McpTestConnectionResult {
+  ok: boolean
+  server_label: string | null
+  tools: McpDiscoveredTool[]
+  error: string | null
 }
 
 export type AgentRuntimeKind = 'llm_chat' | 'acp'
