@@ -329,6 +329,7 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         return Ok(());
     }
     WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
+        .disable_drag_drop_handler()
         .title("AG Swarmer")
         .inner_size(1280.0, 800.0)
         .min_inner_size(1024.0, 680.0)
