@@ -8,6 +8,7 @@ import { WorkspaceHtmlPreview } from '@/components/chat/workspace-preview/Worksp
 import { WorkspaceImagePreview } from '@/components/chat/workspace-preview/WorkspaceImagePreview'
 import { WorkspacePdfPreview } from '@/components/chat/workspace-preview/WorkspacePdfPreview'
 import { WorkspaceTextEditor } from '@/components/chat/workspace-preview/WorkspaceTextEditor'
+import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import {
   createWorkspaceFileObjectUrl,
   conversationWorkspaceFileBlobQueryKey,
@@ -21,7 +22,7 @@ import type {
   ConversationWorkspaceFileTextResponse,
 } from '@/types/api'
 
-export type WorkspacePreviewKind = 'html' | 'image' | 'pdf' | 'text' | 'fallback'
+export type WorkspacePreviewKind = 'html' | 'image' | 'markdown' | 'pdf' | 'text' | 'fallback'
 
 const MAX_WORKSPACE_BINARY_PREVIEW_BYTES = 25 * 1024 * 1024
 
@@ -42,13 +43,16 @@ function selectWorkspacePreviewKind(
   file: Pick<ConversationWorkspaceFileTextResponse, 'path' | 'mime_type' | 'is_text'>,
 ): WorkspacePreviewKind {
   const mime = normalizedMimeType(file.mime_type)
+  const extension = fileExtension(file.path)
 
   if (mime === 'text/html' || mime === 'application/xhtml+xml') return 'html'
   if (mime.startsWith('image/')) return 'image'
   if (mime === 'application/pdf') return 'pdf'
+  if (mime === 'text/markdown' || extension === 'md' || extension === 'markdown') {
+    return file.is_text ? 'markdown' : 'fallback'
+  }
 
   if (GENERIC_MIME_TYPES.has(mime)) {
-    const extension = fileExtension(file.path)
     if (extension === 'html' || extension === 'htm') {
       return file.is_text ? 'html' : 'fallback'
     }
@@ -177,6 +181,20 @@ export function WorkspacePreviewRouter({
           return result.data
         }}
       />
+    )
+  }
+
+  if (kind === 'markdown') {
+    return (
+      <div
+        className="max-h-[60vh] overflow-auto rounded-md border border-border bg-background p-5"
+        data-preview-kind="markdown"
+      >
+        <MarkdownMessage
+          content={text.data.content ?? ''}
+          groupId={scope === 'groups' ? conversationId : undefined}
+        />
+      </div>
     )
   }
 

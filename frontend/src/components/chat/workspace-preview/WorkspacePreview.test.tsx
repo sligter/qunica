@@ -161,6 +161,22 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
     expect(document.querySelector('[data-preview-kind="text"]')).not.toBeNull()
   })
 
+  it('renders Markdown files instead of opening the raw text editor', () => {
+    const client = testClient()
+    const markdownFile = { ...baseFile, path: 'README.md', name: 'README.md' }
+    renderRouter(client, markdownFile, textResponse({
+      path: markdownFile.path,
+      name: markdownFile.name,
+      mime_type: 'text/markdown',
+      content: '# Preview title\n\n- rendered item',
+    }))
+
+    expect(screen.getByRole('heading', { name: 'Preview title' })).toBeVisible()
+    expect(screen.getByText('rendered item')).toBeVisible()
+    expect(document.querySelector('[data-preview-kind="markdown"]')).not.toBeNull()
+    expect(screen.queryByRole('textbox')).toBeNull()
+  })
+
   it('routes images to a bounded lightbox preview and falls back on load failure', async () => {
     const revokeObjectURL = vi.fn()
     vi.stubGlobal('URL', {
