@@ -14,10 +14,7 @@ const terminalMocks = vi.hoisted(() => ({
 }))
 
 const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
-const workspacePanelMocks = vi.hoisted(() => ({
-  conversation: vi.fn(),
-  group: vi.fn(),
-}))
+const workspacePanelMocks = vi.hoisted(() => ({ group: vi.fn() }))
 
 vi.mock('@/components/chat/Composer', () => ({
   Composer: (props: {
@@ -41,23 +38,14 @@ vi.mock('@/components/chat/Composer', () => ({
     )
   },
 }))
-vi.mock('@/components/chat/ConversationWorkspacePanel', () => ({
-  ConversationWorkspacePanel: (props: {
-    scope: string
-    conversationId: string
-    workspaceId: string | null
-  }) => {
-    workspacePanelMocks.conversation(props)
-    return <div>conversation workspace panel</div>
-  },
-}))
 vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
   GroupWorkspacePanel: (props: {
     groupId: string
+    scope?: 'groups' | 'direct-chats'
     workspaceId: string | null
   }) => {
     workspacePanelMocks.group(props)
-    return <div>group workspace panel</div>
+    return <div>workspace panel</div>
   },
 }))
 vi.mock('@/components/chat/MessageList', () => ({ MessageList: () => <div>message list</div> }))
@@ -142,7 +130,6 @@ describe('ConversationChatView', () => {
     terminalMocks.toggleDock.mockReset().mockResolvedValue(undefined)
     terminalMocks.isDockOpen = false
     composerMocks.render.mockReset()
-    workspacePanelMocks.conversation.mockReset()
     workspacePanelMocks.group.mockReset()
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
   })
@@ -154,7 +141,7 @@ describe('ConversationChatView', () => {
 
     expect(screen.getByText('message list')).toBeInTheDocument()
     expect(screen.getByText('composer:false:enabled')).toBeInTheDocument()
-    expect(screen.getByText('conversation workspace panel')).toBeInTheDocument()
+    expect(screen.getByText('workspace panel')).toBeInTheDocument()
     expect(screen.queryByText('Manage Group')).not.toBeInTheDocument()
     expect(screen.queryByText('group only')).not.toBeInTheDocument()
     expect(screen.queryByText('turn trace')).not.toBeInTheDocument()
@@ -163,12 +150,11 @@ describe('ConversationChatView', () => {
       workspaceId: 'workspace-1',
       scope: 'direct-chats',
     }))
-    expect(workspacePanelMocks.conversation).toHaveBeenCalledWith(expect.objectContaining({
-      conversationId: 'chat-1',
+    expect(workspacePanelMocks.group).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'chat-1',
       workspaceId: 'workspace-1',
       scope: 'direct-chats',
     }))
-    expect(workspacePanelMocks.group).not.toHaveBeenCalled()
   })
 
   it('registers its workspace and toggles the terminal from the header', async () => {
@@ -194,12 +180,12 @@ describe('ConversationChatView', () => {
       workspaceId: 'workspace-group',
       scope: 'groups',
     }))
-    expect(screen.getByText('group workspace panel')).toBeInTheDocument()
+    expect(screen.getByText('workspace panel')).toBeInTheDocument()
     expect(workspacePanelMocks.group).toHaveBeenCalledWith(expect.objectContaining({
       groupId: 'group-1',
+      scope: 'groups',
       workspaceId: 'workspace-group',
     }))
-    expect(workspacePanelMocks.conversation).not.toHaveBeenCalled()
   })
 
   it('remounts the composer when the conversation identity changes', () => {

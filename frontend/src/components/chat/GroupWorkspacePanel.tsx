@@ -9,9 +9,11 @@ import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorks
 import { workspaceGitQueryKey } from '@/hooks/useWorkspaceGit'
 import { cn } from '@/lib/utils'
 import { useFileNavStore } from '@/stores/fileNavStore'
+import type { ConversationScope } from '@/types/api'
 
 interface GroupWorkspacePanelProps {
   groupId: string | undefined
+  scope?: ConversationScope
   workspaceId?: string | null
   width?: number
   className?: string
@@ -28,6 +30,7 @@ function readStoredTab(): WorkspaceTab {
 
 export function GroupWorkspacePanel({
   groupId,
+  scope = 'groups',
   workspaceId = null,
   width,
   className,
@@ -48,7 +51,7 @@ export function GroupWorkspacePanel({
       void queryClient.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
     } else {
       void queryClient.invalidateQueries({
-        queryKey: conversationWorkspaceFilesQueryKey('groups', groupId),
+        queryKey: conversationWorkspaceFilesQueryKey(scope, groupId),
       })
     }
   }
@@ -59,7 +62,7 @@ export function GroupWorkspacePanel({
       setTab('files')
       sessionStorage.setItem(WORKSPACE_TAB_KEY, 'files')
     }
-  }, [navRequest, groupId])
+  }, [navRequest, groupId, scope])
 
   return (
     <aside
@@ -80,7 +83,7 @@ export function GroupWorkspacePanel({
         <TabsContent value="files" className="mt-0 min-h-0 flex-1">
           <ConversationWorkspacePanel
             embedded
-            scope="groups"
+            scope={scope}
             conversationId={groupId}
             workspaceId={workspaceId}
             onInsertPaths={onInsertPaths}

@@ -3,7 +3,6 @@ import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
-import { ConversationWorkspacePanel } from '@/components/chat/ConversationWorkspacePanel'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
@@ -285,22 +284,13 @@ export function ConversationChatView({
               onResizeStart={(event) => workspaceFilesPane.startResize(event, -1)}
               onStep={workspaceFilesPane.resizeBy}
             />
-            {scope === 'groups' ? (
-              <GroupWorkspacePanel
-                groupId={conversationId}
-                workspaceId={workspaceId}
-                width={workspaceFilesPane.width}
-                onInsertPaths={insertWorkspacePaths}
-              />
-            ) : (
-              <ConversationWorkspacePanel
-                scope={scope}
-                conversationId={conversationId}
-                workspaceId={workspaceId}
-                width={workspaceFilesPane.width}
-                onInsertPaths={insertWorkspacePaths}
-              />
-            )}
+            <GroupWorkspacePanel
+              scope={scope}
+              groupId={conversationId}
+              workspaceId={workspaceId}
+              width={workspaceFilesPane.width}
+              onInsertPaths={insertWorkspacePaths}
+            />
           </>
         ) : null}
       </div>

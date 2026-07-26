@@ -4,8 +4,14 @@ import { ApiError, fetchFormData, fetchJson } from '@/lib/api-v2/client'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
+import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
 import { workspaceGitQueryKey } from '@/hooks/useWorkspaceGit'
-import type { GroupWorkspaceFilePreview, GroupWorkspaceFileRead, GroupWorkspaceRoot } from '@/types/api'
+import type {
+  ConversationScope,
+  GroupWorkspaceFilePreview,
+  GroupWorkspaceFileRead,
+  GroupWorkspaceRoot,
+} from '@/types/api'
 
 export {
   useCommitGroupWorkspaceGit,
@@ -186,38 +192,48 @@ export async function downloadGroupWorkspaceFile(
   URL.revokeObjectURL(url)
 }
 
-export function useRenameGroupWorkspaceFile(groupId: string | undefined) {
+export function useRenameGroupWorkspaceFile(
+  conversationId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ path, newPath }: { path: string; newPath: string }) => {
-      if (!groupId) throw new Error('Group is required to rename workspace files')
+      if (!conversationId) throw new Error('Conversation is required to rename workspace files')
       return fetchJson<GroupWorkspaceFileRead>(
-        `/groups/${groupId}/workspace-files/rename?${withPath(path)}`,
+        `/groups/${conversationId}/workspace-files/rename?${withPath(path)}`,
         { token, method: 'PATCH', body: { new_path: newPath } },
       )
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
-      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
+      void qc.invalidateQueries({
+        queryKey: conversationWorkspaceFilesQueryKey(scope, conversationId),
+      })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(conversationId) })
     },
   })
 }
 
-export function useDeleteGroupWorkspaceFile(groupId: string | undefined) {
+export function useDeleteGroupWorkspaceFile(
+  conversationId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (path: string) => {
-      if (!groupId) throw new Error('Group is required to delete workspace files')
-      return fetchJson<void>(`/groups/${groupId}/workspace-files?${withPath(path)}`, {
+      if (!conversationId) throw new Error('Conversation is required to delete workspace files')
+      return fetchJson<void>(`/groups/${conversationId}/workspace-files?${withPath(path)}`, {
         token,
         method: 'DELETE',
       })
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'workspace-files'] })
-      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
+      void qc.invalidateQueries({
+        queryKey: conversationWorkspaceFilesQueryKey(scope, conversationId),
+      })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(conversationId) })
     },
   })
 }

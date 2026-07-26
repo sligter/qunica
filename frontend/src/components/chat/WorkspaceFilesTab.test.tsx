@@ -93,13 +93,13 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
   })
 
-  it('keeps direct-chat files read-only while retaining download and preview', async () => {
+  it('allows direct-chat rename and delete while keeping upload unavailable', async () => {
     const user = userEvent.setup()
     renderTab({ scope: 'direct-chats', conversationId: 'chat-1' })
 
     expect(screen.queryByRole('button', { name: 'Upload file to workspace uploads' })).toBeNull()
-    expect(screen.queryByLabelText('Rename README_RAW_原文.md')).toBeNull()
-    expect(screen.queryByLabelText('Delete README_RAW_原文.md')).toBeNull()
+    expect(screen.getByLabelText('Rename README_RAW_原文.md')).toBeVisible()
+    expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Download README_RAW_原文.md')).toBeVisible()
 
     await user.click(screen.getByText('README_RAW_原文.md'))

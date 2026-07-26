@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ConversationWorkspacePanel } from '@/components/chat/ConversationWorkspacePanel'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import i18n from '@/i18n'
 
@@ -37,18 +36,18 @@ describe('conversation workspace panels', () => {
 
   afterEach(cleanup)
 
-  it('renders a direct-chat panel with only the Files tab and shared context', () => {
+  it('renders Files and Git for direct chats with direct file scope', () => {
     renderWithClient(
-      <ConversationWorkspacePanel
+      <GroupWorkspacePanel
         scope="direct-chats"
-        conversationId="chat-1"
+        groupId="chat-1"
         workspaceId="workspace-1"
         width={320}
       />,
     )
 
     expect(screen.getByRole('tab', { name: 'Files' })).toBeVisible()
-    expect(screen.queryByRole('tab', { name: 'Git' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Git' })).toBeVisible()
     expect(screen.getByText('files:direct-chats:chat-1:workspace-1')).toBeVisible()
     expect(panelMocks.files).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'direct-chats',

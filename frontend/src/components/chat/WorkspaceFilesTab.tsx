@@ -114,12 +114,13 @@ export function WorkspaceFilesTab({
   const activeConversationId = workspaceId ? conversationId : undefined
   const groupId = scope === 'groups' ? activeConversationId : undefined
   const hasConversation = Boolean(activeConversationId)
-  const canMutate = scope === 'groups'
+  const canUpload = scope === 'groups'
+  const canMutate = hasConversation
   const files = useConversationWorkspaceFiles(scope, activeConversationId, currentPath)
   const upload = useUploadConversationWorkspaceFile(scope, activeConversationId)
   const download = useDownloadConversationWorkspaceFile(scope, activeConversationId)
-  const rename = useRenameGroupWorkspaceFile(groupId)
-  const del = useDeleteGroupWorkspaceFile(groupId)
+  const rename = useRenameGroupWorkspaceFile(activeConversationId, scope)
+  const del = useDeleteGroupWorkspaceFile(activeConversationId, scope)
   const navRequest = useFileNavStore((state) => state.request)
   const clearNav = useFileNavStore((state) => state.clear)
 
@@ -280,7 +281,7 @@ export function WorkspaceFilesTab({
   }
 
   const submitRename = () => {
-    if (!groupId || !renaming || !renameValue.trim()) return
+    if (!activeConversationId || !renaming || !renameValue.trim()) return
     const oldPath = renaming.path
     const wasPreviewOpen = isPreviewOpen && previewFile !== null
     void rename
@@ -377,7 +378,7 @@ export function WorkspaceFilesTab({
           {title}
         </p>
         <div className="flex shrink-0 items-center gap-1">
-          {canMutate ? (
+          {canUpload ? (
             <>
               <input
                 ref={fileInputRef}
@@ -451,7 +452,7 @@ export function WorkspaceFilesTab({
           })}
         </div>
       ) : null}
-      {canMutate && upload.error ? (
+      {canUpload && upload.error ? (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive" role="alert">
           {t('chat:errors.uploadDetail', {
             message: t(`chat:${workspaceErrorMessageKey(upload.error)}`),
