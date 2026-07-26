@@ -43,7 +43,8 @@ describe('ProviderModelsField', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add model' }))
     const modelInputs = screen.getAllByRole('combobox', { name: 'Model ID' })
-    await user.type(modelInputs[1], 'model-b')
+    await user.click(modelInputs[1])
+    await user.click(screen.getByRole('option', { name: /Model B/ }))
     await user.click(screen.getAllByRole('radio', { name: 'Default' })[1])
 
     expect(modelInputs[1]).toHaveValue('model-b')

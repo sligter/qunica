@@ -1,4 +1,5 @@
-import { Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { useId, useState } from 'react'
+import { Check, ChevronDown, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -35,7 +36,6 @@ export function ProviderModelsField({
   onDefaultChange,
 }: ProviderModelsFieldProps) {
   const { t } = useTranslation('providers')
-  const catalogId = 'provider-model-catalog'
 
   const update = (index: number, patch: Partial<ProviderModelDraft>) => {
     const previous = models[index]
@@ -101,10 +101,6 @@ export function ProviderModelsField({
       )}
       {catalogError && <p className="text-xs text-destructive">{t('models.fetchError')}</p>}
 
-      <datalist id={catalogId}>
-        {catalog.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-      </datalist>
-
       <div className="space-y-3">
         {models.map((model, index) => (
           <div key={index} className="rounded-md border border-border bg-background p-3">
@@ -118,12 +114,12 @@ export function ProviderModelsField({
                 />
                 {t('models.default')}
               </label>
-              <Input
-                aria-label={t('models.modelId')}
-                list={catalogId}
+              <ModelIdCombobox
                 value={model.id}
+                catalog={catalog}
+                label={t('models.modelId')}
                 placeholder={t('models.modelPlaceholder')}
-                onChange={(event) => update(index, { id: event.target.value })}
+                onChange={(id) => update(index, { id })}
               />
               <Button
                 type="button"
@@ -173,5 +169,130 @@ export function ProviderModelsField({
         ))}
       </div>
     </section>
+  )
+}
+
+function ModelIdCombobox({
+  value,
+  catalog,
+  label,
+  placeholder,
+  onChange,
+}: {
+  value: string
+  catalog: ModelInfo[]
+  label: string
+  placeholder: string
+  onChange: (value: string) => void
+}) {
+  const listId = useId()
+  const [open, setOpen] = useState(false)
+  const [highlighted, setHighlighted] = useState(0)
+  const [filter, setFilter] = useState('')
+  const query = filter.trim().toLocaleLowerCase()
+  const options = catalog.filter((model) =>
+    !query || model.id.toLocaleLowerCase().includes(query) ||
+    model.name.toLocaleLowerCase().includes(query),
+  )
+
+  const showOptions = () => {
+    setFilter('')
+    setHighlighted(Math.max(0, catalog.findIndex((model) => model.id === value)))
+    setOpen(catalog.length > 0)
+  }
+
+  const select = (id: string) => {
+    onChange(id)
+    setFilter('')
+    setOpen(false)
+  }
+
+  return (
+    <div
+      className="relative min-w-0 flex-1"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
+      }}
+    >
+      <Input
+        role="combobox"
+        aria-label={label}
+        aria-autocomplete="list"
+        aria-expanded={open && options.length > 0}
+        aria-controls={listId}
+        value={value}
+        placeholder={placeholder}
+        className="pr-10"
+        onFocus={showOptions}
+        onChange={(event) => {
+          onChange(event.target.value)
+          setFilter(event.target.value)
+          setHighlighted(0)
+          setOpen(catalog.length > 0)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setOpen(false)
+          } else if (event.key === 'ArrowDown' && options.length > 0) {
+            event.preventDefault()
+            if (open) setHighlighted((current) => (current + 1) % options.length)
+            else showOptions()
+          } else if (event.key === 'ArrowUp' && options.length > 0) {
+            event.preventDefault()
+            setOpen(true)
+            setHighlighted((current) => (current - 1 + options.length) % options.length)
+          } else if (event.key === 'Enter' && open && options[highlighted]) {
+            event.preventDefault()
+            select(options[highlighted].id)
+          }
+        }}
+      />
+      {catalog.length > 0 && (
+        <button
+          type="button"
+          aria-label={placeholder}
+          tabIndex={-1}
+          className="absolute inset-y-px right-px flex w-9 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            if (open) setOpen(false)
+            else showOptions()
+          }}
+        >
+          <ChevronDown className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} />
+        </button>
+      )}
+      {open && options.length > 0 && (
+        <div
+          id={listId}
+          role="listbox"
+          className="absolute left-0 top-[calc(100%+0.375rem)] z-50 max-h-64 w-full max-w-xl overflow-y-auto rounded-md border border-border bg-background p-1 text-foreground shadow-xl"
+        >
+          {options.map((option, index) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              aria-selected={option.id === value}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm outline-none transition-colors',
+                index === highlighted && 'bg-accent text-accent-foreground',
+              )}
+              onMouseEnter={() => setHighlighted(index)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => select(option.id)}
+            >
+              <span className="min-w-0 flex-1 truncate">{option.name}</span>
+              {option.name !== option.id && (
+                <span className="max-w-48 truncate font-mono text-[11px] text-muted-foreground">
+                  {option.id}
+                </span>
+              )}
+              <Check className={cn('h-4 w-4 shrink-0', option.id !== value && 'invisible')} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
