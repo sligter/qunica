@@ -522,6 +522,22 @@ pub async fn update(
     .await
     .map_err(|_| ApiError::internal("failed to update agent"))?;
 
+    // A direct chat has no workspace of its own; it follows the agent it is
+    // with. Without this, rebinding an agent strands every existing direct chat
+    // on the folder it was created against, silently and with no way back.
+    sqlx::query(
+        "UPDATE groups SET workspace_id = ?, updated_at = ? \
+         WHERE conversation_kind = 'direct' AND direct_agent_id = ? \
+           AND owner_id = ? AND status = 'active'",
+    )
+    .bind(&workspace_id)
+    .bind(&now)
+    .bind(&agent_id)
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to move direct chats to the new workspace"))?;
+
     let row = fetch_row(state.db.pool(), &agent_id)
         .await?
         .ok_or_else(|| ApiError::internal("agent vanished after update"))?;

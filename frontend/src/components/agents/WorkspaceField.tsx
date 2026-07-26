@@ -33,6 +33,22 @@ function inferWorkspaceName(path: string) {
   return last ?? ''
 }
 
+/** Longest path shown in full; past this a picker line just truncates anyway. */
+const MAX_INLINE_LOCATION_CHARS = 40
+
+/**
+ * Keep a short path exactly as it is — hiding the drive from `D:/work/site`
+ * helps nobody. Only a long path collapses to its last two segments, which is
+ * enough to tell `…/projects/site` from `…/archive/site`. The full path stays
+ * in the title attribute either way.
+ */
+function shortLocation(location: string) {
+  if (location.length <= MAX_INLINE_LOCATION_CHARS) return location
+  const parts = location.replaceAll('\\', '/').replace(/\/+$/, '').split('/').filter(Boolean)
+  if (parts.length <= 2) return location
+  return `…/${parts.slice(-2).join('/')}`
+}
+
 function localPathLooksAbsolute(path: string) {
   const trimmed = path.trim()
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
@@ -168,21 +184,23 @@ export function WorkspaceField({
             {t('agents:workspacePicker.createFirst')}
           </p>
         )}
-        {selected && (
-          <p
-            className="truncate text-[11px] text-muted-foreground"
-            title={selected.local_path ?? selected.sandbox_ref ?? undefined}
-          >
-            {variant === 'compact'
-              ? t('agents:workspacePicker.location', {
-                  location: selected.local_path ?? selected.sandbox_ref ?? t('agents:workspacePicker.notConfigured'),
-                })
-              : t('agents:workspacePicker.bound', {
-                  backend: backendLabel(selectedBackendType),
-                  location: selected.local_path ?? selected.sandbox_ref ?? t('agents:workspacePicker.notConfigured'),
-                })}
-          </p>
-        )}
+        {selected && (() => {
+          const location = selected.local_path ?? selected.sandbox_ref ?? null
+          const shown = location ? shortLocation(location) : t('agents:workspacePicker.notConfigured')
+          return (
+            <p
+              className="truncate text-[11px] text-muted-foreground"
+              title={location ?? undefined}
+            >
+              {variant === 'compact'
+                ? t('agents:workspacePicker.location', { location: shown })
+                : t('agents:workspacePicker.bound', {
+                    backend: backendLabel(selectedBackendType),
+                    location: shown,
+                  })}
+            </p>
+          )
+        })()}
       </div>
 
       {showCreate && (

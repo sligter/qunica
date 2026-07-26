@@ -13,24 +13,30 @@ import type {
   ConversationWorkspaceFileTextSaveRequest,
   ConversationWorkspaceFileTextSaveResponse,
   ConversationWorkspaceRoot,
+  ConversationWorkspaceRootEntry,
 } from '@/types/api'
 
 const CONVERSATION_SCOPE_CONFIG = {
   groups: {
     routePrefix: '/groups',
     queryPrefix: 'groups',
-    supportsUpload: true,
   },
   'direct-chats': {
     routePrefix: '/direct-chats',
     queryPrefix: 'direct-chats',
-    supportsUpload: false,
   },
 } as const satisfies Record<ConversationScope, {
   routePrefix: `/${string}`
   queryPrefix: ConversationScope
-  supportsUpload: boolean
 }>
+
+/**
+ * Which root inside the conversation a request addresses: `null` (or omitted)
+ * is the conversation's own workspace, a string is that member agent's folder.
+ * Every file call carries it so a panel showing an agent's root reads, writes
+ * and invalidates against that root rather than the conversation's.
+ */
+export type WorkspaceAgentScope = string | null | undefined
 
 export interface SaveConversationWorkspaceFileTextVariables
   extends ConversationWorkspaceFileTextSaveRequest {
@@ -47,17 +53,6 @@ export type ConversationWorkspaceFileMetadata = Pick<
   'path' | 'name' | 'mime_type' | 'size'
 >
 
-export class ConversationWorkspaceUploadUnsupportedError extends Error {
-  readonly scope: ConversationScope
-
-  constructor(scope: ConversationScope) {
-    super(`Workspace file uploads are not supported for ${scope}`)
-    this.name = 'ConversationWorkspaceUploadUnsupportedError'
-    this.scope = scope
-    Object.setPrototypeOf(this, ConversationWorkspaceUploadUnsupportedError.prototype)
-  }
-}
-
 function scopeConfig(scope: ConversationScope) {
   return CONVERSATION_SCOPE_CONFIG[scope]
 }
@@ -72,8 +67,13 @@ function requireWorkspaceFilePath(path: string): string {
   return path
 }
 
-function withPath(path: string): string {
-  return `path=${encodeURIComponent(path)}`
+// Built by hand rather than with URLSearchParams: that encodes a space as `+`,
+// and these paths have always been percent-encoded.
+function workspaceQuery(path: string | undefined, agentId: WorkspaceAgentScope): string {
+  const parts: string[] = []
+  if (path !== undefined) parts.push(`path=${encodeURIComponent(path)}`)
+  if (agentId) parts.push(`agent_id=${encodeURIComponent(agentId)}`)
+  return parts.length > 0 ? `?${parts.join('&')}` : ''
 }
 
 export function conversationWorkspaceFilesApiPath(
@@ -89,10 +89,18 @@ function conversationWorkspaceFileEndpoint(
   conversationId: string,
   endpoint: '' | 'root' | 'preview' | 'download' | 'text' | 'text/save' | 'upload',
   path?: string,
+  agentId?: WorkspaceAgentScope,
 ): string {
   const suffix = endpoint ? `/${endpoint}` : ''
-  const query = path === undefined ? '' : `?${withPath(path)}`
-  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${query}`
+  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId)}`
+}
+
+export function conversationWorkspaceRootsApiPath(
+  scope: ConversationScope,
+  conversationId: string,
+): string {
+  const id = requireConversationId(conversationId)
+  return `${scopeConfig(scope).routePrefix}/${encodeURIComponent(id)}/workspace-roots`
 }
 
 export function conversationWorkspaceFilesQueryKey(
@@ -106,52 +114,95 @@ export function conversationWorkspaceFileListQueryKey(
   scope: ConversationScope,
   conversationId: string | undefined,
   path = '',
+  agentId: WorkspaceAgentScope = null,
 ) {
-  return [...conversationWorkspaceFilesQueryKey(scope, conversationId), 'list', path] as const
+  return [
+    ...conversationWorkspaceFilesQueryKey(scope, conversationId),
+    'list',
+    agentId ?? null,
+    path,
+  ] as const
 }
 
 export function conversationWorkspaceRootQueryKey(
   scope: ConversationScope,
   conversationId: string | undefined,
+  agentId: WorkspaceAgentScope = null,
 ) {
-  return [...conversationWorkspaceFilesQueryKey(scope, conversationId), 'root'] as const
+  return [
+    ...conversationWorkspaceFilesQueryKey(scope, conversationId),
+    'root',
+    agentId ?? null,
+  ] as const
+}
+
+export function conversationWorkspaceRootsQueryKey(
+  scope: ConversationScope,
+  conversationId: string | undefined,
+) {
+  return [scopeConfig(scope).queryPrefix, conversationId, 'workspace-roots'] as const
 }
 
 export function conversationWorkspaceFilePreviewQueryKey(
   scope: ConversationScope,
   conversationId: string | undefined,
   path: string | null,
+  agentId: WorkspaceAgentScope = null,
 ) {
-  return [...conversationWorkspaceFilesQueryKey(scope, conversationId), 'preview', path] as const
+  return [
+    ...conversationWorkspaceFilesQueryKey(scope, conversationId),
+    'preview',
+    agentId ?? null,
+    path,
+  ] as const
 }
 
 export function conversationWorkspaceFileBlobQueryKey(
   scope: ConversationScope,
   conversationId: string | undefined,
   path: string | null,
+  agentId: WorkspaceAgentScope = null,
 ) {
-  return [...conversationWorkspaceFilesQueryKey(scope, conversationId), 'blob', path] as const
+  return [
+    ...conversationWorkspaceFilesQueryKey(scope, conversationId),
+    'blob',
+    agentId ?? null,
+    path,
+  ] as const
 }
 
 export function conversationWorkspaceFileTextQueryKey(
   scope: ConversationScope,
   conversationId: string | undefined,
   path: string | null,
+  agentId: WorkspaceAgentScope = null,
 ) {
-  return [...conversationWorkspaceFilesQueryKey(scope, conversationId), 'text', path] as const
+  return [
+    ...conversationWorkspaceFilesQueryKey(scope, conversationId),
+    'text',
+    agentId ?? null,
+    path,
+  ] as const
 }
 
 export function useConversationWorkspaceFiles(
   scope: ConversationScope,
   conversationId: string | undefined,
   path = '',
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
-    queryKey: conversationWorkspaceFileListQueryKey(scope, conversationId, path),
+    queryKey: conversationWorkspaceFileListQueryKey(scope, conversationId, path, agentId),
     queryFn: () =>
       fetchJson<ConversationWorkspaceFileRead[]>(
-        conversationWorkspaceFileEndpoint(scope, requireConversationId(conversationId), '', path),
+        conversationWorkspaceFileEndpoint(
+          scope,
+          requireConversationId(conversationId),
+          '',
+          path,
+          agentId,
+        ),
         { token },
       ),
     enabled: token !== null && !!conversationId,
@@ -177,13 +228,20 @@ export async function getConversationWorkspaceFile(
 export function useConversationWorkspaceRoot(
   scope: ConversationScope,
   conversationId: string | undefined,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
-    queryKey: conversationWorkspaceRootQueryKey(scope, conversationId),
+    queryKey: conversationWorkspaceRootQueryKey(scope, conversationId, agentId),
     queryFn: () =>
       fetchJson<ConversationWorkspaceRoot>(
-        conversationWorkspaceFileEndpoint(scope, requireConversationId(conversationId), 'root'),
+        conversationWorkspaceFileEndpoint(
+          scope,
+          requireConversationId(conversationId),
+          'root',
+          undefined,
+          agentId,
+        ),
         { token },
       ),
     enabled: token !== null && !!conversationId,
@@ -196,10 +254,11 @@ export function useConversationWorkspaceFilePreview(
   scope: ConversationScope,
   conversationId: string | undefined,
   path: string | null,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
-    queryKey: conversationWorkspaceFilePreviewQueryKey(scope, conversationId, path),
+    queryKey: conversationWorkspaceFilePreviewQueryKey(scope, conversationId, path, agentId),
     queryFn: () =>
       fetchJson<ConversationWorkspaceFilePreview>(
         conversationWorkspaceFileEndpoint(
@@ -207,6 +266,7 @@ export function useConversationWorkspaceFilePreview(
           requireConversationId(conversationId),
           'preview',
           requireWorkspaceFilePath(path ?? ''),
+          agentId,
         ),
         { token },
       ),
@@ -259,6 +319,7 @@ export async function fetchConversationWorkspaceFileBlob(
   path: string,
   token: string | null,
   signal?: AbortSignal,
+  agentId: WorkspaceAgentScope = null,
 ): Promise<Blob> {
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
@@ -268,6 +329,7 @@ export async function fetchConversationWorkspaceFileBlob(
       conversationId,
       'download',
       requireWorkspaceFilePath(path),
+      agentId,
     )}`),
     { headers, signal },
   )
@@ -279,10 +341,11 @@ export function useConversationWorkspaceFileBlob(
   scope: ConversationScope,
   conversationId: string | undefined,
   path: string | null,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
-    queryKey: conversationWorkspaceFileBlobQueryKey(scope, conversationId, path),
+    queryKey: conversationWorkspaceFileBlobQueryKey(scope, conversationId, path, agentId),
     queryFn: ({ signal }) =>
       fetchConversationWorkspaceFileBlob(
         scope,
@@ -290,6 +353,7 @@ export function useConversationWorkspaceFileBlob(
         requireWorkspaceFilePath(path ?? ''),
         token,
         signal,
+        agentId,
       ),
     enabled: token !== null && !!conversationId && !!path,
     gcTime: 0,
@@ -300,15 +364,17 @@ export function useConversationWorkspaceFileText(
   scope: ConversationScope,
   conversationId: string | undefined,
   path: string | null,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
-    queryKey: conversationWorkspaceFileTextQueryKey(scope, conversationId, path),
+    queryKey: conversationWorkspaceFileTextQueryKey(scope, conversationId, path, agentId),
     queryFn: () => fetchConversationWorkspaceFileText(
       scope,
       requireConversationId(conversationId),
       requireWorkspaceFilePath(path ?? ''),
       token,
+      agentId,
     ),
     enabled: token !== null && !!conversationId && !!path,
   })
@@ -319,6 +385,7 @@ function fetchConversationWorkspaceFileText(
   conversationId: string,
   path: string,
   token: string | null,
+  agentId: WorkspaceAgentScope = null,
 ): Promise<ConversationWorkspaceFileTextResponse> {
   return fetchJson<ConversationWorkspaceFileTextResponse>(
     conversationWorkspaceFileEndpoint(
@@ -326,6 +393,7 @@ function fetchConversationWorkspaceFileText(
       requireConversationId(conversationId),
       'text',
       requireWorkspaceFilePath(path),
+      agentId,
     ),
     { token },
   )
@@ -349,6 +417,7 @@ export async function getConversationWorkspaceFileMetadata(
 export function useSaveConversationWorkspaceFileText(
   scope: ConversationScope,
   conversationId: string | undefined,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
@@ -360,6 +429,7 @@ export function useSaveConversationWorkspaceFileText(
           requireConversationId(conversationId),
           'text/save',
           requireWorkspaceFilePath(path),
+          agentId,
         ),
         {
           method: 'PATCH',
@@ -378,15 +448,12 @@ export function useSaveConversationWorkspaceFileText(
 export function useUploadConversationWorkspaceFile(
   scope: ConversationScope,
   conversationId: string | undefined,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (file: File) => {
-      const config = scopeConfig(scope)
-      if (!config.supportsUpload) {
-        throw new ConversationWorkspaceUploadUnsupportedError(scope)
-      }
       const formData = new FormData()
       formData.append('file', file)
       return fetchFormData<ConversationWorkspaceFileRead>(
@@ -394,6 +461,8 @@ export function useUploadConversationWorkspaceFile(
           scope,
           requireConversationId(conversationId),
           'upload',
+          undefined,
+          agentId,
         ),
         formData,
         { token },
@@ -429,8 +498,16 @@ export async function downloadConversationWorkspaceFile(
   conversationId: string,
   path: string,
   token: string | null,
+  agentId: WorkspaceAgentScope = null,
 ): Promise<void> {
-  const blob = await fetchConversationWorkspaceFileBlob(scope, conversationId, path, token)
+  const blob = await fetchConversationWorkspaceFileBlob(
+    scope,
+    conversationId,
+    path,
+    token,
+    undefined,
+    agentId,
+  )
   const fileName = workspaceFileName(path)
   if (isDesktopRuntime()) {
     await saveFileViaDialog(fileName, new Uint8Array(await blob.arrayBuffer()))
@@ -453,6 +530,7 @@ export async function downloadConversationWorkspaceFile(
 export function useDownloadConversationWorkspaceFile(
   scope: ConversationScope,
   conversationId: string | undefined,
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((state) => state.token)
   return useMutation({
@@ -462,6 +540,28 @@ export function useDownloadConversationWorkspaceFile(
         requireConversationId(conversationId),
         requireWorkspaceFilePath(path),
         token,
+        agentId,
       ),
+  })
+}
+
+/**
+ * The roots a viewer may browse for this conversation: its own workspace plus
+ * any member agent folder that is actually reachable during that agent's turns.
+ */
+export function useConversationWorkspaceRoots(
+  scope: ConversationScope,
+  conversationId: string | undefined,
+) {
+  const token = useAuthStore((state) => state.token)
+  return useQuery({
+    queryKey: conversationWorkspaceRootsQueryKey(scope, conversationId),
+    queryFn: () =>
+      fetchJson<ConversationWorkspaceRootEntry[]>(
+        conversationWorkspaceRootsApiPath(scope, requireConversationId(conversationId)),
+        { token },
+      ),
+    enabled: token !== null && !!conversationId,
+    staleTime: 60_000,
   })
 }

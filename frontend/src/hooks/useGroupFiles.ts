@@ -4,7 +4,11 @@ import { ApiError, fetchFormData, fetchJson } from '@/lib/api-v2/client'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
-import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
+import {
+  conversationWorkspaceFilesApiPath,
+  conversationWorkspaceFilesQueryKey,
+  type WorkspaceAgentScope,
+} from '@/hooks/useConversationWorkspaceFiles'
 import { workspaceGitQueryKey } from '@/hooks/useWorkspaceGit'
 import type {
   ConversationScope,
@@ -41,6 +45,12 @@ export function workspaceFilesQueryKey(groupId: string | undefined, path = '') {
 
 function withPath(path: string) {
   return `path=${encodeURIComponent(path)}`
+}
+
+/** Address one file inside one root of a conversation. */
+function fileQuery(path: string, agentId: WorkspaceAgentScope) {
+  const scope = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''
+  return `${withPath(path)}${scope}`
 }
 
 export function useGroupWorkspaceFiles(groupId: string | undefined, path = '') {
@@ -195,6 +205,7 @@ export async function downloadGroupWorkspaceFile(
 export function useRenameGroupWorkspaceFile(
   conversationId: string | undefined,
   scope: ConversationScope = 'groups',
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
@@ -202,7 +213,7 @@ export function useRenameGroupWorkspaceFile(
     mutationFn: ({ path, newPath }: { path: string; newPath: string }) => {
       if (!conversationId) throw new Error('Conversation is required to rename workspace files')
       return fetchJson<GroupWorkspaceFileRead>(
-        `/groups/${conversationId}/workspace-files/rename?${withPath(path)}`,
+        `${conversationWorkspaceFilesApiPath(scope, conversationId)}/rename?${fileQuery(path, agentId)}`,
         { token, method: 'PATCH', body: { new_path: newPath } },
       )
     },
@@ -218,16 +229,17 @@ export function useRenameGroupWorkspaceFile(
 export function useDeleteGroupWorkspaceFile(
   conversationId: string | undefined,
   scope: ConversationScope = 'groups',
+  agentId: WorkspaceAgentScope = null,
 ) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (path: string) => {
       if (!conversationId) throw new Error('Conversation is required to delete workspace files')
-      return fetchJson<void>(`/groups/${conversationId}/workspace-files?${withPath(path)}`, {
-        token,
-        method: 'DELETE',
-      })
+      return fetchJson<void>(
+        `${conversationWorkspaceFilesApiPath(scope, conversationId)}?${fileQuery(path, agentId)}`,
+        { token, method: 'DELETE' },
+      )
     },
     onSuccess: () => {
       void qc.invalidateQueries({

@@ -4,6 +4,11 @@
 //! caller is authorised against the conversation row first, then against its
 //! active local workspace, and every user supplied path is resolved below the
 //! canonical workspace root before touching the filesystem.
+//!
+//! A conversation can expose more than one root.  [`ConversationRoot`] names
+//! which one a request addresses: the conversation workspace by default, or a
+//! member agent's own workspace when `agent_id` is given.  An agent working in
+//! its own workspace would otherwise write files that appear nowhere in the UI.
 
 use std::{
     collections::HashSet,
@@ -16,7 +21,6 @@ use axum::{
     body::Body,
     http::{header, HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,8 +32,8 @@ use uuid::Uuid;
 
 use crate::{
     api::error::ApiError,
-    api::AppState,
     runtime::group::{AttachmentKind, MessageAttachment},
+    runtime::workspace_scope::WorkspaceMode,
     tools::{resolve_workspace_path, ToolError},
 };
 
@@ -73,7 +77,52 @@ impl ConversationScope {
     }
 }
 
-/// A canonical, owned, active local workspace bound to a conversation.
+/// Which root inside a conversation a request addresses.
+///
+/// `agent_id` is `None` for the conversation's own workspace — the default and
+/// the only root before agents could work elsewhere. `Some(id)` addresses that
+/// member agent's own workspace, which is how the UI surfaces files an isolated
+/// agent produced.
+#[derive(Debug, Clone, Copy)]
+pub struct ConversationRoot<'a> {
+    pub scope: ConversationScope,
+    pub conversation_id: &'a str,
+    pub owner_id: &'a str,
+    pub agent_id: Option<&'a str>,
+}
+
+impl<'a> ConversationRoot<'a> {
+    /// Address the conversation's own workspace.
+    pub fn conversation(
+        scope: ConversationScope,
+        conversation_id: &'a str,
+        owner_id: &'a str,
+    ) -> Self {
+        Self {
+            scope,
+            conversation_id,
+            owner_id,
+            agent_id: None,
+        }
+    }
+
+    /// Address the root named by a request query, which may select an agent.
+    pub fn from_query(
+        scope: ConversationScope,
+        conversation_id: &'a str,
+        owner_id: &'a str,
+        agent_id: Option<&'a str>,
+    ) -> Self {
+        Self {
+            scope,
+            conversation_id,
+            owner_id,
+            agent_id,
+        }
+    }
+}
+
+/// A canonical, owned, active local workspace addressed inside a conversation.
 #[derive(Debug, Clone)]
 pub struct OwnedLocalWorkspace {
     pub scope: ConversationScope,
@@ -87,6 +136,36 @@ pub struct OwnedLocalWorkspace {
 pub struct WorkspaceFilePathQuery {
     #[serde(default)]
     pub path: String,
+    /// Address this member agent's own workspace instead of the conversation's.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+}
+
+impl WorkspaceFilePathQuery {
+    /// The agent selector, treating blank as absent.
+    pub fn agent_id(&self) -> Option<&str> {
+        self.agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
+/// One browsable root inside a conversation.
+#[derive(Debug, Serialize, Clone)]
+pub struct ConversationRootEntry {
+    /// `None` marks the conversation's own workspace.
+    pub agent_id: Option<String>,
+    pub display_name: Option<String>,
+    /// The agent's workspace mode; `None` for the conversation entry.
+    pub workspace_mode: Option<String>,
+    pub workspace_id: String,
+    pub name: String,
+    pub root: String,
+    /// Whether an agent's plain relative paths resolve here. True for the
+    /// conversation entry, and for an agent that works only in its own folder;
+    /// false for a folder the agent merely has mounted.
+    pub is_primary: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -160,40 +239,93 @@ struct FileSnapshot {
     contains_nul: bool,
 }
 
-/// Load and validate the authenticated conversation's active local workspace.
+/// Load and validate the active local workspace a request addresses.
 pub async fn load_owned_local_workspace(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
 ) -> Result<OwnedLocalWorkspace, ApiError> {
+    let conversation = load_owned_conversation(pool, target).await?;
+    let workspace_id = match target.agent_id {
+        Some(agent_id) => member_agent_workspace_id(pool, target, agent_id).await?,
+        None => conversation
+            .workspace_id
+            .ok_or_else(|| ApiError::invalid_input("conversation has no bound workspace"))?,
+    };
+    let root = load_local_workspace_root(pool, &workspace_id, target.owner_id).await?;
+
+    Ok(OwnedLocalWorkspace {
+        scope: target.scope,
+        conversation_id: target.conversation_id.to_string(),
+        owner_id: target.owner_id.to_string(),
+        workspace_id,
+        root,
+    })
+}
+
+/// Load the conversation row, checking ownership, status, and that its kind
+/// matches the URL namespace so one kind cannot be reached through the other's
+/// routes.
+async fn load_owned_conversation(
+    pool: &SqlitePool,
+    target: ConversationRoot<'_>,
+) -> Result<ConversationRow, ApiError> {
     let conversation = sqlx::query_as::<_, ConversationRow>(
         "SELECT owner_id, workspace_id, conversation_kind, status FROM groups WHERE id = ?",
     )
-    .bind(conversation_id)
+    .bind(target.conversation_id)
     .fetch_optional(pool)
     .await
     .map_err(|_| ApiError::internal("database error"))?
     .ok_or_else(|| ApiError::not_found("conversation not found"))?;
 
     if conversation.status != "active"
-        || conversation.conversation_kind != scope.conversation_kind()
+        || conversation.conversation_kind != target.scope.conversation_kind()
     {
         return Err(ApiError::not_found("conversation not found"));
     }
-    if conversation.owner_id != owner_id {
+    if conversation.owner_id != target.owner_id {
         return Err(ApiError::permission_denied(
             "conversation belongs to another user",
         ));
     }
+    Ok(conversation)
+}
 
-    let workspace_id = conversation
-        .workspace_id
-        .ok_or_else(|| ApiError::invalid_input("conversation has no bound workspace"))?;
+/// The workspace bound to an agent that is an active member of this
+/// conversation. Membership is required: owning an agent is not a licence to
+/// browse its folder through an unrelated conversation's routes.
+async fn member_agent_workspace_id(
+    pool: &SqlitePool,
+    target: ConversationRoot<'_>,
+    agent_id: &str,
+) -> Result<String, ApiError> {
+    let workspace_id = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT a.workspace_id FROM group_agents ga \
+         JOIN agents a ON a.id = ga.agent_id \
+         WHERE ga.group_id = ? AND ga.agent_id = ? AND ga.status = 'active' \
+           AND a.status = 'active' AND a.owner_id = ?",
+    )
+    .bind(target.conversation_id)
+    .bind(agent_id)
+    .bind(target.owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::not_found("agent is not a member of this conversation"))?;
+
+    workspace_id.ok_or_else(|| ApiError::invalid_input("agent has no bound workspace"))
+}
+
+/// Validate an owned, active, local workspace and canonicalize its root.
+async fn load_local_workspace_root(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    owner_id: &str,
+) -> Result<PathBuf, ApiError> {
     let workspace = sqlx::query_as::<_, WorkspaceRow>(
         "SELECT owner_id, backend_type, local_path, status FROM workspaces WHERE id = ?",
     )
-    .bind(&workspace_id)
+    .bind(workspace_id)
     .fetch_optional(pool)
     .await
     .map_err(|_| ApiError::internal("database error"))?
@@ -230,24 +362,118 @@ pub async fn load_owned_local_workspace(
     if root.to_str().is_none() {
         return Err(ApiError::invalid_input("workspace path is not valid UTF-8"));
     }
+    Ok(root)
+}
 
-    Ok(OwnedLocalWorkspace {
-        scope,
-        conversation_id: conversation_id.to_string(),
-        owner_id: owner_id.to_string(),
-        workspace_id,
-        root,
-    })
+/// List every root a viewer may browse for this conversation: its own
+/// workspace, plus each active member agent whose own workspace is actually
+/// reachable during that agent's turns (mode `self` or `group_and_self`) and is
+/// a different workspace from the conversation's.
+///
+/// Roots that fail to resolve are omitted rather than failing the request — the
+/// switcher should still list what it can offer.
+pub async fn list_conversation_roots(
+    pool: &SqlitePool,
+    scope: ConversationScope,
+    conversation_id: &str,
+    owner_id: &str,
+) -> Result<Vec<ConversationRootEntry>, ApiError> {
+    let target = ConversationRoot::conversation(scope, conversation_id, owner_id);
+    let conversation = load_owned_conversation(pool, target).await?;
+    let mut entries = Vec::new();
+
+    let conversation_workspace_id = conversation.workspace_id.clone();
+    if let Some(workspace_id) = conversation_workspace_id.as_deref() {
+        if let Some(entry) =
+            root_entry(pool, workspace_id, owner_id, None, None, None, true).await?
+        {
+            entries.push(entry);
+        }
+    }
+
+    let members = sqlx::query_as::<_, MemberAgentRow>(
+        "SELECT ga.agent_id, COALESCE(ga.display_name, a.name) AS display_name, \
+                ga.context_scope_json, a.workspace_id \
+         FROM group_agents ga JOIN agents a ON a.id = ga.agent_id \
+         WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' \
+           AND a.owner_id = ? \
+         ORDER BY ga.joined_at ASC, ga.agent_id ASC",
+    )
+    .bind(conversation_id)
+    .bind(owner_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+
+    for member in members {
+        let Some(workspace_id) = member.workspace_id.as_deref() else {
+            continue;
+        };
+        if Some(workspace_id) == conversation_workspace_id.as_deref() {
+            continue;
+        }
+        let mode = WorkspaceMode::from_context_scope(member.context_scope_json.as_deref());
+        if !matches!(
+            mode,
+            WorkspaceMode::SelfOnly | WorkspaceMode::GroupAndSelf
+        ) {
+            continue;
+        }
+        if let Some(entry) = root_entry(
+            pool,
+            workspace_id,
+            owner_id,
+            Some(member.agent_id),
+            Some(member.display_name),
+            Some(mode.as_str().to_string()),
+            matches!(mode, WorkspaceMode::SelfOnly),
+        )
+        .await?
+        {
+            entries.push(entry);
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Build one root entry, or `None` when the workspace cannot be browsed.
+#[allow(clippy::too_many_arguments)]
+async fn root_entry(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    owner_id: &str,
+    agent_id: Option<String>,
+    display_name: Option<String>,
+    workspace_mode: Option<String>,
+    is_primary: bool,
+) -> Result<Option<ConversationRootEntry>, ApiError> {
+    let Ok(root) = load_local_workspace_root(pool, workspace_id, owner_id).await else {
+        return Ok(None);
+    };
+    let name = sqlx::query_scalar::<_, String>("SELECT name FROM workspaces WHERE id = ?")
+        .bind(workspace_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))?
+        .unwrap_or_default();
+    Ok(Some(ConversationRootEntry {
+        agent_id,
+        display_name,
+        workspace_mode,
+        workspace_id: workspace_id.to_string(),
+        name,
+        root: path_to_utf8(&root)?,
+        is_primary,
+    }))
 }
 
 /// Return the canonical workspace root for a conversation.
 pub async fn workspace_root(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
 ) -> Result<WorkspaceRootResponse, ApiError> {
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     Ok(WorkspaceRootResponse {
         root: path_to_utf8(&workspace.root)?,
         separator: std::path::MAIN_SEPARATOR.to_string(),
@@ -258,12 +484,10 @@ pub async fn workspace_root(
 /// the root; explicit `.` is rejected by the path validator.
 pub async fn list_workspace_files(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
     relative: &str,
 ) -> Result<Vec<WorkspaceFileResponse>, ApiError> {
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     let directory = resolve_workspace_directory(&workspace.root, relative)?;
     let mut rows = Vec::new();
     for entry in fs::read_dir(&directory)
@@ -290,12 +514,10 @@ pub async fn list_workspace_files(
 /// Compatibility preview response used by both conversation scopes.
 pub async fn preview_workspace_file(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
     relative: &str,
 ) -> Result<WorkspaceFilePreviewResponse, ApiError> {
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     let path = resolve_workspace_file(&workspace.root, relative)?;
     let mut file =
         File::open(&path).map_err(|_| ApiError::invalid_input("workspace path is not a file"))?;
@@ -342,12 +564,10 @@ pub async fn preview_workspace_file(
 /// Read a bounded UTF-8 text representation and hash the complete file.
 pub async fn read_workspace_file_text(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
     relative: &str,
 ) -> Result<WorkspaceFileTextResponse, ApiError> {
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     let path = resolve_workspace_file(&workspace.root, relative)?;
     let snapshot = read_validated_snapshot(&workspace.root, &path, MAX_WORKSPACE_TEXT_BYTES)?;
     text_response(&workspace.root, &path, snapshot)
@@ -358,9 +578,7 @@ pub async fn read_workspace_file_text(
 /// full-file SHA-256 immediately before writing.
 pub async fn save_workspace_file_text(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
     relative: &str,
     content: &str,
     version: &str,
@@ -379,7 +597,7 @@ pub async fn save_workspace_file_text(
         return Err(ApiError::invalid_input("version is required"));
     }
 
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     let _save_guard = SAVE_LOCK.lock().await;
     let path = resolve_workspace_file(&workspace.root, relative)?;
     let current = read_validated_snapshot(&workspace.root, &path, MAX_WORKSPACE_TEXT_BYTES)?;
@@ -466,12 +684,10 @@ pub async fn save_workspace_file_text(
 /// ASCII `Content-Disposition` filename.
 pub async fn stream_workspace_file(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
     relative: &str,
 ) -> Result<Response, ApiError> {
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     let path = resolve_workspace_file(&workspace.root, relative)?;
     let bytes =
         fs::read(&path).map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
@@ -498,9 +714,7 @@ pub async fn stream_workspace_file(
 /// message request; MIME and file kind are derived from the resolved file.
 pub async fn validate_conversation_attachments(
     pool: &SqlitePool,
-    scope: ConversationScope,
-    conversation_id: &str,
-    owner_id: &str,
+    target: ConversationRoot<'_>,
     paths: &[String],
 ) -> Result<Vec<MessageAttachment>, ApiError> {
     if paths.len() > MAX_ATTACHMENTS_PER_MESSAGE {
@@ -511,7 +725,7 @@ pub async fn validate_conversation_attachments(
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let workspace = load_owned_local_workspace(pool, scope, conversation_id, owner_id).await?;
+    let workspace = load_owned_local_workspace(pool, target).await?;
     let mut seen = HashSet::new();
     let mut attachments = Vec::with_capacity(paths.len());
     for relative in paths {
@@ -895,116 +1109,11 @@ fn workspace_path_error(error: ToolError) -> ApiError {
     }
 }
 
-// Keep the shared handler contracts close to the service.  Scope-specific
-// modules use these helpers as thin Axum adapters.
-pub async fn list_handler(
-    state: AppState,
-    headers: HeaderMap,
-    scope: ConversationScope,
-    conversation_id: String,
-    query: WorkspaceFilePathQuery,
-) -> Result<Json<Vec<WorkspaceFileResponse>>, ApiError> {
-    let owner_id = crate::api::auth::current_user_id(&headers, &state.auth.secret_key)?;
-    let rows = list_workspace_files(
-        state.db.pool(),
-        scope,
-        &conversation_id,
-        &owner_id,
-        &query.path,
-    )
-    .await?;
-    Ok(Json(rows))
-}
-
-pub async fn root_handler(
-    state: AppState,
-    headers: HeaderMap,
-    scope: ConversationScope,
-    conversation_id: String,
-) -> Result<Json<WorkspaceRootResponse>, ApiError> {
-    let owner_id = crate::api::auth::current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(
-        workspace_root(state.db.pool(), scope, &conversation_id, &owner_id).await?,
-    ))
-}
-
-pub async fn preview_handler(
-    state: AppState,
-    headers: HeaderMap,
-    scope: ConversationScope,
-    conversation_id: String,
-    query: WorkspaceFilePathQuery,
-) -> Result<Json<WorkspaceFilePreviewResponse>, ApiError> {
-    let owner_id = crate::api::auth::current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(
-        preview_workspace_file(
-            state.db.pool(),
-            scope,
-            &conversation_id,
-            &owner_id,
-            &query.path,
-        )
-        .await?,
-    ))
-}
-
-pub async fn download_handler(
-    state: AppState,
-    headers: HeaderMap,
-    scope: ConversationScope,
-    conversation_id: String,
-    query: WorkspaceFilePathQuery,
-) -> Result<Response, ApiError> {
-    let owner_id = crate::api::auth::current_user_id(&headers, &state.auth.secret_key)?;
-    stream_workspace_file(
-        state.db.pool(),
-        scope,
-        &conversation_id,
-        &owner_id,
-        &query.path,
-    )
-    .await
-}
-
-pub async fn text_handler(
-    state: AppState,
-    headers: HeaderMap,
-    scope: ConversationScope,
-    conversation_id: String,
-    query: WorkspaceFilePathQuery,
-) -> Result<Json<WorkspaceFileTextResponse>, ApiError> {
-    let owner_id = crate::api::auth::current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(
-        read_workspace_file_text(
-            state.db.pool(),
-            scope,
-            &conversation_id,
-            &owner_id,
-            &query.path,
-        )
-        .await?,
-    ))
-}
-
-pub async fn save_text_handler(
-    state: AppState,
-    headers: HeaderMap,
-    scope: ConversationScope,
-    conversation_id: String,
-    query: WorkspaceFilePathQuery,
-    body: SaveWorkspaceFileTextRequest,
-) -> Result<Json<WorkspaceFileTextResponse>, ApiError> {
-    let owner_id = crate::api::auth::current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(
-        save_workspace_file_text(
-            state.db.pool(),
-            scope,
-            &conversation_id,
-            &owner_id,
-            &query.path,
-            &body.content,
-            &body.version,
-        )
-        .await?,
-    ))
+/// Row backing one member agent in the root listing.
+#[derive(Debug, sqlx::FromRow)]
+struct MemberAgentRow {
+    agent_id: String,
+    display_name: String,
+    context_scope_json: Option<String>,
+    workspace_id: Option<String>,
 }

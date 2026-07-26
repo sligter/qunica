@@ -257,15 +257,23 @@ pub struct GroupNoteUpdateRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GroupWorkspaceFilePathQuery {
-    #[serde(default)]
-    path: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct GroupWorkspaceUploadQuery {
     #[serde(default)]
     unique_name: bool,
+    /// Upload into this member agent's own workspace instead of the
+    /// conversation's.
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+impl GroupWorkspaceUploadQuery {
+    /// The agent selector, treating blank as absent.
+    fn agent_id(&self) -> Option<&str> {
+        self.agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1241,9 +1249,11 @@ pub async fn get_group_workspace_root(
     let group_id = validate_uuid(&group_id, "group id")?;
     let root = workspace_files::workspace_root(
         state.db.pool(),
-        ConversationScope::Groups,
-        &group_id,
-        &owner_id,
+        workspace_files::ConversationRoot::conversation(
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+        ),
     )
     .await?;
     Ok(Json(GroupWorkspaceRootResponse {
@@ -1256,15 +1266,18 @@ pub async fn list_group_workspace_files(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Json<Vec<GroupWorkspaceFileResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let rows = workspace_files::list_workspace_files(
         state.db.pool(),
-        ConversationScope::Groups,
-        &group_id,
-        &owner_id,
+        workspace_files::ConversationRoot::from_query(
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+            query.agent_id(),
+        ),
         &query.path,
     )
     .await?
@@ -1285,15 +1298,18 @@ pub async fn preview_group_workspace_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Json<GroupWorkspaceFilePreviewResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let preview = workspace_files::preview_workspace_file(
         state.db.pool(),
-        ConversationScope::Groups,
-        &group_id,
-        &owner_id,
+        workspace_files::ConversationRoot::from_query(
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+            query.agent_id(),
+        ),
         &query.path,
     )
     .await?;
@@ -1309,17 +1325,26 @@ pub async fn preview_group_workspace_file(
 }
 
 pub async fn upload_group_workspace_file(
-    State(state): State<AppState>,
+    state: AppState,
     headers: HeaderMap,
-    Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceUploadQuery>,
+    scope: ConversationScope,
+    conversation_id: String,
+    query: GroupWorkspaceUploadQuery,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
+    let group_id = validate_uuid(&conversation_id, "conversation id")?;
 
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let root = conversation_files_root(
+        state.db.pool(),
+        workspace_files::ConversationRoot::from_query(
+            scope,
+            &group_id,
+            &owner_id,
+            query.agent_id(),
+        ),
+    )
+    .await?;
     let upload = read_group_workspace_file_part(multipart).await?;
     let filename = unique_group_upload_filename(
         &root,
@@ -1341,15 +1366,18 @@ pub async fn download_group_workspace_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Response, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     workspace_files::stream_workspace_file(
         state.db.pool(),
-        ConversationScope::Groups,
-        &group_id,
-        &owner_id,
+        workspace_files::ConversationRoot::from_query(
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+            query.agent_id(),
+        ),
         &query.path,
     )
     .await
@@ -1359,16 +1387,19 @@ pub async fn read_group_workspace_file_text(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     Ok(Json(
         workspace_files::read_workspace_file_text(
             state.db.pool(),
-            ConversationScope::Groups,
-            &group_id,
-            &owner_id,
+            workspace_files::ConversationRoot::from_query(
+                ConversationScope::Groups,
+                &group_id,
+                &owner_id,
+                query.agent_id(),
+            ),
             &query.path,
         )
         .await?,
@@ -1379,7 +1410,7 @@ pub async fn save_group_workspace_file_text(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
     Json(body): Json<workspace_files::SaveWorkspaceFileTextRequest>,
 ) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
@@ -1387,9 +1418,12 @@ pub async fn save_group_workspace_file_text(
     Ok(Json(
         workspace_files::save_workspace_file_text(
             state.db.pool(),
-            ConversationScope::Groups,
-            &group_id,
-            &owner_id,
+            workspace_files::ConversationRoot::from_query(
+                ConversationScope::Groups,
+                &group_id,
+                &owner_id,
+                query.agent_id(),
+            ),
             &query.path,
             &body.content,
             &body.version,
@@ -1399,17 +1433,26 @@ pub async fn save_group_workspace_file_text(
 }
 
 pub async fn rename_group_workspace_file(
-    State(state): State<AppState>,
+    state: AppState,
     headers: HeaderMap,
-    Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
-    Json(body): Json<GroupWorkspaceFileRenameRequest>,
+    scope: ConversationScope,
+    conversation_id: String,
+    query: workspace_files::WorkspaceFilePathQuery,
+    body: GroupWorkspaceFileRenameRequest,
 ) -> Result<Json<GroupWorkspaceFileResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
+    let group_id = validate_uuid(&conversation_id, "conversation id")?;
 
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let root = conversation_files_root(
+        state.db.pool(),
+        workspace_files::ConversationRoot::from_query(
+            scope,
+            &group_id,
+            &owner_id,
+            query.agent_id(),
+        ),
+    )
+    .await?;
     let source = resolve_group_workspace_file_path(&root, &query.path)?;
     if source == root {
         return Err(ApiError::invalid_input("cannot rename the workspace root"));
@@ -1438,16 +1481,25 @@ pub async fn rename_group_workspace_file(
 }
 
 pub async fn delete_group_workspace_file(
-    State(state): State<AppState>,
+    state: AppState,
     headers: HeaderMap,
-    Path(group_id): Path<String>,
-    Query(query): Query<GroupWorkspaceFilePathQuery>,
+    scope: ConversationScope,
+    conversation_id: String,
+    query: workspace_files::WorkspaceFilePathQuery,
 ) -> Result<StatusCode, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
+    let group_id = validate_uuid(&conversation_id, "conversation id")?;
 
-    let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let root = conversation_files_root(
+        state.db.pool(),
+        workspace_files::ConversationRoot::from_query(
+            scope,
+            &group_id,
+            &owner_id,
+            query.agent_id(),
+        ),
+    )
+    .await?;
     let target = resolve_group_workspace_file_path(&root, &query.path)?;
     if target == root {
         return Err(ApiError::invalid_input("cannot delete the workspace root"));
@@ -2825,6 +2877,83 @@ async fn reject_active_group_file_filename(
     Ok(())
 }
 
+// Thin Axum adapters binding the group URL namespace to the shared services.
+pub async fn upload_workspace_file_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<GroupWorkspaceUploadQuery>,
+    multipart: Multipart,
+) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
+    upload_group_workspace_file(
+        state,
+        headers,
+        ConversationScope::Groups,
+        group_id,
+        query,
+        multipart,
+    )
+    .await
+}
+
+pub async fn rename_workspace_file_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
+    Json(body): Json<GroupWorkspaceFileRenameRequest>,
+) -> Result<Json<GroupWorkspaceFileResponse>, ApiError> {
+    rename_group_workspace_file(
+        state,
+        headers,
+        ConversationScope::Groups,
+        group_id,
+        query,
+        body,
+    )
+    .await
+}
+
+pub async fn delete_workspace_file_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
+) -> Result<StatusCode, ApiError> {
+    delete_group_workspace_file(state, headers, ConversationScope::Groups, group_id, query).await
+}
+
+pub async fn list_workspace_roots_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<workspace_files::ConversationRootEntry>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    Ok(Json(
+        workspace_files::list_conversation_roots(
+            state.db.pool(),
+            ConversationScope::Groups,
+            &group_id,
+            &owner_id,
+        )
+        .await?,
+    ))
+}
+
+/// Canonical root for a conversation file mutation, honouring the addressed
+/// root. Delegates to the shared service so uploads, renames and deletes get
+/// the same authorization and kind checks the read endpoints already apply.
+async fn conversation_files_root(
+    pool: &SqlitePool,
+    target: workspace_files::ConversationRoot<'_>,
+) -> Result<PathBuf, ApiError> {
+    Ok(workspace_files::load_owned_local_workspace(pool, target)
+        .await?
+        .root)
+}
+
+#[allow(dead_code)]
 async fn group_files_workspace_root(
     pool: &SqlitePool,
     group: &GroupRow,
@@ -3518,6 +3647,37 @@ async fn validate_workspace(
     }
 }
 
+/// Directory name for an auto-created group workspace.
+///
+/// A bare UUID is unrecognisable in a file manager or a workspace picker, so
+/// lead with a slug of the group name and keep a short id for uniqueness. Groups
+/// whose names slugify to nothing (emoji, punctuation, some scripts) fall back
+/// to the id alone rather than producing a bare separator.
+fn group_workspace_dir_name(group_name: &str, group_id: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_separator = false;
+    for ch in group_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_separator = false;
+            slug.extend(ch.to_lowercase());
+        } else {
+            pending_separator = true;
+        }
+        if slug.len() >= 40 {
+            break;
+        }
+    }
+    let short_id: String = group_id.chars().filter(|ch| *ch != '-').take(8).collect();
+    if slug.is_empty() {
+        short_id
+    } else {
+        format!("{slug}-{short_id}")
+    }
+}
+
 async fn create_group_workspace(
     pool: &SqlitePool,
     owner_id: &str,
@@ -3526,7 +3686,7 @@ async fn create_group_workspace(
     now: &str,
 ) -> Result<String, ApiError> {
     let root = require_group_workspace_root(pool, owner_id).await?;
-    let storage_dir = PathBuf::from(root).join(group_id);
+    let storage_dir = PathBuf::from(root).join(group_workspace_dir_name(group_name, group_id));
     std::fs::create_dir_all(&storage_dir)
         .map_err(|_| ApiError::internal("failed to create group workspace directory"))?;
     let local_path = std::fs::canonicalize(&storage_dir)
@@ -3542,7 +3702,7 @@ async fn create_group_workspace(
     )
     .bind(&workspace_id)
     .bind(owner_id)
-    .bind(format!("group:{group_name}"))
+    .bind(group_name)
     .bind(&local_path)
     .bind(now)
     .bind(now)

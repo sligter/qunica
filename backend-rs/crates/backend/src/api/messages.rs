@@ -471,11 +471,15 @@ async fn send_for_kind(
         .into_iter()
         .map(|attachment| attachment.path)
         .collect::<Vec<_>>();
+    // Attachments always belong to the conversation workspace, never to an
+    // agent's own folder: their stored paths are relative to that one root.
     let attachments = validate_conversation_attachments(
         state.db.pool(),
-        conversation_scope(expected),
-        &group_id,
-        &owner_id,
+        crate::api::workspace_files::ConversationRoot::conversation(
+            conversation_scope(expected),
+            &group_id,
+            &owner_id,
+        ),
         &attachment_paths,
     )
     .await?;
@@ -655,11 +659,15 @@ async fn stream_for_kind(
         .into_iter()
         .map(|attachment| attachment.path)
         .collect::<Vec<_>>();
+    // Attachments always belong to the conversation workspace, never to an
+    // agent's own folder: their stored paths are relative to that one root.
     let attachments = validate_conversation_attachments(
         state.db.pool(),
-        conversation_scope(expected),
-        &group_id,
-        &owner_id,
+        crate::api::workspace_files::ConversationRoot::conversation(
+            conversation_scope(expected),
+            &group_id,
+            &owner_id,
+        ),
         &attachment_paths,
     )
     .await?;

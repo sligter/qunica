@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Bot, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -10,7 +10,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
 import { useAgents } from '@/hooks/useAgents'
-import { useGroups } from '@/hooks/useGroups'
+import { useGroups, useUpdateGroup } from '@/hooks/useGroups'
 import {
   useDeleteWorkspace,
   useUpdateWorkspace,
@@ -24,7 +24,7 @@ import {
   readRememberedPrefix,
   saveRememberedPrefix,
 } from '@/lib/folderPicker'
-import type { WorkspaceRead, WorkspaceUpdate } from '@/types/api'
+import type { GroupRead, WorkspaceRead, WorkspaceUpdate } from '@/types/api'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
@@ -247,11 +247,16 @@ interface WorkspaceUsageSectionProps {
 }
 
 /**
- * Read-only view of which groups and agents are bound to this workspace.
- * Bindings are configured on the entity side (agent detail, group manage).
+ * Which groups and agents are bound to this workspace, with a way to act on
+ * each. A read-only list makes you hunt for the entity's own screen to change
+ * anything, which is the wrong direction of travel when you got here by asking
+ * "who is using this folder?".
+ *
+ * A group can be unbound in place. An agent cannot: the API requires every
+ * agent to have a workspace, so the only honest action is to go and rebind it.
  */
 function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
-  const { t } = useTranslation('workspaces')
+  const { t } = useTranslation(['workspaces', 'common'])
   const groups = useGroups()
   const agents = useAgents()
 
@@ -261,39 +266,86 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
 
   return (
     <SettingsSection
-      title={t('detail.usedBy')}
-      description={t('detail.usedByDescription')}
+      title={t('workspaces:detail.usedBy')}
+      description={t('workspaces:detail.usedByDescription')}
     >
       <div className="py-4">
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">{t('detail.loadingUsage')}</p>
+          <p className="text-sm text-muted-foreground">{t('workspaces:detail.loadingUsage')}</p>
         ) : boundGroups.length === 0 && boundAgents.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            {t('detail.unused')}
+            {t('workspaces:detail.unused')}
           </p>
         ) : (
           <ul className="space-y-1.5">
             {boundGroups.map((group) => (
-              <li key={group.id} className="flex items-center gap-2 text-sm">
-                <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">{group.name}</span>
-                <Badge variant="outline" className="text-[10px]">
-                  {t('detail.group')}
-                </Badge>
-              </li>
+              <BoundGroupRow key={group.id} group={group} />
             ))}
             {boundAgents.map((agent) => (
               <li key={agent.id} className="flex items-center gap-2 text-sm">
                 <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">{agent.name}</span>
+                <Link to={`/agents/${agent.id}`} className="truncate hover:underline">
+                  {agent.name}
+                </Link>
                 <Badge variant="outline" className="text-[10px]">
-                  {t('detail.agent')}
+                  {t('workspaces:detail.agent')}
                 </Badge>
+                <Link
+                  to={`/agents/${agent.id}`}
+                  className="ml-auto shrink-0 text-xs text-muted-foreground hover:underline"
+                >
+                  {t('workspaces:detail.rebind')}
+                </Link>
               </li>
             ))}
           </ul>
         )}
       </div>
     </SettingsSection>
+  )
+}
+
+function BoundGroupRow({ group }: { group: GroupRead }) {
+  const { t } = useTranslation(['workspaces', 'common'])
+  const update = useUpdateGroup(group.id)
+  const [error, setError] = useState<LocalizedError | null>(null)
+
+  return (
+    <li className="flex items-center gap-2 text-sm">
+      <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <Link to={`/groups/${group.id}`} className="truncate hover:underline">
+        {group.name}
+      </Link>
+      <Badge variant="outline" className="text-[10px]">
+        {t('workspaces:detail.group')}
+      </Badge>
+      {error ? (
+        <span className="truncate text-xs text-destructive" role="alert">
+          {localizedErrorText(error, t)}
+        </span>
+      ) : null}
+      <Button
+        size="sm"
+        variant="ghost"
+        className="ml-auto h-7 shrink-0 text-xs"
+        disabled={update.isPending}
+        onClick={() => {
+          setError(null)
+          update.mutate(
+            { workspace_id: null },
+            {
+              onError: (err) =>
+                setError(
+                  err instanceof ApiError
+                    ? messageError(err.message)
+                    : translatedError('workspaces:errors.unbind'),
+                ),
+            },
+          )
+        }}
+      >
+        {update.isPending ? t('common:actions.saving') : t('workspaces:detail.unbind')}
+      </Button>
+    </li>
   )
 }

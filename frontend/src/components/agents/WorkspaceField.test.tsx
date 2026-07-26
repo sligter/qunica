@@ -25,10 +25,30 @@ vi.mock('@/hooks/useWorkspaces', () => ({
   useCreateWorkspace: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
+const defaultWorkspaces = mocks.workspaces
+
 describe('WorkspaceField', () => {
   afterEach(async () => {
     cleanup()
+    mocks.workspaces = defaultWorkspaces
     await i18n.changeLanguage('en-US')
+  })
+
+  it('collapses only a long path, and keeps the full one in the title', () => {
+    mocks.workspaces = [
+      {
+        ...mocks.workspaces[0],
+        local_path: 'D:/very/deeply/nested/company/projects/2026/ag-swarmer/backend',
+      },
+    ]
+    render(<WorkspaceField variant="compact" value="workspace-1" onChange={vi.fn()} />)
+
+    const line = screen.getByText(/Location: …\/ag-swarmer\/backend/)
+    expect(line).toBeInTheDocument()
+    expect(line).toHaveAttribute(
+      'title',
+      'D:/very/deeply/nested/company/projects/2026/ag-swarmer/backend',
+    )
   })
 
   it('uses a compact workspace selector without a duplicate label', () => {

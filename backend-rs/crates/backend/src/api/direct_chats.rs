@@ -185,9 +185,11 @@ pub async fn get_workspace_root(
     Ok(Json(
         workspace_files::workspace_root(
             state.db.pool(),
-            ConversationScope::DirectChats,
-            &chat_id,
-            &owner_id,
+            workspace_files::ConversationRoot::conversation(
+                ConversationScope::DirectChats,
+                &chat_id,
+                &owner_id,
+            ),
         )
         .await?,
     ))
@@ -204,9 +206,12 @@ pub async fn list_workspace_files(
     Ok(Json(
         workspace_files::list_workspace_files(
             state.db.pool(),
-            ConversationScope::DirectChats,
-            &chat_id,
-            &owner_id,
+            workspace_files::ConversationRoot::from_query(
+                ConversationScope::DirectChats,
+                &chat_id,
+                &owner_id,
+                query.agent_id(),
+            ),
             &query.path,
         )
         .await?,
@@ -224,9 +229,12 @@ pub async fn preview_workspace_file(
     Ok(Json(
         workspace_files::preview_workspace_file(
             state.db.pool(),
-            ConversationScope::DirectChats,
-            &chat_id,
-            &owner_id,
+            workspace_files::ConversationRoot::from_query(
+                ConversationScope::DirectChats,
+                &chat_id,
+                &owner_id,
+                query.agent_id(),
+            ),
             &query.path,
         )
         .await?,
@@ -243,9 +251,12 @@ pub async fn download_workspace_file(
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     workspace_files::stream_workspace_file(
         state.db.pool(),
-        ConversationScope::DirectChats,
-        &chat_id,
-        &owner_id,
+        workspace_files::ConversationRoot::from_query(
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+            query.agent_id(),
+        ),
         &query.path,
     )
     .await
@@ -262,9 +273,12 @@ pub async fn read_workspace_file_text(
     Ok(Json(
         workspace_files::read_workspace_file_text(
             state.db.pool(),
-            ConversationScope::DirectChats,
-            &chat_id,
-            &owner_id,
+            workspace_files::ConversationRoot::from_query(
+                ConversationScope::DirectChats,
+                &chat_id,
+                &owner_id,
+                query.agent_id(),
+            ),
             &query.path,
         )
         .await?,
@@ -283,9 +297,12 @@ pub async fn save_workspace_file_text(
     Ok(Json(
         workspace_files::save_workspace_file_text(
             state.db.pool(),
-            ConversationScope::DirectChats,
-            &chat_id,
-            &owner_id,
+            workspace_files::ConversationRoot::from_query(
+                ConversationScope::DirectChats,
+                &chat_id,
+                &owner_id,
+                query.agent_id(),
+            ),
             &query.path,
             &body.content,
             &body.version,
@@ -336,4 +353,83 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()
+}
+
+// Direct chats get the same file mutations groups have. A one-on-one chat is
+// where a user is most likely to just drop a file in, so read-only would be the
+// wrong asymmetry.
+pub async fn upload_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<crate::api::groups::GroupWorkspaceUploadQuery>,
+    multipart: axum::extract::Multipart,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::api::groups::GroupWorkspaceFileResponse>,
+    ),
+    ApiError,
+> {
+    crate::api::groups::upload_group_workspace_file(
+        state,
+        headers,
+        ConversationScope::DirectChats,
+        chat_id,
+        query,
+        multipart,
+    )
+    .await
+}
+
+pub async fn rename_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+    Json(body): Json<crate::api::groups::GroupWorkspaceFileRenameRequest>,
+) -> Result<Json<crate::api::groups::GroupWorkspaceFileResponse>, ApiError> {
+    crate::api::groups::rename_group_workspace_file(
+        state,
+        headers,
+        ConversationScope::DirectChats,
+        chat_id,
+        query,
+        body,
+    )
+    .await
+}
+
+pub async fn delete_workspace_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+) -> Result<StatusCode, ApiError> {
+    crate::api::groups::delete_group_workspace_file(
+        state,
+        headers,
+        ConversationScope::DirectChats,
+        chat_id,
+        query,
+    )
+    .await
+}
+
+pub async fn list_workspace_roots(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+) -> Result<Json<Vec<workspace_files::ConversationRootEntry>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let chat_id = validate_uuid(&chat_id, "chat id")?;
+    Ok(Json(
+        workspace_files::list_conversation_roots(
+            state.db.pool(),
+            ConversationScope::DirectChats,
+            &chat_id,
+            &owner_id,
+        )
+        .await?,
+    ))
 }

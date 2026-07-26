@@ -4,12 +4,19 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceFilesTab } from '@/components/chat/WorkspaceFilesTab'
-import { conversationWorkspaceFileListQueryKey } from '@/hooks/useConversationWorkspaceFiles'
+import {
+  conversationWorkspaceFileListQueryKey,
+  conversationWorkspaceRootsQueryKey,
+} from '@/hooks/useConversationWorkspaceFiles'
 import i18n from '@/i18n'
 import { formatNumber } from '@/lib/format'
 import { WORKSPACE_ITEM_MIME } from '@/lib/workspaceDrag'
 import { useAuthStore } from '@/stores/authStore'
-import type { ConversationScope, ConversationWorkspaceFileRead } from '@/types/api'
+import type {
+  ConversationScope,
+  ConversationWorkspaceFileRead,
+  ConversationWorkspaceRootEntry,
+} from '@/types/api'
 
 vi.mock('@/components/chat/workspace-preview/WorkspacePreviewRouter', () => ({
   WorkspacePreviewRouter: ({
@@ -44,6 +51,8 @@ interface RenderTabOptions {
   conversationId?: string
   workspaceId?: string | null
   files?: ConversationWorkspaceFileRead[]
+  roots?: ConversationWorkspaceRootEntry[]
+  agentFiles?: Record<string, ConversationWorkspaceFileRead[]>
 }
 
 function renderTab({
@@ -51,12 +60,23 @@ function renderTab({
   conversationId = 'group-1',
   workspaceId = 'workspace-1',
   files = [rawFile],
+  roots,
+  agentFiles = {},
 }: RenderTabOptions = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   queryClient.setQueryData(
     conversationWorkspaceFileListQueryKey(scope, conversationId, ''),
     files,
   )
+  if (roots) {
+    queryClient.setQueryData(conversationWorkspaceRootsQueryKey(scope, conversationId), roots)
+  }
+  for (const [agentId, agentRootFiles] of Object.entries(agentFiles)) {
+    queryClient.setQueryData(
+      conversationWorkspaceFileListQueryKey(scope, conversationId, '', agentId),
+      agentRootFiles,
+    )
+  }
   const view = render(
     <QueryClientProvider client={queryClient}>
       <WorkspaceFilesTab
@@ -82,6 +102,70 @@ describe('WorkspaceFilesTab', () => {
     useAuthStore.setState({ token: null })
   })
 
+  it('offers an agent root only when there is one, and browses it when picked', async () => {
+    const user = userEvent.setup()
+    const agentFile: ConversationWorkspaceFileRead = {
+      path: 'draft.md',
+      name: 'draft.md',
+      is_dir: false,
+      size: 12,
+      modified_at: '2026-07-18T00:00:00Z',
+      abs_path: 'D:\solo\draft.md',
+    }
+
+    // A conversation with only its own root shows no picker at all.
+    const single = renderTab({
+      roots: [
+        {
+          agent_id: null,
+          display_name: null,
+          workspace_mode: null,
+          workspace_id: 'workspace-1',
+          name: 'Shared',
+          root: 'D:/shared',
+          is_primary: true,
+        },
+      ],
+    })
+    expect(screen.queryByRole('combobox', { name: 'Workspace to browse' })).toBeNull()
+    single.unmount()
+
+    renderTab({
+      roots: [
+        {
+          agent_id: null,
+          display_name: null,
+          workspace_mode: null,
+          workspace_id: 'workspace-1',
+          name: 'Shared',
+          root: 'D:/shared',
+          is_primary: true,
+        },
+        {
+          agent_id: 'agent-1',
+          display_name: 'Solo',
+          workspace_mode: 'self',
+          workspace_id: 'workspace-2',
+          name: "Solo's",
+          root: 'D:/solo',
+          is_primary: true,
+        },
+      ],
+      agentFiles: { 'agent-1': [agentFile] },
+    })
+
+    const picker = screen.getByRole('combobox', { name: 'Workspace to browse' })
+    expect(picker).toHaveValue('')
+    expect(screen.getByText('D:/shared')).toBeVisible()
+    expect(screen.getByText('README_RAW_原文.md')).toBeVisible()
+
+    await user.selectOptions(picker, 'agent-1')
+
+    expect(screen.getByText('D:/solo')).toBeVisible()
+    await waitFor(() => expect(screen.getByText('draft.md')).toBeVisible())
+    expect(screen.queryByText('README_RAW_原文.md')).toBeNull()
+  })
+
   it('keeps group mutation actions and preserves the file name', () => {
     renderTab()
 
@@ -94,7 +178,7 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
   })
 
-  it('allows direct-chat rename and delete while keeping upload unavailable', async () => {
+  it('gives direct chats the same file operations as groups, on their own routes', async () => {
     const user = userEvent.setup()
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => (
       init?.method === 'DELETE'
@@ -108,7 +192,9 @@ describe('WorkspaceFilesTab', () => {
     const { queryClient } = renderTab({ scope: 'direct-chats', conversationId: 'chat-1' })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
 
-    expect(screen.queryByRole('button', { name: 'Upload file to workspace uploads' })).toBeNull()
+    expect(
+      screen.getByRole('button', { name: 'Upload file to workspace uploads' }),
+    ).toBeVisible()
     expect(screen.getByLabelText('Rename README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Download README_RAW_原文.md')).toBeVisible()
@@ -120,7 +206,7 @@ describe('WorkspaceFilesTab', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining(
-        '/groups/chat-1/workspace-files/rename?path=raw%20dir%2FREADME_RAW_',
+        '/direct-chats/chat-1/workspace-files/rename?path=raw%20dir%2FREADME_RAW_',
       ),
       expect.objectContaining({
         method: 'PATCH',
@@ -136,7 +222,7 @@ describe('WorkspaceFilesTab', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining(
-        '/groups/chat-1/workspace-files?path=raw%20dir%2FREADME_RAW_',
+        '/direct-chats/chat-1/workspace-files?path=raw%20dir%2FREADME_RAW_',
       ),
       expect.objectContaining({ method: 'DELETE' }),
     ))

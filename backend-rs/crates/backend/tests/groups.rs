@@ -1125,10 +1125,14 @@ async fn group_create_without_workspace_id_creates_local_workspace_from_settings
     let group_id = group["id"].as_str().unwrap().to_string();
     let workspace_id = group["workspace_id"].as_str().unwrap().to_string();
 
-    let expected_path = std::fs::canonicalize(root.path().join(&group_id))
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    // The directory leads with a slug of the group name so it is recognisable
+    // in a file manager, and keeps a short id so two same-named groups differ.
+    let short_id: String = group_id.chars().filter(|ch| *ch != '-').take(8).collect();
+    let expected_path =
+        std::fs::canonicalize(root.path().join(format!("auto-ws-{short_id}")))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
     assert!(std::path::Path::new(&expected_path).is_dir());
 
     let workspace = sqlx::query_as::<_, (String, String, Option<String>)>(
@@ -1138,7 +1142,7 @@ async fn group_create_without_workspace_id_creates_local_workspace_from_settings
     .fetch_one(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(workspace.0, "group:Auto WS");
+    assert_eq!(workspace.0, "Auto WS");
     assert_eq!(workspace.1, "local");
     assert_eq!(workspace.2.as_deref(), Some(expected_path.as_str()));
 }
@@ -5345,4 +5349,135 @@ async fn group_delete_soft_deletes_and_hides_from_list() {
         .map(|g| g["id"].as_str().unwrap())
         .collect();
     assert!(!ids.contains(&group_id.as_str()));
+}
+
+/// The panel must be able to reach the folder an isolated agent actually writes
+/// to; otherwise its output exists nowhere in the UI.
+#[tokio::test]
+async fn group_workspace_roots_expose_agent_folders_and_scope_file_reads() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-workspace-roots@example.com").await;
+    let (_group_root, group_workspace) = create_local_workspace(&app, &token, "Shared").await;
+    let (_agent_root, agent_workspace) = create_local_workspace(&app, &token, "Solo's").await;
+    let agent = create_agent(&app, &token, &agent_workspace, "Solo").await;
+    let group = create_group_with_initial_agents(&app, &token, &group_workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    // A member on the group workspace contributes no extra root.
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": agent, "workspace_mode": "group"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, roots) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-roots"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {roots:?}");
+    let roots = roots.as_array().unwrap();
+    assert_eq!(roots.len(), 1, "got: {roots:?}");
+    assert!(roots[0]["agent_id"].is_null());
+    assert_eq!(roots[0]["is_primary"], true);
+
+    // Isolating it makes its own folder browsable and marks it primary.
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"workspace_mode": "self"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, roots) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-roots"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {roots:?}");
+    let roots = roots.as_array().unwrap();
+    assert_eq!(roots.len(), 2, "got: {roots:?}");
+    assert_eq!(roots[1]["agent_id"], agent);
+    assert_eq!(roots[1]["workspace_mode"], "self");
+    assert_eq!(roots[1]["is_primary"], true);
+    assert_eq!(roots[1]["workspace_id"], agent_workspace);
+
+    // A mounted folder is browsable but is not where plain paths land.
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}/agents/{agent}/workspace-sharing"),
+            &token,
+            json!({"workspace_mode": "group_and_self"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, roots) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-roots"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(roots.as_array().unwrap()[1]["is_primary"], false);
+}
+
+/// `agent_id` selects a root; it must not become a way to read a folder the
+/// caller could not otherwise reach through this conversation.
+#[tokio::test]
+async fn group_workspace_files_reject_agent_scope_for_non_members() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-workspace-scope@example.com").await;
+    let (_group_root, group_workspace) = create_local_workspace(&app, &token, "Shared").await;
+    let (_outsider_root, outsider_workspace) =
+        create_local_workspace(&app, &token, "Outside").await;
+    let outsider = create_agent(&app, &token, &outsider_workspace, "Outsider").await;
+    let group = create_group_with_initial_agents(&app, &token, &group_workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files?agent_id={outsider}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
+
+    // A group id is not reachable through the direct-chat namespace.
+    let (status, body) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{group_id}/workspace-files"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
 }

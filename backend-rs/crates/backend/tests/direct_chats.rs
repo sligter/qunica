@@ -1014,6 +1014,8 @@ async fn direct_stream_generates_first_title_and_replays_conversation_update() {
     assert!(replay_text.contains("conversation_updated"));
 }
 
+/// Direct chats have the same file mutations groups do, served by the same
+/// services under their own URL namespace, and still share the Git routes.
 #[tokio::test]
 async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes() {
     let (app, _state) = router_with_state_for_tests().await;
@@ -1031,7 +1033,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
         &app,
         request(
             "PATCH",
-            &format!("/api/v2/groups/{chat_id}/workspace-files/rename?path=before.txt"),
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/rename?path=before.txt"),
             Some(&foreign_token),
             json!({"new_path": "stolen.txt"}),
         ),
@@ -1044,7 +1046,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
         &app,
         authed(
             "DELETE",
-            &format!("/api/v2/groups/{chat_id}/workspace-files?path=empty"),
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files?path=empty"),
             &foreign_token,
         ),
     )
@@ -1056,7 +1058,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
         &app,
         request(
             "PATCH",
-            &format!("/api/v2/groups/{chat_id}/workspace-files/rename?path=before.txt"),
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/rename?path=before.txt"),
             Some(&token),
             json!({"new_path": "after.txt"}),
         ),
@@ -1070,7 +1072,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
         &app,
         authed(
             "DELETE",
-            &format!("/api/v2/groups/{chat_id}/workspace-files?path=empty"),
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files?path=empty"),
             &token,
         ),
     )
@@ -1102,4 +1104,97 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
     assert_eq!(body["error"]["code"], "permission_denied");
+}
+
+/// A direct chat has no workspace of its own: it follows the agent it is with.
+/// Rebinding the agent must move the chat, not strand it on the old folder.
+#[tokio::test]
+async fn direct_chat_workspace_follows_the_agent_when_it_is_rebound() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-workspace-follows@example.com").await;
+    let (first_root, first_workspace) = create_local_workspace(&app, &token, "First").await;
+    std::fs::write(first_root.path().join("old.txt"), b"old").unwrap();
+    let agent_id = create_agent(&app, &token, &first_workspace, "Mover").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap().to_string();
+    assert_eq!(chat["workspace_id"], first_workspace);
+
+    let (second_root, second_workspace) = create_local_workspace(&app, &token, "Second").await;
+    std::fs::write(second_root.path().join("new.txt"), b"new").unwrap();
+    let (status, updated) = send(
+        &app,
+        request(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            Some(&token),
+            json!({ "workspace_id": second_workspace }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {updated:?}");
+
+    let (status, chat) = send(
+        &app,
+        authed("GET", &format!("/api/v2/direct-chats/{chat_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {chat:?}");
+    assert_eq!(chat["workspace_id"], second_workspace);
+
+    // The panel follows too: the new folder's file is listed, the old one is not.
+    let (status, files) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {files:?}");
+    let names = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"new.txt".to_string()), "got: {names:?}");
+    assert!(!names.contains(&"old.txt".to_string()), "got: {names:?}");
+}
+
+/// A direct chat can upload just like a group chat; a one-on-one is where a
+/// user is most likely to drop a file in.
+#[tokio::test]
+async fn direct_workspace_upload_writes_into_the_conversation_workspace() {
+    let (app, _state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-workspace-upload@example.com").await;
+    let (root, workspace_id) = create_local_workspace(&app, &token, "Uploads").await;
+    let agent_id = create_agent(&app, &token, &workspace_id, "Uploader").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let boundary = "boundary123";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--{boundary}--\r\n"
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v2/direct-chats/{chat_id}/workspace-files/upload"
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(axum::body::Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(root.path().join("uploads/notes.txt").is_file());
 }

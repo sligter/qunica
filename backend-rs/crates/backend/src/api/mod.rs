@@ -183,7 +183,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups/:group_id/workspace-files",
-            get(groups::list_group_workspace_files).delete(groups::delete_group_workspace_file),
+            get(groups::list_group_workspace_files).delete(groups::delete_workspace_file_route),
         )
         .route(
             "/api/v2/groups/:group_id/workspace-files/root",
@@ -195,7 +195,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups/:group_id/workspace-files/upload",
-            axum::routing::post(groups::upload_group_workspace_file)
+            axum::routing::post(groups::upload_workspace_file_route)
                 .layer(DefaultBodyLimit::max(26 * 1024 * 1024)),
         )
         .route(
@@ -212,7 +212,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups/:group_id/workspace-files/rename",
-            axum::routing::patch(groups::rename_group_workspace_file),
+            axum::routing::patch(groups::rename_workspace_file_route),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-roots",
+            get(groups::list_workspace_roots_route),
         )
         .route(
             "/api/v2/groups/:group_id/workspace-git/status",
@@ -377,7 +381,20 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/direct-chats/:chat_id/workspace-files",
-            get(direct_chats::list_workspace_files),
+            get(direct_chats::list_workspace_files).delete(direct_chats::delete_workspace_file),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/upload",
+            axum::routing::post(direct_chats::upload_workspace_file)
+                .layer(DefaultBodyLimit::max(26 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/rename",
+            axum::routing::patch(direct_chats::rename_workspace_file),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-roots",
+            get(direct_chats::list_workspace_roots),
         )
         .route(
             "/api/v2/direct-chats/:chat_id/workspace-files/root",

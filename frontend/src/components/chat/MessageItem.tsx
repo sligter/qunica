@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
+import { useFileNavStore } from '@/stores/fileNavStore'
 import type { GroupAgentRead } from '@/types/api'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
 
@@ -38,13 +39,27 @@ export function MessageItem({
 }: MessageItemProps) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const groupAgents = useGroupAgents(scope === 'groups' ? groupId : undefined)
+  // The conversation view already resolved the roster and passes it down; only
+  // fall back to a query when a caller renders a message without one.
+  const groupAgents = useGroupAgents(
+    agents === undefined && scope === 'groups' ? groupId : undefined,
+  )
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
   const groupAgent = useMemo(() => {
     if (message.sender_type !== 'agent') return undefined
     return (agents ?? groupAgents.data)?.find((g) => g.agent_id === message.sender_id)
   }, [agents, groupAgents.data, message.sender_id, message.sender_type])
+
+  const openFile = useFileNavStore((s) => s.openFile)
+  // Only a non-default mode is worth badging: it means this agent's files are
+  // not where the panel shows by default.
+  const workspaceModeKey =
+    groupAgent?.workspace_mode === 'self'
+      ? 'messages.workspaceIsolated'
+      : groupAgent?.workspace_mode === 'group_and_self'
+        ? 'messages.workspaceOwnFolder'
+        : null
 
   const senderName = useMemo(() => {
     if (message.sender_type === 'user') {
@@ -93,6 +108,16 @@ export function MessageItem({
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{senderName}</span>
+          {workspaceModeKey ? (
+            <button
+              type="button"
+              className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-muted"
+              onClick={() => openFile(groupId, '', message.sender_id)}
+              title={t(workspaceModeKey)}
+            >
+              {t(workspaceModeKey)}
+            </button>
+          ) : null}
           {!showStreamingDot && !isInterrupted && <span>{time}</span>}
           {showStreamingDot && (
             <span className="inline-flex items-center gap-1 text-warning-foreground">

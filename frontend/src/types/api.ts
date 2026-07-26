@@ -598,6 +598,21 @@ export interface ConversationWorkspaceRoot {
   separator: string
 }
 
+/**
+ * One browsable root inside a conversation. `agent_id === null` is the
+ * conversation's own workspace; otherwise it is that member agent's folder.
+ */
+export interface ConversationWorkspaceRootEntry {
+  agent_id: string | null
+  display_name: string | null
+  workspace_mode: GroupWorkspaceMode | null
+  workspace_id: string
+  name: string
+  root: string
+  /** Whether the agent's plain relative paths resolve here, or it is a mount. */
+  is_primary: boolean
+}
+
 export interface ConversationWorkspaceFilePreview {
   path: string
   name: string

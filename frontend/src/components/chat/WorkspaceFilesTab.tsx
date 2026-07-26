@@ -25,6 +25,7 @@ import {
 import { Input } from '@/components/ui/input'
 import {
   useConversationWorkspaceFiles,
+  useConversationWorkspaceRoots,
   useDownloadConversationWorkspaceFile,
   useUploadConversationWorkspaceFile,
 } from '@/hooks/useConversationWorkspaceFiles'
@@ -90,6 +91,7 @@ export function WorkspaceFilesTab({
   const { t, i18n } = useTranslation(['chat', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const [currentPath, setCurrentPath] = useState('')
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [previewFile, setPreviewFile] = useState<ConversationWorkspaceFileRead | null>(null)
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<Set<string>>(
     () => new Set(),
@@ -112,15 +114,28 @@ export function WorkspaceFilesTab({
   const dragDescriptionId = useId()
   const contextMenuId = useId()
   const activeConversationId = workspaceId ? conversationId : undefined
-  const groupId = scope === 'groups' ? activeConversationId : undefined
   const hasConversation = Boolean(activeConversationId)
-  const canUpload = scope === 'groups'
+  const canUpload = hasConversation
   const canMutate = hasConversation
-  const files = useConversationWorkspaceFiles(scope, activeConversationId, currentPath)
-  const upload = useUploadConversationWorkspaceFile(scope, activeConversationId)
-  const download = useDownloadConversationWorkspaceFile(scope, activeConversationId)
-  const rename = useRenameGroupWorkspaceFile(activeConversationId, scope)
-  const del = useDeleteGroupWorkspaceFile(activeConversationId, scope)
+  const roots = useConversationWorkspaceRoots(scope, activeConversationId)
+  const rootEntries = roots.data ?? []
+  // A root can disappear (agent removed, mode changed); fall back to the
+  // conversation rather than leaving the panel pointed at nothing.
+  const activeAgentId =
+    selectedAgentId && rootEntries.some((entry) => entry.agent_id === selectedAgentId)
+      ? selectedAgentId
+      : null
+  const activeRoot = rootEntries.find((entry) => entry.agent_id === activeAgentId) ?? null
+  const files = useConversationWorkspaceFiles(
+    scope,
+    activeConversationId,
+    currentPath,
+    activeAgentId,
+  )
+  const upload = useUploadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
+  const download = useDownloadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
+  const rename = useRenameGroupWorkspaceFile(activeConversationId, scope, activeAgentId)
+  const del = useDeleteGroupWorkspaceFile(activeConversationId, scope, activeAgentId)
   const navRequest = useFileNavStore((state) => state.request)
   const clearNav = useFileNavStore((state) => state.clear)
 
@@ -208,6 +223,15 @@ export function WorkspaceFilesTab({
 
   useEffect(() => {
     if (!navRequest || navRequest.groupId !== conversationId || !workspaceId) return
+    setSelectedAgentId(navRequest.agentId ?? null)
+    // An empty path means "show me this root", not "open this file".
+    if (!navRequest.path) {
+      setCurrentPath('')
+      setPreviewFile(null)
+      setIsPreviewOpen(false)
+      clearNav()
+      return
+    }
     const requestedFile: ConversationWorkspaceFileRead = {
       path: navRequest.path,
       name: fileName(navRequest.path),
@@ -224,6 +248,12 @@ export function WorkspaceFilesTab({
   useEffect(() => {
     setSelectedWorkspacePaths(new Set())
   }, [currentPath, conversationId, scope])
+
+  useEffect(() => {
+    setCurrentPath('')
+    setPreviewFile(null)
+    setIsPreviewOpen(false)
+  }, [activeAgentId])
 
   useEffect(() => {
     if (!menu) return
@@ -316,7 +346,7 @@ export function WorkspaceFilesTab({
   }
 
   const uploadFile = (file: globalThis.File | undefined) => {
-    if (!file || !groupId) return
+    if (!file || !activeConversationId) return
     setOperationError(null)
     void upload
       .mutateAsync(file)
@@ -373,6 +403,32 @@ export function WorkspaceFilesTab({
         {t('chat:workspace.filePanel.dragDirectoryDescription')}
       </span>
 
+      {rootEntries.length > 1 ? (
+        <div className="shrink-0 space-y-1 border-b border-border px-3 py-2">
+          <select
+            aria-label={t('chat:workspace.rootPicker.label')}
+            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+            value={activeAgentId ?? ''}
+            onChange={(event) => setSelectedAgentId(event.target.value || null)}
+          >
+            {rootEntries.map((entry) => (
+              <option key={entry.agent_id ?? 'conversation'} value={entry.agent_id ?? ''}>
+                {entry.agent_id === null
+                  ? t('chat:workspace.rootPicker.conversation')
+                  : entry.is_primary
+                    ? t('chat:workspace.rootPicker.agentPrimary', { name: entry.display_name })
+                    : t('chat:workspace.rootPicker.agentMounted', { name: entry.display_name })}
+              </option>
+            ))}
+          </select>
+          {activeRoot ? (
+            <p className="truncate text-[11px] text-muted-foreground" title={activeRoot.root}>
+              {activeRoot.root}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
         <p className="min-w-0 truncate text-[11px] text-muted-foreground" title={title}>
           {title}
@@ -392,7 +448,7 @@ export function WorkspaceFilesTab({
                 size="icon"
                 className="h-8 w-8 shrink-0"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={upload.isPending || !groupId}
+                disabled={upload.isPending || !hasConversation}
                 aria-label={t('chat:workspace.filePanel.uploadAria')}
                 title={t('chat:workspace.filePanel.uploadTitle')}
               >

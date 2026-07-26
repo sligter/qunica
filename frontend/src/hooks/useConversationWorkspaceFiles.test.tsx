@@ -11,7 +11,6 @@ import type {
   ConversationWorkspaceFileTextResponse,
 } from '@/types/api'
 import {
-  ConversationWorkspaceUploadUnsupportedError,
   conversationWorkspaceFilesApiPath,
   conversationWorkspaceFilesQueryKey,
   createWorkspaceFileObjectUrl,
@@ -309,24 +308,21 @@ describe('conversation workspace file client', () => {
     await waitFor(() => expect(result.current.error).toBe(conflict))
   })
 
-  it('uploads only for group conversations and never constructs a direct-chat upload request', async () => {
+  it('uploads for both conversation kinds under their own namespace', async () => {
     const client = testClient()
+    const upload = new File(['hello'], 'hello.txt', { type: 'text/plain' })
+
+    mockedFetchFormData.mockResolvedValueOnce({ ...fileFixture, path: 'uploads/hello.txt' })
     const direct = renderHook(
       () => useUploadConversationWorkspaceFile('direct-chats', 'chat-1'),
       { wrapper: wrapper(client) },
     )
-    const upload = new File(['hello'], 'hello.txt', { type: 'text/plain' })
-
-    let unsupported: unknown
     await act(async () => {
-      try {
-        await direct.result.current.mutateAsync(upload)
-      } catch (error) {
-        unsupported = error
-      }
+      await direct.result.current.mutateAsync(upload)
     })
-    expect(unsupported).toBeInstanceOf(ConversationWorkspaceUploadUnsupportedError)
-    expect(mockedFetchFormData).not.toHaveBeenCalled()
+    expect(mockedFetchFormData.mock.calls[0]?.[0]).toBe(
+      '/direct-chats/chat-1/workspace-files/upload',
+    )
 
     mockedFetchFormData.mockResolvedValueOnce({ ...fileFixture, path: 'uploads/hello.txt' })
     const group = renderHook(
@@ -336,12 +332,33 @@ describe('conversation workspace file client', () => {
     await act(async () => {
       await group.result.current.mutateAsync(upload)
     })
+    expect(mockedFetchFormData.mock.calls[1]?.[0]).toBe('/groups/group-1/workspace-files/upload')
+  })
 
-    expect(mockedFetchFormData).toHaveBeenCalledTimes(1)
-    expect(mockedFetchFormData).toHaveBeenCalledWith(
-      '/groups/group-1/workspace-files/upload',
-      expect.any(FormData),
-      { token: 'owner-token' },
+  it('scopes reads and uploads to the selected agent root', async () => {
+    const client = testClient()
+    mockedFetchJson.mockResolvedValueOnce([fileFixture])
+    const files = renderHook(
+      () => useConversationWorkspaceFiles('groups', 'group-1', 'notes', 'agent-7'),
+      { wrapper: wrapper(client) },
+    )
+    await waitFor(() => expect(files.result.current.isSuccess).toBe(true))
+    expect(mockedFetchJson.mock.calls[0]?.[0]).toBe(
+      '/groups/group-1/workspace-files?path=notes&agent_id=agent-7',
+    )
+
+    mockedFetchFormData.mockResolvedValueOnce({ ...fileFixture, path: 'uploads/hello.txt' })
+    const upload = renderHook(
+      () => useUploadConversationWorkspaceFile('groups', 'group-1', 'agent-7'),
+      { wrapper: wrapper(client) },
+    )
+    await act(async () => {
+      await upload.result.current.mutateAsync(
+        new File(['hello'], 'hello.txt', { type: 'text/plain' }),
+      )
+    })
+    expect(mockedFetchFormData.mock.calls[0]?.[0]).toBe(
+      '/groups/group-1/workspace-files/upload?agent_id=agent-7',
     )
   })
 
