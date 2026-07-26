@@ -93,6 +93,16 @@ function workspaceDataTransfer(
   }
 }
 
+function webViewWorkspaceDataTransfer(paths: string[]) {
+  const text = paths.join('\n')
+  return {
+    files: [],
+    types: ['text/plain'],
+    dropEffect: 'none',
+    getData: (type: string) => type === 'text/plain' ? text : '',
+  }
+}
+
 function operatingSystemDataTransfer(files: File[]) {
   return {
     files,
@@ -250,6 +260,57 @@ describe('Composer', () => {
 
     await waitFor(() => expect(screen.getAllByText('guide.md')).toHaveLength(1))
     expect(mocks.getMetadata).toHaveBeenCalledTimes(1)
+  })
+
+  it('attaches a server-confirmed file from a text/plain-only WebView drop', async () => {
+    mocks.getFile.mockResolvedValueOnce(workspaceFile('docs/guide.md'))
+    mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))
+    render(
+      <Composer
+        conversationId="chat-1"
+        workspaceId="workspace-1"
+        scope="direct-chats"
+        onSend={vi.fn()}
+      />,
+    )
+    const dropZone = screen.getByRole('group', {
+      name: 'Message composer file drop area',
+    })
+    const dataTransfer = webViewWorkspaceDataTransfer(['docs/guide.md'])
+
+    fireEvent.dragOver(dropZone, { dataTransfer })
+    fireEvent.drop(dropZone, { dataTransfer })
+
+    expect(await screen.findByText('guide.md')).toBeVisible()
+    expect(mocks.getFile).toHaveBeenCalledWith(
+      'direct-chats',
+      'chat-1',
+      'docs/guide.md',
+      null,
+    )
+  })
+
+  it('inserts a server-confirmed directory from a text/plain-only WebView drop', async () => {
+    const user = userEvent.setup()
+    mocks.getFile.mockResolvedValueOnce(workspaceFile('docs', true))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={vi.fn()}
+      />,
+    )
+    const textarea = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement
+    await user.type(textarea, 'open OLD now')
+    textarea.setSelectionRange(5, 8)
+
+    fireEvent.drop(
+      screen.getByRole('group', { name: 'Message composer file drop area' }),
+      { dataTransfer: webViewWorkspaceDataTransfer(['docs']) },
+    )
+
+    await waitFor(() => expect(textarea).toHaveValue('open docs now'))
   })
 
   it('replaces the focused selection with a directory path and appends when unfocused', async () => {

@@ -17,7 +17,11 @@ import {
 } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
-import { WORKSPACE_ITEM_MIME, workspaceItemsFromDataTransfer } from '@/lib/workspaceDrag'
+import {
+  WORKSPACE_ITEM_MIME,
+  workspaceItemsFromDataTransfer,
+  workspacePathsFromDataTransfer,
+} from '@/lib/workspaceDrag'
 import type {
   ConversationScope,
   GroupAgentRead,
@@ -112,6 +116,7 @@ function isRecognizedDrop(dataTransfer: DataTransfer): boolean {
   return (dataTransfer.files?.length ?? 0) > 0
     || types.includes('Files')
     || types.includes(WORKSPACE_ITEM_MIME)
+    || types.includes('text/plain')
 }
 
 function PendingAttachmentRow({
@@ -632,6 +637,11 @@ export function Composer({
     const files = Array.from(event.dataTransfer.files)
     if (files.length > 0) {
       uploadFiles(files)
+      return
+    }
+    const fallbackPaths = workspacePathsFromDataTransfer(event.dataTransfer)
+    if (fallbackPaths.length > 0) {
+      insertWorkspacePaths(fallbackPaths)
       return
     }
     showNotice('composer.drop.unsupported', 'error')

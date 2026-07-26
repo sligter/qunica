@@ -140,6 +140,7 @@ describe('WorkspaceFilesTab', () => {
         kind: 'file',
       },
     ])
+    expect(setData).toHaveBeenCalledWith('text/plain', rawFile.path)
     expect(fileButton).toHaveAttribute('aria-grabbed', 'true')
     fireEvent.dragEnd(fileButton)
     expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
