@@ -47,3 +47,8 @@ workspaces/
 uploads/
 data/
 frontend/src-tauri/gen/
+
+# Local agent tooling and scratch state
+.superpowers/
+.tmp-liveagent-git/
+.build-desktop.*.pid
