@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
+import { PageState } from '@/components/ui/page-state'
 import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroups, useUpdateGroup } from '@/hooks/useGroups'
@@ -37,19 +38,20 @@ export function WorkspaceDetailPage() {
   const navigate = useNavigate()
 
   if (workspaces.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('detail.loading')}</div>
+    return <PageState variant="loading" title={t('detail.loading')} />
   }
   if (workspaces.error) {
     return (
-      <div className="p-6 text-sm text-destructive">
-        {t('detail.loadError', { error: String(workspaces.error) })}
-      </div>
+      <PageState
+        variant="error"
+        title={t('detail.loadError', { error: String(workspaces.error) })}
+      />
     )
   }
 
   const workspace = (workspaces.data ?? []).find((w) => w.id === workspaceId)
   if (!workspace) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('detail.notFound')}</div>
+    return <PageState title={t('detail.notFound')} />
   }
 
   return (
@@ -175,7 +177,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
               id="workspace-edit-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              className="max-w-xl"
+              className="w-full"
             />
           </SettingsRow>
           {workspace.backend_type === 'local' ? (
@@ -185,7 +187,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
               htmlFor="workspace-edit-path"
               stacked
             >
-              <div className="flex max-w-xl gap-2">
+              <div className="flex w-full gap-2">
                 <Input
                   id="workspace-edit-path"
                   value={localPath}
@@ -212,7 +214,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
                 id="workspace-edit-sandbox"
                 value={sandboxRef}
                 onChange={(event) => setSandboxRef(event.target.value)}
-                className="max-w-xl"
+                className="w-full"
               />
             </SettingsRow>
           )}

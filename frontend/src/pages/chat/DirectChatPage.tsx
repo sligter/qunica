@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { EditableDirectChatTitle } from '@/components/direct-chats/EditableDirectChatTitle'
+import { PageState } from '@/components/ui/page-state'
 import { directChatQueryKey, directChatsQueryKey, replaceDirectChatInList, useDirectChat } from '@/hooks/useDirectChats'
 import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
 import type { DirectChatRead, GroupAgentRead } from '@/types/api'
@@ -22,9 +23,9 @@ export function DirectChatPage() {
       return existing ? replaceDirectChatInList(current, { ...existing, title: payload.title, title_source: payload.title_source, updated_at: payload.updated_at }) : current ?? []
     })
   }, [chatId, qc])
-  if (!chatId) return <div className="p-6 text-sm text-muted-foreground">{t('direct.notFound')}</div>
-  if (chat.isLoading) return <div className="p-6 text-sm text-muted-foreground">{t('direct.loading')}</div>
-  if (chat.error || !chat.data) return <div className="p-6 text-sm text-destructive">{t('direct.notFound')}</div>
+  if (!chatId) return <PageState title={t('direct.notFound')} />
+  if (chat.isLoading) return <PageState variant="loading" title={t('direct.loading')} />
+  if (chat.error || !chat.data) return <PageState variant="error" title={t('direct.notFound')} />
   const item = chat.data
   const agents: GroupAgentRead[] = item.agent_id && item.agent_name ? [{ id: `${item.id}:${item.agent_id}`, group_id: item.id, agent_id: item.agent_id, display_name: item.agent_name, role: null, topology_role: null, speaking_order: 1, response_mode: 'default', workspace_mode: 'group', share_group_workspace: true, context_usage: null, status: item.agent_status ?? 'deleted', joined_at: item.created_at }] : []
   const unavailable = !item.agent_id || item.agent_status !== 'active'

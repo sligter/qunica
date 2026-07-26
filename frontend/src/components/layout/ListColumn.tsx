@@ -90,7 +90,7 @@ export function ListColumn({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2">
         {isLoading && (
           <p className="px-4 text-xs text-muted-foreground">{t('state.loading')}</p>
         )}

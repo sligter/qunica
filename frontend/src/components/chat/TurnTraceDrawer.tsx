@@ -58,7 +58,7 @@ function formatCostAmount(amount: string, language: 'en-US' | 'zh-CN'): string {
 function Metric({ icon: Icon, label, value }: { icon: typeof Footprints; label: string; value: string }) {
   return (
     <div className="min-w-0 border-l border-border pl-3 first:border-l-0 first:pl-0">
-      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+      <span className="flex items-center gap-1 text-2xs text-muted-foreground">
         <Icon className="h-3 w-3" aria-hidden="true" />
         {label}
       </span>

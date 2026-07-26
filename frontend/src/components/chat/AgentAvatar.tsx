@@ -110,7 +110,7 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
           {t('messages.context.outputTotal', { output: formatTokens(usage.output_tokens, language), total: formatTokens(usage.total_tokens, language) })}
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
         <span>{sourceLabel}</span>
         {updatedLabel && (
           <>

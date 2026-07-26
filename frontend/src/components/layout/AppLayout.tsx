@@ -17,7 +17,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   return (
     <TerminalRuntimeProvider transport={terminalTransport}>
       <div
-        className="flex h-screen min-h-0 bg-background"
+        className="flex h-full min-h-0 overflow-hidden bg-background"
         onContextMenu={(event) => event.preventDefault()}
       >
         <AppSidebar />

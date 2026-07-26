@@ -422,7 +422,7 @@ export function WorkspaceFilesTab({
             ))}
           </select>
           {activeRoot ? (
-            <p className="truncate text-[11px] text-muted-foreground" title={activeRoot.root}>
+            <p className="truncate text-2xs text-muted-foreground" title={activeRoot.root}>
               {activeRoot.root}
             </p>
           ) : null}
@@ -430,7 +430,7 @@ export function WorkspaceFilesTab({
       ) : null}
 
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <p className="min-w-0 truncate text-[11px] text-muted-foreground" title={title}>
+        <p className="min-w-0 truncate text-2xs text-muted-foreground" title={title}>
           {title}
         </p>
         <div className="flex shrink-0 items-center gap-1">
@@ -492,7 +492,7 @@ export function WorkspaceFilesTab({
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 px-2 text-[11px]"
+            className="h-7 px-2 text-2xs"
             onClick={insertSelectedPaths}
             disabled={!onInsertPaths}
           >

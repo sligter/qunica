@@ -3,6 +3,7 @@ import { FolderPlus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
@@ -180,7 +181,7 @@ export function WorkspaceField({
         </select>
         {error && <p className="text-xs text-destructive">{error}</p>}
         {workspaces.data && workspaces.data.length === 0 && !showCreate && (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             {t('agents:workspacePicker.createFirst')}
           </p>
         )}
@@ -189,7 +190,7 @@ export function WorkspaceField({
           const shown = location ? shortLocation(location) : t('agents:workspacePicker.notConfigured')
           return (
             <p
-              className="truncate text-[11px] text-muted-foreground"
+              className="truncate text-2xs text-muted-foreground"
               title={location ?? undefined}
             >
               {variant === 'compact'
@@ -204,7 +205,7 @@ export function WorkspaceField({
       </div>
 
       {showCreate && (
-        <div className="space-y-3 rounded-md border border-border bg-card p-3">
+        <Card className="space-y-3 rounded-md p-3 shadow-none">
           <div className="space-y-1.5">
             <Label htmlFor="workspace-name">{t('agents:workspacePicker.name')}</Label>
             <Input
@@ -255,7 +256,7 @@ export function WorkspaceField({
           >
             {createWorkspace.isPending ? t('agents:workspacePicker.creating') : t('agents:workspacePicker.create')}
           </Button>
-        </div>
+        </Card>
       )}
     </div>
   )

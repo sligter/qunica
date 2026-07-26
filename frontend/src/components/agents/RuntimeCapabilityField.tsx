@@ -244,7 +244,7 @@ export function RuntimeCapabilityField({
           id={statusId}
           role="status"
           className={cn(
-            'flex items-start gap-1 text-[11px] leading-4',
+            'flex items-start gap-1 text-2xs leading-4',
             stale || warning ? 'text-warning-foreground' : 'text-muted-foreground',
           )}
         >

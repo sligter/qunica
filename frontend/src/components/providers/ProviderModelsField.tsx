@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Panel } from '@/components/ui/panel'
 import { cn } from '@/lib/utils'
 import type { ModelInfo } from '@/types/api'
 
@@ -57,12 +58,12 @@ export function ProviderModelsField({
   }
 
   return (
-    <section className="space-y-3 rounded-md border border-border bg-card/40 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-medium">{t('models.title')}</h3>
-          <p className="text-[11px] text-muted-foreground">{t('models.description')}</p>
-        </div>
+    <Panel
+      variant="inset"
+      title={t('models.title')}
+      description={t('models.description')}
+      contentClassName="space-y-3"
+      aside={
         <div className="flex gap-2">
           {onRefreshCatalog && (
             <Button
@@ -91,8 +92,8 @@ export function ProviderModelsField({
             {t('models.add')}
           </Button>
         </div>
-      </div>
-
+      }
+    >
       {isLoadingCatalog && <p className="text-xs text-muted-foreground">{t('models.loading')}</p>}
       {!isLoadingCatalog && catalog.length > 0 && (
         <p className="text-xs text-muted-foreground">
@@ -168,7 +169,7 @@ export function ProviderModelsField({
           </div>
         ))}
       </div>
-    </section>
+    </Panel>
   )
 }
 
@@ -284,7 +285,7 @@ function ModelIdCombobox({
             >
               <span className="min-w-0 flex-1 truncate">{option.name}</span>
               {option.name !== option.id && (
-                <span className="max-w-48 truncate font-mono text-[11px] text-muted-foreground">
+                <span className="max-w-48 truncate font-mono text-2xs text-muted-foreground">
                   {option.id}
                 </span>
               )}

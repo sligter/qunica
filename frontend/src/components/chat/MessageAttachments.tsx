@@ -56,7 +56,7 @@ export function MessageAttachments({ groupId, attachments }: { groupId: string; 
       {attachment.kind === 'image' ? <ImagePreview groupId={groupId} attachment={attachment} /> : null}
       <div className="mt-1 flex min-w-0 items-center gap-2">
         {attachment.kind === 'image' ? <ImageIcon className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
-        <div className="min-w-0 flex-1"><div className="truncate text-xs font-medium">{attachment.name}</div><div className="flex flex-wrap gap-x-1 text-[11px] text-muted-foreground"><span>{attachment.mime_type}</span><span aria-hidden="true">·</span><span>{formatSize(attachment.size)}</span></div></div>
+        <div className="min-w-0 flex-1"><div className="truncate text-xs font-medium">{attachment.name}</div><div className="flex flex-wrap gap-x-1 text-2xs text-muted-foreground"><span>{attachment.mime_type}</span><span aria-hidden="true">·</span><span>{formatSize(attachment.size)}</span></div></div>
         <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={t('attachments.openNamed', { name: attachment.name, defaultValue: `Open ${attachment.name}` })} title={t('attachments.open', { defaultValue: 'Open attachment' })} onClick={() => void downloadGroupWorkspaceFile(groupId, attachment.path, token)}><Paperclip className="h-3.5 w-3.5" /></Button>
       </div>
     </div>)}

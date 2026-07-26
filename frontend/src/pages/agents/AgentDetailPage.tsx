@@ -7,6 +7,10 @@ import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Field, FieldGrid } from '@/components/ui/field'
+import { PageState } from '@/components/ui/page-state'
+import { ProseBlock } from '@/components/ui/prose-block'
+import { Section } from '@/components/ui/section'
 import { useAgent } from '@/hooks/useAgents'
 import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useProviders } from '@/hooks/useProviders'
@@ -25,17 +29,18 @@ export function AgentDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (agent.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('agents:detail.loading')}</div>
+    return <PageState variant="loading" title={t('agents:detail.loading')} />
   }
   if (agent.error) {
     return (
-      <div className="p-6 text-sm text-destructive">
-        {t('agents:detail.loadError', { error: String(agent.error) })}
-      </div>
+      <PageState
+        variant="error"
+        title={t('agents:detail.loadError', { error: String(agent.error) })}
+      />
     )
   }
   if (!agent.data) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('agents:detail.notFound')}</div>
+    return <PageState title={t('agents:detail.notFound')} />
   }
 
   const a = agent.data
@@ -87,40 +92,24 @@ export function AgentDetailPage() {
       }
     >
       <div className="space-y-8">
-        <section className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2 xl:grid-cols-3">
-          <div>
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {t('agents:detail.runtime')}
-            </h3>
-            <p className="mt-1">{runtimeText}</p>
-          </div>
-          <div>
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {t('agents:detail.status')}
-            </h3>
+        <FieldGrid>
+          <Field label={t('agents:detail.runtime')} value={runtimeText} />
+          <Field label={t('agents:detail.status')}>
             <Badge
               variant={a.status === 'active' ? 'default' : 'secondary'}
               className="mt-1"
             >
               {formatResourceStatus(a.status, t)}
             </Badge>
-          </div>
-        </section>
+          </Field>
+        </FieldGrid>
 
-        <section className="space-y-2">
-          <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            {t('agents:detail.systemPrompt')}
-          </h2>
-          <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-4 text-sm">
-            {a.system_prompt}
-          </pre>
-        </section>
+        <Section title={t('agents:detail.systemPrompt')}>
+          <ProseBlock maxHeight="lg">{a.system_prompt}</ProseBlock>
+        </Section>
 
         {a.llm_config && Object.keys(a.llm_config).length > 0 && (
-          <section className="space-y-2">
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {t('agents:detail.modelParameters')}
-            </h3>
+          <Section title={t('agents:detail.modelParameters')} as="h3">
             <div className="flex flex-wrap gap-2">
               {Object.entries(a.llm_config).map(([k, v]) => (
                 <Badge key={k} variant="outline">
@@ -128,13 +117,10 @@ export function AgentDetailPage() {
                 </Badge>
               ))}
             </div>
-          </section>
+          </Section>
         )}
 
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            {t('agents:detail.mountedSkills')}
-          </h3>
+        <Section title={t('agents:detail.mountedSkills')} as="h3">
           {mountedSkills.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('agents:detail.noMountedSkills')}</p>
           ) : (
@@ -146,7 +132,7 @@ export function AgentDetailPage() {
               ))}
             </div>
           )}
-        </section>
+        </Section>
       </div>
 
       <ConfirmDialog

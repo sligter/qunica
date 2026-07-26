@@ -155,7 +155,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
               }}
             />
           </div>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             {t('form.packageHint')}
           </p>
           {visibleError && (
@@ -200,7 +200,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
               />
             </div>
           </div>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             {t('form.repositoryHint')}
           </p>
           {visibleError && (
@@ -227,7 +227,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
               value={raw}
               onChange={(e) => setRaw(e.target.value)}
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {t('form.markdownHint')}
             </p>
           </div>

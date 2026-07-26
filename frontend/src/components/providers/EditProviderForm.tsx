@@ -153,7 +153,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
                 )}
               >
                 <span className="text-sm font-medium">{t(`kinds.${key}.label`)}</span>
-                <span className="text-[11px] leading-snug text-muted-foreground">
+                <span className="text-2xs leading-snug text-muted-foreground">
                   {t(`kinds.${key}.hint`)}
                 </span>
               </button>
@@ -179,7 +179,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
           placeholder={t('form.keyMaskedPlaceholder', { masked: provider.api_key_masked })}
           {...form.register('api_key')}
         />
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-2xs text-muted-foreground">
           {t('form.keyMaskedHint')}
         </p>
       </div>

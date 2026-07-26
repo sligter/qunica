@@ -6,10 +6,20 @@ import { useTranslation } from 'react-i18next'
 import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { PageState } from '@/components/ui/page-state'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useGroup } from '@/hooks/useGroups'
 import { GroupMembersTab } from '@/pages/group/GroupMembersTab'
 import { GroupSettingsTab } from '@/pages/group/GroupSettingsTab'
+
+/**
+ * Full pane width: the members tab is a two-column master/detail, and the
+ * settings tab's section rules have to end where the header's rule does — a
+ * narrower cap leaves a band of dead space down the right of every setting.
+ * Rows stay readable because inline controls share one right-flushed column.
+ */
+const MANAGE_CONTENT_WIDTH = 'max-w-none'
 
 type ManageTab = 'settings' | 'members' | 'notes'
 
@@ -33,7 +43,7 @@ export function GroupManagePage() {
   }, [group.data?.name, t])
 
   if (!groupId) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('noGroupSelected')}</div>
+    return <PageState title={t('noGroupSelected')} />
   }
 
   const onTabChange = (value: string) => {
@@ -51,14 +61,17 @@ export function GroupManagePage() {
           </Link>
         </Button>
       }
-      contentClassName="max-w-none"
+      contentClassName={MANAGE_CONTENT_WIDTH}
     >
       {group.error ? (
-        <div className="text-sm text-destructive">
-          {t('manage.loadErrorDetail', { message: String(group.error) })}
-        </div>
+        <PageState
+          inset
+          variant="error"
+          className="px-0"
+          title={t('manage.loadErrorDetail', { message: String(group.error) })}
+        />
       ) : group.isLoading ? (
-        <div className="text-sm text-muted-foreground">{t('manage.loading')}</div>
+        <PageState inset variant="loading" className="px-0" title={t('manage.loading')} />
       ) : group.data ? (
         <Tabs value={tab} onValueChange={onTabChange} className="min-h-0 w-full">
           <TabsList>
@@ -73,13 +86,13 @@ export function GroupManagePage() {
             <GroupMembersTab groupId={groupId} />
           </TabsContent>
           <TabsContent value="notes" className="mt-6">
-            <div className="w-full rounded-lg border border-border bg-card p-4">
+            <Card className="w-full p-4">
               <GroupNotesPanel groupId={groupId} />
-            </div>
+            </Card>
           </TabsContent>
         </Tabs>
       ) : (
-        <div className="text-sm text-muted-foreground">{t('manage.notFound')}</div>
+        <PageState inset className="px-0" title={t('manage.notFound')} />
       )}
     </DetailShell>
   )

@@ -22,7 +22,7 @@ export function ReasoningPassbackControl({ value, onChange }: ReasoningPassbackC
     <div className="flex items-start justify-between gap-3">
       <div className="space-y-0.5">
         <Label>{t('fields.reasoningPassback')}</Label>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <p className="text-2xs leading-relaxed text-muted-foreground">
           {t('reasoning.description')}
         </p>
       </div>

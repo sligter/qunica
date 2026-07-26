@@ -8,6 +8,7 @@ import { MessageList } from '@/components/chat/MessageList'
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
+import { PageState } from '@/components/ui/page-state'
 import {
   type ConversationScope,
   useConversationMessages,
@@ -191,11 +192,11 @@ export function ConversationChatView({
   }, [capabilities.showWorkspace, conversationId, fileNavRequest, setWorkspaceFilesOpenPersisted])
 
   if (messagesQuery.error) {
-    return <div className="p-6 text-sm text-destructive">{String(messagesQuery.error)}</div>
+    return <PageState variant="error" title={String(messagesQuery.error)} />
   }
 
   if (messagesQuery.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('messages.loading')}</div>
+    return <PageState variant="loading" title={t('messages.loading')} />
   }
 
   const hint = agents.length === 0 ? t('composer.noAgents') : undefined

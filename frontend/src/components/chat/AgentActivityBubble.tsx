@@ -70,7 +70,7 @@ function DetailBlock({ label, value }: { label: string; value?: string | null })
   if (!value) return null
   return (
     <details className="rounded-md border border-border bg-background">
-      <summary className="cursor-pointer px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+      <summary className="cursor-pointer px-2 py-1 text-2xs font-medium text-muted-foreground hover:text-foreground">
         {label}
       </summary>
       <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words border-t border-border px-2 py-1.5 text-xs leading-snug text-foreground">
@@ -93,7 +93,7 @@ function ToolRow({ tool }: { tool: ActivityToolItem }) {
 
   return (
     <details open={tool.defaultOpen} className="group/tool min-w-0">
-      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-[11px] hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-2xs hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
         <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate font-mono font-semibold text-foreground">
           {tool.name}
@@ -148,7 +148,7 @@ export function AgentActivityBubble({
       aria-label={accessibleLabel}
       className="group/activity w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-border bg-muted/20"
     >
-      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-[11px] text-muted-foreground hover:bg-muted/40 hover:text-foreground [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-2xs text-muted-foreground hover:bg-muted/40 hover:text-foreground [&::-webkit-details-marker]:hidden">
         <Wrench className="h-3.5 w-3.5 shrink-0" />
         <span className="font-medium text-foreground">{t('tools.activity')}</span>
         <span className="min-w-0 truncate">{counts.join(' · ')}</span>
@@ -160,7 +160,7 @@ export function AgentActivityBubble({
       <div className="min-w-0 border-t border-border">
         {reasoningSegments.length > 0 ? (
           <section aria-label={t('stream.reasoning')} className="min-w-0 px-2.5 py-2.5">
-            <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-warning-foreground">
+            <div className="mb-2 flex items-center gap-1.5 text-2xs font-medium text-warning-foreground">
               <Brain className="h-3.5 w-3.5" />
               <span>{t('stream.reasoning')}</span>
               <span className="font-normal text-muted-foreground">

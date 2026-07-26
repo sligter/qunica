@@ -88,7 +88,7 @@ export function ToolSelector({
             {t('tools.agentAsToolDescription')}
           </p>
           {selectableAgents.length === 0 ? (
-            <p className="mt-2 text-[11px] text-muted-foreground">{t('tools.noAgents')}</p>
+            <p className="mt-2 text-2xs text-muted-foreground">{t('tools.noAgents')}</p>
           ) : (
             <div className="mt-3 flex flex-wrap gap-2">
               {selectableAgents.map((agent) => {
@@ -151,7 +151,7 @@ export function ToolSelector({
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{tool.description}</p>
                     {!executable && checked && (
-                      <p className="mt-2 text-[11px] font-medium text-warning-foreground">
+                      <p className="mt-2 text-2xs font-medium text-warning-foreground">
                         {t('tools.unavailable')}
                       </p>
                     )}

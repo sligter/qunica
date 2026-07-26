@@ -341,7 +341,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           })}
           stacked
         >
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,18rem)_5rem]">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_6rem]">
             <Select
               value={maxAgentStepsMode}
               onValueChange={(value) => {
@@ -369,7 +369,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
                 type="number"
                 min={1}
                 step={1}
-                className="w-full sm:w-20"
+                className="w-full"
                 disabled={schedulerControlsDisabled || maxAgentStepsMode !== 'custom'}
                 {...form.register('max_agent_steps_custom', numericRegistration())}
               />
@@ -389,7 +389,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               type="number"
               min={1}
               step={1}
-              className="w-20"
+              className="w-24"
               disabled={schedulerControlsDisabled}
               {...form.register('max_steps_per_agent', numericRegistration())}
             />
@@ -404,7 +404,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               type="number"
               min={0}
               step={1}
-              className="w-20"
+              className="w-24"
               disabled={schedulerControlsDisabled}
               {...form.register('max_scheduler_hops', numericRegistration())}
             />
@@ -419,7 +419,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               type="number"
               min={0}
               step={1}
-              className="w-20"
+              className="w-24"
               disabled={schedulerControlsDisabled}
               {...form.register('max_moderator_calls', numericRegistration())}
             />
@@ -434,7 +434,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               type="number"
               min={1}
               step={1}
-              className="w-20"
+              className="w-24"
               disabled={schedulerControlsDisabled}
               {...form.register('max_consecutive_failures', numericRegistration())}
             />
@@ -449,7 +449,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               type="number"
               min={1}
               step={1}
-              className="w-20"
+              className="w-24"
               disabled={schedulerControlsDisabled}
               {...form.register('max_total_failures', numericRegistration())}
             />
@@ -464,7 +464,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               type="number"
               min={1}
               step={1}
-              className="w-28"
+              className="w-24"
               disabled={schedulerControlsDisabled}
               {...form.register('max_total_tokens', numericRegistration())}
             />
@@ -504,7 +504,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               onValueChange={onProviderChange}
               disabled={moderatorControlsDisabled || providers.isLoading}
             >
-              <SelectTrigger className="w-full max-w-md" aria-label={t('scheduler.moderatorProvider')}>
+              <SelectTrigger className="w-full" aria-label={t('scheduler.moderatorProvider')}>
                 <SelectValue placeholder={providers.isLoading ? t('scheduler.loadingProviders') : t('scheduler.chooseProvider')} />
               </SelectTrigger>
               <SelectContent>
@@ -533,7 +533,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               }
               disabled={moderatorControlsDisabled || !selectedProviderId || models.isLoading}
             >
-              <SelectTrigger className="w-full max-w-md" aria-label={t('scheduler.moderatorModel')}>
+              <SelectTrigger className="w-full" aria-label={t('scheduler.moderatorModel')}>
                 <SelectValue placeholder={models.isLoading ? t('scheduler.loadingModels') : t('scheduler.chooseModel')} />
               </SelectTrigger>
               <SelectContent>
