@@ -20,6 +20,9 @@ export interface WorkspaceDropItems {
 
 const WORKSPACE_DRAG_ITEM_KEYS = ['kind', 'name', 'path', 'version'] as const
 const WINDOWS_DRIVE_PATTERN = /^[a-zA-Z]:/
+const MAX_WORKSPACE_DROP_PATHS = 10
+const MAX_WORKSPACE_DROP_TEXT_LENGTH = 16 * 1024
+const MAX_WORKSPACE_DROP_PATH_LENGTH = 1024
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -153,6 +156,12 @@ export function decodeWorkspacePaths(raw: string): string[] {
 
 export function workspacePathsFromDataTransfer(dataTransfer: DataTransfer): string[] {
   const custom = dataTransfer.getData(WORKSPACE_PATHS_MIME)
-  if (custom) return decodeWorkspacePaths(custom)
-  return decodeWorkspacePaths(dataTransfer.getData('text/plain'))
+  const raw = custom || dataTransfer.getData('text/plain')
+  if (raw.length > MAX_WORKSPACE_DROP_TEXT_LENGTH) return []
+
+  return Array.from(new Set(
+    decodeWorkspacePaths(raw).filter(
+      (path) => path.length <= MAX_WORKSPACE_DROP_PATH_LENGTH && isWorkspaceRelativePath(path),
+    ),
+  )).slice(0, MAX_WORKSPACE_DROP_PATHS)
 }

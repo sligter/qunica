@@ -13,10 +13,11 @@ import {
   useRenameGroupWorkspaceGitBranch,
   useSwitchGroupWorkspaceGitBranch,
 } from '@/hooks/useWorkspaceGit'
-import type { GroupWorkspaceGitBranch } from '@/types/api'
+import type { ConversationScope, GroupWorkspaceGitBranch } from '@/types/api'
 
 interface WorkspaceGitBranchSheetProps {
   groupId: string | undefined
+  scope?: ConversationScope
   open: boolean
   onOpenChange: (open: boolean) => void
   onError: (error: string | null) => void
@@ -29,6 +30,7 @@ function displayError(error: unknown) {
 
 export function WorkspaceGitBranchSheet({
   groupId,
+  scope = 'groups',
   open,
   onOpenChange,
   onError,
@@ -41,7 +43,7 @@ export function WorkspaceGitBranchSheet({
   const [deleteBranch, setDeleteBranch] = useState<GroupWorkspaceGitBranch | null>(null)
   const branches = useGroupWorkspaceGitBranches(groupId)
   const create = useCreateGroupWorkspaceGitBranch(groupId)
-  const switchBranch = useSwitchGroupWorkspaceGitBranch(groupId)
+  const switchBranch = useSwitchGroupWorkspaceGitBranch(groupId, scope)
   const rename = useRenameGroupWorkspaceGitBranch(groupId)
   const remove = useDeleteGroupWorkspaceGitBranch(groupId)
   const local = branches.data?.branches.filter((branch) => branch.kind === 'local') ?? []

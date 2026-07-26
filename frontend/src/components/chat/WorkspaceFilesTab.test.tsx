@@ -57,7 +57,7 @@ function renderTab({
     conversationWorkspaceFileListQueryKey(scope, conversationId, ''),
     files,
   )
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <WorkspaceFilesTab
         scope={scope}
@@ -67,6 +67,7 @@ function renderTab({
       />
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
 }
 
 describe('WorkspaceFilesTab', () => {
@@ -95,16 +96,53 @@ describe('WorkspaceFilesTab', () => {
 
   it('allows direct-chat rename and delete while keeping upload unavailable', async () => {
     const user = userEvent.setup()
-    renderTab({ scope: 'direct-chats', conversationId: 'chat-1' })
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => (
+      init?.method === 'DELETE'
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify({ ...rawFile, path: 'raw dir/renamed.md', name: 'renamed.md' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { queryClient } = renderTab({ scope: 'direct-chats', conversationId: 'chat-1' })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
 
     expect(screen.queryByRole('button', { name: 'Upload file to workspace uploads' })).toBeNull()
     expect(screen.getByLabelText('Rename README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Download README_RAW_原文.md')).toBeVisible()
 
-    await user.click(screen.getByText('README_RAW_原文.md'))
-    expect(screen.getByRole('dialog')).toBeVisible()
-    expect(screen.getByText('preview:direct-chats:raw dir/README_RAW_原文.md')).toBeVisible()
+    await user.click(screen.getByLabelText('Rename README_RAW_原文.md'))
+    await user.clear(screen.getByLabelText('Rename path'))
+    await user.type(screen.getByLabelText('Rename path'), 'raw dir/renamed.md')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '/groups/chat-1/workspace-files/rename?path=raw%20dir%2FREADME_RAW_',
+      ),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ new_path: 'raw dir/renamed.md' }),
+      }),
+    ))
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['direct-chats', 'chat-1', 'workspace-files'],
+    })
+
+    await user.click(screen.getByLabelText('Delete README_RAW_原文.md'))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '/groups/chat-1/workspace-files?path=raw%20dir%2FREADME_RAW_',
+      ),
+      expect.objectContaining({ method: 'DELETE' }),
+    ))
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['direct-chats', 'chat-1', 'workspace-files'],
+    })
   })
 
   it('emits structured drag items with accessible file and directory state', () => {

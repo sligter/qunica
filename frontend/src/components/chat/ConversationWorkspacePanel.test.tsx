@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import i18n from '@/i18n'
 
-const panelMocks = vi.hoisted(() => ({ files: vi.fn() }))
+const panelMocks = vi.hoisted(() => ({ files: vi.fn(), git: vi.fn() }))
 
 vi.mock('@/components/chat/WorkspaceFilesTab', () => ({
   WorkspaceFilesTab: (props: {
@@ -19,7 +20,10 @@ vi.mock('@/components/chat/WorkspaceFilesTab', () => ({
 }))
 
 vi.mock('@/components/chat/WorkspaceGitTab', () => ({
-  WorkspaceGitTab: () => <div>git content</div>,
+  WorkspaceGitTab: (props: { groupId: string | undefined; scope: string }) => {
+    panelMocks.git(props)
+    return <div>git content</div>
+  },
 }))
 
 function renderWithClient(element: React.ReactNode) {
@@ -31,12 +35,14 @@ describe('conversation workspace panels', () => {
   beforeEach(async () => {
     sessionStorage.clear()
     panelMocks.files.mockReset()
+    panelMocks.git.mockReset()
     await i18n.changeLanguage('en-US')
   })
 
   afterEach(cleanup)
 
-  it('renders Files and Git for direct chats with direct file scope', () => {
+  it('renders Files and Git for direct chats with direct file scope', async () => {
+    const user = userEvent.setup()
     renderWithClient(
       <GroupWorkspacePanel
         scope="direct-chats"
@@ -54,9 +60,15 @@ describe('conversation workspace panels', () => {
       conversationId: 'chat-1',
       workspaceId: 'workspace-1',
     }))
+    await user.click(screen.getByRole('tab', { name: 'Git' }))
+    expect(panelMocks.git).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'chat-1',
+      scope: 'direct-chats',
+    }))
   })
 
-  it('keeps Files and Git tabs for groups while reusing the shared Files panel', () => {
+  it('keeps Files and Git tabs for groups while reusing the shared Files panel', async () => {
+    const user = userEvent.setup()
     renderWithClient(
       <GroupWorkspacePanel
         groupId="group-1"
@@ -72,6 +84,11 @@ describe('conversation workspace panels', () => {
       scope: 'groups',
       conversationId: 'group-1',
       workspaceId: 'workspace-group',
+    }))
+    await user.click(screen.getByRole('tab', { name: 'Git' }))
+    expect(panelMocks.git).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'group-1',
+      scope: 'groups',
     }))
   })
 })

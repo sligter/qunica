@@ -116,4 +116,24 @@ describe('workspace drag item protocol', () => {
 
     expect(workspacePathsFromDataTransfer(transfer)).toEqual(['docs/guide.md', 'assets'])
   })
+
+  it('rejects unsafe paths and bounds text/plain drop candidates', () => {
+    const valid = Array.from({ length: 12 }, (_, index) => `docs/file-${index}.md`)
+    const transfer = dataTransfer({
+      'text/plain': [
+        ...valid,
+        '../secret.txt',
+        '/absolute.txt',
+        'a'.repeat(1025),
+      ].join('\n'),
+    })
+
+    expect(workspacePathsFromDataTransfer(transfer)).toEqual(valid.slice(0, 10))
+  })
+
+  it('rejects oversized text/plain drop payloads', () => {
+    const transfer = dataTransfer({ 'text/plain': 'a'.repeat(16 * 1024 + 1) })
+
+    expect(workspacePathsFromDataTransfer(transfer)).toEqual([])
+  })
 })

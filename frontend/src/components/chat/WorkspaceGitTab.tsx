@@ -58,6 +58,7 @@ import { ApiError } from '@/lib/api-v2/client'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type {
+  ConversationScope,
   GroupWorkspaceGitCommitSummary,
   GroupWorkspaceGitFileStatus,
   GroupWorkspaceGitStatus,
@@ -65,6 +66,7 @@ import type {
 
 interface WorkspaceGitTabProps {
   groupId: string | undefined
+  scope?: ConversationScope
 }
 
 type ReviewMode = 'changes' | 'history'
@@ -229,7 +231,7 @@ function ChangeSection({
   )
 }
 
-export function WorkspaceGitTab({ groupId }: WorkspaceGitTabProps) {
+export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabProps) {
   const { t, i18n } = useTranslation(['chat', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const [mode, setMode] = useState<ReviewMode>('changes')
@@ -256,15 +258,15 @@ export function WorkspaceGitTab({ groupId }: WorkspaceGitTabProps) {
   const unstage = useUnstageGroupWorkspaceGit(groupId)
   const commitChanges = useCommitGroupWorkspaceGit(groupId)
   const generateMessage = useGenerateGroupWorkspaceGitCommitMessage(groupId)
-  const pull = usePullGroupWorkspaceGit(groupId)
+  const pull = usePullGroupWorkspaceGit(groupId, scope)
   const push = usePushGroupWorkspaceGit(groupId)
   const fetch = useFetchGroupWorkspaceGit(groupId)
   const init = useInitGroupWorkspaceGit(groupId)
-  const discard = useDiscardGroupWorkspaceGit(groupId)
+  const discard = useDiscardGroupWorkspaceGit(groupId, scope)
   const ignore = useIgnoreGroupWorkspaceGit(groupId)
   const setRemote = useSetGroupWorkspaceGitRemote(groupId)
-  const stashPush = usePushGroupWorkspaceGitStash(groupId)
-  const stashPop = usePopGroupWorkspaceGitStash(groupId)
+  const stashPush = usePushGroupWorkspaceGitStash(groupId, scope)
+  const stashPop = usePopGroupWorkspaceGitStash(groupId, scope)
   const createBranchFromCommit = useCreateGroupWorkspaceGitBranchFromCommit(groupId, selectedCommit)
 
   const hasGroupId = Boolean(groupId)
@@ -368,7 +370,7 @@ export function WorkspaceGitTab({ groupId }: WorkspaceGitTabProps) {
         </div>
       </> : null}
 
-      <WorkspaceGitBranchSheet groupId={groupId} open={branchSheetOpen} onOpenChange={setBranchSheetOpen} onError={setGitError} onSetRemote={() => { setRemoteUrl(status.data?.remote_url ?? ''); setRemoteDialogOpen(true) }} />
+      <WorkspaceGitBranchSheet groupId={groupId} scope={scope} open={branchSheetOpen} onOpenChange={setBranchSheetOpen} onError={setGitError} onSetRemote={() => { setRemoteUrl(status.data?.remote_url ?? ''); setRemoteDialogOpen(true) }} />
       <Dialog open={remoteDialogOpen} onOpenChange={setRemoteDialogOpen}><DialogContent closeLabel={t('common:actions.close')} className="w-[calc(100vw-2rem)] sm:max-w-md"><DialogHeader><DialogTitle>{t('chat:workspace.gitPanel.setRemoteTitle')}</DialogTitle><DialogDescription>{t('chat:workspace.gitPanel.setRemoteDescription')}</DialogDescription></DialogHeader><Input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} placeholder={t('chat:workspace.gitPanel.remoteUrlPlaceholder')} aria-label={t('chat:workspace.gitPanel.remoteUrl')} /><DialogFooter><Button type="button" variant="outline" onClick={() => setRemoteDialogOpen(false)}>{t('common:actions.cancel')}</Button><Button type="button" disabled={!remoteUrl.trim() || setRemote.isPending} onClick={saveRemoteAndRetry}>{t('chat:workspace.gitPanel.saveRetry')}</Button></DialogFooter></DialogContent></Dialog>
       <ConfirmDialog open={discardAllOpen} onOpenChange={setDiscardAllOpen} title={t('chat:workspace.gitPanel.discardAllTitle')} description={t('chat:workspace.gitPanel.discardAllDescription')} confirmLabel={t('chat:workspace.gitPanel.discardAll')} destructive onConfirm={async () => { try { await discard.mutateAsync({ paths: [], all: true }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) })) } }} />
       <ConfirmDialog open={discardTarget !== null} onOpenChange={(open) => { if (!open) setDiscardTarget(null) }} title={t('chat:workspace.gitPanel.discardFileTitle')} description={discardTarget ? t('chat:workspace.gitPanel.discardFileDescription', { path: discardTarget.path }) : undefined} confirmLabel={t('chat:workspace.discard')} destructive onConfirm={async () => { try { if (discardTarget) await discard.mutateAsync({ paths: [discardTarget.path], all: false }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) })) } }} />

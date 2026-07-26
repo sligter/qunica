@@ -90,7 +90,7 @@ export function GroupWorkspacePanel({
           />
         </TabsContent>
         <TabsContent value="git" className="mt-0 min-h-0 flex-1">
-          <WorkspaceGitTab groupId={groupId} />
+          <WorkspaceGitTab groupId={groupId} scope={scope} />
         </TabsContent>
       </Tabs>
     </aside>

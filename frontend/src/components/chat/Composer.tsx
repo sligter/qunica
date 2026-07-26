@@ -18,6 +18,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import {
+  isWorkspaceRelativePath,
   WORKSPACE_ITEM_MIME,
   workspaceItemsFromDataTransfer,
   workspacePathsFromDataTransfer,
@@ -382,8 +383,8 @@ export function Composer({
     void (async () => {
       if (!ensureWorkspaceContext() || !resolvedConversationId) return
       const cleanPaths = Array.from(new Set(
-        paths.map((path) => path.trim()).filter((path) => path.length > 0),
-      ))
+        paths.map((path) => path.trim()).filter(isWorkspaceRelativePath),
+      )).slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
       const results = await Promise.allSettled(
         cleanPaths.map((path) => getConversationWorkspaceFile(
           scope,

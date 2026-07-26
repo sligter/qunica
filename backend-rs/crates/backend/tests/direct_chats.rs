@@ -1025,6 +1025,32 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     let agent_id = create_agent(&app, &token, &workspace_id, "Local Agent").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap();
+    let foreign_token = register(&app, "direct-workspace-foreign@example.com").await;
+
+    let (status, body) = send(
+        &app,
+        request(
+            "PATCH",
+            &format!("/api/v2/groups/{chat_id}/workspace-files/rename?path=before.txt"),
+            Some(&foreign_token),
+            json!({"new_path": "stolen.txt"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
+    assert!(root.path().join("before.txt").is_file());
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{chat_id}/workspace-files?path=empty"),
+            &foreign_token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
+    assert!(root.path().join("empty").is_dir());
 
     let (status, renamed) = send(
         &app,
@@ -1065,7 +1091,6 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     assert_eq!(status, StatusCode::OK, "body: {initialized:?}");
     assert_eq!(initialized["available"], true);
 
-    let foreign_token = register(&app, "direct-workspace-foreign@example.com").await;
     let (status, body) = send(
         &app,
         authed(

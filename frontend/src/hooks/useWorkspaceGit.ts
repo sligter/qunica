@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type {
+  ConversationScope,
   GroupWorkspaceGitBranchCreateRequest,
   GroupWorkspaceGitBranchDeleteRequest,
   GroupWorkspaceGitBranchRenameRequest,
@@ -54,10 +56,6 @@ export function workspaceGitCommitDiffQueryKey(
 
 export function workspaceGitBranchesQueryKey(groupId: string | undefined) {
   return [...workspaceGitQueryKey(groupId), 'branches'] as const
-}
-
-function workspaceFilesQueryKey(groupId: string | undefined) {
-  return ['groups', groupId, 'workspace-files'] as const
 }
 
 function queryString(params: Record<string, string | number | null | undefined>) {
@@ -180,6 +178,7 @@ function useWorkspaceGitMutation<TBody, TResult = GroupWorkspaceGitStatus>(
   groupId: string | undefined,
   endpoint: string,
   options: WorkspaceGitMutationOptions = {},
+  scope: ConversationScope = 'groups',
 ) {
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
@@ -205,7 +204,9 @@ function useWorkspaceGitMutation<TBody, TResult = GroupWorkspaceGitStatus>(
         })
       }
       if (options.invalidateFiles) {
-        void queryClient.invalidateQueries({ queryKey: workspaceFilesQueryKey(groupId) })
+        void queryClient.invalidateQueries({
+          queryKey: conversationWorkspaceFilesQueryKey(scope, groupId),
+        })
       }
     },
   })
@@ -247,8 +248,16 @@ export function useGenerateGroupWorkspaceGitCommitMessage(groupId: string | unde
   })
 }
 
-export function usePullGroupWorkspaceGit(groupId: string | undefined) {
-  return useWorkspaceGitMutation<Record<string, never>>(groupId, 'pull', { invalidateFiles: true })
+export function usePullGroupWorkspaceGit(
+  groupId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
+  return useWorkspaceGitMutation<Record<string, never>>(
+    groupId,
+    'pull',
+    { invalidateFiles: true },
+    scope,
+  )
 }
 
 export function usePushGroupWorkspaceGit(groupId: string | undefined) {
@@ -265,10 +274,14 @@ export function useCreateGroupWorkspaceGitBranch(groupId: string | undefined) {
   })
 }
 
-export function useSwitchGroupWorkspaceGitBranch(groupId: string | undefined) {
+export function useSwitchGroupWorkspaceGitBranch(
+  groupId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
   return useWorkspaceGitMutation<GroupWorkspaceGitBranchSwitchRequest>(groupId, 'branches/switch', {
     invalidateBranches: true,
-  })
+    invalidateFiles: true,
+  }, scope)
 }
 
 export function useRenameGroupWorkspaceGitBranch(groupId: string | undefined) {
@@ -314,27 +327,36 @@ export function useSetGroupWorkspaceGitRemote(groupId: string | undefined) {
   return useWorkspaceGitMutation<GroupWorkspaceGitRemoteRequest>(groupId, 'set-remote')
 }
 
-export function useDiscardGroupWorkspaceGit(groupId: string | undefined) {
+export function useDiscardGroupWorkspaceGit(
+  groupId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
   return useWorkspaceGitMutation<GroupWorkspaceGitDiscardRequest>(groupId, 'discard', {
     invalidateDiffs: true,
     invalidateFiles: true,
-  })
+  }, scope)
 }
 
 export function useIgnoreGroupWorkspaceGit(groupId: string | undefined) {
   return useWorkspaceGitMutation<GroupWorkspaceGitIgnoreRequest>(groupId, 'ignore')
 }
 
-export function usePushGroupWorkspaceGitStash(groupId: string | undefined) {
+export function usePushGroupWorkspaceGitStash(
+  groupId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
   return useWorkspaceGitMutation<GroupWorkspaceGitStashPushRequest>(groupId, 'stash/push', {
     invalidateDiffs: true,
     invalidateFiles: true,
-  })
+  }, scope)
 }
 
-export function usePopGroupWorkspaceGitStash(groupId: string | undefined) {
+export function usePopGroupWorkspaceGitStash(
+  groupId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
   return useWorkspaceGitMutation<Record<string, never>>(groupId, 'stash/pop', {
     invalidateDiffs: true,
     invalidateFiles: true,
-  })
+  }, scope)
 }
