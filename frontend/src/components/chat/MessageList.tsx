@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ChevronDown } from 'lucide-react'
 
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MessageItem } from '@/components/chat/MessageItem'
@@ -128,8 +129,8 @@ export function MessageList({
     if (node) storeScrollTop(groupId, node.scrollTop)
     const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
-    setShowJumpToLatest(hasActiveStreamRun && canScroll && !isNearBottom)
-  }, [getScrollState, groupId, hasActiveStreamRun])
+    setShowJumpToLatest(canScroll && !isNearBottom)
+  }, [getScrollState, groupId])
 
   const jumpToLatest = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -157,7 +158,7 @@ export function MessageList({
     node.scrollTop = Math.min(storedScrollTop, maxRestorableScrollTop)
     const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
-    setShowJumpToLatest(hasActiveStreamRun && canScroll && !isNearBottom)
+    setShowJumpToLatest(canScroll && !isNearBottom)
     restoredScrollRef.current = true
   }, [getScrollState, groupId, hasActiveStreamRun, messages.length, streamRuns])
 
@@ -176,7 +177,7 @@ export function MessageList({
       return
     }
     isNearBottomRef.current = false
-    setShowJumpToLatest(hasActiveStreamRun && canScroll)
+    setShowJumpToLatest(canScroll)
   }, [messages, streamRuns, warnings, groupId, hasActiveStreamRun, getScrollState])
 
   return (
@@ -252,10 +253,12 @@ export function MessageList({
         <div className="sticky bottom-3 z-10 flex justify-center">
           <button
             type="button"
-            className="rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted"
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md hover:bg-muted"
             onClick={jumpToLatest}
+            aria-label={t('messages.jumpLatest')}
+            title={t('messages.jumpLatest')}
           >
-            {t('messages.jumpLatest')}
+            <ChevronDown className="h-5 w-5" />
           </button>
         </div>
       )}

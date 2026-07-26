@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -144,6 +144,28 @@ describe('MessageList scheduler summary integration', () => {
     const messageColumn = scrollRoot?.firstElementChild
     expect(scrollRoot).toHaveClass('min-w-0', 'overflow-x-hidden', 'overflow-y-auto')
     expect(messageColumn).toHaveClass('min-w-0', 'w-full', 'max-w-6xl')
+  })
+
+  it('shows a jump-to-latest button whenever the user scrolls away from the bottom', async () => {
+    const user = userEvent.setup()
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
+    setMessageState()
+
+    const { container } = render(<MessageList groupId="group-1" />)
+    const scrollRoot = container.firstElementChild as HTMLDivElement
+    Object.defineProperties(scrollRoot, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+    })
+
+    fireEvent.scroll(scrollRoot)
+    const button = screen.getByRole('button', { name: 'Jump to latest' })
+    await user.click(button)
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' })
+    expect(button).not.toBeInTheDocument()
+    scrollIntoView.mockRestore()
   })
 
   it('anchors a persisted turn summary below its trigger message', async () => {
