@@ -11,8 +11,24 @@ pub mod stdio;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::task::JoinHandle;
 
 use super::McpError;
+
+/// Aborts a spawned task when dropped.
+///
+/// A bare `JoinHandle` *detaches* its task on drop rather than cancelling it. A
+/// transport dropped without `close()` — a cancelled turn, a caller that goes
+/// away mid-handshake — would otherwise leave its reader polling a live socket
+/// or pipe for the rest of the process's life. Wrapping the handle makes
+/// cancellation the default rather than something every path must remember.
+pub(crate) struct AbortOnDrop(pub JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// A live connection to one MCP server.
 #[async_trait]

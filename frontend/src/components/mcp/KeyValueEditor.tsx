@@ -13,6 +13,11 @@ interface KeyValueEditorProps {
   addLabel: string
   /** Renders values as password fields — used for headers carrying tokens. */
   secret?: boolean
+  /**
+   * Placeholder shown on an untouched row whose real value is masked, keyed by
+   * row key. Tells the operator the stored secret is intact and will be kept.
+   */
+  storedHints?: Record<string, string>
   disabled?: boolean
 }
 
@@ -24,6 +29,7 @@ export function KeyValueEditor({
   valuePlaceholder,
   addLabel,
   secret = false,
+  storedHints,
   disabled = false,
 }: KeyValueEditorProps) {
   const { t } = useTranslation('mcp')
@@ -47,9 +53,18 @@ export function KeyValueEditor({
             className="flex-1"
             type={secret ? 'password' : 'text'}
             value={row.value}
-            placeholder={valuePlaceholder}
+            // An untouched masked row shows what is stored, so the operator can
+            // see the credential is still there rather than an empty box that
+            // looks like it was lost.
+            placeholder={
+              (!row.dirty && storedHints?.[row.key.trim()]) || valuePlaceholder
+            }
             disabled={disabled}
-            onChange={(event) => update(row.id, { value: event.target.value })}
+            // Typing is what marks the row dirty: only then does the payload
+            // carry a value instead of "keep what is stored".
+            onChange={(event) =>
+              update(row.id, { value: event.target.value, dirty: true })
+            }
           />
           <Button
             type="button"

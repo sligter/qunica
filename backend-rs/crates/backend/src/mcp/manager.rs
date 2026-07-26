@@ -85,9 +85,11 @@ impl McpManager {
                 }
                 // Stale: either the transport died or the row was edited.
                 let stale = clients.remove(&config.id);
-                if let Some(stale) = stale {
-                    drop(clients);
-                    stale.client.close().await;
+                drop(clients);
+                // Only close when nothing else holds it; another turn may still
+                // be mid-call on this handle.
+                if let Some(client) = stale.and_then(|entry| Arc::into_inner(entry.client)) {
+                    client.close().await;
                 }
             }
         }
@@ -116,8 +118,9 @@ impl McpManager {
             },
         );
         drop(clients);
-        if let Some(replaced) = replaced {
-            replaced.client.close().await;
+        // Same rule as `evict`: only close when nothing else still holds it.
+        if let Some(client) = replaced.and_then(|entry| Arc::into_inner(entry.client)) {
+            client.close().await;
         }
         Ok(client)
     }
@@ -131,10 +134,7 @@ impl McpManager {
         let tools = match client.list_tools(config).await {
             Ok(tools) => tools,
             Err(error) => {
-                // A listing failure usually means the transport went away
-                // mid-call; evict so the next attempt reconnects rather than
-                // reusing a connection that is known bad.
-                self.evict(&config.id).await;
+                self.evict_if_broken(&config.id, &error).await;
                 return Err(error);
             }
         };
@@ -152,17 +152,40 @@ impl McpManager {
         match client.call_tool(tool_name, arguments).await {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
-                self.evict(&config.id).await;
+                self.evict_if_broken(&config.id, &error).await;
                 Err(error)
             }
         }
     }
 
-    /// Drop and close the pooled connection for `server_id`, if any.
+    /// Unpool a connection only when the failure says the connection itself is
+    /// bad.
+    ///
+    /// A server that returns a malformed payload or rejects one request is still
+    /// a perfectly good connection; tearing it down would make the next turn pay
+    /// a fresh handshake for someone else's bad tool call.
+    async fn evict_if_broken(&self, server_id: &str, error: &McpError) {
+        if matches!(error, McpError::Transport(_) | McpError::Timeout(_)) {
+            self.evict(server_id).await;
+        }
+    }
+
+    /// Remove `server_id` from the pool so the next caller reconnects.
+    ///
+    /// This deliberately does **not** close a connection other callers are still
+    /// holding. `close()` is destructive — it kills the child process and drops
+    /// every pending request — so closing a shared handle here would fail an
+    /// unrelated turn that is mid `tools/call`, which is exactly what an
+    /// operator editing a server row would trigger. Instead the entry is
+    /// unpooled and the transport shuts itself down when the last holder
+    /// releases it.
     pub async fn evict(&self, server_id: &str) {
         let pooled = self.clients.lock().await.remove(server_id);
-        if let Some(pooled) = pooled {
-            pooled.client.close().await;
+        let Some(pooled) = pooled else { return };
+        // `into_inner` yields the client only when this was the final handle,
+        // which makes "am I the last user?" a race-free question.
+        if let Some(client) = Arc::into_inner(pooled.client) {
+            client.close().await;
         }
     }
 

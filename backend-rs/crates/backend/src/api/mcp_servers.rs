@@ -48,14 +48,20 @@ pub struct CreateRequest {
     cwd: Option<String>,
     #[serde(default)]
     url: Option<String>,
+    /// `Some(value)` sets the header, `None` keeps whatever is stored. See
+    /// [`resolve_headers`].
     #[serde(default)]
-    headers: Option<BTreeMap<String, String>>,
+    headers: Option<BTreeMap<String, Option<String>>>,
     #[serde(default)]
     timeout_seconds: Option<i64>,
     #[serde(default)]
     tool_filter: Option<Vec<String>>,
     #[serde(default)]
     enabled: Option<bool>,
+    /// Only meaningful on `POST /mcp-servers/test`: the saved row whose stored
+    /// header values a `None` entry should resolve against.
+    #[serde(default)]
+    server_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,8 +82,10 @@ pub struct UpdateRequest {
     cwd: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     url: Option<Option<String>>,
+    /// `Some(value)` sets the header, `None` keeps whatever is stored, and a
+    /// key that is absent entirely is deleted. See [`resolve_headers`].
     #[serde(default)]
-    headers: Option<BTreeMap<String, String>>,
+    headers: Option<BTreeMap<String, Option<String>>>,
     #[serde(default)]
     timeout_seconds: Option<i64>,
     #[serde(default)]
@@ -170,13 +178,19 @@ pub async fn create(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
 
     let name = validate_name(&body.name)?;
+    ensure_slug_is_free(state.db.pool(), &owner_id, &name, None).await?;
     let transport = validate_transport(&body.transport)?;
     let command = normalize_text(body.command.as_deref(), "command")?;
     let args = validate_collection(body.args.unwrap_or_default(), "args")?;
     let env = validate_map(body.env.unwrap_or_default(), "env")?;
     let cwd = normalize_text(body.cwd.as_deref(), "cwd")?;
     let url = normalize_text(body.url.as_deref(), "url")?;
-    let headers_map = validate_map(body.headers.unwrap_or_default(), "headers")?;
+    // Nothing is stored yet, so a "keep" entry has nothing to keep and drops out.
+    let headers_map = resolve_headers(
+        body.headers.unwrap_or_default(),
+        &BTreeMap::new(),
+        "headers",
+    )?;
     let timeout_seconds = validate_timeout(body.timeout_seconds)?;
     let tool_filter = validate_collection(body.tool_filter.unwrap_or_default(), "tool_filter")?;
     let status = if body.enabled.unwrap_or(true) {
@@ -282,6 +296,7 @@ pub async fn update(
         Some(ref raw) => validate_name(raw)?,
         None => existing.name.clone(),
     };
+    ensure_slug_is_free(state.db.pool(), &owner_id, &name, Some(&server_id)).await?;
     let transport = match body.transport {
         Some(ref raw) => validate_transport(raw)?,
         None => current.transport,
@@ -311,7 +326,7 @@ pub async fn update(
         None => current.url.clone(),
     };
     let headers_map = match body.headers {
-        Some(headers) => validate_map(headers, "headers")?,
+        Some(headers) => resolve_headers(headers, &current.headers, "headers")?,
         None => current.headers.clone(),
     };
     let timeout_seconds = match body.timeout_seconds {
@@ -431,8 +446,22 @@ pub async fn test_draft(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<Json<TestConnectionResponse>, ApiError> {
-    current_user_id(&headers, &state.auth.secret_key)?;
-    let _ = &state;
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+
+    // Testing an edit to a saved server sends "keep" for every header the
+    // operator did not retype, and the client cannot fill those in because it
+    // only ever saw the mask. Resolve them against the row so the probe dials
+    // with the real credentials instead of reporting a spurious 401.
+    let stored = match body.server_id.as_deref() {
+        Some(server_id) => {
+            let server_id = validate_uuid(server_id)?;
+            load_owned(state.db.pool(), &server_id, &owner_id)
+                .await?
+                .to_config()
+                .headers
+        }
+        None => BTreeMap::new(),
+    };
 
     let config = McpServerConfig {
         id: Uuid::new_v4().to_string(),
@@ -443,7 +472,7 @@ pub async fn test_draft(
         env: validate_map(body.env.unwrap_or_default(), "env")?,
         cwd: normalize_text(body.cwd.as_deref(), "cwd")?,
         url: normalize_text(body.url.as_deref(), "url")?,
-        headers: validate_map(body.headers.unwrap_or_default(), "headers")?,
+        headers: resolve_headers(body.headers.unwrap_or_default(), &stored, "headers")?,
         timeout_seconds: validate_timeout(body.timeout_seconds)? as u64,
         tool_filter: validate_collection(body.tool_filter.unwrap_or_default(), "tool_filter")?,
     };
@@ -500,6 +529,41 @@ async fn probe(config: &McpServerConfig) -> TestConnectionResponse {
             error: Some(error.to_string()),
         },
     }
+}
+
+/// Reject a name whose slug already belongs to another of this owner's servers.
+///
+/// Tool names are namespaced by the slug, not the name, and slugification is
+/// lossy: `Notion (work)` and `Notion-work` both become `notion_work`. Two such
+/// servers would produce identical `mcp__notion_work__*` tool names, leaving the
+/// model unable to address one of them. The unique index is on the raw name, so
+/// it does not catch this — hence the explicit check.
+async fn ensure_slug_is_free(
+    pool: &SqlitePool,
+    owner_id: &str,
+    name: &str,
+    exclude_id: Option<&str>,
+) -> Result<(), ApiError> {
+    let slug = slugify_server_name(name);
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, name FROM mcp_servers WHERE owner_id = ?1 AND status != 'deleted'")
+            .bind(owner_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|_| ApiError::internal("database error"))?;
+
+    for (id, existing_name) in rows {
+        if exclude_id == Some(id.as_str()) {
+            continue;
+        }
+        if slugify_server_name(&existing_name) == slug {
+            return Err(ApiError::invalid_input(format!(
+                "'{name}' produces the same tool prefix (mcp__{slug}__) as '{existing_name}'. \
+                 Pick a name that differs by more than punctuation or case."
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn load_owned(
@@ -603,6 +667,49 @@ fn validate_collection(values: Vec<String>, field: &str) -> Result<Vec<String>, 
         .into_iter()
         .filter(|value| !value.trim().is_empty())
         .collect())
+}
+
+/// Resolve a submitted header map against what is already stored.
+///
+/// Header values are masked on the way out, so the client never holds the real
+/// secret and cannot send it back. A wholesale replace would therefore turn
+/// every unrelated edit into a credential wipe. Instead each entry says what to
+/// do with that header:
+///
+/// - `Some(value)` — set it to `value` (the operator typed a new one).
+/// - `None` — keep whatever is stored (the operator left the field alone).
+/// - key absent from the map entirely — delete that header.
+///
+/// A `None` for a header that has no stored value is dropped rather than
+/// written as an empty string, so a half-filled form cannot create a blank
+/// `Authorization` that fails as a confusing 401 later.
+fn resolve_headers(
+    submitted: BTreeMap<String, Option<String>>,
+    stored: &BTreeMap<String, String>,
+    field: &str,
+) -> Result<BTreeMap<String, String>, ApiError> {
+    if submitted.len() > MAX_COLLECTION_ENTRIES {
+        return Err(ApiError::invalid_input(format!(
+            "{field} must have at most {MAX_COLLECTION_ENTRIES} entries"
+        )));
+    }
+    let mut resolved = BTreeMap::new();
+    for (key, value) in submitted {
+        let key = key.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        let Some(value) = value.or_else(|| stored.get(&key).cloned()) else {
+            continue;
+        };
+        if key.chars().count() > MAX_TEXT_CHARS || value.chars().count() > MAX_TEXT_CHARS {
+            return Err(ApiError::invalid_input(format!(
+                "each {field} entry must be at most {MAX_TEXT_CHARS} characters"
+            )));
+        }
+        resolved.insert(key, value);
+    }
+    Ok(resolved)
 }
 
 /// Drop entries with a blank key and enforce the per-map cap.

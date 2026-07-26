@@ -54,13 +54,36 @@ impl McpMount {
             .into_iter()
             .map(|config| (config.id.clone(), config))
             .collect();
-        let bindings = bindings
-            .into_iter()
-            .filter(|binding| servers.contains_key(&binding.server_id))
-            .map(|binding| (binding.exposed_name.clone(), binding))
-            .collect();
+        let mut failures = failures;
+        let mut resolved: HashMap<String, McpToolBinding> = HashMap::new();
+        for binding in bindings {
+            if !servers.contains_key(&binding.server_id) {
+                continue;
+            }
+            // Two servers whose names slugify identically ("Notion (work)" and
+            // "Notion-work" both become `notion_work`) produce the same exposed
+            // name. Collecting into a map would let the later one overwrite the
+            // earlier, so the model would call one server and silently reach the
+            // other. Refuse the collision instead, and say so in the prompt.
+            if let Some(existing) = resolved.get(&binding.exposed_name) {
+                if existing.server_id != binding.server_id {
+                    failures.push((
+                        binding.server_name.clone(),
+                        format!(
+                            "its tool names collide with '{}' — rename one of them so their \
+                             tool prefixes differ",
+                            existing.server_name
+                        ),
+                    ));
+                }
+                continue;
+            }
+            resolved.insert(binding.exposed_name.clone(), binding);
+        }
+        // One unreachable server should produce one line, not one per tool.
+        failures.dedup();
         Self {
-            bindings,
+            bindings: resolved,
             servers,
             failures,
         }

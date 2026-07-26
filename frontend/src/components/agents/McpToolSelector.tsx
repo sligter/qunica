@@ -114,6 +114,7 @@ export function McpToolSelector({ servers, value, onChange }: McpToolSelectorPro
                 serverId={server.id}
                 selected={selection.tools ?? []}
                 onChange={(tools) => setTools(server.id, tools)}
+                onDeselectServer={() => toggleServer(server.id)}
               />
             ) : null}
           </div>
@@ -127,10 +128,17 @@ interface McpToolListProps {
   serverId: string
   selected: string[]
   onChange: (tools: string[]) => void
+  /** Called when the operator narrows the server down to no tools at all. */
+  onDeselectServer: () => void
 }
 
 /** The expanded per-tool checklist, probing the server for its tool list. */
-function McpToolList({ serverId, selected, onChange }: McpToolListProps) {
+function McpToolList({
+  serverId,
+  selected,
+  onChange,
+  onDeselectServer,
+}: McpToolListProps) {
   const { t } = useTranslation('agents')
   const probe = useMcpServerTools(serverId, true)
 
@@ -160,12 +168,28 @@ function McpToolList({ serverId, selected, onChange }: McpToolListProps) {
     )
   }
 
+  const allNames = tools.map((tool) => tool.name)
+
   const toggle = (name: string) => {
-    onChange(
-      selected.includes(name)
-        ? selected.filter((entry) => entry !== name)
-        : [...selected, name],
-    )
+    // Expand the "all" sentinel before toggling. Without this, unchecking a box
+    // from the default state falls through to the "add" branch and narrows the
+    // agent to exactly the tool the operator was trying to remove.
+    const current = selected.length === 0 ? allNames : selected
+    const next = current.includes(name)
+      ? current.filter((entry) => entry !== name)
+      : [...current, name]
+
+    if (next.length === 0) {
+      // An empty list already means "all", so it cannot also mean "none".
+      // Unchecking the last tool means the agent should not use this server,
+      // which is what deselecting it says unambiguously.
+      onDeselectServer()
+      return
+    }
+    // Collapse back to the sentinel once everything is checked, so a tool the
+    // server gains later is picked up instead of being silently excluded by a
+    // frozen list.
+    onChange(next.length === allNames.length ? [] : next)
   }
 
   return (

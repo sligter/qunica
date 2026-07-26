@@ -32,7 +32,6 @@ use reqwest::{
 use serde_json::Value;
 use tokio::{
     sync::{oneshot, Mutex},
-    task::JoinHandle,
     time::timeout,
 };
 
@@ -43,6 +42,7 @@ use crate::mcp::{
 };
 
 use super::http::{build_headers, describe_request_error, status_error};
+use super::AbortOnDrop;
 
 /// How long to wait for the `endpoint` event before giving up on the handshake.
 const ENDPOINT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -63,7 +63,7 @@ pub struct SseTransport {
     next_id: Arc<AtomicI64>,
     timeout_seconds: u64,
     alive: Arc<AtomicBool>,
-    reader: Mutex<Option<JoinHandle<()>>>,
+    reader: Mutex<Option<AbortOnDrop>>,
 }
 
 impl SseTransport {
@@ -84,16 +84,31 @@ impl SseTransport {
         let headers = build_headers(&config.headers)?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(timeout_seconds.min(30)))
+            // No idle keep-alive pooling. JSON-RPC over HTTP is low volume here
+            // — a handful of requests per agent turn — and a pooled connection
+            // the peer has already closed surfaces as a send failure on the next
+            // request. Retrying is not safe (`tools/call` may not be idempotent,
+            // so a retry could double-execute a side effect), and a fresh
+            // connection costs far less than a spurious tool failure.
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(|err| McpError::Transport(format!("could not build an HTTP client: {err}")))?;
 
-        let response = client
-            .get(&url)
-            .headers(headers.clone())
-            .header(ACCEPT, "text/event-stream")
-            .send()
-            .await
-            .map_err(|err| McpError::Transport(describe_request_error(&err)))?;
+        // `connect_timeout` covers only the TCP/TLS handshake. A server that
+        // accepts the socket and then never writes response headers would hang
+        // this await forever, and `ENDPOINT_TIMEOUT` below is only reached once
+        // `send()` has returned, so it would never fire. Bound the whole call.
+        let response = timeout(
+            Duration::from_secs(timeout_seconds),
+            client
+                .get(&url)
+                .headers(headers.clone())
+                .header(ACCEPT, "text/event-stream")
+                .send(),
+        )
+        .await
+        .map_err(|_| McpError::Timeout(timeout_seconds))?
+        .map_err(|err| McpError::Transport(describe_request_error(&err)))?;
 
         if !response.status().is_success() {
             return Err(status_error(response.status(), "GET"));
@@ -141,7 +156,7 @@ impl SseTransport {
             next_id: Arc::new(AtomicI64::new(1)),
             timeout_seconds,
             alive,
-            reader: Mutex::new(Some(reader)),
+            reader: Mutex::new(Some(AbortOnDrop(reader))),
         })
     }
 
@@ -151,16 +166,23 @@ impl SseTransport {
     }
 
     /// `POST` one payload to the message endpoint.
+    ///
+    /// Bounded by the configured timeout: the shared client has no request
+    /// timeout of its own, so a stalled endpoint would otherwise park the caller
+    /// indefinitely rather than surfacing [`McpError::Timeout`].
     async fn post(&self, payload: &Value) -> Result<(), McpError> {
-        let response = self
-            .client
-            .post(&self.message_url)
-            .headers(self.headers.clone())
-            .header(CONTENT_TYPE, "application/json")
-            .json(payload)
-            .send()
-            .await
-            .map_err(|err| McpError::Transport(describe_request_error(&err)))?;
+        let response = timeout(
+            Duration::from_secs(self.timeout_seconds),
+            self.client
+                .post(&self.message_url)
+                .headers(self.headers.clone())
+                .header(CONTENT_TYPE, "application/json")
+                .json(payload)
+                .send(),
+        )
+        .await
+        .map_err(|_| McpError::Timeout(self.timeout_seconds))?
+        .map_err(|err| McpError::Transport(describe_request_error(&err)))?;
 
         if !response.status().is_success() {
             let method = payload
@@ -215,9 +237,9 @@ impl super::McpTransport for SseTransport {
         self.alive.store(false, Ordering::SeqCst);
         // The legacy transport has no shutdown message; dropping the GET stream
         // is what tells the server the client is gone.
-        if let Some(reader) = self.reader.lock().await.take() {
-            reader.abort();
-        }
+        // Dropping the guard aborts the reader; taking it here just makes the
+        // shutdown explicit and idempotent.
+        drop(self.reader.lock().await.take());
         self.pending.lock().await.clear();
     }
 }

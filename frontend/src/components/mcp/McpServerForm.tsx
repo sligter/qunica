@@ -4,8 +4,10 @@ import { useTranslation } from 'react-i18next'
 
 import { KeyValueEditor } from '@/components/mcp/KeyValueEditor'
 import {
+  maskedRowsFromRecord,
   recordFromRows,
   rowsFromRecord,
+  secretRecordFromRows,
   type KeyValueRow,
 } from '@/components/mcp/keyValueRows'
 import { Button } from '@/components/ui/button'
@@ -79,11 +81,7 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
   const [url, setUrl] = useState(server?.url ?? '')
   const [envRows, setEnvRows] = useState<KeyValueRow[]>(() => rowsFromRecord(server?.env))
   const [headerRows, setHeaderRows] = useState<KeyValueRow[]>(() =>
-    Object.keys(server?.headers_masked ?? {}).map((key) => ({
-      id: `header-${key}`,
-      key,
-      value: '',
-    })),
+    maskedRowsFromRecord(server?.headers_masked),
   )
   const [timeoutSeconds, setTimeoutSeconds] = useState(server?.timeout_seconds ?? 60)
   const [toolFilterText, setToolFilterText] = useState((server?.tool_filter ?? []).join(', '))
@@ -95,7 +93,6 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
   const saving = create.isPending || update.isPending
 
   const payload = useMemo((): McpServerCreate => {
-    const headers = recordFromRows(headerRows)
     return {
       name: name.trim(),
       description: description.trim() || null,
@@ -105,9 +102,12 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
       env: isHttp ? {} : recordFromRows(envRows),
       cwd: isHttp ? null : cwd.trim() || null,
       url: isHttp ? url.trim() || null : null,
-      // A header the operator did not retype keeps its stored value, so editing
-      // an unrelated field never silently wipes a bearer token.
-      headers: isHttp ? headers : {},
+      // Header values are masked on the way out, so an untouched row sends
+      // `null` ("keep what is stored") rather than the blank box the operator
+      // sees. A row the operator deleted is absent from the map, which is how
+      // the server is told to drop that header. Sending the rows verbatim would
+      // overwrite every stored credential with an empty string.
+      headers: isHttp ? secretRecordFromRows(headerRows) : {},
       timeout_seconds: timeoutSeconds,
       tool_filter: toolFilterText
         .split(',')
@@ -138,7 +138,14 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
     setError(null)
     setTestResult(null)
     try {
-      setTestResult(await testDraft.mutateAsync(payload))
+      // Pass the row id so the server can resolve the "keep" header entries
+      // against what is stored; without it the probe would dial with blanks and
+      // report a failure the real configuration would not hit.
+      setTestResult(
+        await testDraft.mutateAsync(
+          server ? { ...payload, server_id: server.id } : payload,
+        ),
+      )
     } catch (err) {
       setError(errorText(err))
     }
@@ -161,13 +168,7 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
     }
     try {
       const saved = server
-        ? await update.mutateAsync({
-            ...payload,
-            // Omit headers entirely when none were retyped, so the stored
-            // values survive an edit to any other field.
-            headers:
-              Object.keys(payload.headers ?? {}).length > 0 ? payload.headers : undefined,
-          })
+        ? await update.mutateAsync(payload)
         : await create.mutateAsync(payload)
       onSaved?.(saved)
     } catch (err) {
@@ -252,6 +253,7 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
               valuePlaceholder="Bearer ..."
               addLabel={t('mcp:actions.addHeader')}
               secret
+              storedHints={server?.headers_masked}
             />
             <p className="text-xs text-muted-foreground">
               {server ? t('mcp:fields.headersMaskedHint') : t('mcp:fields.headersHint')}

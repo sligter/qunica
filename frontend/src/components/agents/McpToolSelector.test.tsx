@@ -3,10 +3,14 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { PropsWithChildren, ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { McpToolSelector } from '@/components/agents/McpToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
+import {
+  maskedRowsFromRecord,
+  secretRecordFromRows,
+} from '@/components/mcp/keyValueRows'
 import i18n from '@/i18n'
 import type {
   AgentMcpServerSelection,
@@ -227,5 +231,117 @@ describe('mergeToolConfig', () => {
 
   it('defaults an agent to no MCP servers rather than opting it into every one', () => {
     expect(mergeToolConfig(builtins, null).mcp_servers).toEqual([])
+  })
+})
+
+describe('McpToolSelector tool narrowing regressions', () => {
+  beforeEach(() => {
+    mocks.toolsQuery.mockReturnValue({
+      isLoading: false,
+      error: null,
+      data: probeResult(),
+    })
+  })
+
+  const allSelected: AgentMcpServerSelection[] = [
+    { server_id: 'srv-a', enabled: true, tools: [] },
+  ]
+
+  async function expandAllToolsRow() {
+    await userEvent.click(screen.getByText('All tools'))
+    await waitFor(() => expect(screen.getByText('create_issue')).toBeTruthy())
+    return screen.getAllByRole('checkbox') as HTMLInputElement[]
+  }
+
+  it('unchecking from the default state removes that tool instead of selecting it', async () => {
+    // The empty array is the "all tools" sentinel. A plain membership toggle
+    // would fall through to the add branch and narrow the agent down to exactly
+    // the tool the operator was trying to take away.
+    const onChange = vi.fn()
+    render(
+      <McpToolSelector servers={[server()]} value={allSelected} onChange={onChange} />,
+      { wrapper },
+    )
+
+    const boxes = await expandAllToolsRow()
+    await userEvent.click(boxes[0]!)
+
+    expect(onChange).toHaveBeenCalledWith([
+      { server_id: 'srv-a', enabled: true, tools: ['list_issues'] },
+    ])
+  })
+
+  it('unchecking the last remaining tool deselects the server rather than re-granting all', async () => {
+    // An empty list already means "all", so it cannot also mean "none".
+    const onChange = vi.fn()
+    const oneLeft: AgentMcpServerSelection[] = [
+      { server_id: 'srv-a', enabled: true, tools: ['create_issue'] },
+    ]
+    render(
+      <McpToolSelector servers={[server()]} value={oneLeft} onChange={onChange} />,
+      { wrapper },
+    )
+
+    await userEvent.click(screen.getByText('1 tool'))
+    await waitFor(() => expect(screen.getByText('create_issue')).toBeTruthy())
+    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    // The only checked box is create_issue; unchecking it leaves nothing.
+    await userEvent.click(boxes[0]!)
+
+    expect(onChange).toHaveBeenCalledWith([])
+  })
+
+  it('re-checking every tool collapses back to the all-tools sentinel', async () => {
+    // Otherwise the frozen list would silently exclude any tool the server
+    // gains later.
+    const onChange = vi.fn()
+    const oneSelected: AgentMcpServerSelection[] = [
+      { server_id: 'srv-a', enabled: true, tools: ['create_issue'] },
+    ]
+    render(
+      <McpToolSelector servers={[server()]} value={oneSelected} onChange={onChange} />,
+      { wrapper },
+    )
+
+    await userEvent.click(screen.getByText('1 tool'))
+    await waitFor(() => expect(screen.getByText('list_issues')).toBeTruthy())
+    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    await userEvent.click(boxes[1]!)
+
+    expect(onChange).toHaveBeenCalledWith([
+      { server_id: 'srv-a', enabled: true, tools: [] },
+    ])
+  })
+})
+
+describe('secretRecordFromRows', () => {
+  it('sends null for a row the operator never typed into', () => {
+    // Masked values never reach the client, so an untouched row must say "keep
+    // what is stored" rather than submitting the blank box the operator sees.
+    const rows = maskedRowsFromRecord({ Authorization: '****efgh' })
+
+    expect(secretRecordFromRows(rows)).toEqual({ Authorization: null })
+  })
+
+  it('sends the new value once the row has been edited', () => {
+    const rows = maskedRowsFromRecord({ Authorization: '****efgh' }).map((row) => ({
+      ...row,
+      value: 'Bearer new-token',
+      dirty: true,
+    }))
+
+    expect(secretRecordFromRows(rows)).toEqual({ Authorization: 'Bearer new-token' })
+  })
+
+  it('omits a deleted row so the stored header is dropped', () => {
+    // A key absent from the map is how a revoked credential gets deleted; if
+    // deletion instead produced an empty map the caller could never revoke one.
+    expect(secretRecordFromRows([])).toEqual({})
+  })
+
+  it('ignores rows whose key is still blank', () => {
+    const rows = [{ id: 'r1', key: '   ', value: 'orphan', dirty: true }]
+
+    expect(secretRecordFromRows(rows)).toEqual({})
   })
 })

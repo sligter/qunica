@@ -30,7 +30,6 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Child,
     sync::{mpsc, oneshot, Mutex},
-    task::JoinHandle,
     time::timeout,
 };
 
@@ -41,6 +40,8 @@ use crate::mcp::{
     McpError,
 };
 use crate::process::tokio_command_no_window;
+
+use super::AbortOnDrop;
 
 /// How long to wait for the reader/writer tasks to wind down on close.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
@@ -61,10 +62,12 @@ pub struct StdioTransport {
     timeout_seconds: u64,
     alive: Arc<AtomicBool>,
     stderr_tail: Arc<Mutex<Tail>>,
+    /// Dropping the last handle drops the `Child`, which was spawned with
+    /// `kill_on_drop`, so an unclosed transport still reaps its process.
     child: Arc<Mutex<Child>>,
-    reader: Mutex<Option<JoinHandle<()>>>,
-    writer: Mutex<Option<JoinHandle<()>>>,
-    stderr_reader: Mutex<Option<JoinHandle<()>>>,
+    reader: Mutex<Option<AbortOnDrop>>,
+    writer: Mutex<Option<AbortOnDrop>>,
+    stderr_reader: Mutex<Option<AbortOnDrop>>,
 }
 
 impl StdioTransport {
@@ -173,9 +176,9 @@ impl StdioTransport {
             alive,
             stderr_tail,
             child: Arc::new(Mutex::new(child)),
-            reader: Mutex::new(Some(reader)),
-            writer: Mutex::new(Some(writer)),
-            stderr_reader: Mutex::new(Some(stderr_reader)),
+            reader: Mutex::new(Some(AbortOnDrop(reader))),
+            writer: Mutex::new(Some(AbortOnDrop(writer))),
+            stderr_reader: Mutex::new(Some(AbortOnDrop(stderr_reader))),
         })
     }
 
@@ -259,11 +262,10 @@ impl super::McpTransport for StdioTransport {
                 continue;
             };
             // The child is already dead or being killed, so its pipes close and
-            // the tasks end on their own. Abort only if one somehow lingers, so
-            // shutdown can never hang.
-            if timeout(SHUTDOWN_GRACE, &mut task).await.is_err() {
-                task.abort();
-            }
+            // the tasks end on their own. Give them a moment to drain; the guard
+            // aborts whatever is still running when it drops, so shutdown can
+            // never hang on a task that refuses to end.
+            let _ = timeout(SHUTDOWN_GRACE, &mut task.0).await;
         }
         self.pending.lock().await.clear();
     }

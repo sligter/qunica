@@ -76,6 +76,14 @@ use crate::tools::{
     McpMount, MountedSkill, ToolExecutor, ToolResult, ToolStatus, WorkspaceMount, SELF_MOUNT_NAME,
 };
 
+/// Total wall clock MCP tool discovery may spend before a turn starts.
+///
+/// This runs before the agent produces any output, so it is dead time the user
+/// watches. A per-server timeout alone is not enough: it bounds each server but
+/// not their sum, and the budget is what keeps a misconfigured server from
+/// holding up every turn indefinitely.
+const MCP_RESOLVE_BUDGET: Duration = Duration::from_secs(30);
+
 const MAX_TOOL_ROUNDS: usize = 24;
 const MAX_NATIVE_IMAGES_PER_REQUEST: usize = 4;
 const MAX_NATIVE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
@@ -4515,21 +4523,62 @@ async fn resolve_mcp_tools(services: &RuntimeServices, agent: &Candidate) -> Mcp
             }
         };
 
+    // Listing runs concurrently and under one shared deadline. Serially, three
+    // servers each sitting on the default 60s timeout would add three minutes to
+    // the front of every single turn before the agent says a word; concurrently
+    // the worst case is one timeout, and the budget caps even that.
+    let listings = rows.into_iter().map(|row| {
+        let config = row.to_config();
+        let allowed = selections
+            .iter()
+            .find(|selection| selection.server_id == config.id)
+            .map(|selection| selection.tools.clone())
+            .unwrap_or_default();
+        let manager = services.mcp.clone();
+        async move {
+            let outcome = manager.list_bindings(&config).await;
+            (config, allowed, outcome)
+        }
+    });
+
+    let resolved = match tokio::time::timeout(
+        MCP_RESOLVE_BUDGET,
+        futures_util::future::join_all(listings),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            // Every server is still connecting. Rather than hold the turn open,
+            // start it with no MCP tools and tell the agent why.
+            tracing::warn!(
+                agent_id = %agent.agent_id,
+                "MCP tool resolution exceeded its budget; starting the turn without MCP tools"
+            );
+            return McpMount::new(
+                Vec::new(),
+                Vec::new(),
+                vec![(
+                    "MCP servers".to_string(),
+                    format!(
+                        "did not respond within {}s",
+                        MCP_RESOLVE_BUDGET.as_secs()
+                    ),
+                )],
+            );
+        }
+    };
+
     let mut bindings: Vec<McpToolBinding> = Vec::new();
     let mut configs: Vec<McpServerConfig> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 
-    for row in rows {
-        let config = row.to_config();
-        // A per-agent tool selection narrows the server's own allowlist further,
-        // so an agent can be given one tool from a server that exposes twenty.
-        let selection = selections
-            .iter()
-            .find(|selection| selection.server_id == config.id);
-        let allowed = selection.map(|selection| selection.tools.clone()).unwrap_or_default();
-
-        match services.mcp.list_bindings(&config).await {
+    for (config, allowed, outcome) in resolved {
+        match outcome {
             Ok(server_bindings) => {
+                // A per-agent tool selection narrows the server's own allowlist
+                // further, so an agent can be given one tool from a server that
+                // exposes twenty.
                 let kept = server_bindings.into_iter().filter(|binding| {
                     allowed.is_empty() || allowed.iter().any(|name| name == &binding.tool_name)
                 });

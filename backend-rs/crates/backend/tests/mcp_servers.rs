@@ -31,7 +31,7 @@ use tokio::{
 use tower::ServiceExt;
 
 use ag_swarmer_backend::mcp::{
-    config::McpServerConfig, McpClient, McpManager, McpTransportKind,
+    config::McpServerConfig, McpClient, McpError, McpManager, McpTransportKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -448,10 +448,13 @@ async fn the_manager_reuses_one_connection_and_drops_it_on_eviction() {
     );
 
     manager.evict(&config.id).await;
-    assert!(!first.is_alive(), "eviction should close the connection");
 
     let third = manager.client(&config).await.expect("reconnect");
     assert!(!Arc::ptr_eq(&first, &third), "eviction forces a reconnect");
+
+    // `first`/`second` are still held here, so eviction must not have closed
+    // them — see `evicting_a_pooled_server_does_not_kill_a_call_another_holder_is_making`.
+    first.close().await;
     manager.shutdown().await;
 }
 
@@ -825,4 +828,279 @@ async fn an_http_endpoint_that_is_not_an_mcp_server_fails_with_a_readable_reason
 
     let message = error.to_string();
     assert!(message.contains("405") || message.contains("unreachable"), "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// Regressions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn editing_an_unrelated_field_keeps_the_stored_header_value() {
+    // Header values are masked on the way out, so the form cannot send the real
+    // secret back. An untouched header must therefore survive an edit to any
+    // other field rather than being overwritten with the blank box the operator
+    // sees.
+    let app = app().await;
+    let token = register_and_login(&app, "mcp-header-keep@example.test").await;
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({
+                "name": "Secured",
+                "transport": "streamable-http",
+                "url": "https://mcp.example.test/mcp",
+                "headers": {"Authorization": "Bearer sk-live-abcdefgh"},
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let server_id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["headers_masked"]["Authorization"], "****efgh");
+
+    // `null` is the form saying "I did not retype this one".
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/mcp-servers/{server_id}"),
+            &token,
+            json!({"timeout_seconds": 120, "headers": {"Authorization": null}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["timeout_seconds"], 120);
+    // Still the same secret, not a mask and not an empty string.
+    assert_eq!(updated["headers_masked"]["Authorization"], "****efgh");
+}
+
+#[tokio::test]
+async fn a_retyped_header_replaces_the_stored_value_and_an_omitted_one_is_deleted() {
+    let app = app().await;
+    let token = register_and_login(&app, "mcp-header-rotate@example.test").await;
+
+    let (_, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({
+                "name": "Rotating",
+                "transport": "streamable-http",
+                "url": "https://mcp.example.test/mcp",
+                "headers": {"Authorization": "Bearer old-1234", "X-Trace": "on"},
+            }),
+        ),
+    )
+    .await;
+    let server_id = created["id"].as_str().unwrap().to_string();
+
+    // Rotate one; X-Trace is absent from the map, which is how a revoked header
+    // is deleted.
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/mcp-servers/{server_id}"),
+            &token,
+            json!({"headers": {"Authorization": "Bearer new-5678"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["headers_masked"]["Authorization"], "****5678");
+    assert!(updated["headers_masked"].get("X-Trace").is_none(), "{updated}");
+
+    // An empty map clears every header, so a credential can be revoked.
+    let (status, cleared) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/mcp-servers/{server_id}"),
+            &token,
+            json!({"headers": {}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert_eq!(cleared["headers_masked"].as_object().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn a_keep_entry_for_a_header_that_was_never_stored_is_dropped() {
+    // A half-filled form must not write a blank Authorization that would fail
+    // later as a confusing 401.
+    let app = app().await;
+    let token = register_and_login(&app, "mcp-header-blank@example.test").await;
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({
+                "name": "Blank header",
+                "transport": "sse",
+                "url": "https://mcp.example.test/sse",
+                "headers": {"Authorization": null},
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["headers_masked"].as_object().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn names_that_slugify_identically_are_rejected() {
+    // Tool names are namespaced by the slug, and slugification is lossy. Two
+    // servers sharing a slug would produce identical mcp__<slug>__* tool names,
+    // leaving the model unable to address one of them.
+    let app = app().await;
+    let token = register_and_login(&app, "mcp-slug@example.test").await;
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({"name": "Notion (work)", "transport": "stdio", "command": "node"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, error) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({"name": "Notion-work", "transport": "stdio", "command": "node"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+
+    // A genuinely different name is still fine.
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({"name": "Notion personal", "transport": "stdio", "command": "node"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn renaming_a_server_to_its_own_name_is_allowed() {
+    // The slug guard must exclude the row being edited, or saving any unrelated
+    // field would report a collision with itself.
+    let app = app().await;
+    let token = register_and_login(&app, "mcp-slug-self@example.test").await;
+
+    let (_, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/mcp-servers",
+            &token,
+            json!({"name": "Weather", "transport": "stdio", "command": "node"}),
+        ),
+    )
+    .await;
+    let server_id = created["id"].as_str().unwrap();
+
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/mcp-servers/{server_id}"),
+            &token,
+            json!({"timeout_seconds": 90}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["timeout_seconds"], 90);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_sse_endpoint_that_stalls_times_out_instead_of_hanging() {
+    // `connect_timeout` covers only the TCP handshake. A server that accepts the
+    // socket and then never writes response headers must still surface a
+    // timeout, or the turn would park forever.
+    let addr = spawn_stalling_server().await;
+    let mut config = http_config(
+        "Stalling",
+        McpTransportKind::Sse,
+        format!("http://{addr}/sse"),
+    );
+    config.timeout_seconds = 2;
+
+    let started = std::time::Instant::now();
+    let error = McpClient::connect(&config)
+        .await
+        .expect_err("a stalled endpoint must not connect");
+
+    assert!(
+        matches!(error, McpError::Timeout(_)),
+        "expected a timeout, got {error}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "connect should give up on its own timeout rather than hang"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evicting_a_pooled_server_does_not_kill_a_call_another_holder_is_making() {
+    // `close()` kills the child and drops every pending request. Doing that to a
+    // handle another turn is holding would fail an unrelated agent mid-call, so
+    // eviction must only unpool.
+    let manager = McpManager::new();
+    let config = fake_stdio_config("Shared", "ok");
+
+    let held = manager.client(&config).await.expect("connect");
+    manager.evict(&config.id).await;
+
+    assert!(held.is_alive(), "eviction closed a connection still in use");
+    let outcome = held
+        .call_tool("echo", &json!({"text": "still here"}))
+        .await
+        .expect("the held connection should still work");
+    assert_eq!(outcome.text, "echo: still here");
+
+    // The pool really did forget it, so the next caller reconnects.
+    let fresh = manager.client(&config).await.expect("reconnect");
+    assert!(!Arc::ptr_eq(&held, &fresh));
+
+    held.close().await;
+    manager.shutdown().await;
+}
+
+/// Bind a server that accepts connections and then never answers.
+async fn spawn_stalling_server() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            // Hold the socket open without writing a response.
+            held.push(stream);
+        }
+    });
+    addr
 }

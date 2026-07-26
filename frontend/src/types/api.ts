@@ -131,10 +131,20 @@ export interface McpServerCreate {
   env?: Record<string, string>
   cwd?: string | null
   url?: string | null
-  headers?: Record<string, string>
+  /**
+   * Keep-or-set map for header values, which the API masks on the way out.
+   * A string sets the header, `null` keeps whatever the server has stored, and
+   * a key left out of the map deletes that header.
+   */
+  headers?: Record<string, string | null>
   timeout_seconds?: number
   tool_filter?: string[]
   enabled?: boolean
+  /**
+   * Only used by the connection-test endpoint: the saved row whose stored
+   * header values a `null` entry should resolve against.
+   */
+  server_id?: string
 }
 
 export type McpServerUpdate = Partial<McpServerCreate>

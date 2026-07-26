@@ -77,6 +77,13 @@ impl HttpTransport {
             // SSE response stays open past the response headers, so the client's
             // own timeout must cover connection setup only.
             .connect_timeout(Duration::from_secs(timeout_seconds.min(30)))
+            // No idle keep-alive pooling. JSON-RPC over HTTP is low volume here
+            // — a handful of requests per agent turn — and a pooled connection
+            // the peer has already closed surfaces as a send failure on the next
+            // request. Retrying is not safe (`tools/call` may not be idempotent,
+            // so a retry could double-execute a side effect), and a fresh
+            // connection costs far less than a spurious tool failure.
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(|err| McpError::Transport(format!("could not build an HTTP client: {err}")))?;
 
