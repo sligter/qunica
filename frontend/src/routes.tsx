@@ -1,3 +1,4 @@
+import { lazy } from 'react'
 import { Navigate, createBrowserRouter } from 'react-router-dom'
 
 import { AppLayout } from '@/components/layout/AppLayout'
@@ -10,25 +11,58 @@ import { SettingsLayout } from '@/components/layout/SettingsLayout'
 import { SkillsListColumn } from '@/components/layout/SkillsListColumn'
 import { WorkspacesListColumn } from '@/components/layout/WorkspacesListColumn'
 import { NotFoundPage } from '@/pages/NotFoundPage'
-import { AgentCreatePage } from '@/pages/agents/AgentCreatePage'
-import { AgentDetailPage } from '@/pages/agents/AgentDetailPage'
-import { AgentsIndexPage } from '@/pages/agents/AgentsIndexPage'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { GroupChatPage } from '@/pages/group/GroupChatPage'
 import { DirectChatPage } from '@/pages/chat/DirectChatPage'
-import { GroupManagePage } from '@/pages/group/GroupManagePage'
 import { ChatHomePage } from '@/pages/home/ChatHomePage'
-import { ProviderCreatePage } from '@/pages/providers/ProviderCreatePage'
-import { ProviderDetailPage } from '@/pages/providers/ProviderDetailPage'
-import { ProvidersIndexPage } from '@/pages/providers/ProvidersIndexPage'
-import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
-import { SkillCreatePage } from '@/pages/skills/SkillCreatePage'
-import { SkillDetailPage } from '@/pages/skills/SkillDetailPage'
-import { SkillsIndexPage } from '@/pages/skills/SkillsIndexPage'
-import { WorkspaceCreatePage } from '@/pages/workspace/WorkspaceCreatePage'
-import { WorkspaceDetailPage } from '@/pages/workspace/WorkspaceDetailPage'
-import { WorkspacesIndexPage } from '@/pages/workspace/WorkspacesIndexPage'
+
+// Auth, layout shells, and the three chat surfaces stay eager: they are the
+// landing surfaces and splitting them would only add a blank frame on boot.
+// Everything below is reachable solely by navigation, so its code — including
+// the react-hook-form/zod form machinery — loads when the route is entered.
+const AgentCreatePage = lazy(() =>
+  import('@/pages/agents/AgentCreatePage').then((m) => ({ default: m.AgentCreatePage })),
+)
+const AgentDetailPage = lazy(() =>
+  import('@/pages/agents/AgentDetailPage').then((m) => ({ default: m.AgentDetailPage })),
+)
+const AgentsIndexPage = lazy(() =>
+  import('@/pages/agents/AgentsIndexPage').then((m) => ({ default: m.AgentsIndexPage })),
+)
+const ProviderCreatePage = lazy(() =>
+  import('@/pages/providers/ProviderCreatePage').then((m) => ({ default: m.ProviderCreatePage })),
+)
+const ProviderDetailPage = lazy(() =>
+  import('@/pages/providers/ProviderDetailPage').then((m) => ({ default: m.ProviderDetailPage })),
+)
+const ProvidersIndexPage = lazy(() =>
+  import('@/pages/providers/ProvidersIndexPage').then((m) => ({ default: m.ProvidersIndexPage })),
+)
+const SkillCreatePage = lazy(() =>
+  import('@/pages/skills/SkillCreatePage').then((m) => ({ default: m.SkillCreatePage })),
+)
+const SkillDetailPage = lazy(() =>
+  import('@/pages/skills/SkillDetailPage').then((m) => ({ default: m.SkillDetailPage })),
+)
+const SkillsIndexPage = lazy(() =>
+  import('@/pages/skills/SkillsIndexPage').then((m) => ({ default: m.SkillsIndexPage })),
+)
+const WorkspaceCreatePage = lazy(() =>
+  import('@/pages/workspace/WorkspaceCreatePage').then((m) => ({ default: m.WorkspaceCreatePage })),
+)
+const WorkspaceDetailPage = lazy(() =>
+  import('@/pages/workspace/WorkspaceDetailPage').then((m) => ({ default: m.WorkspaceDetailPage })),
+)
+const WorkspacesIndexPage = lazy(() =>
+  import('@/pages/workspace/WorkspacesIndexPage').then((m) => ({ default: m.WorkspacesIndexPage })),
+)
+const SystemSettingsPage = lazy(() =>
+  import('@/pages/settings/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })),
+)
+const GroupManagePage = lazy(() =>
+  import('@/pages/group/GroupManagePage').then((m) => ({ default: m.GroupManagePage })),
+)
 
 const ENTITY_LIST_WIDTH = 240
 

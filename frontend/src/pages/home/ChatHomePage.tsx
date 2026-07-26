@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { MessageSquarePlus } from 'lucide-react'
@@ -7,9 +7,14 @@ import { avatarColorClass } from '@/lib/avatarColor'
 import { useGroups } from '@/hooks/useGroups'
 import { useDirectChats } from '@/hooks/useDirectChats'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
-import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+
+// Shares the chunk the sidebar's New group button loads; neither pays for it
+// until someone actually opens the create-group form.
+const GroupFormDialog = lazy(() =>
+  import('@/components/groups/GroupFormDialog').then((m) => ({ default: m.GroupFormDialog })),
+)
 
 /**
  * Chat home ("/"): a centered welcome surface shown when no group is
@@ -48,7 +53,11 @@ export function ChatHomePage() {
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto bg-background p-6">
-      <GroupFormDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      {dialogOpen ? (
+        <Suspense fallback={null}>
+          <GroupFormDialog open onOpenChange={setDialogOpen} />
+        </Suspense>
+      ) : null}
       <DirectChatPickerDialog open={directDialogOpen} onOpenChange={setDirectDialogOpen} />
       <div className="flex w-full max-w-xl flex-col items-center gap-6">
         <h1 className="text-center font-serif text-4xl font-semibold tracking-tight">

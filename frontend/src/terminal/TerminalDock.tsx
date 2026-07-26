@@ -10,6 +10,8 @@ import {
   X,
 } from 'lucide-react'
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -21,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { TerminalPane } from '@/terminal/TerminalPane'
 import {
   useTerminalRuntime,
   type TerminalRuntimeTab,
@@ -29,6 +30,14 @@ import {
 import { usePersistentPaneHeight } from '@/terminal/usePersistentPaneHeight'
 
 export const FULL_ACCESS_WARNING_KEY = 'ag-swarmer:terminal-full-access-warning:v1'
+
+// The dock ships with every route but starts collapsed and has no tabs until the
+// user opens one, so the xterm runtime downloads with the first pane instead of
+// at boot. `lazy` caches the module, so later tabs render synchronously and
+// existing panes are never remounted.
+const TerminalPane = lazy(() =>
+  import('@/terminal/TerminalPane').then((m) => ({ default: m.TerminalPane })),
+)
 
 interface IconActionProps {
   label: string
@@ -312,19 +321,21 @@ export function TerminalDock() {
       ) : null}
 
       <div className="relative min-h-0 flex-1" data-testid="terminal-pane-host">
-        {runtime.allTabs.map((tab) => {
-          const paneVisible = runtimeChromeVisible && tab.tabId === runtime.activeTabId
-          return (
-            <div
-              key={tab.tabId}
-              hidden={!paneVisible}
-              aria-hidden={!paneVisible}
-              className="absolute inset-0 p-2"
-            >
-              <TerminalPane tab={tab} />
-            </div>
-          )
-        })}
+        <Suspense fallback={null}>
+          {runtime.allTabs.map((tab) => {
+            const paneVisible = runtimeChromeVisible && tab.tabId === runtime.activeTabId
+            return (
+              <div
+                key={tab.tabId}
+                hidden={!paneVisible}
+                aria-hidden={!paneVisible}
+                className="absolute inset-0 p-2"
+              >
+                <TerminalPane tab={tab} />
+              </div>
+            )
+          })}
+        </Suspense>
 
         {chromeVisible && unavailableMessage !== null ? (
           <div className="absolute inset-0 grid place-items-center p-6 text-center">

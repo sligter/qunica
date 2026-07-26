@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
@@ -25,7 +25,6 @@ import { useDeleteDirectChat, useDirectChats } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useAuthStore } from '@/stores/authStore'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
-import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,6 +33,12 @@ import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 
 const COLLAPSED_KEY = 'ag-swarmer:layout:sidebar-collapsed'
+
+// The create-group form drags in react-hook-form + zod; it downloads the first
+// time the user asks for it rather than on every app boot.
+const GroupFormDialog = lazy(() =>
+  import('@/components/groups/GroupFormDialog').then((m) => ({ default: m.GroupFormDialog })),
+)
 
 interface LibraryItem {
   to: string
@@ -120,7 +125,11 @@ export function AppSidebar() {
         collapsed ? 'w-14' : 'w-[248px]',
       )}
     >
-      <GroupFormDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      {dialogOpen ? (
+        <Suspense fallback={null}>
+          <GroupFormDialog open onOpenChange={setDialogOpen} />
+        </Suspense>
+      ) : null}
       <DirectChatPickerDialog open={directDialogOpen} onOpenChange={setDirectDialogOpen} />
       <ConfirmDialog
         open={pendingDeleteChat !== null}

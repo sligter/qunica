@@ -1,7 +1,9 @@
+import { Suspense } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { RouteFallback } from '@/components/layout/RouteFallback'
 import { Button } from '@/components/ui/button'
 
 /**
@@ -29,7 +31,9 @@ export function SettingsLayout() {
         </h1>
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
       </div>
     </div>
   )

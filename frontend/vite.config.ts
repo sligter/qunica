@@ -5,7 +5,10 @@ import tailwindcss from '@tailwindcss/vite'
 
 const reactPackages = new Set(['react', 'react-dom', 'react-router', 'react-router-dom', 'scheduler'])
 const statePackages = new Set(['@tanstack/react-query', 'zustand'])
-const formPackages = new Set(['@hookform/resolvers', 'react-hook-form', 'zod'])
+// zod is split out from the form stack: api-v2 response parsing needs it on the
+// chat surface, while react-hook-form is only reached through lazily-loaded
+// forms. Keeping them together would drag the form runtime into the boot chunk.
+const formPackages = new Set(['@hookform/resolvers', 'react-hook-form'])
 const utilityPackages = new Set([
   'class-variance-authority',
   'clsx',
@@ -30,9 +33,13 @@ function manualChunks(id: string): string | undefined {
   if (reactPackages.has(packageName)) return 'vendor-react'
   if (statePackages.has(packageName)) return 'vendor-state'
   if (formPackages.has(packageName)) return 'vendor-forms'
+  if (packageName === 'zod') return 'vendor-schema'
   if (packageName === 'lucide-react') return 'vendor-icons'
   if (packageName.startsWith('@radix-ui/')) return 'vendor-radix'
   if (packageName.startsWith('@tauri-apps/')) return 'vendor-tauri'
+  // Must stay out of the catch-all `vendor` chunk: that one is a static
+  // dependency of the boot chunk, which would undo TerminalPane's lazy import.
+  if (packageName.startsWith('@xterm/')) return 'vendor-terminal'
   if (utilityPackages.has(packageName)) return 'vendor-utils'
   return 'vendor'
 }

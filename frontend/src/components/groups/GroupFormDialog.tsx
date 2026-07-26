@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { Link, useNavigate } from 'react-router-dom'
@@ -53,12 +53,17 @@ interface GroupFormDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
+interface GroupFormDialogBodyProps {
+  onOpenChange: (open: boolean) => void
+}
+
 /**
- * Modal dialog for creating a new group. Editing an existing group is handled
- * on the group manage page (`/groups/:groupId/manage`), reached from the chat
- * header's gear icon — out of scope here.
+ * Create-group form body. Lives inside `DialogContent`, so the agent list and
+ * system settings are fetched when the dialog opens rather than when the sidebar
+ * that owns it renders — and each open starts from a fresh mount, which is what
+ * resets the form.
  */
-export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
+function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
   const { t } = useTranslation(['groups', 'common'])
   const navigate = useNavigate()
   const agents = useAgents()
@@ -79,23 +84,6 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
       allow_agent_free_mention: true,
     },
   })
-
-  // Reset form values when the dialog opens.
-  useEffect(() => {
-    if (open) {
-      form.reset({
-        name: '',
-        description: '',
-        announcement: '',
-        communication_mode: 'mesh',
-        free_speech: false,
-        allow_agent_free_mention: true,
-      })
-      setSelectedAgentIds([])
-      setSelectedWorkspaceId('')
-      setSubmitError(undefined)
-    }
-  }, [open, form])
 
   const toggleAgent = (id: string) => {
     setSelectedAgentIds((prev) =>
@@ -124,11 +112,7 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
   })
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        closeLabel={t('common:actions.close')}
-        className="flex max-h-[85vh] w-[95vw] flex-col gap-4 overflow-hidden sm:max-w-2xl"
-      >
+    <>
         <DialogHeader className="shrink-0">
           <DialogTitle>{t('create.title')}</DialogTitle>
           <DialogDescription>{t('create.description')}</DialogDescription>
@@ -275,6 +259,25 @@ export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
             </Button>
           </DialogFooter>
         </form>
+    </>
+  )
+}
+
+/**
+ * Modal dialog for creating a new group. Editing an existing group is handled
+ * on the group manage page (`/groups/:groupId/manage`), reached from the chat
+ * header's gear icon — out of scope here.
+ */
+export function GroupFormDialog({ open, onOpenChange }: GroupFormDialogProps) {
+  const { t } = useTranslation('common')
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        closeLabel={t('actions.close')}
+        className="flex max-h-[85vh] w-[95vw] flex-col gap-4 overflow-hidden sm:max-w-2xl"
+      >
+        <GroupFormDialogBody onOpenChange={onOpenChange} />
       </DialogContent>
     </Dialog>
   )

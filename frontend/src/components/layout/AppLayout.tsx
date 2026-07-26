@@ -1,6 +1,8 @@
+import { Suspense } from 'react'
 import { Outlet } from 'react-router-dom'
 
 import { AppSidebar } from '@/components/layout/AppSidebar'
+import { RouteFallback } from '@/components/layout/RouteFallback'
 import {
   TerminalRuntimeProvider,
 } from '@/terminal/TerminalRuntimeProvider'
@@ -21,7 +23,9 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         <AppSidebar />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 overflow-hidden">
-            <Outlet />
+            <Suspense fallback={<RouteFallback />}>
+              <Outlet />
+            </Suspense>
           </div>
           <TerminalDock />
         </main>

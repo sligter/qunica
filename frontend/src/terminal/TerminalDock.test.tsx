@@ -95,9 +95,10 @@ describe('TerminalDock', () => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps panes from every conversation mounted and exposes accessible controls', () => {
+  it('keeps panes from every conversation mounted and exposes accessible controls', async () => {
     const { rerender } = render(<TerminalDock />)
-    expect(screen.getByTestId('mock-pane-tab-a')).toBeInTheDocument()
+    // Panes load lazily with the xterm runtime; await the first resolution.
+    expect(await screen.findByTestId('mock-pane-tab-a')).toBeInTheDocument()
     expect(screen.getByTestId('mock-pane-tab-b')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New terminal' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Rename terminal' })).toBeInTheDocument()
@@ -118,9 +119,9 @@ describe('TerminalDock', () => {
     expect(separator.className).not.toContain('-translate-y')
   })
 
-  it('keeps pane instances mounted but unfocusable when collapsed or no route is registered', () => {
+  it('keeps pane instances mounted but unfocusable when collapsed or no route is registered', async () => {
     const { rerender } = render(<TerminalDock />)
-    const foregroundPane = screen.getByTestId('mock-pane-tab-a')
+    const foregroundPane = await screen.findByTestId('mock-pane-tab-a')
     const backgroundPane = screen.getByTestId('mock-pane-tab-b')
     expect(foregroundPane.parentElement).not.toHaveAttribute('hidden')
     expect(backgroundPane.parentElement).toHaveAttribute('hidden')
@@ -145,7 +146,7 @@ describe('TerminalDock', () => {
     ['route hidden', 'empty'],
     ['route hidden', 'exited'],
     ['route hidden', 'error'],
-  ] as const)('removes %s %s-state controls from the DOM without unmounting panes', (hiddenBy, state) => {
+  ] as const)('removes %s %s-state controls from the DOM without unmounting panes', async (hiddenBy, state) => {
     const error = Object.assign(new Error('Unable to start PowerShell'), { code: 'terminal.spawn_failed' })
     const activeStateTab = state === 'exited'
       ? { ...firstTab, status: 'exited' as const, exitCode: 7 }
@@ -161,7 +162,7 @@ describe('TerminalDock', () => {
         }
 
     const { rerender } = render(<TerminalDock />)
-    const pane = screen.getByTestId(state === 'empty' ? 'mock-pane-tab-b' : 'mock-pane-tab-a')
+    const pane = await screen.findByTestId(state === 'empty' ? 'mock-pane-tab-b' : 'mock-pane-tab-a')
 
     if (state === 'empty') {
       expect(screen.getAllByRole('button', { name: 'New terminal' }).length).toBeGreaterThan(0)
@@ -240,7 +241,7 @@ describe('TerminalDock', () => {
     ['pathRequired', 'error', 'absolute directory', /Unable to start the terminal/i],
   ] as const)(
     'prioritizes the %s unavailable state over an existing %s tab',
-    (availability, status, unavailableText, hiddenStatusText) => {
+    async (availability, status, unavailableText, hiddenStatusText) => {
       const error = Object.assign(new Error('Unable to start PowerShell'), { code: 'terminal.spawn_failed' })
       const stateTab: TerminalRuntimeTab = {
         ...firstTab,
@@ -256,7 +257,7 @@ describe('TerminalDock', () => {
       }
 
       const { rerender } = render(<TerminalDock />)
-      const pane = screen.getByTestId('mock-pane-tab-a')
+      const pane = await screen.findByTestId('mock-pane-tab-a')
       expect(pane.parentElement).not.toHaveAttribute('hidden')
 
       runtime = {
