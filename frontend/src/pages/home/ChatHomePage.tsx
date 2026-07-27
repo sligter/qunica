@@ -9,6 +9,7 @@ import { useDirectChats } from '@/hooks/useDirectChats'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { SectionHeading } from '@/components/ui/section'
 
 // Shares the chunk the sidebar's New group button loads; neither pays for it
 // until someone actually opens the create-group form.
@@ -60,18 +61,20 @@ export function ChatHomePage() {
       ) : null}
       <DirectChatPickerDialog open={directDialogOpen} onOpenChange={setDirectDialogOpen} />
       <div className="flex w-full max-w-xl flex-col items-center gap-6">
-        <h1 className="text-center font-serif text-4xl font-semibold tracking-tight">
-          AG Swarmer
-        </h1>
-        <p className="text-center text-sm text-muted-foreground">
-          {t('groups:homeSubtitle')}
-        </p>
+        <div className="flex flex-col items-center gap-2">
+          <h1 className="text-center font-serif text-4xl font-semibold tracking-tight">
+            AG Swarmer
+          </h1>
+          <p className="max-w-md text-center text-sm leading-relaxed text-muted-foreground">
+            {t('groups:homeSubtitle')}
+          </p>
+        </div>
         <div className="flex flex-wrap justify-center gap-2">
-          <Button size="lg" className="gap-2 rounded-lg" onClick={() => setDirectDialogOpen(true)}>
+          <Button size="lg" onClick={() => setDirectDialogOpen(true)}>
             <MessageSquarePlus className="h-4 w-4" />
             {t('navigation:newDirectChat')}
           </Button>
-          <Button size="lg" variant="outline" className="gap-2 rounded-lg" onClick={() => setDialogOpen(true)}>
+          <Button size="lg" variant="outline" onClick={() => setDialogOpen(true)}>
             <MessageSquarePlus className="h-4 w-4" />
             {t('navigation:newGroup')}
           </Button>
@@ -85,10 +88,8 @@ export function ChatHomePage() {
         )}
         {recent.length > 0 && (
           <div className="w-full">
-            <p className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              {t('groups:recent')}
-            </p>
-            <ul className="space-y-1.5">
+            <SectionHeading title={t('groups:recent')} />
+            <ul className="space-y-1.5 pt-3">
               {recent.map((conversation) => (
                 <li key={`${conversation.kind}:${conversation.id}`}>
                   <Link

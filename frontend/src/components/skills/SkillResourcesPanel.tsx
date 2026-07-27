@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Section } from '@/components/ui/section'
 import { Separator } from '@/components/ui/separator'
 import {
   useSkillResource,
@@ -72,28 +73,23 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
 
   if (!skill.files || skill.files.length === 0) {
     return (
-      <section className="space-y-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          {t('resources.title')}
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          {t('resources.empty')}
-        </p>
-      </section>
+      <Section title={t('resources.title')} as="h3">
+        <p className="text-sm text-muted-foreground">{t('resources.empty')}</p>
+      </Section>
     )
   }
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          {t('resources.title')}
-        </h3>
+    <Section
+      title={t('resources.title')}
+      as="h3"
+      aside={
         <Badge variant="outline" className="text-[10px]">
           {t('resources.file', { count: skill.files.length })}
         </Badge>
-      </div>
-
+      }
+      contentClassName="space-y-3"
+    >
       {resources.error && (
         <p className="text-xs text-destructive">
           {t('resources.metadataError')}
@@ -101,7 +97,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
       )}
 
       <div className="grid min-h-72 gap-3 md:grid-cols-[minmax(0,240px),minmax(0,1fr)]">
-        <div className="overflow-hidden rounded-md border border-border">
+        <div className="overflow-hidden rounded-md border border-border bg-card">
           <div className="max-h-80 overflow-y-auto p-1">
             {resourceRows.map((file) => (
               <button
@@ -126,7 +122,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
           </div>
         </div>
 
-        <div className="min-w-0 rounded-md border border-border p-3">
+        <div className="min-w-0 rounded-md border border-border bg-card p-3">
           {!selectedInfo && (
             <p className="text-sm text-muted-foreground">{t('resources.select')}</p>
           )}
@@ -186,7 +182,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
           )}
         </div>
       </div>
-    </section>
+    </Section>
   )
 }
 

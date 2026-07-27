@@ -207,7 +207,6 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
       <SettingsSection
         title={t('settings.basic')}
         description={t('settings.basicDescription')}
-        className="max-w-4xl"
         aside={<div className="flex items-center gap-2"><span className="hidden text-xs text-muted-foreground sm:inline">{basicsDirty ? t('settings.unsaved') : t('settings.saved')}</span>
           <Button
             size="sm"
@@ -223,7 +222,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             id="gs-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="max-w-2xl"
+            className="w-full"
           />
         </SettingsRow>
 
@@ -239,7 +238,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             rows={5}
             value={announcement}
             onChange={(e) => setAnnouncement(e.target.value)}
-            className="max-w-4xl resize-y"
+            className="w-full resize-y"
           />
         </SettingsRow>
 
@@ -249,7 +248,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
           stacked
           className="py-5"
         >
-          <div className="max-w-3xl">
+          <div className="w-full">
             <WorkspaceField
               variant="compact"
               value={selectedWorkspaceId}
@@ -295,7 +294,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             value={communicationModeValue}
             onChange={(event) => onCommunicationModeChange(event.target.value)}
             disabled={update.isPending}
-            className="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           >
             {!isCommunicationMode(communicationModeValue) ? (
               <option value={communicationModeValue}>{communicationModeValue}</option>
@@ -348,7 +347,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             value={proactiveReplyMultiplier}
             onChange={(e) => setMinimumProactiveReplyMultiplier(e.target.value)}
             disabled={!proactiveMode}
-            className="w-20"
+            className="w-24"
           />
         </SettingsRow>
 
@@ -380,7 +379,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             value={freeMentionMaxDispatches}
             onChange={(e) => setMinimumFreeMentionMaxDispatches(e.target.value)}
             disabled={!allowFreeMention}
-            className="w-20"
+            className="w-24"
           />
         </SettingsRow>
 

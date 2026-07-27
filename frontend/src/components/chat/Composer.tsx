@@ -156,7 +156,7 @@ function PendingAttachmentRow({
         <img src={previewUrl} alt="" className="h-7 w-7 rounded object-cover" />
       </button>
     ) : isImage ? <Image className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
-    <div className="min-w-0 flex-1"><div className="truncate">{details.name}</div><div className="truncate text-[11px] text-muted-foreground">{details.mime || t('attachments.unknownType')} · {formatSize(details.size)}</div></div>
+    <div className="min-w-0 flex-1"><div className="truncate">{details.name}</div><div className="truncate text-2xs text-muted-foreground">{details.mime || t('attachments.unknownType')} · {formatSize(details.size)}</div></div>
     <span className={cn('shrink-0 text-muted-foreground', attachment.kind === 'upload' && attachment.status === 'failed' && 'text-destructive')}>{attachment.kind === 'workspace' ? t('attachments.workspace') : attachment.status === 'failed' ? t('attachments.failed') : attachment.status === 'uploading' ? t('attachments.uploading') : t('attachments.uploaded')}</span>
     {attachment.kind === 'upload' && attachment.status === 'failed' ? <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRetry} disabled={retryDisabled} aria-label={t('attachments.retryNamed', { name: details.name })} title={t('attachments.retry')}><RotateCw className="h-3.5 w-3.5" /></Button> : null}
     <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onRemove} aria-label={t('attachments.removeNamed', { name: details.name })} title={t('attachments.remove')}><X className="h-3.5 w-3.5" /></Button>
@@ -770,7 +770,7 @@ export function Composer({
             </Button>
             {allowMentions && groupAgents.length > 0 ? (
               <div className="relative min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-1 px-1 text-[11px] text-muted-foreground">
+                <div className="flex min-w-0 items-center gap-1 px-1 text-2xs text-muted-foreground">
                   {groupAgents.slice(0, 3).map((agent) => (
                     <span key={agent.id} className="truncate whitespace-nowrap">
                       @{agent.display_name}
@@ -781,7 +781,7 @@ export function Composer({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-6 shrink-0 gap-0.5 px-1 text-[11px]"
+                      className="h-6 shrink-0 gap-0.5 px-1 text-2xs"
                       onClick={() => setAgentSummaryOpen((open) => !open)}
                       aria-expanded={agentSummaryOpen}
                       aria-label={t('composer.showMore', { count: groupAgents.length - 3 })}
@@ -810,7 +810,7 @@ export function Composer({
                 ) : null}
               </div>
             ) : hint ? (
-              <p className="min-w-0 flex-1 truncate px-1 text-[11px] text-muted-foreground">
+              <p className="min-w-0 flex-1 truncate px-1 text-2xs text-muted-foreground">
                 {hint}
               </p>
             ) : (

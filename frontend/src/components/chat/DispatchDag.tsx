@@ -177,7 +177,7 @@ function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) 
   const { t } = useTranslation('chat')
   if (!artifact) return null
   return (
-    <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-t border-border pt-2 text-[11px]">
+    <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-t border-border pt-2 text-2xs">
       {artifact.mode ? <><dt className="text-muted-foreground">{t('trace.mode')}</dt><dd>{hasOwnKey(actionKeys, artifact.mode) ? t(actionKeys[artifact.mode]) : artifact.mode}</dd></> : null}
       {artifact.target_agent_id ? <><dt className="text-muted-foreground">{t('trace.target')}</dt><dd className="truncate" title={artifact.target_agent_id}>{artifact.target_agent_id}</dd></> : null}
       {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">{t('trace.child')}</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
@@ -212,7 +212,7 @@ function DagRow({ node, depth }: FlatDagNode) {
             {statusLabel(dispatch.status, t)}
           </span>
         </div>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-2xs text-muted-foreground">
           <span>{reasonLabel(dispatch.selection_reason, t)}</span>
           <span>{t('trace.hop', { count: formatNumber(dispatch.hop, language) })}</span>
           <span>{t('trace.tokenCount', { count: formatNumber(dispatch.total_tokens, language) })}</span>
@@ -223,7 +223,7 @@ function DagRow({ node, depth }: FlatDagNode) {
             </span>
           ) : null}
         </div>
-        {dispatch.failure_code ? <p className="mt-1 break-words text-[11px] text-destructive">{t('trace.failureDetail', { message: dispatch.failure_code })}</p> : null}
+        {dispatch.failure_code ? <p className="mt-1 break-words text-2xs text-destructive">{t('trace.failureDetail', { message: dispatch.failure_code })}</p> : null}
         <ArtifactDetails artifact={dispatch.artifact} />
       </div>
     </li>

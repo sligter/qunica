@@ -4,8 +4,11 @@ import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
+import { PageState } from '@/components/ui/page-state'
+import { Panel } from '@/components/ui/panel'
 import { useAddAgentToGroup } from '@/hooks/useAddAgentToGroup'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroup } from '@/hooks/useGroups'
@@ -125,8 +128,8 @@ function AgentWorkspaceAccess({ groupId, agent, onError }: { groupId: string; ag
         {workspaceModes.map((value) => <option key={value} value={value}>{t(workspaceModeKeys[value])}</option>)}
       </select>
       <p className="text-xs text-muted-foreground">{t(workspaceModeHintKeys[mode])}</p>
-      <p className="truncate text-[11px] text-muted-foreground" title={primary ?? undefined}>{t('members.workspacePrimary', { location: primary ?? notConfigured })}</p>
-      {mount ? <p className="truncate text-[11px] text-muted-foreground" title={mount}>{t('members.workspaceMount', { location: mount })}</p> : null}
+      <p className="truncate text-2xs text-muted-foreground" title={primary ?? undefined}>{t('members.workspacePrimary', { location: primary ?? notConfigured })}</p>
+      {mount ? <p className="truncate text-2xs text-muted-foreground" title={mount}>{t('members.workspaceMount', { location: mount })}</p> : null}
     </div>
   )
 }
@@ -210,7 +213,8 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
     : null
 
   return (
-    <section className="space-y-4 rounded-lg border border-border bg-card p-4">
+    <Card asChild className="space-y-4 p-4">
+      <section>
       <div className="flex items-start gap-3">
         <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>
           {agent ? <Bot className="h-5 w-5" /> : <UserRound className="h-5 w-5" />}
@@ -238,7 +242,8 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
       </div>
       {errorText ? <p className="text-xs text-destructive" role="alert">{errorText}</p> : null}
       <ConfirmDialog open={confirm} onOpenChange={setConfirm} title={t('members.removeTitle', { name: entryName(entry) })} description={t('members.removeDescription')} confirmLabel={t('members.remove')} destructive onConfirm={remove} />
-    </section>
+      </section>
+    </Card>
   )
 }
 
@@ -296,15 +301,16 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
   ]
 
   if (group.error || humans.error || groupAgents.error) {
-    return <div className="text-sm text-destructive">{t('members.loadError')}</div>
+    return <PageState inset variant="error" className="px-0" title={t('members.loadError')} />
   }
   if (group.isLoading || humans.isLoading || groupAgents.isLoading) {
-    return <div className="text-sm text-muted-foreground">{t('members.loading')}</div>
+    return <PageState inset variant="loading" className="px-0" title={t('members.loading')} />
   }
 
   return (
     <div className="grid min-h-[34rem] w-full grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <section className="flex min-h-0 flex-col rounded-lg border border-border bg-card">
+      <Card asChild className="flex min-h-0 flex-col">
+        <section>
         <div className="space-y-3 border-b border-border p-4">
           <div>
             <h2 className="text-sm font-semibold">{t('members.title')}</h2>
@@ -327,16 +333,22 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
           {visible.map((entry) => <EntryRow key={entryKey(entry)} entry={entry} active={entryKey(entry) === selected} mode={mode} onSelect={() => setSelected(entryKey(entry))} />)}
           {visible.length === 0 ? <li className="p-6 text-center text-sm text-muted-foreground">{t('members.noMatches')}</li> : null}
         </ul>
-      </section>
+        </section>
+      </Card>
       <aside className="space-y-4">
         {current ? (
           <Details entry={current} groupId={groupId} mode={mode} onRemoved={() => setSelected(null)} />
         ) : (
           <>
-            <section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">{t('members.details')}</h2><p className="mt-1 text-xs text-muted-foreground">{t('members.detailsHint')}</p></section>
-            <section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">{t('members.topology')}</h2><p className="mt-1 text-xs text-muted-foreground">{t('members.currentMode', { mode: isCommunicationMode(mode as string) ? t(communicationModeKeys[mode]) : (mode as string) })}</p></section>
-            <section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">{t('members.addHuman')}</h2><div className="relative mt-3"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-9 pl-8" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder={t('members.searchUsers')} /></div><ul className="mt-2 max-h-48 overflow-y-auto">{(userCandidates.data ?? []).filter((user) => !(humans.data ?? []).some((member) => member.user_id === user.id)).map((user) => <AddUser key={user.id} user={user} groupId={groupId} />)}</ul></section>
-            <section className="rounded-lg border border-border bg-card p-4"><h2 className="text-sm font-semibold">{t('members.addAgent')}</h2><ul className="mt-2 max-h-56 overflow-y-auto">{availableAgents.map((agent) => <AddAgent key={agent.id} agent={agent} groupId={groupId} />)}{availableAgents.length === 0 ? <li className="py-2 text-xs text-muted-foreground">{t('members.noAgents')}</li> : null}</ul></section>
+            <Panel title={t('members.details')} description={t('members.detailsHint')} />
+            <Panel title={t('members.topology')} description={t('members.currentMode', { mode: isCommunicationMode(mode as string) ? t(communicationModeKeys[mode]) : (mode as string) })} />
+            <Panel title={t('members.addHuman')}>
+              <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-9 pl-8" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder={t('members.searchUsers')} /></div>
+              <ul className="mt-2 max-h-48 overflow-y-auto">{(userCandidates.data ?? []).filter((user) => !(humans.data ?? []).some((member) => member.user_id === user.id)).map((user) => <AddUser key={user.id} user={user} groupId={groupId} />)}</ul>
+            </Panel>
+            <Panel title={t('members.addAgent')}>
+              <ul className="max-h-56 overflow-y-auto">{availableAgents.map((agent) => <AddAgent key={agent.id} agent={agent} groupId={groupId} />)}{availableAgents.length === 0 ? <li className="py-2 text-xs text-muted-foreground">{t('members.noAgents')}</li> : null}</ul>
+            </Panel>
           </>
         )}
       </aside>

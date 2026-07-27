@@ -68,6 +68,14 @@ describe('AppLayout', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  it('clips the app shell so nothing can grow the document', async () => {
+    const { container } = await renderAppLayout()
+
+    // The shell fills its host and clips: any surface that overflows scrolls in
+    // its own container rather than turning the document into a scroller.
+    expect(container.firstElementChild).toHaveClass('h-full', 'min-h-0', 'overflow-hidden')
+  })
+
   it('renders English navigation labels', async () => {
     await renderAppLayout('en-US')
 

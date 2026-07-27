@@ -6,9 +6,9 @@ use ag_swarmer_backend::{
         group_scheduler::{
             mentions::{scan_visible_mentions, MentionTarget},
             next_decision, ActionKind, BudgetLimits, DispatchOutput, DispatchStatus,
-            FinishDispatch, NewDispatch, NewTurn, SchedulerCandidate, SchedulerDecision,
-            SchedulerModelError, SchedulerStore, SchedulerStoreError, SelectionReason, TurnBudget,
-            TurnReason, TurnStatus,
+            FinishDispatch, NewDispatch, NewTurn, SchedulerDecision, SchedulerModelError,
+            SchedulerStore, SchedulerStoreError, SelectionReason, TurnBudget, TurnReason,
+            TurnStatus,
         },
         sequence::NewMessage,
         StreamEvent, StreamEventKind,
@@ -24,30 +24,18 @@ const NOW: &str = "2026-07-11T00:00:00Z";
 #[test]
 fn moderator_decision_requires_two_legal_candidates() {
     let budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
-    let one_candidate = [SchedulerCandidate {
-        agent_id: "a".to_owned(),
-        eligible: true,
-    }];
+    let one_candidate = ["a".to_owned()];
     assert!(matches!(
-        next_decision(&budget, None, &[], None, &one_candidate, 0, true),
+        next_decision(&budget, None, &[], &[], &one_candidate, 0, true),
         SchedulerDecision::Dispatch(ref dispatch)
             if dispatch.target_agent_id == "a"
                 && dispatch.selection_reason == SelectionReason::DeterministicOrder
     ));
 
-    let candidates = [
-        SchedulerCandidate {
-            agent_id: "a".to_owned(),
-            eligible: true,
-        },
-        SchedulerCandidate {
-            agent_id: "b".to_owned(),
-            eligible: true,
-        },
-    ];
+    let candidates = ["a".to_owned(), "b".to_owned()];
 
     assert!(matches!(
-        next_decision(&budget, None, &[], None, &candidates, 0, true),
+        next_decision(&budget, None, &[], &[], &candidates, 0, true),
         SchedulerDecision::RequestModerator
     ));
 }
@@ -349,6 +337,60 @@ async fn store_enforces_one_active_turn_per_thread() {
         .await
         .unwrap();
     assert_eq!(second.id, "turn-2");
+}
+
+#[tokio::test]
+async fn store_supersede_and_create_replaces_the_active_turn_atomically() {
+    let fixture = Fixture::new().await;
+    let (nothing_superseded, first) = fixture
+        .store
+        .supersede_and_create_turn(fixture.turn("turn-1"))
+        .await
+        .unwrap();
+    assert!(nothing_superseded.is_none());
+    assert_eq!(first.status, TurnStatus::Pending);
+
+    let (superseded, second) = fixture
+        .store
+        .supersede_and_create_turn(fixture.turn("turn-2"))
+        .await
+        .unwrap();
+    let superseded = superseded.expect("the first turn is superseded, not rejected");
+    assert_eq!(superseded.id, "turn-1");
+    assert_eq!(superseded.status, TurnStatus::Superseded);
+    assert_eq!(superseded.termination_reason, Some(TurnReason::Superseded));
+    assert_eq!(second.id, "turn-2");
+    assert_eq!(second.status, TurnStatus::Pending);
+}
+
+#[tokio::test]
+async fn store_supersede_and_create_leaves_no_turn_behind_when_the_insert_fails() {
+    let fixture = Fixture::new().await;
+    fixture
+        .store
+        .supersede_and_create_turn(fixture.turn("turn-1"))
+        .await
+        .unwrap();
+
+    let mut invalid = fixture.turn("turn-2");
+    invalid.trigger_message_id = Some("missing-message".to_owned());
+    assert!(fixture
+        .store
+        .supersede_and_create_turn(invalid)
+        .await
+        .is_err());
+
+    // The rolled-back transaction must not have superseded the live turn.
+    let status: String = sqlx::query_scalar("SELECT status FROM group_turns WHERE id = 'turn-1'")
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, TurnStatus::Pending.as_str());
+    let turn_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_turns")
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+    assert_eq!(turn_count, 1);
 }
 
 #[tokio::test]

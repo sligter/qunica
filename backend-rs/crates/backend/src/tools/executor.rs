@@ -7,22 +7,129 @@
 //! internal [`ToolError::Io`] is collapsed to a generic message so no local path
 //! leaks back to the model.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use serde_json::Value;
+
+use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
     bash, controlled, http, MountedSkill, ToolError, ToolResult, ToolStatus, WorkspaceMount,
     WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
-/// Executes workspace and network tools by name with JSON arguments.
-#[derive(Debug, Clone)]
+/// The MCP tools mounted into an executor, with the servers needed to call them.
+///
+/// Bindings are resolved once when the agent's invocation context is built, so
+/// dispatch is a lookup rather than a re-listing round trip per tool call. The
+/// servers that could not be reached are carried alongside, because the system
+/// prompt has to say why an expected server contributed nothing.
+#[derive(Debug, Clone, Default)]
+pub struct McpMount {
+    /// Exposed tool name → binding.
+    bindings: HashMap<String, McpToolBinding>,
+    /// Server id → the config to connect with.
+    servers: HashMap<String, McpServerConfig>,
+    /// `(server name, reason)` for each server that failed to list its tools.
+    failures: Vec<(String, String)>,
+}
+
+impl McpMount {
+    /// Build a mount from resolved bindings, the configs they address, and the
+    /// servers that could not be listed.
+    ///
+    /// A binding whose server config is absent is dropped: without the config
+    /// there is no way to reach the server, and advertising the tool anyway
+    /// would give the model something it can only fail to call.
+    pub fn new(
+        bindings: Vec<McpToolBinding>,
+        servers: Vec<McpServerConfig>,
+        failures: Vec<(String, String)>,
+    ) -> Self {
+        let servers: HashMap<String, McpServerConfig> = servers
+            .into_iter()
+            .map(|config| (config.id.clone(), config))
+            .collect();
+        let mut failures = failures;
+        let mut resolved: HashMap<String, McpToolBinding> = HashMap::new();
+        for binding in bindings {
+            if !servers.contains_key(&binding.server_id) {
+                continue;
+            }
+            // Two servers whose names slugify identically ("Notion (work)" and
+            // "Notion-work" both become `notion_work`) produce the same exposed
+            // name. Collecting into a map would let the later one overwrite the
+            // earlier, so the model would call one server and silently reach the
+            // other. Refuse the collision instead, and say so in the prompt.
+            if let Some(existing) = resolved.get(&binding.exposed_name) {
+                if existing.server_id != binding.server_id {
+                    failures.push((
+                        binding.server_name.clone(),
+                        format!(
+                            "its tool names collide with '{}' — rename one of them so their \
+                             tool prefixes differ",
+                            existing.server_name
+                        ),
+                    ));
+                }
+                continue;
+            }
+            resolved.insert(binding.exposed_name.clone(), binding);
+        }
+        // One unreachable server should produce one line, not one per tool.
+        failures.dedup();
+        Self {
+            bindings: resolved,
+            servers,
+            failures,
+        }
+    }
+
+    /// Whether this mount contributes nothing at all — no tools and no failure
+    /// worth reporting.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty() && self.failures.is_empty()
+    }
+
+    /// The mounted bindings, for building provider tool definitions.
+    pub fn bindings(&self) -> impl Iterator<Item = &McpToolBinding> {
+        self.bindings.values()
+    }
+
+    /// The servers that failed to list their tools, as `(name, reason)`.
+    pub fn failures(&self) -> &[(String, String)] {
+        &self.failures
+    }
+}
+
+/// Executes workspace, network and MCP tools by name with JSON arguments.
+#[derive(Clone)]
 pub struct ToolExecutor {
     /// The bound workspace, or `None` when no local workspace is configured.
     workspace: Option<WorkspaceTools>,
     /// Skill metadata/instructions mounted for the non-executing SkillManager.
     mounted_skills: Vec<MountedSkill>,
+    /// The MCP tools this agent may call.
+    mcp_mount: McpMount,
+    /// Shared connection pool, absent when no MCP tools are mounted.
+    mcp_manager: Option<Arc<McpManager>>,
+}
+
+// `McpManager` holds live connections and so cannot derive `Debug`; the rest of
+// the executor is worth printing, and the manager reduces to its presence.
+impl std::fmt::Debug for ToolExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolExecutor")
+            .field("workspace", &self.workspace)
+            .field("mounted_skills", &self.mounted_skills)
+            .field("mcp_mount", &self.mcp_mount)
+            .field("mcp_connected", &self.mcp_manager.is_some())
+            .finish()
+    }
 }
 
 impl ToolExecutor {
@@ -56,6 +163,8 @@ impl ToolExecutor {
         Ok(Self {
             workspace,
             mounted_skills,
+            mcp_mount: McpMount::default(),
+            mcp_manager: None,
         })
     }
 
@@ -69,7 +178,24 @@ impl ToolExecutor {
         Self {
             workspace: None,
             mounted_skills,
+            mcp_mount: McpMount::default(),
+            mcp_manager: None,
         }
+    }
+
+    /// Mount MCP tools, routed through `manager`'s connection pool.
+    ///
+    /// Consuming and returning `self` keeps the existing constructors unchanged
+    /// for every caller that does not use MCP.
+    pub fn with_mcp(mut self, manager: Arc<McpManager>, mount: McpMount) -> Self {
+        self.mcp_manager = Some(manager);
+        self.mcp_mount = mount;
+        self
+    }
+
+    /// The MCP tools mounted into this executor.
+    pub fn mcp_mount(&self) -> &McpMount {
+        &self.mcp_mount
     }
 
     /// The bound primary workspace root, if any.
@@ -144,7 +270,50 @@ impl ToolExecutor {
             }
             "TodoWrite" => Ok(controlled::todo_write(arg_todos(&args))),
             "ExitPlanMode" => Ok(controlled::exit_plan_mode(arg_str(&args, "plan")?)),
+            name if is_mcp_tool_name(name) => Ok(self.run_mcp_tool(name, args).await),
             _ => Ok(unknown_tool(name)),
+        }
+    }
+
+    /// Call a mounted MCP tool.
+    ///
+    /// Every outcome is a [`ToolResult`], never an `Err`: a server that is down,
+    /// slow, or rejecting arguments is something the model should read and react
+    /// to, exactly like a failed file read, rather than an error that aborts the
+    /// agent's turn.
+    async fn run_mcp_tool(&self, name: &str, args: Value) -> ToolResult {
+        let Some(manager) = self.mcp_manager.as_ref() else {
+            return ToolResult {
+                status: ToolStatus::SetupRequired,
+                output: format!("Tool '{name}' needs an MCP server, but none is configured."),
+            };
+        };
+        let Some(binding) = self.mcp_mount.bindings.get(name) else {
+            return unknown_tool(name);
+        };
+        let Some(config) = self.mcp_mount.servers.get(&binding.server_id) else {
+            return ToolResult {
+                status: ToolStatus::SetupRequired,
+                output: format!(
+                    "MCP server '{}' is no longer configured, so '{name}' cannot run.",
+                    binding.server_name
+                ),
+            };
+        };
+
+        match manager.call_tool(config, &binding.tool_name, &args).await {
+            Ok(outcome) => ToolResult {
+                status: if outcome.is_error {
+                    ToolStatus::Failed
+                } else {
+                    ToolStatus::Completed
+                },
+                output: outcome.text,
+            },
+            Err(error) => ToolResult {
+                status: ToolStatus::Failed,
+                output: format!("MCP server '{}' failed: {error}", binding.server_name),
+            },
         }
     }
 

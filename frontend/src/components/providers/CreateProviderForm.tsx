@@ -148,7 +148,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
                 )}
               >
                 <span className="text-sm font-medium">{t(`kinds.${key}.label`)}</span>
-                <span className="text-[11px] leading-snug text-muted-foreground">
+                <span className="text-2xs leading-snug text-muted-foreground">
                   {t(`kinds.${key}.hint`)}
                 </span>
               </button>
@@ -164,7 +164,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
           placeholder={baseUrlPlaceholder(kind)}
           {...form.register('base_url')}
         />
-        <p className="text-[11px] text-muted-foreground">{t(`kinds.${KIND_KEYS[kind]}.baseHint`)}</p>
+        <p className="text-2xs text-muted-foreground">{t(`kinds.${KIND_KEYS[kind]}.baseHint`)}</p>
       </div>
 
       <div className="space-y-1.5">

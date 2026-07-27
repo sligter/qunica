@@ -9,8 +9,8 @@ pub mod topology;
 
 pub use model::{
     ActionKind, DispatchOutput, DispatchSnapshot, FinishDispatch, NewDispatch, NewTurn,
-    SchedulerAction, SchedulerCandidate, SchedulerDecision, SchedulerDispatch, SchedulerModelError,
-    SelectionReason, TurnReason, TurnSnapshot, TurnTrace,
+    SchedulerDecision, SchedulerDispatch, SchedulerModelError, SelectionReason, TurnReason,
+    TurnSnapshot, TurnTrace,
 };
 pub use moderator::{
     select_with_moderator, ModeratorAttempt, ModeratorCandidate, ModeratorConfig, ModeratorFailure,
@@ -26,12 +26,18 @@ pub use topology::{allows_agent_edge, validate_topology, TopologyError, Topology
 pub use budget::{BudgetLimits, BudgetRejection, TurnBudget};
 pub use cancellation::{ActiveTurn, ActiveTurnRegistry, TurnCancellation};
 
+/// Pick who speaks next, or report why the turn is over.
+///
+/// Priority is user `@mentions`, then the agent `@mentions` queued by the last
+/// speaker, then the group's deterministic speaking order. Every path draws from
+/// the same budget-filtered candidate set, so enabling the moderator changes
+/// *who* is chosen, never *whether* anyone is.
 pub fn next_decision(
     budget: &TurnBudget,
     previous_speaker: Option<&str>,
     user_mentions: &[String],
-    action: Option<&SchedulerAction>,
-    deterministic_candidates: &[SchedulerCandidate],
+    agent_mentions: &[String],
+    deterministic_candidates: &[String],
     hop: u32,
     moderator_enabled: bool,
 ) -> SchedulerDecision {
@@ -43,100 +49,26 @@ pub fn next_decision(
             hop,
         });
     }
-    if let Some(action) = action {
-        match action {
-            SchedulerAction::Call {
-                target_agent_id, ..
-            } => {
-                return action_decision(
-                    budget,
-                    previous_speaker,
-                    target_agent_id,
-                    SelectionReason::AgentCall,
-                    ActionKind::Call,
-                    hop,
-                )
-            }
-            SchedulerAction::Handoff {
-                target_agent_id, ..
-            } => {
-                return action_decision(
-                    budget,
-                    previous_speaker,
-                    target_agent_id,
-                    SelectionReason::AgentHandoff,
-                    ActionKind::Handoff,
-                    hop,
-                )
-            }
-            SchedulerAction::Speak {
-                mentioned_agent_ids,
-                ..
-            } => {
-                if let Some(target) =
-                    first_eligible(budget, previous_speaker, mentioned_agent_ids, hop)
-                {
-                    return SchedulerDecision::Dispatch(SchedulerDispatch {
-                        target_agent_id: target,
-                        selection_reason: SelectionReason::AgentTextMention,
-                        action_kind: ActionKind::Speak,
-                        hop,
-                    });
-                }
-            }
-            SchedulerAction::Wait { .. } => {
-                return SchedulerDecision::Finish {
-                    status: TurnStatus::WaitingForUser,
-                    reason: TurnReason::WaitingForUser,
-                }
-            }
-            SchedulerAction::Silent => {
-                return SchedulerDecision::Finish {
-                    status: TurnStatus::Silence,
-                    reason: TurnReason::Silence,
-                }
-            }
-        }
-    }
-    if !moderator_enabled {
-        if let Some(target) = deterministic_candidates
-            .iter()
-            .find(|candidate| {
-                candidate.eligible && Some(candidate.agent_id.as_str()) != previous_speaker
-            })
-            .and_then(|candidate| {
-                budget
-                    .check_dispatch(&candidate.agent_id, hop)
-                    .ok()
-                    .map(|_| candidate.agent_id.clone())
-            })
-        {
-            return SchedulerDecision::Dispatch(SchedulerDispatch {
-                target_agent_id: target,
-                selection_reason: SelectionReason::DeterministicOrder,
-                action_kind: ActionKind::Speak,
-                hop,
-            });
-        }
-        return SchedulerDecision::Finish {
-            status: terminal_status(budget),
-            reason: terminal_reason(budget),
-        };
+    if let Some(target) = first_eligible(budget, previous_speaker, agent_mentions, hop) {
+        return SchedulerDecision::Dispatch(SchedulerDispatch {
+            target_agent_id: target,
+            selection_reason: SelectionReason::AgentTextMention,
+            action_kind: ActionKind::Speak,
+            hop,
+        });
     }
 
-    let legal_candidates: Vec<&SchedulerCandidate> = deterministic_candidates
+    let legal_candidates: Vec<&String> = deterministic_candidates
         .iter()
-        .filter(|candidate| {
-            candidate.eligible && Some(candidate.agent_id.as_str()) != previous_speaker
-        })
-        .filter(|candidate| budget.check_dispatch(&candidate.agent_id, hop).is_ok())
+        .filter(|agent_id| Some(agent_id.as_str()) != previous_speaker)
+        .filter(|agent_id| budget.check_dispatch(agent_id, hop).is_ok())
         .collect();
     if moderator_enabled && legal_candidates.len() >= 2 {
         return match budget.check_moderator() {
             Ok(()) => SchedulerDecision::RequestModerator,
             Err(BudgetRejection::ModeratorCalls) => {
                 SchedulerDecision::Dispatch(SchedulerDispatch {
-                    target_agent_id: legal_candidates[0].agent_id.clone(),
+                    target_agent_id: legal_candidates[0].clone(),
                     selection_reason: SelectionReason::ModeratorFallback,
                     action_kind: ActionKind::Speak,
                     hop,
@@ -157,7 +89,7 @@ pub fn next_decision(
     }
     if let Some(target) = legal_candidates.first() {
         return SchedulerDecision::Dispatch(SchedulerDispatch {
-            target_agent_id: target.agent_id.clone(),
+            target_agent_id: (*target).clone(),
             selection_reason: SelectionReason::DeterministicOrder,
             action_kind: ActionKind::Speak,
             hop,
@@ -184,29 +116,6 @@ fn first_eligible(
         .cloned()
 }
 
-fn action_decision(
-    budget: &TurnBudget,
-    previous_speaker: Option<&str>,
-    target: &str,
-    reason: SelectionReason,
-    action_kind: ActionKind,
-    hop: u32,
-) -> SchedulerDecision {
-    if Some(target) != previous_speaker && budget.check_dispatch(target, hop).is_ok() {
-        SchedulerDecision::Dispatch(SchedulerDispatch {
-            target_agent_id: target.to_owned(),
-            selection_reason: reason,
-            action_kind,
-            hop,
-        })
-    } else {
-        SchedulerDecision::Finish {
-            status: terminal_status(budget),
-            reason: terminal_reason(budget),
-        }
-    }
-}
-
 fn terminal_status(budget: &TurnBudget) -> TurnStatus {
     match budget.check_dispatch("terminal", 0) {
         Err(BudgetRejection::Failures) => TurnStatus::FailureBudgetExhausted,
@@ -227,30 +136,36 @@ fn terminal_reason(budget: &TurnBudget) -> TurnReason {
 mod tests {
     use super::{
         budget::{BudgetLimits, TurnBudget},
-        next_decision, SchedulerAction, SchedulerCandidate, SchedulerDecision, SelectionReason,
+        next_decision, SchedulerDecision, SelectionReason,
     };
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
     #[test]
-    fn scheduler_decision_priority_is_user_then_action_then_deterministic() {
+    fn scheduler_decision_priority_is_user_then_agent_mention_then_deterministic() {
         let budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
-        let candidates = vec![
-            SchedulerCandidate {
-                agent_id: "a".into(),
-                eligible: true,
-            },
-            SchedulerCandidate {
-                agent_id: "b".into(),
-                eligible: true,
-            },
-        ];
-        assert!(
-            matches!(next_decision(&budget, None, &["b".into()], Some(&SchedulerAction::Call { target_agent_id: "a".into(), task: String::new() }), &candidates, 0, false), SchedulerDecision::Dispatch(ref value) if value.target_agent_id == "b" && value.selection_reason == SelectionReason::UserMention)
-        );
-        assert!(
-            matches!(next_decision(&budget, None, &[], Some(&SchedulerAction::Call { target_agent_id: "b".into(), task: String::new() }), &candidates, 0, false), SchedulerDecision::Dispatch(ref value) if value.selection_reason == SelectionReason::AgentCall)
-        );
-        assert!(
-            matches!(next_decision(&budget, Some("a"), &[], None, &candidates, 0, false), SchedulerDecision::Dispatch(ref value) if value.target_agent_id == "b")
-        );
+        let candidates = ids(&["a", "b"]);
+
+        assert!(matches!(
+            next_decision(&budget, None, &ids(&["b"]), &ids(&["a"]), &candidates, 0, false),
+            SchedulerDecision::Dispatch(ref value)
+                if value.target_agent_id == "b"
+                    && value.selection_reason == SelectionReason::UserMention
+        ));
+        assert!(matches!(
+            next_decision(&budget, None, &[], &ids(&["b"]), &candidates, 0, false),
+            SchedulerDecision::Dispatch(ref value)
+                if value.target_agent_id == "b"
+                    && value.selection_reason == SelectionReason::AgentTextMention
+        ));
+        assert!(matches!(
+            next_decision(&budget, Some("a"), &[], &[], &candidates, 0, false),
+            SchedulerDecision::Dispatch(ref value)
+                if value.target_agent_id == "b"
+                    && value.selection_reason == SelectionReason::DeterministicOrder
+        ));
     }
 
     #[test]
@@ -265,13 +180,9 @@ mod tests {
             max_total_tokens: 120_000,
         });
         budget.record_failure();
-        let candidates = vec![SchedulerCandidate {
-            agent_id: "a".into(),
-            eligible: true,
-        }];
 
         assert!(matches!(
-            next_decision(&budget, None, &[], None, &candidates, 0, false),
+            next_decision(&budget, None, &[], &[], &ids(&["a"]), 0, false),
             SchedulerDecision::Finish {
                 status: super::TurnStatus::FailureBudgetExhausted,
                 reason: super::TurnReason::FailureBudgetExhausted,
@@ -280,28 +191,50 @@ mod tests {
     }
 
     #[test]
-    fn disabled_scheduler_keeps_the_first_deterministic_candidate_semantics() {
+    fn deterministic_order_skips_a_candidate_that_is_out_of_per_agent_budget() {
         let mut budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
         for _ in 0..budget.limits().max_steps_per_agent {
             budget.record_dispatch("a");
         }
-        let candidates = vec![
-            SchedulerCandidate {
-                agent_id: "a".into(),
-                eligible: true,
-            },
-            SchedulerCandidate {
-                agent_id: "b".into(),
-                eligible: true,
-            },
-        ];
 
         assert!(matches!(
-            next_decision(&budget, None, &[], None, &candidates, 0, false),
-            SchedulerDecision::Finish {
-                status: super::TurnStatus::Silence,
-                reason: super::TurnReason::Silence,
+            next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, false),
+            SchedulerDecision::Dispatch(ref dispatch)
+                if dispatch.target_agent_id == "b"
+                    && dispatch.selection_reason == SelectionReason::DeterministicOrder
+        ));
+    }
+
+    #[test]
+    fn moderator_toggle_does_not_change_whether_a_candidate_is_reachable() {
+        let mut budget = TurnBudget::new(BudgetLimits::with_auto_steps(3, Some(8)));
+        for _ in 0..budget.limits().max_steps_per_agent {
+            budget.record_dispatch("a");
+        }
+        let candidates = ids(&["a", "b"]);
+
+        // Only "b" is affordable. With two legal candidates the moderator would
+        // arbitrate, but here both paths must land on the same agent.
+        for moderator_enabled in [false, true] {
+            assert!(matches!(
+                next_decision(&budget, None, &[], &[], &candidates, 0, moderator_enabled),
+                SchedulerDecision::Dispatch(ref dispatch) if dispatch.target_agent_id == "b"
+            ));
+        }
+    }
+
+    #[test]
+    fn everyone_out_of_budget_finishes_the_turn() {
+        let mut budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
+        for agent_id in ["a", "b"] {
+            for _ in 0..budget.limits().max_steps_per_agent {
+                budget.record_dispatch(agent_id);
             }
+        }
+
+        assert!(matches!(
+            next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, false),
+            SchedulerDecision::Finish { .. }
         ));
     }
 
@@ -316,19 +249,9 @@ mod tests {
             max_total_failures: 6,
             max_total_tokens: 120_000,
         });
-        let candidates = vec![
-            SchedulerCandidate {
-                agent_id: "a".into(),
-                eligible: true,
-            },
-            SchedulerCandidate {
-                agent_id: "b".into(),
-                eligible: true,
-            },
-        ];
 
         assert!(matches!(
-            next_decision(&budget, None, &[], None, &candidates, 0, true),
+            next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, true),
             SchedulerDecision::Dispatch(ref dispatch)
                 if dispatch.target_agent_id == "a"
                     && dispatch.selection_reason == SelectionReason::ModeratorFallback

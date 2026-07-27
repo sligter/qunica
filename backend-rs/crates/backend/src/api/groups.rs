@@ -2452,7 +2452,7 @@ pub async fn remove_group_agent(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
-    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
 
     let now = now_rfc3339();
@@ -2475,6 +2475,9 @@ pub async fn remove_group_agent(
     .map_err(|_| ApiError::internal("failed to remove group agent"))?;
 
     remove_agent_from_group_lists(&mut tx, &group_id, &agent_id, &now).await?;
+    // Removing the hub or the last leader would leave a topology the runtime
+    // cannot schedule, so the remaining members are re-normalized.
+    normalize_group_agent_topology(&mut tx, &group_id, &group.communication_mode, &now).await?;
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group agent removal"))?;
@@ -2598,6 +2601,29 @@ pub async fn set_group_agent_topology(
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("failed to update group agent topology"))?;
+
+    // Demoting the last leader would leave a hierarchy the runtime cannot
+    // schedule, so it is rejected here rather than silently degraded.
+    if group.communication_mode == "hierarchical" && topology_role.as_deref() != Some("leader") {
+        let leader_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) \
+             FROM group_agents \
+             JOIN agents ON agents.id = group_agents.agent_id \
+             WHERE group_agents.group_id = ? \
+               AND group_agents.status = 'active' \
+               AND agents.status = 'active' \
+               AND group_agents.topology_role = 'leader'",
+        )
+        .bind(&group_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to verify hierarchical topology"))?;
+        if leader_count == 0 {
+            return Err(ApiError::invalid_input(
+                "hierarchical mode needs at least one leader",
+            ));
+        }
+    }
 
     touch_group(&mut tx, &group_id, &now).await?;
     tx.commit()
@@ -3271,7 +3297,29 @@ async fn new_agent_topology(
             };
             Ok((role, None))
         }
-        "hierarchical" => Ok((Some("worker".to_string()), None)),
+        "hierarchical" => {
+            // The runtime rejects a hierarchy with no leader, so the first agent
+            // in the group takes that role.
+            let leader_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) \
+                 FROM group_agents \
+                 JOIN agents ON agents.id = group_agents.agent_id \
+                 WHERE group_agents.group_id = ? \
+                   AND group_agents.status = 'active' \
+                   AND agents.status = 'active' \
+                   AND group_agents.topology_role = 'leader'",
+            )
+            .bind(group_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to load hierarchical topology state"))?;
+            let role = if leader_count == 0 {
+                "leader"
+            } else {
+                "worker"
+            };
+            Ok((Some(role.to_string()), None))
+        }
         "ring" => {
             let max_order: Option<i64> = sqlx::query_scalar(
                 "SELECT MAX(group_agents.speaking_order) \
@@ -3567,11 +3615,19 @@ fn star_topology_updates(
 fn hierarchical_topology_updates(
     rows: &[ActiveGroupAgentRow],
 ) -> Vec<(String, Option<String>, Option<i64>)> {
+    // A hierarchy with no leader is rejected by the runtime, so when nobody
+    // carries the role the earliest-joined agent is promoted.
+    let implicit_leader_agent_id = rows
+        .iter()
+        .all(|row| row.topology_role.as_deref() != Some("leader"))
+        .then(|| rows.first().map(|row| row.agent_id.as_str()))
+        .flatten();
+
     rows.iter()
         .map(|row| {
             let role = match row.topology_role.as_deref() {
                 Some("leader") => "leader",
-                Some("worker") => "worker",
+                _ if implicit_leader_agent_id == Some(row.agent_id.as_str()) => "leader",
                 _ => "worker",
             };
             (row.agent_id.clone(), Some(role.to_string()), None)
@@ -4289,9 +4345,13 @@ fn normalize_description(raw: Option<&str>) -> Option<String> {
         .map(|d| d.to_string())
 }
 
+/// Seed the topology fields for the `position`-th agent added while creating a
+/// group. The first agent takes the role every mode needs at least one of, so a
+/// freshly created group always has a valid topology.
 fn initial_agent_topology(mode: &str, position: usize) -> (Option<&'static str>, Option<i64>) {
     match mode {
         "star" if position == 0 => (Some("hub"), None),
+        "hierarchical" if position == 0 => (Some("leader"), None),
         "hierarchical" => (Some("worker"), None),
         "ring" => (None, Some(position as i64 + 1)),
         _ => (None, None),

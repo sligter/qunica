@@ -7,6 +7,7 @@ pub mod group_turns;
 pub mod groups;
 pub mod health;
 pub mod llm_providers;
+pub mod mcp_servers;
 pub mod messages;
 pub mod skills;
 mod sse_replay;
@@ -29,7 +30,7 @@ use axum::{
 use tokio::sync::Mutex;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{db::Db, runtime::group_scheduler::ActiveTurnRegistry};
+use crate::{db::Db, mcp::McpManager, runtime::group_scheduler::ActiveTurnRegistry};
 
 /// Shared application state injected into every API v2 handler.
 #[derive(Clone)]
@@ -44,6 +45,9 @@ pub struct AppState {
     pub active_turns: ActiveTurnRegistry,
     /// Root directory for extracted skill package resources.
     pub skill_storage_root: PathBuf,
+    /// Pooled MCP connections, shared with the group runtime so editing a
+    /// server's row can evict the connection the runtime would otherwise reuse.
+    pub mcp: Arc<McpManager>,
 }
 
 /// Auth configuration needed to mint and verify access tokens.
@@ -132,6 +136,24 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/llm-providers/:provider_id/models",
             get(llm_providers::models),
+        )
+        .route(
+            "/api/v2/mcp-servers",
+            axum::routing::post(mcp_servers::create).get(mcp_servers::list),
+        )
+        .route(
+            "/api/v2/mcp-servers/test",
+            axum::routing::post(mcp_servers::test_draft),
+        )
+        .route(
+            "/api/v2/mcp-servers/:server_id",
+            get(mcp_servers::get)
+                .patch(mcp_servers::update)
+                .delete(mcp_servers::delete),
+        )
+        .route(
+            "/api/v2/mcp-servers/:server_id/test",
+            axum::routing::post(mcp_servers::test_connection),
         )
         .route(
             "/api/v2/settings/system",
@@ -495,6 +517,9 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: std::env::temp_dir()
             .join(format!("ag-swarmer-test-skills-{}", uuid::Uuid::new_v4())),
+        // A private pool per test router: the shared one would carry live
+        // connections between tests that each build their own database.
+        mcp: Arc::new(McpManager::new()),
     };
     (router(state.clone()), state)
 }

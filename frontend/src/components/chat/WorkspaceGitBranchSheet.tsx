@@ -68,11 +68,11 @@ export function WorkspaceGitBranchSheet({
           <Button type="submit" size="icon" className="h-8 w-8 shrink-0" disabled={!newBranch.trim() || create.isPending} aria-label={t('chat:workspace.createBranch')} title={t('chat:workspace.createBranch')}><Plus className="h-3.5 w-3.5" /></Button>
         </form>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <p className="px-4 py-2 text-[11px] font-medium uppercase text-muted-foreground">{t('chat:workspace.gitPanel.local')}</p>
+          <p className="px-4 py-2 text-2xs font-medium uppercase text-muted-foreground">{t('chat:workspace.gitPanel.local')}</p>
           {local.map(branchRow)}
           <div className="flex items-center justify-between border-t border-border px-4 py-2">
-            <p className="text-[11px] font-medium uppercase text-muted-foreground">{t('chat:workspace.gitPanel.remote')}</p>
-            <Button type="button" variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-[11px]" onClick={onSetRemote} title={t('chat:workspace.gitPanel.setRemoteTitle')}><Link className="h-3 w-3" /> {t('chat:workspace.gitPanel.remoteUrlAction')}</Button>
+            <p className="text-2xs font-medium uppercase text-muted-foreground">{t('chat:workspace.gitPanel.remote')}</p>
+            <Button type="button" variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-2xs" onClick={onSetRemote} title={t('chat:workspace.gitPanel.setRemoteTitle')}><Link className="h-3 w-3" /> {t('chat:workspace.gitPanel.remoteUrlAction')}</Button>
           </div>
           {remote.length ? remote.map(branchRow) : <p className="px-4 py-2 text-xs text-muted-foreground">{t('chat:workspace.gitPanel.noRemoteBranches')}</p>}
         </div>

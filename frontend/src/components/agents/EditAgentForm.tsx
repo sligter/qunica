@@ -13,7 +13,6 @@ import {
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
-import { SkillSelectorField } from '@/components/agents/SkillSelectorField'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
 import {
@@ -24,19 +23,24 @@ import {
   normalizeAgentTemperature,
 } from '@/components/agents/defaults'
 import { isThinkingLevel, thinkingLevelValues } from '@/components/agents/thinkingLevel'
+import { SkillPicker } from '@/components/agents/SkillPicker'
 import { ToolSelector } from '@/components/agents/ToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
 import { useCommittedAcpRuntimeCapabilities } from '@/components/agents/useCommittedAcpRuntimeCapabilities'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Panel } from '@/components/ui/panel'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { useAcpRuntimePresets } from '@/hooks/useAcpRuntimePresets'
 import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
+import { useMcpServers } from '@/hooks/useMcpServers'
 import { useProviderModels, useProviders } from '@/hooks/useProviders'
+import { useSkills } from '@/hooks/useSkills'
 import { useUpdateAgent } from '@/hooks/useUpdateAgent'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
@@ -105,9 +109,11 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   const { t, i18n } = useTranslation(['agents', 'common'])
   const update = useUpdateAgent(agent.id)
   const providers = useProviders()
+  const skills = useSkills()
   const workspaces = useWorkspaces()
   const builtinTools = useBuiltinTools()
   const agents = useAgents()
+  const mcpServers = useMcpServers()
   const acpRuntimePresets = useAcpRuntimePresets()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
@@ -326,13 +332,11 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
         )}
       </div>
 
-      <section className="space-y-2 rounded-md border border-border bg-card p-3">
-        <div>
-          <h3 className="text-sm font-medium">{t('agents:fields.runtime')}</h3>
-          <p className="text-[11px] text-muted-foreground">
-            {t('agents:form.runtimeDescription')}
-          </p>
-        </div>
+      <Panel
+        variant="inset"
+        title={t('agents:fields.runtime')}
+        description={t('agents:form.runtimeDescription')}
+      >
         <div className="grid gap-2 sm:grid-cols-2">
           {([
             ['llm_chat', t('agents:runtime.chatLabel'), t('agents:runtime.chatHint')],
@@ -352,20 +356,18 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                 )}
               >
                 <span className="block text-sm font-medium">{label}</span>
-                <span className="block text-[11px] text-muted-foreground">{hint}</span>
+                <span className="block text-2xs text-muted-foreground">{hint}</span>
               </button>
             )
           })}
         </div>
-      </section>
+      </Panel>
 
-      <section className="space-y-2 rounded-md border border-border bg-card p-3">
-        <div>
-          <h3 className="text-sm font-medium">{t('agents:fields.workspace')}</h3>
-          <p className="text-[11px] text-muted-foreground">
-            {t('agents:form.workspaceDescription')}
-          </p>
-        </div>
+      <Panel
+        variant="inset"
+        title={t('agents:fields.workspace')}
+        description={t('agents:form.workspaceDescription')}
+      >
         <WorkspaceField
           value={form.watch('workspace_id')}
           onChange={(workspaceId) =>
@@ -378,7 +380,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
             {t('agents:form.noWorkspaceWarning')}
           </p>
         )}
-      </section>
+      </Panel>
 
       {runtimeKind === 'acp' && (
         <ExternalRuntimeFields
@@ -482,7 +484,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
               {t('agents:fields.modelParameters')}
             </button>
             {showAdvanced && (
-              <div className="space-y-4 rounded-md border border-border bg-card p-4">
+              <Card className="space-y-4 rounded-md p-3 shadow-none">
                 <div className="flex items-center justify-between gap-4">
                   <div className="space-y-1">
                     <Label htmlFor="ea-vision">{t('agents:fields.vision')}</Label>
@@ -558,17 +560,16 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                     />
                   </div>
                 </div>
-              </div>
+              </Card>
             )}
           </div>
 
-          <section className="space-y-2 rounded-md border border-border bg-card p-3">
-            <div>
-              <h3 className="text-sm font-medium">{t('agents:fields.builtInTools')}</h3>
-              <p className="text-[11px] text-muted-foreground">
-                {t('agents:form.toolsDescription')}
-              </p>
-            </div>
+          <Panel
+            variant="inset"
+            title={t('agents:fields.builtInTools')}
+            description={t('agents:form.toolsDescription')}
+            contentClassName="space-y-2"
+          >
             {builtinTools.isLoading && (
               <p className="text-xs text-muted-foreground">{t('agents:states.loadingTools')}</p>
             )}
@@ -578,19 +579,29 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
                 value={currentToolConfig}
                 workspaceBackendType={selectedWorkspace?.backend_type ?? 'local'}
                 agents={agents.data ?? []}
+                mcpServers={mcpServers.data ?? []}
                 currentAgentId={agent.id}
                 onChange={setToolConfig}
               />
             )}
-          </section>
+          </Panel>
         </>
       )}
 
-      <SkillSelectorField
-        selectedIds={selectedSkillIds}
-        onChange={setSelectedSkillIds}
-        emptyText={t('agents:form.noSkillsEdit')}
-      />
+      <Panel
+        variant="inset"
+        title={t('agents:fields.skills')}
+        description={t('agents:form.skillsDescription')}
+        contentClassName="space-y-2"
+      >
+        <SkillPicker
+          skills={skills.data ?? []}
+          isLoading={skills.isLoading}
+          selectedIds={selectedSkillIds}
+          onChange={setSelectedSkillIds}
+          emptyText={t('agents:form.noSkillsEdit')}
+        />
+      </Panel>
 
       {localizedErrorText(submitError, t) && (
         <p className="text-sm text-destructive" role="alert">

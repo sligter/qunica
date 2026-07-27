@@ -9,6 +9,9 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { PageState } from '@/components/ui/page-state'
+import { ProseBlock } from '@/components/ui/prose-block'
+import { Section } from '@/components/ui/section'
 import { Textarea } from '@/components/ui/textarea'
 import { useDeleteSkill, useSkill, useUpdateSkill } from '@/hooks/useSkills'
 import { ApiError } from '@/lib/api-v2/client'
@@ -26,17 +29,18 @@ export function SkillDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (skill.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('skills:detail.loading')}</div>
+    return <PageState variant="loading" title={t('skills:detail.loading')} />
   }
   if (skill.error) {
     return (
-      <div className="p-6 text-sm text-destructive">
-        {t('skills:detail.loadError', { error: String(skill.error) })}
-      </div>
+      <PageState
+        variant="error"
+        title={t('skills:detail.loadError', { error: String(skill.error) })}
+      />
     )
   }
   if (!skill.data) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('skills:detail.notFound')}</div>
+    return <PageState title={t('skills:detail.notFound')} />
   }
 
   const s = skill.data
@@ -90,14 +94,9 @@ export function SkillDetailPage() {
       }
     >
       <div className="space-y-8">
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            {t('skills:detail.body')}
-          </h3>
-          <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-4 text-sm">
-            {s.body_markdown}
-          </pre>
-        </section>
+        <Section title={t('skills:detail.body')} as="h3">
+          <ProseBlock maxHeight="lg">{s.body_markdown}</ProseBlock>
+        </Section>
 
         <SkillResourcesPanel skill={s} />
       </div>

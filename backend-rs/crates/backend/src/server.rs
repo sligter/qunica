@@ -7,6 +7,7 @@ use crate::{
     api::{self, AppState, AuthSettings},
     config::AppConfig,
     db::Db,
+    mcp::McpManager,
     runtime::group_scheduler::{ActiveTurnRegistry, SchedulerStore},
 };
 
@@ -63,6 +64,9 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         write_lock,
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: config.skill_storage_root(),
+        // The same pool the group runtime uses, so a settings edit evicts the
+        // connection a turn would otherwise reuse.
+        mcp: McpManager::shared(),
     })
 }
 

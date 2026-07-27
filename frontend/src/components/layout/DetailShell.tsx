@@ -50,7 +50,7 @@ export function DetailShell({
           <div className="flex shrink-0 items-center gap-2">{actions}</div>
         ) : null}
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className={cn('w-full max-w-5xl px-8 py-6 pb-10', contentClassName)}>
           {children}
         </div>

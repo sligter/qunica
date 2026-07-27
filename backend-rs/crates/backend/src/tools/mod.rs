@@ -19,7 +19,7 @@ pub mod http;
 pub mod path_safety;
 pub mod workspace;
 
-pub use executor::ToolExecutor;
+pub use executor::{McpMount, ToolExecutor};
 pub use path_safety::resolve_workspace_path;
 pub use workspace::{
     WorkspaceMount, WorkspaceTools, MAX_FILE_BYTES, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,

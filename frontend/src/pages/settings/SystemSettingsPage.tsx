@@ -256,6 +256,7 @@ export function SystemSettingsPage() {
     <DetailShell
       title={t('title')}
       subtitle={t('subtitle')}
+      contentClassName="max-w-none"
     >
       <div className="space-y-10">
         <SettingsSection title={t('appearance')}>
@@ -341,14 +342,14 @@ export function SystemSettingsPage() {
             htmlFor="ss-root"
             stacked
           >
-            <div className="flex gap-2">
+            <div className="flex w-full gap-2">
               <Input
                 id="ss-root"
                 ref={pathInputRef}
                 value={root}
                 onChange={(event) => onRootChange(event.target.value)}
                 placeholder={t('workspaceRoot.placeholder')}
-                className="max-w-xl"
+                className="min-w-0 flex-1"
               />
               <Button
                 type="button"
@@ -422,7 +423,7 @@ export function SystemSettingsPage() {
                   ? t('tavily.configuredPlaceholder')
                   : 'tvly-...'
               }
-              className="w-72"
+              className="min-w-0 flex-1"
             />
             <Button
               type="button"
@@ -448,7 +449,7 @@ export function SystemSettingsPage() {
               value={tavilySearchUrl}
               onChange={(event) => setTavilySearchUrl(event.target.value)}
               placeholder="https://api.tavily.com/search"
-              className="w-96"
+              className="w-full"
             />
           </SettingsRow>
 
@@ -475,7 +476,7 @@ export function SystemSettingsPage() {
           >
             <select
               id="ss-tavily-depth"
-              className="h-9 w-40 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
               value={tavilySearchDepth}
               disabled={update.isPending}
               onChange={(event) => onTavilyDepthChange(event.target.value)}

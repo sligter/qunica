@@ -14,6 +14,7 @@ import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityFie
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Panel } from '@/components/ui/panel'
 import { useAcpRuntimeVersions, useInstallAcpRuntimeVersion } from '@/hooks/useAcpRuntimeVersions'
 import type {
   AcpPermissionPolicy,
@@ -137,17 +138,13 @@ export function ExternalRuntimeFields({
   }
 
   return (
-    <section className="space-y-3 rounded-md border border-border bg-card p-3">
-      <div className="flex items-start gap-2">
-        <Terminal className="mt-0.5 h-4 w-4 text-muted-foreground" />
-        <div>
-          <h3 className="text-sm font-medium">{t('agents:runtime.title')}</h3>
-          <p className="text-[11px] text-muted-foreground">
-            {t('agents:runtime.description')}
-          </p>
-        </div>
-      </div>
-
+    <Panel
+      variant="inset"
+      icon={Terminal}
+      title={t('agents:runtime.title')}
+      description={t('agents:runtime.description')}
+      contentClassName="space-y-3"
+    >
       <div className="space-y-1.5">
         <Label htmlFor="acp-profile">{t('agents:runtime.preset')}</Label>
         <select
@@ -181,7 +178,7 @@ export function ExternalRuntimeFields({
                   ].join(' ')}
                 >
                   <span className="block font-medium">{preset.name}</span>
-                  <span className="block text-[11px] text-muted-foreground">
+                  <span className="block text-2xs text-muted-foreground">
                     {preset.installed ? t('agents:runtime.localDetected') : t('agents:runtime.usesFallback')}
                   </span>
                 </button>
@@ -190,12 +187,12 @@ export function ExternalRuntimeFields({
           </div>
         )}
         {installedPresets.length > 0 && (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             {t('agents:runtime.detected', { names: installedPresets.map((preset) => preset.name).join(', ') })}
           </p>
         )}
         {installedPresets.length === 0 && presets.length > 0 && (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             {t('agents:runtime.noneDetected')}
           </p>
         )}
@@ -204,7 +201,7 @@ export function ExternalRuntimeFields({
       {missingPresets.length > 0 && (
         <div className="space-y-1 rounded-md border border-dashed border-border p-2">
           {missingPresets.map((preset) => (
-            <p key={preset.id} className="flex gap-2 text-[11px] text-muted-foreground">
+            <p key={preset.id} className="flex gap-2 text-2xs text-muted-foreground">
               <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>
                 {preset.name}: {preset.install_hint}
@@ -370,6 +367,6 @@ export function ExternalRuntimeFields({
           </select>
         </div>
       </div>
-    </section>
+    </Panel>
   )
 }

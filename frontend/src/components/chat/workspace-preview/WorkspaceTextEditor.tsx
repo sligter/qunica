@@ -155,7 +155,7 @@ export function WorkspaceTextEditor({
           className={cn(
             'rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-wide',
             dirty
-              ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+              ? 'border-warning bg-warning text-warning-foreground'
               : 'border-border bg-muted/50 text-muted-foreground',
           )}
           role="status"
@@ -198,7 +198,7 @@ export function WorkspaceTextEditor({
       </div>
 
       {snapshot.truncated ? (
-        <div className="mt-3 flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
+        <div className="mt-3 flex gap-2 rounded-md border border-warning bg-warning p-3 text-xs leading-5 text-warning-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <p>{t('workspace.previewPanel.truncated')}</p>
         </div>

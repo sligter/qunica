@@ -20,4 +20,16 @@ describe('DetailShell', () => {
       'overflow-y-auto',
     )
   })
+
+  it('stops the wheel chaining outward once the content reaches its end', () => {
+    const { container } = render(
+      <DetailShell title="Manage group">
+        <div>Settings content</div>
+      </DetailShell>,
+    )
+
+    // Without this the last wheel tick at the bottom scrolls the document and
+    // drags the whole app — sidebar and header included — off screen.
+    expect(container.firstElementChild?.lastElementChild).toHaveClass('overscroll-contain')
+  })
 })

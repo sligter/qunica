@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 
 interface EntityLayoutProps {
   /** Navigation resource key for the area heading. */
-  titleKey: 'agents' | 'providers' | 'skills' | 'workspaces'
+  titleKey: 'agents' | 'providers' | 'mcpServers' | 'skills' | 'workspaces'
   /** The searchable entity list column rendered left of the detail Outlet. */
   list: ReactNode
 }

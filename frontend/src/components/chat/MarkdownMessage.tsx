@@ -49,13 +49,13 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
 
   return (
     <div className="my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-code text-code-foreground shadow-sm">
-      <div className="flex items-center justify-between border-b border-code-foreground/10 bg-code-foreground/10 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-code-foreground/70">
+      <div className="flex items-center justify-between border-b border-code-foreground/10 bg-code-foreground/10 px-3 py-1.5 text-2xs uppercase tracking-[0.16em] text-code-foreground/70">
         <span>{language ?? t('messages.code')}</span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-[11px] text-code-foreground/80 hover:bg-code-foreground/15 hover:text-code-foreground"
+          className="h-7 px-2 text-2xs text-code-foreground/80 hover:bg-code-foreground/15 hover:text-code-foreground"
           onClick={() => void copyCode()}
           aria-label={t('messages.copyCode')}
         >

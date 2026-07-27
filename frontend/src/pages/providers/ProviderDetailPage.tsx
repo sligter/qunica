@@ -7,6 +7,9 @@ import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Field, FieldGrid } from '@/components/ui/field'
+import { PageState } from '@/components/ui/page-state'
+import { Section } from '@/components/ui/section'
 import { useDeleteProvider, useProvider } from '@/hooks/useProviders'
 import { formatNumber } from '@/lib/format'
 import type { Language } from '@/i18n'
@@ -22,17 +25,18 @@ export function ProviderDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (provider.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('providers:detail.loading')}</div>
+    return <PageState variant="loading" title={t('providers:detail.loading')} />
   }
   if (provider.error) {
     return (
-      <div className="p-6 text-sm text-destructive">
-        {t('providers:detail.loadError', { error: String(provider.error) })}
-      </div>
+      <PageState
+        variant="error"
+        title={t('providers:detail.loadError', { error: String(provider.error) })}
+      />
     )
   }
   if (!provider.data) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('providers:detail.notFound')}</div>
+    return <PageState title={t('providers:detail.notFound')} />
   }
 
   const p = provider.data
@@ -73,7 +77,7 @@ export function ProviderDetailPage() {
       }
     >
       <div className="space-y-8">
-        <section className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+        <FieldGrid columns={4}>
           <Field label={t('providers:fields.kind')} value={p.kind} />
           <Field label={t('providers:fields.defaultModel')} value={p.default_model} />
           <Field
@@ -95,19 +99,19 @@ export function ProviderDetailPage() {
           <Field label={t('providers:fields.baseUrl')} value={p.base_url ?? '-'} />
           <Field label={t('providers:fields.apiKey')} value={p.api_key_masked} mono />
           <Field label={t('providers:fields.status')}>
-            <Badge variant={p.status === 'active' ? 'default' : 'secondary'}>
+            <Badge variant={p.status === 'active' ? 'default' : 'secondary'} className="mt-1">
               {formatResourceStatus(p.status, t)}
             </Badge>
           </Field>
-        </section>
+        </FieldGrid>
 
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            {t('providers:models.title')}
-          </h3>
+        <Section title={t('providers:models.title')} as="h3">
           <div className="grid gap-3 sm:grid-cols-2">
             {(p.models ?? []).map((model) => (
-              <div key={model.id} className="rounded-md border border-border p-3 text-sm">
+              <div
+                key={model.id}
+                className="rounded-md border border-border bg-card p-3 text-sm"
+              >
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{model.id}</span>
                   {model.id === p.default_model && (
@@ -128,15 +132,12 @@ export function ProviderDetailPage() {
               </div>
             ))}
           </div>
-        </section>
+        </Section>
 
         {p.description && (
-          <section className="space-y-2">
-            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {t('providers:detail.description')}
-            </h3>
-            <p className="whitespace-pre-wrap text-sm">{p.description}</p>
-          </section>
+          <Section title={t('providers:detail.description')} as="h3">
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">{p.description}</p>
+          </Section>
         )}
       </div>
 
@@ -153,28 +154,5 @@ export function ProviderDetailPage() {
         }}
       />
     </DetailShell>
-  )
-}
-
-function Field({
-  label,
-  value,
-  mono,
-  children,
-}: {
-  label: string
-  value?: string
-  mono?: boolean
-  children?: React.ReactNode
-}) {
-  return (
-    <div>
-      <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </h3>
-      {children ?? (
-        <p className={mono ? 'mt-1 font-mono text-sm' : 'mt-1 text-sm'}>{value}</p>
-      )}
-    </div>
   )
 }

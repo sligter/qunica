@@ -2,7 +2,10 @@ import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
+import { Compass } from 'lucide-react'
+
 import { Button } from '@/components/ui/button'
+import { PageState } from '@/components/ui/page-state'
 
 export function NotFoundPage() {
   const { t } = useTranslation('common')
@@ -13,11 +16,14 @@ export function NotFoundPage() {
   }, [title])
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-      <h1 className="font-serif text-2xl font-semibold tracking-tight">{title}</h1>
-      <Button asChild variant="outline">
-        <Link to="/">{t('backToApp')}</Link>
-      </Button>
-    </div>
+    <PageState
+      icon={Compass}
+      title={title}
+      action={
+        <Button asChild variant="outline">
+          <Link to="/">{t('backToApp')}</Link>
+        </Button>
+      }
+    />
   )
 }

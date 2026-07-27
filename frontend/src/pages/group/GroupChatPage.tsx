@@ -1,10 +1,11 @@
 import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Settings } from 'lucide-react'
+import { MessagesSquare, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { Button } from '@/components/ui/button'
+import { PageState } from '@/components/ui/page-state'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useGroup } from '@/hooks/useGroups'
 import { normalizeLanguage } from '@/i18n'
@@ -27,13 +28,18 @@ export function GroupChatPage() {
   }, [group.data?.name, t])
 
   if (!groupId) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('noGroupSelected')}</div>
+    return <PageState icon={MessagesSquare} title={t('noGroupSelected')} />
   }
   if (group.error) {
-    return <div className="p-6 text-sm text-destructive">{t('manage.loadErrorDetail', { message: String(group.error) })}</div>
+    return (
+      <PageState
+        variant="error"
+        title={t('manage.loadErrorDetail', { message: String(group.error) })}
+      />
+    )
   }
   if (group.isLoading || !group.data) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('manage.loading')}</div>
+    return <PageState variant="loading" title={t('manage.loading')} />
   }
 
   const agents = groupAgents.data ?? []

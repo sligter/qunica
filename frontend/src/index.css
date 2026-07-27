@@ -39,10 +39,22 @@
   --color-avatar-8: hsl(355 40% 52%);
   --color-avatar-foreground: hsl(40 40% 98%);
 
+  /* One step below text-xs, for dense secondary metadata in chat and file
+     surfaces. Named so it stops being an ad-hoc text-[11px] everywhere. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
   --radius: 0.625rem;
   --radius-md: 0.4375rem;
   --radius-lg: 0.625rem;
   --radius-xl: 0.875rem;
+
+  /* Elevation — warm-tinted rather than neutral black, so raised surfaces stay
+     in the same colour family as the background instead of graying it out. */
+  --shadow-xs: 0 1px 2px -1px hsl(30 20% 20% / 0.06);
+  --shadow-sm: 0 1px 2px -1px hsl(30 20% 20% / 0.08), 0 1px 3px hsl(30 20% 20% / 0.05);
+  --shadow-md: 0 2px 4px -2px hsl(30 20% 20% / 0.08), 0 4px 12px -4px hsl(30 20% 20% / 0.08);
+  --shadow-lg: 0 4px 8px -4px hsl(30 20% 20% / 0.1), 0 12px 28px -8px hsl(30 20% 20% / 0.1);
 
   --font-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
 }
@@ -97,6 +109,11 @@
     --color-avatar-8: hsl(355 42% 66%);
     --color-avatar-foreground: hsl(30 25% 12%);
 
+    /* No dark shadow overrides: Tailwind inlines @theme shadow values into the
+       utility instead of emitting var(--shadow-*), so redefining them here would
+       be dead code. Dark elevation comes from --color-card sitting a step above
+       --color-background, plus the borders every surface already carries. */
+
     --terminal-background: hsl(30 12% 8%);
     --terminal-foreground: hsl(40 18% 88%);
     --terminal-selection: hsl(18 36% 30%);
@@ -107,7 +124,19 @@
     --terminal-active-tab: hsl(30 8% 18%);
   }
 
+  /* A desktop shell never scrolls its document: every surface owns an inner
+     scroll container. Without this the app root is the only thing sized to the
+     viewport, so anything that overflows it grows the document instead — and a
+     list that reaches its end then chains the wheel outward and drags the whole
+     window content off screen. */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   body {
+    overflow: hidden;
     font-family:
       -apple-system,
       BlinkMacSystemFont,

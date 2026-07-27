@@ -1,9 +1,16 @@
-import { useMemo } from 'react'
-import { useTranslation } from 'react-i18next'
-
-import { EntityMultiSelect } from '@/components/ui/entity-multi-select'
+import type {
+  AgentRead,
+  AgentToolConfig,
+  BuiltinToolRead,
+  McpServerRead,
+  ToolPolicy,
+  WorkspaceBackendType,
+} from '@/types/api'
+import { McpToolSelector } from '@/components/agents/McpToolSelector'
+import { EntityPicker } from '@/components/ui/entity-picker'
+import { PageState } from '@/components/ui/page-state'
 import { cn } from '@/lib/utils'
-import type { AgentRead, AgentToolConfig, BuiltinToolRead, ToolPolicy, WorkspaceBackendType } from '@/types/api'
+import { useTranslation } from 'react-i18next'
 
 const POLICY_ORDER: ToolPolicy[] = [
   'read',
@@ -20,6 +27,8 @@ interface ToolSelectorProps {
   value: AgentToolConfig
   workspaceBackendType: WorkspaceBackendType
   agents?: AgentRead[]
+  /** MCP servers the owner has configured, offered alongside the built-ins. */
+  mcpServers?: McpServerRead[]
   currentAgentId?: string
   onChange: (next: AgentToolConfig) => void
 }
@@ -40,6 +49,7 @@ export function ToolSelector({
   value,
   workspaceBackendType,
   agents = [],
+  mcpServers = [],
   currentAgentId,
   onChange,
 }: ToolSelectorProps) {
@@ -66,34 +76,16 @@ export function ToolSelector({
     })
   }
 
-  const selectedAssistantIds = useMemo(
-    () =>
-      (value.assistant_agents ?? [])
-        .filter((selection) => selection.enabled)
-        .map((selection) => selection.agent_id),
-    [value.assistant_agents],
-  )
-
+  // The picker speaks in plain ids; the stored shape is a list of records, so
+  // the mapping lives here rather than leaking that shape into the picker.
   const setAssistantAgents = (agentIds: string[]) => {
     onChange({
       ...value,
-      assistant_agents: agentIds.map((agentId) => ({ agent_id: agentId, enabled: true })),
+      assistant_agents: agentIds.map((agent_id) => ({ agent_id, enabled: true })),
     })
   }
 
-  const assistantOptions = useMemo(
-    () =>
-      agents
-        .filter((agent) => agent.id !== currentAgentId)
-        .map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          description: agent.description,
-          keywords: [agent.id],
-          badge: agent.runtime_kind === 'acp' ? t('acpRuntime') : null,
-        })),
-    [agents, currentAgentId, t],
-  )
+  const selectableAgents = agents.filter((agent) => agent.id !== currentAgentId)
 
   return (
     <div className="space-y-3">
@@ -102,22 +94,33 @@ export function ToolSelector({
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-muted-foreground">{t('tools.agentAsTool')}</p>
-        <div className="rounded-md border border-border bg-background p-3">
-          <p className="text-xs text-muted-foreground">
-            {t('tools.agentAsToolDescription')}
-          </p>
-          <EntityMultiSelect
-            className="mt-3"
-            id="agent-as-tool"
-            items={assistantOptions}
-            selectedIds={selectedAssistantIds}
-            onChange={setAssistantAgents}
-            label={t('tools.agentAsTool')}
-            searchPlaceholder={t('tools.searchAgents')}
-            emptyText={t('tools.noAgents')}
-            namePrefix="@"
-          />
-        </div>
+        <p className="text-xs text-muted-foreground">{t('tools.agentAsToolDescription')}</p>
+        <EntityPicker
+          label={t('tools.agentAsTool')}
+          searchPlaceholder={t('form.searchAgents')}
+          items={selectableAgents.map((agent) => ({
+            id: agent.id,
+            label: `@${agent.name}`,
+            meta: agent.description ?? undefined,
+          }))}
+          selectedIds={(value.assistant_agents ?? [])
+            .filter((selection) => selection.enabled)
+            .map((selection) => selection.agent_id)}
+          onChange={setAssistantAgents}
+          countLabel={(total, selected) =>
+            t('form.agentCount', { total, selected, count: total })
+          }
+          empty={<PageState inset icon={null} title={t('tools.noAgents')} />}
+        />
+      </div>
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-muted-foreground">{t('tools.mcp.title')}</p>
+        <p className="text-xs text-muted-foreground">{t('tools.mcp.description')}</p>
+        <McpToolSelector
+          servers={mcpServers}
+          value={value.mcp_servers ?? []}
+          onChange={(next) => onChange({ ...value, mcp_servers: next })}
+        />
       </div>
       {POLICY_ORDER.map((policy) => {
         const policyTools = tools.filter((tool) => tool.policy === policy)
@@ -152,7 +155,7 @@ export function ToolSelector({
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{tool.description}</p>
                     {!executable && checked && (
-                      <p className="mt-2 text-[11px] font-medium text-warning-foreground">
+                      <p className="mt-2 text-2xs font-medium text-warning-foreground">
                         {t('tools.unavailable')}
                       </p>
                     )}

@@ -65,13 +65,13 @@ export function WorkspaceFileFallback({
 
       <dl className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
         <dt className="text-muted-foreground">{t('workspace.previewPanel.mime')}</dt>
-        <dd className="min-w-0 break-all font-mono text-[11px]">
+        <dd className="min-w-0 break-all font-mono text-2xs">
           {metadata.mime_type || t('workspace.previewPanel.unknownMime')}
         </dd>
         <dt className="text-muted-foreground">{t('workspace.previewPanel.size')}</dt>
         <dd>{formatWorkspaceFileSize(metadata.size, language)}</dd>
         <dt className="text-muted-foreground">{t('workspace.previewPanel.path')}</dt>
-        <dd className="min-w-0 break-all font-mono text-[11px]">{metadata.path}</dd>
+        <dd className="min-w-0 break-all font-mono text-2xs">{metadata.path}</dd>
       </dl>
 
       {download.error ? (
