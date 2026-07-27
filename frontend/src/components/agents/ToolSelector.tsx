@@ -1,6 +1,9 @@
-import type { AgentRead, AgentToolConfig, BuiltinToolRead, ToolPolicy, WorkspaceBackendType } from '@/types/api'
-import { cn } from '@/lib/utils'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+
+import { EntityMultiSelect } from '@/components/ui/entity-multi-select'
+import { cn } from '@/lib/utils'
+import type { AgentRead, AgentToolConfig, BuiltinToolRead, ToolPolicy, WorkspaceBackendType } from '@/types/api'
 
 const POLICY_ORDER: ToolPolicy[] = [
   'read',
@@ -63,18 +66,34 @@ export function ToolSelector({
     })
   }
 
-  const toggleAssistantAgent = (agentId: string) => {
-    const current = value.assistant_agents ?? []
-    const exists = current.some((selection) => selection.agent_id === agentId && selection.enabled)
+  const selectedAssistantIds = useMemo(
+    () =>
+      (value.assistant_agents ?? [])
+        .filter((selection) => selection.enabled)
+        .map((selection) => selection.agent_id),
+    [value.assistant_agents],
+  )
+
+  const setAssistantAgents = (agentIds: string[]) => {
     onChange({
       ...value,
-      assistant_agents: exists
-        ? current.filter((selection) => selection.agent_id !== agentId)
-        : [...current.filter((selection) => selection.agent_id !== agentId), { agent_id: agentId, enabled: true }],
+      assistant_agents: agentIds.map((agentId) => ({ agent_id: agentId, enabled: true })),
     })
   }
 
-  const selectableAgents = agents.filter((agent) => agent.id !== currentAgentId)
+  const assistantOptions = useMemo(
+    () =>
+      agents
+        .filter((agent) => agent.id !== currentAgentId)
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          description: agent.description,
+          keywords: [agent.id],
+          badge: agent.runtime_kind === 'acp' ? t('acpRuntime') : null,
+        })),
+    [agents, currentAgentId, t],
+  )
 
   return (
     <div className="space-y-3">
@@ -87,35 +106,17 @@ export function ToolSelector({
           <p className="text-xs text-muted-foreground">
             {t('tools.agentAsToolDescription')}
           </p>
-          {selectableAgents.length === 0 ? (
-            <p className="mt-2 text-[11px] text-muted-foreground">{t('tools.noAgents')}</p>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {selectableAgents.map((agent) => {
-                const checked = (value.assistant_agents ?? []).some(
-                  (selection) => selection.agent_id === agent.id && selection.enabled,
-                )
-                return (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => toggleAssistantAgent(agent.id)}
-                    className={cn(
-                      'rounded-md border px-3 py-2 text-left text-xs transition-colors',
-                      checked
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background hover:bg-muted',
-                    )}
-                  >
-                    <span className="block font-medium">@{agent.name}</span>
-                    {agent.description && (
-                      <span className="block max-w-48 truncate opacity-75">{agent.description}</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          <EntityMultiSelect
+            className="mt-3"
+            id="agent-as-tool"
+            items={assistantOptions}
+            selectedIds={selectedAssistantIds}
+            onChange={setAssistantAgents}
+            label={t('tools.agentAsTool')}
+            searchPlaceholder={t('tools.searchAgents')}
+            emptyText={t('tools.noAgents')}
+            namePrefix="@"
+          />
         </div>
       </div>
       {POLICY_ORDER.map((policy) => {

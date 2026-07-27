@@ -13,6 +13,7 @@ import {
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
+import { SkillSelectorField } from '@/components/agents/SkillSelectorField'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
 import {
@@ -38,7 +39,6 @@ import { useAgents } from '@/hooks/useAgents'
 import { useBuiltinTools } from '@/hooks/useBuiltinTools'
 import { useCreateAgent } from '@/hooks/useCreateAgent'
 import { useProviderModels, useProviders } from '@/hooks/useProviders'
-import { useSkills } from '@/hooks/useSkills'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
@@ -104,7 +104,6 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
   const { t, i18n } = useTranslation(['agents', 'common'])
   const createAgent = useCreateAgent()
   const providers = useProviders()
-  const skills = useSkills()
   const workspaces = useWorkspaces()
   const builtinTools = useBuiltinTools()
   const agents = useAgents()
@@ -243,12 +242,6 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
     applyAcpPreset(preset)
     autoAppliedAcpPreset.current = true
   }, [acpPresets, applyAcpPreset, runtimeKind])
-
-  const toggleSkill = (id: string) => {
-    setSelectedSkillIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    )
-  }
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(null)
@@ -613,49 +606,11 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
         </>
       )}
 
-      <section className="space-y-2 rounded-md border border-border bg-card p-3">
-        <div>
-          <h3 className="text-sm font-medium">{t('agents:fields.skills')}</h3>
-          <p className="text-[11px] text-muted-foreground">
-            {t('agents:form.skillsDescription')}
-          </p>
-        </div>
-        {skills.isLoading && <p className="text-xs text-muted-foreground">{t('agents:states.loadingSkills')}</p>}
-        {skills.data && skills.data.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">
-            {t('agents:form.noSkillsCreate')}
-          </p>
-        )}
-        {skills.data && skills.data.length > 0 && (
-          <ul className="flex flex-wrap gap-2">
-            {skills.data.map((s) => {
-              const checked = selectedSkillIds.includes(s.id)
-              return (
-                <li key={s.id}>
-                  <button
-                    type="button"
-                    onClick={() => toggleSkill(s.id)}
-                    title={s.description ?? undefined}
-                    className={cn(
-                      'rounded-md border px-3 py-1 text-left text-xs transition-colors',
-                      checked
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background hover:bg-muted',
-                    )}
-                  >
-                    <span className="block font-medium">{s.name}</span>
-                    {s.description && (
-                      <span className="block max-w-48 truncate opacity-75">
-                        {s.description}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </section>
+      <SkillSelectorField
+        selectedIds={selectedSkillIds}
+        onChange={setSelectedSkillIds}
+        emptyText={t('agents:form.noSkillsCreate')}
+      />
 
       {localizedErrorText(submitError, t) && (
         <p className="text-sm text-destructive" role="alert">

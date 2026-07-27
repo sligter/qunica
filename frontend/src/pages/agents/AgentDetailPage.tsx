@@ -13,6 +13,9 @@ import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
 
+/** Mounted skills stay a glanceable summary even when an agent mounts dozens. */
+const SKILL_BADGE_LIMIT = 24
+
 export function AgentDetailPage() {
   const { t } = useTranslation(['agents', 'common'])
   const { agentId } = useParams<{ agentId: string }>()
@@ -23,6 +26,7 @@ export function AgentDetailPage() {
   const del = useDeleteAgent()
   const [editing, setEditing] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [showAllSkills, setShowAllSkills] = useState(false)
 
   if (agent.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">{t('agents:detail.loading')}</div>
@@ -138,12 +142,25 @@ export function AgentDetailPage() {
           {mountedSkills.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('agents:detail.noMountedSkills')}</p>
           ) : (
-            <div className="flex flex-wrap gap-2">
-              {mountedSkills.map((s) => (
-                <Badge key={s.id} variant="secondary">
-                  {s.name}
-                </Badge>
-              ))}
+            <div className="flex flex-wrap items-center gap-2">
+              {(showAllSkills ? mountedSkills : mountedSkills.slice(0, SKILL_BADGE_LIMIT)).map(
+                (s) => (
+                  <Badge key={s.id} variant="secondary">
+                    {s.name}
+                  </Badge>
+                ),
+              )}
+              {!showAllSkills && mountedSkills.length > SKILL_BADGE_LIMIT && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSkills(true)}
+                  className="text-xs font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                >
+                  {t('common:multiSelect.moreChips', {
+                    count: mountedSkills.length - SKILL_BADGE_LIMIT,
+                  })}
+                </button>
+              )}
             </div>
           )}
         </section>
