@@ -78,6 +78,7 @@ impl SequenceAllocator {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
+        ensure_thread_writable(&mut tx, thread_id).await?;
 
         let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
             .bind(thread_id)
@@ -128,6 +129,7 @@ impl SequenceAllocator {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
+        ensure_thread_writable(&mut tx, thread_id).await?;
 
         let result = sqlx::query(
             "UPDATE messages \
@@ -167,6 +169,7 @@ impl SequenceAllocator {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
+        ensure_thread_writable(&mut tx, thread_id).await?;
 
         let result = sqlx::query(
             "UPDATE messages \
@@ -199,12 +202,17 @@ impl SequenceAllocator {
     pub async fn set_thread_status(&self, thread_id: &str, status: &str) -> anyhow::Result<()> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
-        sqlx::query("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
-            .bind(status)
-            .bind(&now)
-            .bind(thread_id)
-            .execute(&self.pool)
-            .await?;
+        let result = sqlx::query(
+            "UPDATE threads SET status = ?, updated_at = ? WHERE id = ? AND status != 'cleared'",
+        )
+        .bind(status)
+        .bind(&now)
+        .bind(thread_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!("thread is not writable"));
+        }
         Ok(())
     }
 
@@ -249,6 +257,7 @@ pub(crate) async fn persist_message_with_event_in_tx(
     event: &StreamEvent<Value>,
 ) -> anyhow::Result<i64> {
     let now = now_rfc3339();
+    ensure_thread_writable(tx, thread_id).await?;
     let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
         .bind(thread_id)
         .fetch_one(&mut **tx)
@@ -299,6 +308,7 @@ async fn insert_stream_event(
     event: &StreamEvent<Value>,
     now: &str,
 ) -> anyhow::Result<()> {
+    ensure_thread_writable(tx, thread_id).await?;
     sqlx::query(
         "INSERT INTO stream_events \
          (id, stream_id, thread_id, seq, event_id, kind, payload_json, created_at) \
@@ -314,6 +324,20 @@ async fn insert_stream_event(
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+async fn ensure_thread_writable(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: &str,
+) -> anyhow::Result<()> {
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(thread_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if status.as_deref() == Some("cleared") || status.is_none() {
+        return Err(anyhow::anyhow!("thread is not writable"));
+    }
     Ok(())
 }
 

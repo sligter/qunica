@@ -27,13 +27,15 @@ use crate::{
         conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
         sse_replay::{
-            event_kind_from_wire, fetch_replay_events_for_group, last_event_id, parse_replay_cursor,
+            event_kind_from_wire, fetch_replay_events_for_group, fetch_replay_events_for_stream,
+            last_event_id, parse_replay_cursor,
         },
         workspace_files::{validate_conversation_attachments, ConversationScope},
         AppState,
     },
     runtime::{
-        group::MessageAttachment, run_group_turn, RuntimeServices, TurnOutcome, TurnRequest,
+        group::MessageAttachment, run_group_turn, run_group_turn_with_stream_id, RuntimeServices,
+        TurnOutcome, TurnRequest,
     },
 };
 
@@ -49,6 +51,8 @@ pub struct MessageInput {
     attachments: Vec<MessageAttachmentInput>,
     #[serde(default)]
     thread_id: Option<String>,
+    #[serde(default)]
+    client_request_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -298,6 +302,24 @@ async fn clear_for_kind(
     .map_err(|_| ApiError::internal("failed to clear messages"))?
     .rows_affected();
 
+    let cleared_thread_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM threads \
+         WHERE group_id = ? \
+           AND agent_id IS NULL \
+           AND status IN ('active', 'running', 'paused', 'completed', 'failed', 'created') \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM messages \
+             WHERE messages.thread_id = threads.id \
+               AND messages.group_id = ? \
+               AND messages.status IN ('visible', 'interrupted') \
+           )",
+    )
+    .bind(&group_id)
+    .bind(&group_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to load cleared message threads"))?;
+
     sqlx::query(
         "UPDATE threads \
          SET status = 'cleared', updated_at = ? \
@@ -321,6 +343,9 @@ async fn clear_for_kind(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit message clear"))?;
+    for thread_id in cleared_thread_ids {
+        state.active_turns.cancel_thread(&thread_id).await;
+    }
 
     Ok(Json(ClearMessagesResponse { cleared_count }))
 }
@@ -404,7 +429,7 @@ async fn delete_for_kind(
         return Err(ApiError::not_found("message not found"));
     }
 
-    sqlx::query(
+    let thread_cleared = sqlx::query(
         "UPDATE threads \
          SET status = 'cleared', updated_at = ? \
          WHERE id = ? \
@@ -424,11 +449,16 @@ async fn delete_for_kind(
     .bind(&group_id)
     .execute(&mut *tx)
     .await
-    .map_err(|_| ApiError::internal("failed to update message thread"))?;
+    .map_err(|_| ApiError::internal("failed to update message thread"))?
+    .rows_affected()
+        > 0;
 
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit message delete"))?;
+    if thread_cleared {
+        state.active_turns.cancel_thread(&thread_id).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -684,6 +714,19 @@ async fn stream_for_kind(
         return Ok(Sse::new(body));
     }
 
+    let stream_id = body
+        .client_request_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ApiError::invalid_input("client_request_id must be a UUID"))?
+        .unwrap_or_else(Uuid::new_v4);
+    let replay = fetch_replay_events_for_stream(state.db.pool(), &group_id, stream_id).await?;
+    if !replay.is_empty() {
+        let body = futures_util::stream::iter(replay.into_iter().map(event_to_sse)).boxed();
+        return Ok(Sse::new(body));
+    }
+
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_active_turn_registry(state.active_turns.clone());
@@ -695,7 +738,7 @@ async fn stream_for_kind(
         attachments,
     };
     tokio::spawn(async move {
-        run_group_turn(services, request, tx).await;
+        run_group_turn_with_stream_id(services, request, tx, stream_id).await;
     });
 
     let body = futures_util::stream::unfold(rx, |mut rx| async move {

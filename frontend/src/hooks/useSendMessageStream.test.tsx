@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   streams: [] as Array<{
     handlers: ApiV2SseHandlers
     url: string
+    body: unknown
     abort: ReturnType<typeof vi.fn>
   }>,
   fetchJson: vi.fn(),
@@ -25,10 +26,15 @@ vi.mock('@/lib/api-v2/client', async (importOriginal) => {
 })
 
 vi.mock('@/lib/api-v2/sse', () => ({
-  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers; url: string }) => {
+  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers; url: string; body: unknown }) => {
     if (mocks.streamStartError) throw mocks.streamStartError
     const abort = vi.fn()
-    mocks.streams.push({ handlers: options.handlers, url: options.url, abort })
+    mocks.streams.push({
+      handlers: options.handlers,
+      url: options.url,
+      body: options.body,
+      abort,
+    })
     return { abort } as unknown as AbortController
   },
 }))
@@ -175,6 +181,22 @@ describe('useSendMessageStream scheduler events', () => {
     mocks.streamStartError = null
     useMessageStore.setState(initialMessages, true)
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
+  })
+
+  it('sends its stable local request id to the backend', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useSendMessageStream('group-1', false),
+      { wrapper: wrapper(queryClient) },
+    )
+
+    act(() => ignoreSend(hook.result.current.send('hello')))
+
+    expect(mocks.streams[0]?.body).toMatchObject({
+      content: 'hello',
+      attachments: [],
+      client_request_id: expect.any(String),
+    })
   })
 
   it('resolves send on the persisted user-message acknowledgement before agents finish', async () => {

@@ -101,6 +101,27 @@ pub(crate) async fn fetch_replay_events_for_group(
     rows.into_iter().map(stream_event_from_row).collect()
 }
 
+pub(crate) async fn fetch_replay_events_for_stream(
+    pool: &sqlx::SqlitePool,
+    group_id: &str,
+    stream_id: Uuid,
+) -> Result<Vec<StreamEvent<Value>>, ApiError> {
+    let rows: Vec<StreamEventRow> = sqlx::query_as(
+        "SELECT se.stream_id, se.seq, se.event_id, se.kind, se.payload_json \
+         FROM stream_events se \
+         JOIN threads t ON t.id = se.thread_id \
+         WHERE se.stream_id = ? AND t.group_id = ? \
+         ORDER BY se.seq ASC",
+    )
+    .bind(stream_id.to_string())
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+
+    rows.into_iter().map(stream_event_from_row).collect()
+}
+
 pub(crate) async fn fetch_replay_events_for_thread(
     pool: &sqlx::SqlitePool,
     thread_id: &str,

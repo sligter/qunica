@@ -226,8 +226,15 @@ pub async fn run_group_turn(
     req: TurnRequest,
     tx: Sender<StreamEvent<Value>>,
 ) -> TurnOutcome {
-    let stream_id = Uuid::new_v4();
+    run_group_turn_with_stream_id(services, req, tx, Uuid::new_v4()).await
+}
 
+pub async fn run_group_turn_with_stream_id(
+    services: RuntimeServices,
+    req: TurnRequest,
+    tx: Sender<StreamEvent<Value>>,
+    stream_id: Uuid,
+) -> TurnOutcome {
     // Resolve the thread before building the streaming context: a bad thread id
     // is reported as an `error`/`done` pair on a fresh stream.
     let thread_id = match resolve_or_create_thread(&services, &req).await {
@@ -247,6 +254,10 @@ pub async fn run_group_turn(
             return TurnOutcome::Error;
         }
     };
+    let runtime_active_turn = services
+        .active_turns
+        .register(thread_id.clone(), format!("runtime:{}", Uuid::new_v4()))
+        .await;
 
     let mut ctx = StreamCtx {
         stream_id,
@@ -259,7 +270,7 @@ pub async fn run_group_turn(
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
         private_execution: false,
-        turn_cancellation: None,
+        turn_cancellation: Some(runtime_active_turn.cancellation.clone()),
         active_turn: None,
         cancellation: services.cancellation.clone(),
     };
@@ -271,6 +282,7 @@ pub async fn run_group_turn(
     if let Some(active_turn) = ctx.active_turn.take() {
         services.active_turns.remove(&active_turn).await;
     }
+    services.active_turns.remove(&runtime_active_turn).await;
     outcome
 }
 
@@ -282,6 +294,13 @@ pub async fn run_thread_resume(
     tx: Sender<StreamEvent<Value>>,
 ) -> TurnOutcome {
     let stream_id = Uuid::new_v4();
+    let runtime_active_turn = services
+        .active_turns
+        .register(
+            req.thread_id.clone(),
+            format!("runtime:{}", Uuid::new_v4()),
+        )
+        .await;
     let mut ctx = StreamCtx {
         stream_id,
         seq: 0,
@@ -293,15 +312,17 @@ pub async fn run_thread_resume(
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
         private_execution: false,
-        turn_cancellation: None,
+        turn_cancellation: Some(runtime_active_turn.cancellation.clone()),
         active_turn: None,
         cancellation: services.cancellation.clone(),
     };
 
-    match run_resume_inner(&services, &req, &mut ctx).await {
+    let outcome = match run_resume_inner(&services, &req, &mut ctx).await {
         Ok(outcome) => outcome,
         Err(Cancelled) => TurnOutcome::Cancelled,
-    }
+    };
+    services.active_turns.remove(&runtime_active_turn).await;
+    outcome
 }
 
 /// Per-stream emit state: the stream id, the monotonic sequence counter, the
@@ -2370,6 +2391,8 @@ struct RecordedToolCall {
     status: Option<String>,
     args_summary: Option<String>,
     result_summary: Option<String>,
+    args: Option<Value>,
+    result: Option<String>,
 }
 
 /// Structured data accumulated across one agent turn so reasoning blocks, tool
@@ -2402,12 +2425,17 @@ impl TurnData {
         status: Option<String>,
         args_summary: Option<String>,
     ) {
+        let args = args_summary
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok());
         self.tool_calls.push(RecordedToolCall {
             tool_call_id,
             tool_name,
             status,
             args_summary,
             result_summary: None,
+            args,
+            result: None,
         });
     }
 
@@ -2432,17 +2460,41 @@ impl TurnData {
                 existing.tool_name = tool_name;
             }
             if result_summary.is_some() {
+                existing.result = result_summary.clone();
                 existing.result_summary = result_summary;
             }
             return;
         }
+        let result = result_summary.clone();
         self.tool_calls.push(RecordedToolCall {
             tool_call_id,
             tool_name,
             status,
             args_summary: None,
             result_summary,
+            args: None,
+            result,
         });
+    }
+
+    fn record_tool_args(&mut self, tool_call_id: &str, args: Value) {
+        if let Some(call) = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| call.tool_call_id.as_deref() == Some(tool_call_id))
+        {
+            call.args = Some(args);
+        }
+    }
+
+    fn record_tool_output(&mut self, tool_call_id: &str, result: String) {
+        if let Some(call) = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| call.tool_call_id.as_deref() == Some(tool_call_id))
+        {
+            call.result = Some(result);
+        }
     }
 
     fn set_context_usage(&mut self, usage: Value) {
@@ -2477,6 +2529,8 @@ impl TurnData {
                     "status": call.status,
                     "args_summary": call.args_summary,
                     "result_summary": call.result_summary,
+                    "args": call.args,
+                    "result": call.result,
                 })
             })
             .collect();
@@ -3043,6 +3097,7 @@ async fn execute_tool_call(
         Some("started".to_string()),
         Some(summarize_value(&call.args)),
     );
+    turn.record_tool_args(&call.id, call.args.clone());
     if let Err(err) = emit_tool_call_start(ctx, agent, call).await {
         if matches!(err, StepErr::Cancelled) {
             maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
@@ -3059,6 +3114,7 @@ async fn execute_tool_call(
         Some(tool_status_wire(result.status).to_string()),
         Some(summarize_text(&result.output)),
     );
+    turn.record_tool_output(&call.id, result.output.clone());
     if let Err(err) = ctx
         .emit(
             StreamEventKind::ToolCallResult,
@@ -3170,6 +3226,7 @@ async fn handle_agent_as_tool(
         Some("started".to_string()),
         Some(summarize_value(&call.args)),
     );
+    turn.record_tool_args(&call.id, call.args.clone());
     emit_tool_call_start(ctx, agent, &call).await?;
 
     let parsed = match AgentAsToolCall::from_args(call.id.clone(), &call.args) {
@@ -3661,6 +3718,7 @@ async fn handle_bounded_agent_as_tool(
                 Some("completed".to_string()),
                 Some(summarize_text(&result)),
             );
+            turn.record_tool_output(&parsed.tool_call_id, result.clone());
             emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &result).await?;
             Ok(AgentAsToolOutcome::Continue(result))
         }
@@ -5831,6 +5889,35 @@ mod tests {
         assert!(result.output.contains("MCP server"), "{}", result.output);
     }
 
+    #[test]
+    fn turn_data_persists_full_tool_context() {
+        let mut turn = TurnData::default();
+        turn.record_tool_start(
+            Some("call-1".to_string()),
+            Some("Read".to_string()),
+            Some("started".to_string()),
+            Some("{\"file_path\":\"note.txt\"}".to_string()),
+        );
+        turn.record_tool_args("call-1", json!({"file_path": "note.txt"}));
+        turn.record_tool_result(
+            Some("call-1".to_string()),
+            Some("Read".to_string()),
+            Some("completed".to_string()),
+            Some("summary".to_string()),
+        );
+        turn.record_tool_output("call-1", "complete file contents".to_string());
+
+        let payload: Value = serde_json::from_str(&turn.to_content_json().unwrap()).unwrap();
+        assert_eq!(
+            payload["tool_calls"][0]["args"],
+            json!({"file_path": "note.txt"})
+        );
+        assert_eq!(
+            payload["tool_calls"][0]["result"],
+            "complete file contents"
+        );
+    }
+
     fn human_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {
         ConversationMessage {
             id: Uuid::new_v4().to_string(),
@@ -5843,6 +5930,7 @@ mod tests {
             dispatch_id: None,
             reply_to_message_id: None,
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
         }
     }
 
@@ -5858,6 +5946,7 @@ mod tests {
             dispatch_id: None,
             reply_to_message_id: None,
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
         }
     }
 

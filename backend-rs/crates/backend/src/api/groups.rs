@@ -45,7 +45,16 @@ const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, anno
 const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id, \
      group_agents.display_name, agents.name AS agent_name, group_agents.role, \
      group_agents.topology_role, group_agents.speaking_order, group_agents.response_mode, \
-     group_agents.context_scope_json, group_agents.status, group_agents.joined_at";
+     group_agents.context_scope_json, group_agents.status, group_agents.joined_at, \
+     (SELECT json_extract(messages.content_json, '$.context_usage') \
+      FROM messages \
+      WHERE messages.group_id = group_agents.group_id \
+        AND messages.sender_type = 'agent' \
+        AND messages.sender_id = group_agents.agent_id \
+        AND messages.status = 'visible' \
+        AND json_type(messages.content_json, '$.context_usage') = 'object' \
+      ORDER BY messages.created_at DESC, messages.seq DESC, messages.id DESC \
+      LIMIT 1) AS context_usage_json";
 
 const GROUP_MEMBER_COLUMNS: &str = "group_members.group_id, group_members.user_id, \
      users.name AS user_name, group_members.role, group_members.status, \
@@ -670,6 +679,7 @@ struct GroupAgentRow {
     context_scope_json: Option<String>,
     status: String,
     joined_at: String,
+    context_usage_json: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -771,6 +781,11 @@ impl From<GroupAgentRow> for GroupAgentResponse {
     fn from(row: GroupAgentRow) -> Self {
         let id = format!("{}:{}", row.group_id, row.agent_id);
         let workspace_mode = WorkspaceMode::from_context_scope(row.context_scope_json.as_deref());
+        let context_usage = row
+            .context_usage_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .filter(Value::is_object);
         Self {
             id,
             group_id: row.group_id,
@@ -782,7 +797,7 @@ impl From<GroupAgentRow> for GroupAgentResponse {
             response_mode: row.response_mode,
             workspace_mode: workspace_mode.as_str().to_string(),
             share_group_workspace: workspace_mode.uses_group_workspace(),
-            context_usage: None,
+            context_usage,
             status: row.status,
             joined_at: row.joined_at,
         }

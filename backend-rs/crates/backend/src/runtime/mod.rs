@@ -13,7 +13,9 @@ pub mod group_scheduler;
 pub mod sequence;
 pub mod workspace_scope;
 
-pub use group::{run_group_turn, RuntimeServices, TurnOutcome, TurnRequest};
+pub use group::{
+    run_group_turn, run_group_turn_with_stream_id, RuntimeServices, TurnOutcome, TurnRequest,
+};
 
 // Re-export the stream event contract so integration tests (which link only
 // against this crate) can name the shared types without depending on the domain

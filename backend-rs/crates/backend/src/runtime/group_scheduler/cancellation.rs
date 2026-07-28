@@ -135,6 +135,26 @@ impl ActiveTurnRegistry {
         true
     }
 
+    /// Signal every runtime currently registered for one thread.
+    pub async fn cancel_thread(&self, thread_id: &str) -> usize {
+        let cancellations = self
+            .active_turns
+            .lock()
+            .await
+            .get(thread_id)
+            .map(|turns| {
+                turns
+                    .values()
+                    .map(|turn| turn.cancellation.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for cancellation in &cancellations {
+            cancellation.cancel();
+        }
+        cancellations.len()
+    }
+
     /// Remove only the exact registration owned by the completed runtime task.
     pub async fn remove(&self, active_turn: &ActiveTurn) -> bool {
         let mut active_turns = self.active_turns.lock().await;
