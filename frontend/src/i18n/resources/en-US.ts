@@ -112,6 +112,7 @@ export const enUS = {
     openingWorkspace: 'Opening workspace…',
   },
   chat: {
+    gitActions: { expandDiff: 'Expand diff', collapseDiff: 'Collapse diff', stagedCount_one: '{{formattedCount}} staged', stagedCount_other: '{{formattedCount}} staged' },
     direct: {
       pickerTitle: 'Start a chat',
       pickerDescription: 'Choose an Agent for a new independent chat.',

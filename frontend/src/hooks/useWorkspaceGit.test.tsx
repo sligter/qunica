@@ -4,8 +4,11 @@ import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  useCreateGroupWorkspaceGitBranch,
   usePullGroupWorkspaceGit,
+  useStageGroupWorkspaceGit,
   useSwitchGroupWorkspaceGitBranch,
+  workspaceGitQueryKey,
 } from '@/hooks/useWorkspaceGit'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
@@ -70,5 +73,38 @@ describe('workspace Git mutations', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['direct-chats', 'chat-1', 'workspace-files'],
     })
+  })
+
+  it('stores a returned Git status immediately after staging', async () => {
+    const client = new QueryClient()
+    const status = { available: true, files: [] }
+    mockedFetchJson.mockResolvedValueOnce(status as never)
+    const mutation = renderHook(
+      () => useStageGroupWorkspaceGit('group-1'),
+      { wrapper: wrapper(client) },
+    )
+
+    await act(async () => {
+      await mutation.result.current.mutateAsync({ paths: [] })
+    })
+
+    expect(client.getQueryData(workspaceGitQueryKey('group-1'))).toBe(status)
+  })
+
+  it('does not replace Git status with a branch-list response', async () => {
+    const client = new QueryClient()
+    const status = { available: true, files: [] }
+    client.setQueryData(workspaceGitQueryKey('group-1'), status)
+    mockedFetchJson.mockResolvedValueOnce({ branches: [] } as never)
+    const mutation = renderHook(
+      () => useCreateGroupWorkspaceGitBranch('group-1'),
+      { wrapper: wrapper(client) },
+    )
+
+    await act(async () => {
+      await mutation.result.current.mutateAsync({ name: 'feature' })
+    })
+
+    expect(client.getQueryData(workspaceGitQueryKey('group-1'))).toBe(status)
   })
 })

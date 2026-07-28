@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceGitTab } from '@/components/chat/WorkspaceGitTab'
@@ -8,7 +8,14 @@ import i18n from '@/i18n'
 import type { GroupWorkspaceGitDiff, GroupWorkspaceGitStatus } from '@/types/api'
 
 const rawPath = 'src/RAW_原文.ts'
-const rawPatch = 'diff --git a/src/RAW_原文.ts b/src/RAW_原文.ts\n+RAW_DIFF_原文'
+const rawPatch = [
+  'diff --git a/src/RAW_原文.ts b/src/RAW_原文.ts',
+  '--- a/src/RAW_原文.ts',
+  '+++ b/src/RAW_原文.ts',
+  '@@ -1 +1 @@',
+  '-OLD_RAW_DIFF_原文',
+  '+NEW_RAW_DIFF_原文',
+].join('\n')
 
 const status: GroupWorkspaceGitStatus = {
   available: true,
@@ -75,7 +82,56 @@ describe('WorkspaceGitTab i18n', () => {
     expect(screen.getByText('12,345 ahead, 1 behind')).toBeVisible()
     expect(screen.getByRole('button', { name: `Unstage ${rawPath}` })).toBeVisible()
     expect(screen.getByRole('button', { name: `Stage ${rawPath}` })).toBeVisible()
-    expect(container.querySelector('pre')?.textContent).toBe(rawPatch)
+    expect(screen.getByText('origin_RAW / 1 staged')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Stash worktree changes' })).not.toBeInTheDocument()
+    expect(container.querySelector('pre')).toHaveTextContent('+NEW_RAW_DIFF_原文')
+  })
+
+  it('enables the commit message as soon as staging returns the updated status', async () => {
+    const unstagedStatus: GroupWorkspaceGitStatus = {
+      ...status,
+      dirty_counts: { ...status.dirty_counts, staged: 0 },
+      files: status.files.map((file) => ({ ...file, staged: false })),
+    }
+    const stagedStatus: GroupWorkspaceGitStatus = {
+      ...status,
+      files: status.files.map((file) => ({ ...file, unstaged: false })),
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(stagedStatus), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { container } = renderTab(unstagedStatus)
+
+    const commitMessage = screen.getByRole('textbox', { name: 'Commit message' })
+    expect(commitMessage).toBeDisabled()
+    fireEvent.click(within(container.querySelector('header')!).getByRole('button', { name: 'Stage all' }))
+
+    await waitFor(() => expect(commitMessage).toBeEnabled())
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/workspace-git/stage'),
+      expect.objectContaining({ body: '{"paths":[]}' }),
+    )
+  })
+
+  it('highlights patch lines and expands the diff across the workspace panel', () => {
+    const { container } = renderTab()
+
+    expect(container.querySelector('[data-diff-line="addition"]')).toHaveTextContent('+NEW_RAW_DIFF')
+    expect(container.querySelector('[data-diff-line="deletion"]')).toHaveTextContent('-OLD_RAW_DIFF')
+    expect(container.querySelector('[data-diff-line="hunk"]')).toHaveTextContent('@@ -1 +1 @@')
+    expect(container.querySelector('[data-diff-line="meta"]')).toHaveTextContent('diff --git')
+
+    const toggle = screen.getByRole('button', { name: 'Expand diff' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveAccessibleName('Collapse diff')
+    expect(screen.queryByRole('button', { name: `Stage ${rawPath}` })).not.toBeInTheDocument()
   })
 
   it('renders Chinese Git framing while preserving branch, path, and diff data', async () => {
@@ -86,7 +142,8 @@ describe('WorkspaceGitTab i18n', () => {
     expect(screen.getByText('领先 12,345，落后 1')).toBeVisible()
     expect(screen.getByRole('button', { name: `取消暂存 ${rawPath}` })).toBeVisible()
     expect(screen.getByRole('button', { name: `暂存 ${rawPath}` })).toBeVisible()
-    expect(container.querySelector('pre')?.textContent).toBe(rawPatch)
+    expect(screen.getByText('origin_RAW / 1 项暂存')).toBeVisible()
+    expect(container.querySelector('pre')).toHaveTextContent('+NEW_RAW_DIFF_原文')
   })
 
   it('frames an unknown repository state while preserving the raw wire value', async () => {

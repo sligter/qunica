@@ -74,10 +74,18 @@ pub async fn stage(root: &Path, paths: &[String]) -> Result<(), GitOperationErro
 }
 
 pub async fn unstage(root: &Path, paths: &[String]) -> Result<(), GitOperationError> {
-    let args = if paths.is_empty() {
-        git_args(&["reset", "--", "."])
+    let targets = if paths.is_empty() {
+        &[".".to_string()][..]
     } else {
-        git_args_with_paths(&["reset", "--"], paths)
+        paths
+    };
+    let args = if has_head(root).await? {
+        git_args_with_paths(&["restore", "--staged", "--"], targets)
+    } else {
+        git_args_with_paths(
+            &["rm", "--cached", "-f", "-r", "--ignore-unmatch", "--"],
+            targets,
+        )
     };
     run_git_or_error(root, &args, "git unstage failed").await
 }

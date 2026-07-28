@@ -3080,6 +3080,42 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     assert_eq!(git_status_file(&staged_all, "tracked.txt")["status"], "M ");
     assert_eq!(git_status_file(&staged_all, "new.txt")["status"], "A ");
 
+    let (status, unstaged_all) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "unstage"),
+            &token,
+            json!({"paths": []}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        git_status_file(&unstaged_all, "tracked.txt")["status"],
+        " M"
+    );
+    assert_eq!(git_status_file(&unstaged_all, "new.txt")["status"], "??");
+    assert_eq!(
+        std::fs::read(root.path().join("tracked.txt")).unwrap(),
+        b"changed"
+    );
+    assert_eq!(std::fs::read(root.path().join("new.txt")).unwrap(), b"new");
+
+    let (status, staged_all) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "stage"),
+            &token,
+            json!({"paths": []}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(git_status_file(&staged_all, "tracked.txt")["status"], "M ");
+    assert_eq!(git_status_file(&staged_all, "new.txt")["status"], "A ");
+
     let (status, committed) = send(
         &app,
         authed_json(
@@ -3099,6 +3135,49 @@ async fn workspace_git_status_stage_unstage_and_commit() {
     assert_eq!(committed["dirty_counts"]["unstaged"], 0);
     assert_eq!(committed["dirty_counts"]["untracked"], 0);
     assert_eq!(committed["dirty_counts"]["conflicted"], 0);
+
+    let (initial_root, initial_workspace) =
+        create_local_workspace(&app, &token, "Initial Workspace Git").await;
+    let initial_group =
+        create_group_with_initial_agents(&app, &token, &initial_workspace, "mesh", &[]).await;
+    let initial_group_id = initial_group["id"].as_str().unwrap();
+    run_git(initial_root.path(), &["init"]);
+    std::fs::write(initial_root.path().join("first.txt"), b"first").unwrap();
+
+    let (status, staged) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(initial_group_id, "stage"),
+            &token,
+            json!({"paths": []}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(git_status_file(&staged, "first.txt")["status"], "A ");
+    std::fs::write(
+        initial_root.path().join("first.txt"),
+        b"changed after stage",
+    )
+    .unwrap();
+
+    let (status, unstaged) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(initial_group_id, "unstage"),
+            &token,
+            json!({"paths": []}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(git_status_file(&unstaged, "first.txt")["status"], "??");
+    assert_eq!(
+        std::fs::read(initial_root.path().join("first.txt")).unwrap(),
+        b"changed after stage"
+    );
 }
 
 #[tokio::test]

@@ -9,7 +9,9 @@ import {
   GitCommitHorizontal,
   History,
   LoaderCircle,
+  Maximize2,
   Minus,
+  Minimize2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -45,10 +47,8 @@ import {
   useGroupWorkspaceGitStatus,
   useIgnoreGroupWorkspaceGit,
   useInitGroupWorkspaceGit,
-  usePopGroupWorkspaceGitStash,
   usePullGroupWorkspaceGit,
   usePushGroupWorkspaceGit,
-  usePushGroupWorkspaceGitStash,
   useSetGroupWorkspaceGitRemote,
   useStageGroupWorkspaceGit,
   useUnstageGroupWorkspaceGit,
@@ -73,6 +73,7 @@ type ReviewMode = 'changes' | 'history'
 type ChangeSelection = { path: string; mode: 'worktree' | 'staged' } | null
 type RemoteOperation = (() => Promise<unknown>) | null
 type RepositoryState = NonNullable<GroupWorkspaceGitStatus['state']>
+type DiffLineKind = 'addition' | 'deletion' | 'hunk' | 'meta' | 'context'
 
 const repositoryStateKeys = {
   conflict: 'workspace.gitPanel.conflicts',
@@ -115,6 +116,48 @@ function statusSummary(
         count: status.files.length,
         formattedCount: formatNumber(status.files.length, language),
       })
+}
+
+function diffLineKind(line: string): DiffLineKind {
+  if (line.startsWith('@@')) return 'hunk'
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'addition'
+  if (line.startsWith('-') && !line.startsWith('---')) return 'deletion'
+  if (
+    line.startsWith('diff --git')
+    || line.startsWith('index ')
+    || line.startsWith('---')
+    || line.startsWith('+++')
+  ) return 'meta'
+  return 'context'
+}
+
+const diffLineClassNames: Record<DiffLineKind, string> = {
+  addition: 'border-l-2 border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  deletion: 'border-l-2 border-red-500 bg-red-500/10 text-red-700 dark:text-red-300',
+  hunk: 'border-l-2 border-sky-500 bg-sky-500/10 text-sky-700 dark:text-sky-300',
+  meta: 'bg-muted/50 text-muted-foreground',
+  context: '',
+}
+
+function DiffPatch({ content, highlight }: { content: string; highlight: boolean }) {
+  return (
+    <pre className="min-h-0 flex-1 overflow-auto bg-muted/15 py-3 font-mono text-2xs leading-5">
+      <code className="block w-max min-w-full">
+        {content.split('\n').map((line, index) => {
+          const kind = highlight ? diffLineKind(line) : 'context'
+          return (
+            <span
+              key={index}
+              data-diff-line={kind}
+              className={cn('block min-h-5 w-full px-3', diffLineClassNames[kind])}
+            >
+              {line || ' '}
+            </span>
+          )
+        })}
+      </code>
+    </pre>
+  )
 }
 
 function ChangeSection({
@@ -248,6 +291,7 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const [historySkip, setHistorySkip] = useState(0)
   const [history, setHistory] = useState<GroupWorkspaceGitCommitSummary[]>([])
   const [branchFromCommit, setBranchFromCommit] = useState('')
+  const [diffExpanded, setDiffExpanded] = useState(false)
 
   const status = useGroupWorkspaceGitStatus(groupId)
   const diff = useGroupWorkspaceGitDiff(groupId, selection?.mode ?? 'worktree', selection?.path)
@@ -265,15 +309,13 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const discard = useDiscardGroupWorkspaceGit(groupId, scope)
   const ignore = useIgnoreGroupWorkspaceGit(groupId)
   const setRemote = useSetGroupWorkspaceGitRemote(groupId)
-  const stashPush = usePushGroupWorkspaceGitStash(groupId, scope)
-  const stashPop = usePopGroupWorkspaceGitStash(groupId, scope)
   const createBranchFromCommit = useCreateGroupWorkspaceGitBranchFromCommit(groupId, selectedCommit)
 
   const hasGroupId = Boolean(groupId)
   const files = status.data?.files ?? []
   const staged = files.filter((file) => file.staged)
   const unstaged = files.filter((file) => file.unstaged || file.untracked)
-  const busy = stage.isPending || unstage.isPending || commitChanges.isPending || generateMessage.isPending || pull.isPending || push.isPending || fetch.isPending || init.isPending || discard.isPending || ignore.isPending || setRemote.isPending || stashPush.isPending || stashPop.isPending || createBranchFromCommit.isPending
+  const busy = stage.isPending || unstage.isPending || commitChanges.isPending || generateMessage.isPending || pull.isPending || push.isPending || fetch.isPending || init.isPending || discard.isPending || ignore.isPending || setRemote.isPending || createBranchFromCommit.isPending
   const canUseGit = hasGroupId && status.data?.available === true && !busy
   const currentDiff = mode === 'history' && selectedCommit ? commitDiff : diff
 
@@ -281,6 +323,7 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
     setHistorySkip(0)
     setHistory([])
     setSelectedCommit(undefined)
+    setDiffExpanded(false)
   }, [groupId])
 
   useEffect(() => {
@@ -333,8 +376,7 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
           </Button>
           <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => pull.mutateAsync({}), { remote: true })} aria-label={t('chat:workspace.gitPanel.pullAria')} title={t('chat:workspace.gitPanel.pull')}><ArrowDown className="h-3.5 w-3.5" /></Button>
           <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => push.mutateAsync({}), { remote: true })} aria-label={t('chat:workspace.gitPanel.pushAria')} title={t('chat:workspace.gitPanel.push')}><ArrowUp className="h-3.5 w-3.5" /></Button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => stashPush.mutateAsync({}))} aria-label={t('chat:workspace.gitPanel.stashAria')} title={t('chat:workspace.gitPanel.stash')}><GitCommitHorizontal className="h-3.5 w-3.5" /></Button>
-          {status.data?.stash_count ? <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => stashPop.mutateAsync({}))} aria-label={t('chat:workspace.gitPanel.popStashAria')} title={t('chat:workspace.gitPanel.popStash')}><RotateCcw className="h-3.5 w-3.5" /></Button> : null}
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit || unstaged.length === 0} onClick={() => run(() => stage.mutateAsync({ paths: [] }))} aria-label={t('chat:workspace.gitPanel.stageAll')} title={t('chat:workspace.gitPanel.stageAll')}><Plus className="h-3.5 w-3.5" /></Button>
           <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!hasGroupId || status.isFetching} onClick={() => void status.refetch()} aria-label={t('chat:workspace.gitPanel.refreshAria')} title={t('chat:workspace.refresh')}><RotateCcw className={cn('h-3.5 w-3.5', status.isFetching && 'animate-spin')} /></Button>
         </div>
       </header>
@@ -348,23 +390,51 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
         <div className="flex shrink-0 border-b border-border px-2">
           <button type="button" className={cn('flex h-8 items-center gap-1 border-b-2 px-2 text-xs', mode === 'changes' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground')} onClick={() => setMode('changes')}><FileDiff className="h-3.5 w-3.5" /> {t('chat:workspace.changes')}</button>
           <button type="button" className={cn('flex h-8 items-center gap-1 border-b-2 px-2 text-xs', mode === 'history' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground')} onClick={() => setMode('history')}><History className="h-3.5 w-3.5" /> {t('chat:workspace.gitPanel.history')}</button>
-          <span className="ml-auto self-center text-[10px] text-muted-foreground">{status.data.remote_name ?? t('chat:workspace.gitPanel.noRemote')}{status.data.stash_count ? ` / ${t('chat:workspace.gitPanel.stashCount', { count: status.data.stash_count, formattedCount: formatNumber(status.data.stash_count, language) })}` : ''}</span>
+          <span className="ml-auto self-center text-[10px] text-muted-foreground">{status.data.remote_name ?? t('chat:workspace.gitPanel.noRemote')}{status.data.dirty_counts.staged ? ` / ${t('chat:gitActions.stagedCount', { count: status.data.dirty_counts.staged, formattedCount: formatNumber(status.data.dirty_counts.staged, language) })}` : ''}</span>
         </div>
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(12rem,1fr)_minmax(12rem,1fr)] min-[500px]:grid-cols-[minmax(13rem,38%)_1fr] min-[500px]:grid-rows-1">
-          <div className="min-h-0 overflow-y-auto border-b border-border min-[500px]:border-b-0 min-[500px]:border-r">
-            {mode === 'changes' ? <>
-              <ChangeSection title={t('chat:workspace.staged')} files={staged} selection={selection} action="unstage" disabled={!canUseGit} onSelect={setSelection} onAction={(paths) => run(() => unstage.mutateAsync({ paths }))} />
-              <ChangeSection title={t('chat:workspace.changes')} files={unstaged} selection={selection} action="stage" disabled={!canUseGit} onSelect={setSelection} onAction={(paths) => run(() => stage.mutateAsync({ paths }))} onDiscard={setDiscardTarget} onIgnore={(file) => run(() => ignore.mutateAsync({ path: file.path }))} />
-              {files.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{t('chat:workspace.noChanges')}</p> : <Button type="button" variant="ghost" size="sm" className="m-2 h-7 text-xs text-destructive" disabled={!canUseGit} onClick={() => setDiscardAllOpen(true)}><Trash2 className="h-3.5 w-3.5" /> {t('chat:workspace.gitPanel.discardAllChanges')}</Button>}
-            </> : <>
-              {log.isLoading && history.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{t('chat:workspace.gitPanel.loadingHistory')}</p> : null}
-              {history.map((item) => <button key={item.sha} type="button" className={cn('flex w-full min-w-0 flex-col gap-0.5 border-b border-border px-3 py-2 text-left hover:bg-muted/70', selectedCommit === item.sha && 'bg-muted')} onClick={() => setSelectedCommit(item.sha)}><span className="truncate text-xs font-medium">{item.subject}</span><span className="truncate font-mono text-[10px] text-muted-foreground">{item.short_sha} / {item.author_name}</span></button>)}
-              {log.data?.has_more ? <Button type="button" variant="ghost" size="sm" className="m-2 h-7 text-xs" disabled={log.isFetching} onClick={() => setHistorySkip((value) => value + 50)}>{t('chat:workspace.gitPanel.loadMore')}</Button> : null}
-            </>}
-          </div>
+        <div className={cn(
+          'grid min-h-0 flex-1',
+          diffExpanded
+            ? 'grid-cols-1 grid-rows-1'
+            : 'grid-rows-[minmax(12rem,1fr)_minmax(12rem,1fr)] min-[500px]:grid-cols-[minmax(13rem,38%)_1fr] min-[500px]:grid-rows-1',
+        )}>
+          {!diffExpanded ? (
+            <div className="min-h-0 overflow-y-auto border-b border-border min-[500px]:border-b-0 min-[500px]:border-r">
+              {mode === 'changes' ? <>
+                <ChangeSection title={t('chat:workspace.staged')} files={staged} selection={selection} action="unstage" disabled={!canUseGit} onSelect={setSelection} onAction={(paths) => run(() => unstage.mutateAsync({ paths }))} />
+                <ChangeSection title={t('chat:workspace.changes')} files={unstaged} selection={selection} action="stage" disabled={!canUseGit} onSelect={setSelection} onAction={(paths) => run(() => stage.mutateAsync({ paths }))} onDiscard={setDiscardTarget} onIgnore={(file) => run(() => ignore.mutateAsync({ path: file.path }))} />
+                {files.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{t('chat:workspace.noChanges')}</p> : <Button type="button" variant="ghost" size="sm" className="m-2 h-7 text-xs text-destructive" disabled={!canUseGit} onClick={() => setDiscardAllOpen(true)}><Trash2 className="h-3.5 w-3.5" /> {t('chat:workspace.gitPanel.discardAllChanges')}</Button>}
+              </> : <>
+                {log.isLoading && history.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{t('chat:workspace.gitPanel.loadingHistory')}</p> : null}
+                {history.map((item) => <button key={item.sha} type="button" className={cn('flex w-full min-w-0 flex-col gap-0.5 border-b border-border px-3 py-2 text-left hover:bg-muted/70', selectedCommit === item.sha && 'bg-muted')} onClick={() => setSelectedCommit(item.sha)}><span className="truncate text-xs font-medium">{item.subject}</span><span className="truncate font-mono text-[10px] text-muted-foreground">{item.short_sha} / {item.author_name}</span></button>)}
+                {log.data?.has_more ? <Button type="button" variant="ghost" size="sm" className="m-2 h-7 text-xs" disabled={log.isFetching} onClick={() => setHistorySkip((value) => value + 50)}>{t('chat:workspace.gitPanel.loadMore')}</Button> : null}
+              </>}
+            </div>
+          ) : null}
           <section className="flex min-h-0 flex-col overflow-hidden">
             {mode === 'history' && selectedCommit && commit.data ? <div className="shrink-0 border-b border-border px-3 py-2"><div className="flex items-start gap-2"><GitCommitHorizontal className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" /><div className="min-w-0"><p className="truncate text-xs font-medium">{commit.data.subject}</p><p className="truncate text-[10px] text-muted-foreground">{commit.data.short_sha} / {commit.data.author_name} / +{formatNumber(commit.data.insertions, language)} -{formatNumber(commit.data.deletions, language)}</p></div></div><p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{commit.data.body}</p><div className="mt-2 flex gap-1"><Input value={branchFromCommit} onChange={(event) => setBranchFromCommit(event.target.value)} placeholder={t('chat:workspace.gitPanel.branchFromCommit')} className="h-7 text-xs" aria-label={t('chat:workspace.gitPanel.branchNameFromCommit')} /><Button type="button" variant="outline" size="sm" className="h-7 shrink-0 text-xs" disabled={!canUseGit || !branchFromCommit.trim()} onClick={() => run(() => createBranchFromCommit.mutateAsync({ name: branchFromCommit.trim() }).then(() => setBranchFromCommit('')))}>{t('chat:workspace.gitPanel.create')}</Button></div></div> : null}
-            <div className="flex min-h-0 flex-1 flex-col"><div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5"><span className="truncate text-2xs text-muted-foreground">{mode === 'history' ? selectedCommit ? t('chat:workspace.gitPanel.commitDiff') : t('chat:workspace.gitPanel.selectCommit') : selection?.path ?? t('chat:workspace.gitPanel.selectChangedFile')}</span>{currentDiff.data?.truncated ? <span className="text-[10px] text-muted-foreground">{t('chat:workspace.gitPanel.truncated')}</span> : null}</div><pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-2xs leading-5">{currentDiff.isLoading ? t('chat:workspace.gitPanel.loadingDiff') : currentDiff.data?.patch || t('chat:workspace.gitPanel.noDiff')}</pre></div>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1">
+                <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">{mode === 'history' ? selectedCommit ? t('chat:workspace.gitPanel.commitDiff') : t('chat:workspace.gitPanel.selectCommit') : selection?.path ?? t('chat:workspace.gitPanel.selectChangedFile')}</span>
+                {currentDiff.data?.truncated ? <span className="text-[10px] text-muted-foreground">{t('chat:workspace.gitPanel.truncated')}</span> : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  onClick={() => setDiffExpanded((value) => !value)}
+                  aria-label={t(diffExpanded ? 'chat:gitActions.collapseDiff' : 'chat:gitActions.expandDiff')}
+                  aria-expanded={diffExpanded}
+                  title={t(diffExpanded ? 'chat:gitActions.collapseDiff' : 'chat:gitActions.expandDiff')}
+                >
+                  {diffExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+              <DiffPatch
+                content={currentDiff.isLoading ? t('chat:workspace.gitPanel.loadingDiff') : currentDiff.data?.patch || t('chat:workspace.gitPanel.noDiff')}
+                highlight={!currentDiff.isLoading && Boolean(currentDiff.data?.patch)}
+              />
+            </div>
             {mode === 'changes' ? <form className="shrink-0 border-t border-border p-2" onSubmit={(event) => { event.preventDefault(); if (commitMessage.trim()) run(() => commitChanges.mutateAsync({ message: commitMessage.trim() }), { clearCommit: true }) }}><div className="flex items-end gap-1"><Textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={t('chat:workspace.commitMessage')} className="min-h-8 resize-none py-1.5 text-xs" rows={2} disabled={!canUseGit || staged.length === 0} aria-label={t('chat:workspace.commitMessage')} /><div className="flex shrink-0 flex-col gap-1"><Button type="button" variant="outline" size="icon" className="h-7 w-7" disabled={!canUseGit || staged.length === 0} onClick={() => run(() => generateMessage.mutateAsync().then((result) => setCommitMessage(result.message)))} aria-label={t('chat:workspace.gitPanel.generateCommitMessage')} title={t('chat:workspace.gitPanel.generateCommitMessage')}><Sparkles className={cn('h-3.5 w-3.5', generateMessage.isPending && 'animate-pulse')} /></Button><Button type="submit" size="icon" className="h-7 w-7" disabled={!canUseGit || staged.length === 0 || !commitMessage.trim()} aria-label={t('chat:workspace.gitPanel.commitStaged')} title={t('chat:workspace.commit')}><Check className="h-3.5 w-3.5" /></Button></div></div></form> : null}
           </section>
         </div>

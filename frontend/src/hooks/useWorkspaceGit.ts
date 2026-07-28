@@ -71,6 +71,13 @@ function requireGroupId(groupId: string | undefined) {
   return groupId
 }
 
+function isWorkspaceGitStatus(value: unknown): value is GroupWorkspaceGitStatus {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as GroupWorkspaceGitStatus).available === 'boolean'
+    && Array.isArray((value as GroupWorkspaceGitStatus).files)
+}
+
 export function useGroupWorkspaceGitStatus(groupId: string | undefined) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
@@ -189,11 +196,15 @@ function useWorkspaceGitMutation<TBody, TResult = GroupWorkspaceGitStatus>(
         method: 'POST',
         body,
       }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: workspaceGitQueryKey(groupId),
-        exact: true,
-      })
+    onSuccess: (result) => {
+      if (isWorkspaceGitStatus(result)) {
+        queryClient.setQueryData(workspaceGitQueryKey(groupId), result)
+      } else {
+        void queryClient.invalidateQueries({
+          queryKey: workspaceGitQueryKey(groupId),
+          exact: true,
+        })
+      }
       if (options.invalidateBranches) {
         void queryClient.invalidateQueries({ queryKey: workspaceGitBranchesQueryKey(groupId) })
         void queryClient.invalidateQueries({ queryKey: workspaceGitLogQueryKey(groupId) })
@@ -269,7 +280,7 @@ export function useFetchGroupWorkspaceGit(groupId: string | undefined) {
 }
 
 export function useCreateGroupWorkspaceGitBranch(groupId: string | undefined) {
-  return useWorkspaceGitMutation<GroupWorkspaceGitBranchCreateRequest>(groupId, 'branches', {
+  return useWorkspaceGitMutation<GroupWorkspaceGitBranchCreateRequest, GroupWorkspaceGitBranches>(groupId, 'branches', {
     invalidateBranches: true,
   })
 }
@@ -285,13 +296,13 @@ export function useSwitchGroupWorkspaceGitBranch(
 }
 
 export function useRenameGroupWorkspaceGitBranch(groupId: string | undefined) {
-  return useWorkspaceGitMutation<GroupWorkspaceGitBranchRenameRequest>(groupId, 'branches/rename', {
+  return useWorkspaceGitMutation<GroupWorkspaceGitBranchRenameRequest, GroupWorkspaceGitBranches>(groupId, 'branches/rename', {
     invalidateBranches: true,
   })
 }
 
 export function useDeleteGroupWorkspaceGitBranch(groupId: string | undefined) {
-  return useWorkspaceGitMutation<GroupWorkspaceGitBranchDeleteRequest>(groupId, 'branches/delete', {
+  return useWorkspaceGitMutation<GroupWorkspaceGitBranchDeleteRequest, GroupWorkspaceGitBranches>(groupId, 'branches/delete', {
     invalidateBranches: true,
   })
 }
