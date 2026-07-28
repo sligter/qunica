@@ -2667,6 +2667,60 @@ async fn group_stream_executes_native_tool_and_continues_model() {
 }
 
 #[tokio::test]
+async fn group_stream_continues_past_24_tool_rounds() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "unbounded-tool-loop@example.com").await;
+    let owner = owner_id(&state, "unbounded-tool-loop@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "ok").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let mut bodies = Vec::new();
+    for round in 0..25 {
+        let call_id = format!("call_read_{round}");
+        bodies.push(tool_body(vec![(
+            call_id.as_str(),
+            "Read",
+            json!({"file_path": "note.txt"}),
+        )]));
+    }
+    bodies.push(text_body("Finished after 25 tool rounds."));
+
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(bodies).await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "keep reading note.txt"}),
+    )
+    .await;
+
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::ToolCallResult).len(),
+        25
+    );
+    let messages = payloads_of_kind(&events, StreamEventKind::AgentMessage);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content"], "Finished after 25 tool rounds.");
+}
+
+#[tokio::test]
 async fn group_stream_runs_acp_agent_without_llm_provider() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "group-acp@example.com").await;

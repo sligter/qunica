@@ -84,7 +84,6 @@ use crate::tools::{
 /// holding up every turn indefinitely.
 const MCP_RESOLVE_BUDGET: Duration = Duration::from_secs(30);
 
-const MAX_TOOL_ROUNDS: usize = 24;
 const MAX_NATIVE_IMAGES_PER_REQUEST: usize = 4;
 const MAX_NATIVE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_NATIVE_IMAGE_TOTAL_BYTES: u64 = 12 * 1024 * 1024;
@@ -2614,7 +2613,7 @@ async fn run_agent_turn(
     let checkpoint_interrupted = handoff_depth == 0;
     let mut turn = TurnData::default();
 
-    for _ in 0..MAX_TOOL_ROUNDS {
+    loop {
         let request = ChatRequest {
             model: model.clone(),
             messages: messages.clone(),
@@ -2821,17 +2820,6 @@ async fn run_agent_turn(
             return Ok(AgentRunResult::WaitingForUser);
         }
     }
-
-    content.push_str("\n\nTool loop stopped after repeated tool calls without a final answer.");
-    finish_agent_content(
-        ctx,
-        agent,
-        group.proactive_mode,
-        content,
-        &turn,
-        checkpoint_interrupted,
-    )
-    .await
 }
 
 async fn maybe_persist_interrupted_agent(
