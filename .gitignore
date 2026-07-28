@@ -6,7 +6,6 @@ target/
 *.log
 .pnpm-debug.log*
 *.tsbuildinfo
-.trellis/
 .claude/
 .worktrees/
 docs/
@@ -49,6 +48,5 @@ data/
 frontend/src-tauri/gen/
 
 # Local agent tooling and scratch state
-.superpowers/
 .tmp-liveagent-git/
 .build-desktop.*.pid
