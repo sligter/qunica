@@ -114,6 +114,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     openingWorkspace: '正在打开工作区…',
   },
   chat: {
+    gitActions: { expandDiff: '展开差异', collapseDiff: '收起差异', stagedCount_one: '{{formattedCount}} 项暂存', stagedCount_other: '{{formattedCount}} 项暂存' },
     direct: {
       pickerTitle: '\u5f00\u59cb\u79c1\u804a',
       pickerDescription: '\u9009\u62e9\u4e00\u4e2a Agent \u521b\u5efa\u72ec\u7acb\u4f1a\u8bdd\u3002',
