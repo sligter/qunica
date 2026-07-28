@@ -616,7 +616,10 @@ export function useSendMessageStream(
       setError(null)
       clearWarnings(groupId)
       clearToolActivity(groupId)
-      const message = typeof input === 'string' ? { content: input, attachments: [] } : input
+      const message = {
+        ...(typeof input === 'string' ? { content: input, attachments: [] } : input),
+        client_request_id: id,
+      }
 
       try {
         const ctrl = openApiV2SseStream({

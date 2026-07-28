@@ -9,8 +9,9 @@
 //! [`AttachmentAccess`]. Handing an isolated agent a bare relative path would
 //! silently resolve it under a different root.
 
-use crate::llm::ChatMessage;
+use crate::llm::{ChatMessage, ToolCall};
 use serde::Deserialize;
+use serde_json::Value;
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -48,6 +49,18 @@ pub struct ConversationMessage {
     pub dispatch_id: Option<String>,
     pub reply_to_message_id: Option<String>,
     pub attachments: Vec<ConversationAttachment>,
+    pub tool_calls: Vec<ConversationToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConversationToolCall {
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub status: Option<String>,
+    pub args_summary: Option<String>,
+    pub result_summary: Option<String>,
+    pub args: Option<Value>,
+    pub result: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -143,6 +156,11 @@ impl From<ConversationRow> for ConversationMessage {
             } else {
                 attachments_from_content_json(row.content_json.as_deref())
             },
+            tool_calls: if is_agent {
+                tool_calls_from_content_json(row.content_json.as_deref())
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -158,6 +176,18 @@ fn attachments_from_content_json(content_json: Option<&str>) -> Vec<Conversation
         .and_then(|raw| serde_json::from_str::<AttachmentPayload>(raw).ok())
         .filter(|payload| payload.version == 1)
         .map(|payload| payload.attachments)
+        .unwrap_or_default()
+}
+
+fn tool_calls_from_content_json(content_json: Option<&str>) -> Vec<ConversationToolCall> {
+    #[derive(Deserialize)]
+    struct AgentPayload {
+        #[serde(default)]
+        tool_calls: Vec<ConversationToolCall>,
+    }
+    content_json
+        .and_then(|raw| serde_json::from_str::<AgentPayload>(raw).ok())
+        .map(|payload| payload.tool_calls)
         .unwrap_or_default()
 }
 
@@ -180,12 +210,61 @@ pub fn to_llm_messages(
     access: AttachmentAccess,
 ) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
-    messages.extend(rows.iter().map(|row| match &row.actor {
-        ConversationActor::Agent { id, .. } if id == current_agent_id => {
-            ChatMessage::text("assistant", row.content.clone())
+    for row in rows {
+        match &row.actor {
+            ConversationActor::Agent { id, .. } if id == current_agent_id => {
+                let completed_calls: Vec<(ToolCall, String)> = row
+                    .tool_calls
+                    .iter()
+                    .filter_map(|call| {
+                        let id = call.tool_call_id.clone()?;
+                        let name = call.tool_name.clone()?;
+                        let result = call.result.as_ref().or(call.result_summary.as_ref())?;
+                        let args = call.args.clone().unwrap_or_else(|| {
+                            call.args_summary
+                                .as_deref()
+                                .and_then(|raw| serde_json::from_str(raw).ok())
+                                .unwrap_or_else(|| {
+                                    Value::String(call.args_summary.clone().unwrap_or_default())
+                                })
+                        });
+                        let result = call.status.as_deref().map_or_else(
+                            || result.clone(),
+                            |status| format!("status: {status}\n{result}"),
+                        );
+                        Some((
+                            ToolCall {
+                                id,
+                                name,
+                                args,
+                                provider_metadata: None,
+                            },
+                            result,
+                        ))
+                    })
+                    .collect();
+                if !completed_calls.is_empty() {
+                    messages.push(ChatMessage::assistant_tool_calls(
+                        "",
+                        completed_calls
+                            .iter()
+                            .map(|(call, _)| call.clone())
+                            .collect(),
+                    ));
+                    messages.extend(completed_calls.into_iter().map(|(call, result)| {
+                        ChatMessage::tool_result(call.id, call.name, result)
+                    }));
+                }
+                if !row.content.is_empty() || row.tool_calls.is_empty() {
+                    messages.push(ChatMessage::text("assistant", row.content.clone()));
+                }
+            }
+            _ => messages.push(ChatMessage::text(
+                "user",
+                render_untrusted_message(row, access),
+            )),
         }
-        _ => ChatMessage::text("user", render_untrusted_message(row, access)),
-    }));
+    }
     messages
 }
 

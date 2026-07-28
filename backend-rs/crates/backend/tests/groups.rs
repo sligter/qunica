@@ -4225,6 +4225,62 @@ async fn group_agents_add_and_list_return_group_agent_read() {
 }
 
 #[tokio::test]
+async fn group_agents_return_last_context_usage() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "group-agent-usage@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Alpha").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[&agent]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let thread_id = Uuid::new_v4().to_string();
+    let message_id = Uuid::new_v4().to_string();
+    let usage = json!({
+        "input_tokens": 3026,
+        "output_tokens": 18,
+        "total_tokens": 3044,
+        "context_window_tokens": 128000,
+        "output_reserve_tokens": 4096,
+        "ratio": 0.024,
+        "source": "provider",
+    });
+
+    sqlx::query(
+        "INSERT INTO threads \
+         (id, group_id, agent_id, status, next_seq, created_at, updated_at) \
+         VALUES (?, ?, NULL, 'active', 2, '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z')",
+    )
+    .bind(&thread_id)
+    .bind(group_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, \
+          content_json, status, created_at) \
+         VALUES (?, ?, ?, 1, 'agent', ?, 'text', 'reply', ?, 'visible', \
+                 '2026-07-28T00:00:00Z')",
+    )
+    .bind(&message_id)
+    .bind(&thread_id)
+    .bind(group_id)
+    .bind(&agent)
+    .bind(json!({"schema_version": 1, "context_usage": usage}).to_string())
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let (status, rows) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows[0]["context_usage"], usage);
+}
+
+#[tokio::test]
 async fn group_agents_reject_foreign_agent_add() {
     let app = app().await;
     let token_a = register_and_login(&app, "group-agents-owner@example.com").await;
