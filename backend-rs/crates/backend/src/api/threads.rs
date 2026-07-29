@@ -9,7 +9,7 @@ use std::convert::Infallible;
 use ag_swarmer_domain::events::StreamEvent;
 use axum::{
     extract::{Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::sse::{Event, Sse},
     Json,
 };
@@ -112,6 +112,18 @@ pub async fn get(
     Ok(Json(ThreadResponse::from(thread)))
 }
 
+pub async fn cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(thread_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    state.active_turns.cancel_thread(&thread.id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn resume(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -139,7 +151,8 @@ pub async fn resume(
     .await?;
 
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
-    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_active_turn_registry(state.active_turns.clone());
     let request = ResumeRequest {
         group_id: target.group_id,
         thread_id: target.thread_id,

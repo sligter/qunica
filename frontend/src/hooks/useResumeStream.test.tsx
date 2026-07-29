@@ -362,6 +362,34 @@ describe('useResumeStream scheduler events', () => {
     ])
   })
 
+  it('cancels a legacy resume on the server before aborting its stream', async () => {
+    useMessageStore.getState().setHistory('group-1', [
+      { ...interruptedMessage, turn_id: null, dispatch_id: null },
+    ])
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-resumed',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'agent_start',
+      payload: { agent_id: 'agent-1', display_name: 'Agent One' },
+    })
+
+    await act(async () => hook.result.current.cancel())
+
+    expect(mocks.fetchJson).toHaveBeenCalledWith('/threads/thread-1/cancel', {
+      method: 'POST',
+      token: 'token-1',
+    })
+    expect(stream.abort).toHaveBeenCalledTimes(1)
+  })
+
   it('reconciles waiting_for_user to the parsed cancel response before aborting', async () => {
     useMessageStore.getState().setHistory('group-1', [triggerMessage, interruptedMessage])
     const queryClient = new QueryClient()

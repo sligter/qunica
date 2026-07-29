@@ -462,7 +462,7 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
-  it('aborts immediately when the caller explicitly selects legacy mode', async () => {
+  it('cancels the legacy server thread before aborting its stream', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useSendMessageStream('group-1', false), {
       wrapper: wrapper(queryClient),
@@ -482,7 +482,10 @@ describe('useSendMessageStream scheduler events', () => {
     })
     await act(async () => cancelPromise)
 
-    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    expect(mocks.fetchJson).toHaveBeenCalledWith('/threads/thread-1/cancel', {
+      method: 'POST',
+      token: 'token-1',
+    })
     expect(stream.abort).toHaveBeenCalledTimes(1)
     expect(
       useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].status,

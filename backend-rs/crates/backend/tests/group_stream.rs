@@ -806,6 +806,41 @@ async fn fake_provider_status_sequence(responses: Vec<(StatusCode, String)>) -> 
     format!("http://{addr}")
 }
 
+async fn recording_fake_provider_status_sequence(
+    responses: Vec<(StatusCode, String)>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        move |request: Request<Body>| {
+            let requests = Arc::clone(&requests);
+            let queue = Arc::clone(&queue);
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                requests
+                    .lock()
+                    .await
+                    .push(serde_json::from_slice(&bytes).unwrap());
+                let (status, body) = queue
+                    .lock()
+                    .await
+                    .pop_front()
+                    .unwrap_or((StatusCode::OK, "data: [DONE]\n".to_string()));
+                (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), requests)
+}
+
 async fn fake_nested_cancellable_provider() -> (String, Arc<Notify>, Arc<Notify>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2532,6 +2567,76 @@ async fn messages_clear_cancels_legacy_turn_before_late_reply() {
 }
 
 #[tokio::test]
+async fn cancel_thread_stops_legacy_turn_before_late_reply() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "thread-cancel-running@example.com").await;
+    let owner = owner_id(&state, "thread-cancel-running@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, _, started, release) =
+        controlled_recording_fake_provider(text_body("late reply")).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let app_for_stream = app.clone();
+    let stream_uri = format!("/api/v2/groups/{group}/messages/stream");
+    let stream_token = token.clone();
+    let provider_started = started.notified();
+    let stream = tokio::spawn(async move {
+        stream_events(
+            &app_for_stream,
+            &stream_uri,
+            &stream_token,
+            json!({"content": "stop while running"}),
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), provider_started)
+        .await
+        .expect("provider request should be pending before cancellation");
+
+    let thread_id: String = sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let (status, _) = send(
+        &app,
+        authed_empty(
+            "POST",
+            &format!("/api/v2/threads/{thread_id}/cancel"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(2), stream)
+        .await
+        .expect("cancelled stream should terminate")
+        .unwrap();
+
+    let visible_agent_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages \
+         WHERE thread_id = ? AND sender_type = 'agent' AND status = 'visible'",
+    )
+    .bind(&thread_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(visible_agent_messages, 0);
+}
+
+#[tokio::test]
 async fn group_stream_uses_monotonic_sequence_not_timestamps() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "seq@example.com").await;
@@ -2664,6 +2769,170 @@ async fn group_stream_executes_native_tool_and_continues_model() {
     let messages = payloads_of_kind(&events, StreamEventKind::AgentMessage);
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["content"], "I read the file.");
+}
+
+#[tokio::test]
+async fn provider_retry_preserves_completed_tool_context() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "provider-retry@example.com").await;
+    let owner = owner_id(&state, "provider-retry@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "tool result body").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) = recording_fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "call_read",
+                "Read",
+                json!({"file_path": "note.txt"}),
+            )]),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (StatusCode::OK, text_body("Recovered after retry.")),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "please inspect note.txt"}),
+    )
+    .await;
+
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentMessage)[0]["content"],
+        "Recovered after retry."
+    );
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::ToolCallResult).len(),
+        1
+    );
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    let retry_messages = requests[2]["messages"].as_array().unwrap();
+    assert!(retry_messages.iter().any(|message| {
+        message["role"] == "assistant" && message["tool_calls"][0]["id"] == "call_read"
+    }));
+    assert!(retry_messages.iter().any(|message| {
+        message["role"] == "tool"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("tool result body"))
+    }));
+}
+
+#[tokio::test]
+async fn provider_failure_persists_completed_tool_context_for_resume() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "provider-resume@example.com").await;
+    let owner = owner_id(&state, "provider-resume@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "durable tool result").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) = recording_fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "call_read",
+                "Read",
+                json!({"file_path": "note.txt"}),
+            )]),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (StatusCode::OK, text_body(" resumed from checkpoint")),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "please inspect note.txt"}),
+    )
+    .await;
+    assert!(events.iter().any(|event| event["kind"] == "error"));
+
+    let (thread_id, interrupted_id, content_json): (String, String, String) = sqlx::query_as(
+        "SELECT thread_id, id, content_json FROM messages \
+         WHERE group_id = ? AND sender_type = 'agent' AND status = 'interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&content_json).unwrap();
+    assert_eq!(checkpoint["tool_calls"][0]["tool_call_id"], "call_read");
+    assert!(checkpoint["tool_calls"][0]["result"]
+        .as_str()
+        .is_some_and(|result| result.contains("durable tool result")));
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "paused");
+
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({}),
+    )
+    .await;
+    let resumed_message = payloads_of_kind(&resumed, StreamEventKind::AgentMessage);
+    assert_eq!(resumed_message[0]["message_id"], interrupted_id);
+    assert_eq!(resumed_message[0]["content"], " resumed from checkpoint");
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 5);
+    let resume_messages = requests[4]["messages"].as_array().unwrap();
+    assert!(resume_messages.iter().any(|message| {
+        message["role"] == "assistant" && message["tool_calls"][0]["id"] == "call_read"
+    }));
+    assert!(resume_messages.iter().any(|message| {
+        message["role"] == "tool"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("durable tool result"))
+    }));
 }
 
 #[tokio::test]

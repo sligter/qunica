@@ -264,15 +264,22 @@ export function useResumeStream(
       (groupId
         ? state.byGroup[groupId]?.find((message) => message.id === messageId)?.turn_id
         : null)
-    if (groupId && turnId && token) {
+    if (token && threadId) {
       try {
-        const trace = parseGroupTurnTrace(
-          await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
+        if (groupId && turnId) {
+          const trace = parseGroupTurnTrace(
+            await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
+              method: 'POST',
+              token,
+            }),
+          )
+          reconcileSchedulerTurn(groupId, trace)
+        } else {
+          await fetchJson<void>(`/threads/${threadId}/cancel`, {
             method: 'POST',
             token,
-          }),
-        )
-        reconcileSchedulerTurn(groupId, trace)
+          })
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
         return
@@ -289,6 +296,7 @@ export function useResumeStream(
     markStreamRunCancelled,
     messageId,
     reconcileSchedulerTurn,
+    threadId,
     token,
   ])
 

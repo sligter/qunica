@@ -351,6 +351,7 @@ export function useSendMessageStream(
   const [error, setError] = useState<string | null>(null)
   const streamsRef = useRef<Map<string, AbortController>>(new Map())
   const streamIdsRef = useRef<Map<string, string>>(new Map())
+  const threadIdsRef = useRef<Map<string, string>>(new Map())
   const erroredStreamIdsRef = useRef<Set<string>>(new Set())
   const agentNamesRef = useRef<Map<string, string>>(new Map())
   const streamProtocolByRequestRef = useRef<Map<string, StreamProtocol>>(new Map())
@@ -385,6 +386,7 @@ export function useSendMessageStream(
     const abandonedGroupId = groupId
     const streams = streamsRef.current
     const streamIds = streamIdsRef.current
+    const threadIds = threadIdsRef.current
     const erroredStreamIds = erroredStreamIdsRef.current
     const agentNames = agentNamesRef.current
     const streamProtocols = streamProtocolByRequestRef.current
@@ -416,6 +418,7 @@ export function useSendMessageStream(
       }
       streams.clear()
       streamIds.clear()
+      threadIds.clear()
       erroredStreamIds.clear()
       agentNames.clear()
       streamProtocols.clear()
@@ -455,6 +458,7 @@ export function useSendMessageStream(
       const protocol = streamProtocolByRequestRef.current.get(id)
       if (!protocol) return
       if (protocol === 'scheduler' && !schedulerTurnByRequestRef.current.has(id)) return
+      if (protocol === 'legacy' && !threadIdsRef.current.has(id)) return
     }
 
     pending.completing = true
@@ -466,8 +470,14 @@ export function useSendMessageStream(
         .map((id) => schedulerTurnByRequestRef.current.get(id))
         .filter((turnId): turnId is string => Boolean(turnId)),
     )
+    const threadIds = new Set(
+      activeRequestIds
+        .filter((id) => streamProtocolByRequestRef.current.get(id) === 'legacy')
+        .map((id) => threadIdsRef.current.get(id))
+        .filter((threadId): threadId is string => Boolean(threadId)),
+    )
 
-    if (turnIds.size > 0 && (!groupId || !token)) {
+    if ((turnIds.size > 0 || threadIds.size > 0) && !token) {
       setError('Authentication is required to cancel this turn')
       pendingCancellationRef.current = null
       pending.resolve()
@@ -475,6 +485,16 @@ export function useSendMessageStream(
     }
 
     try {
+      if (token && threadIds.size > 0) {
+        await Promise.all(
+          Array.from(threadIds, (threadId) =>
+            fetchJson<void>(`/threads/${threadId}/cancel`, {
+              method: 'POST',
+              token,
+            }),
+          ),
+        )
+      }
       if (groupId && token) {
         const traces = await Promise.all(
           Array.from(turnIds, (turnId) =>
@@ -511,6 +531,7 @@ export function useSendMessageStream(
       streamsRef.current.get(id)?.abort()
       streamsRef.current.delete(id)
       streamIdsRef.current.delete(id)
+      threadIdsRef.current.delete(id)
       streamProtocolByRequestRef.current.delete(id)
       schedulerTurnByRequestRef.current.delete(id)
     }
@@ -560,6 +581,7 @@ export function useSendMessageStream(
         clearActiveAgent(groupId, undefined, resolvedStreamId)
       }
       streamIdsRef.current.delete(id)
+      threadIdsRef.current.delete(id)
       streamProtocolByRequestRef.current.delete(id)
       schedulerTurnByRequestRef.current.delete(id)
       if (resolvedStreamId) {
@@ -648,11 +670,15 @@ export function useSendMessageStream(
               }
               return
             }
-            if (
-              event.kind === 'user_message'
-              && userMessagePayloadSchema.safeParse(event.payload).success
-            ) {
-              acknowledgeSend(id)
+            if (event.kind === 'user_message') {
+              const parsed = userMessagePayloadSchema.safeParse(event.payload)
+              if (parsed.success) {
+                acknowledgeSend(id)
+                if (parsed.data.thread_id) {
+                  threadIdsRef.current.set(id, parsed.data.thread_id)
+                  void completePendingCancellation()
+                }
+              }
             }
             if (event.kind === 'error') {
               rejectSendBeforeAcknowledgement(

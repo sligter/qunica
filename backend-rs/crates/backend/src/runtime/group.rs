@@ -50,8 +50,9 @@ use crate::acp::{
 };
 use crate::llm::{
     build_provider, model_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest,
-    ProviderConfig, ToolCall, ToolDefinition,
+    LlmProvider, ProviderConfig, ToolCall, ToolDefinition,
 };
+use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
     resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AgentAsToolMode, CallerAgent,
     AGENT_AS_TOOL_NAME,
@@ -70,7 +71,6 @@ use crate::runtime::group_scheduler::{
     NewDispatch, NewTurn, SchedulerDecision, SchedulerDispatch, SchedulerStore, SelectionReason,
     TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
 };
-use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{
     McpMount, MountedSkill, ToolExecutor, ToolResult, ToolStatus, WorkspaceMount, SELF_MOUNT_NAME,
@@ -83,6 +83,8 @@ use crate::tools::{
 /// not their sum, and the budget is what keeps a misconfigured server from
 /// holding up every turn indefinitely.
 const MCP_RESOLVE_BUDGET: Duration = Duration::from_secs(30);
+const PROVIDER_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(250), Duration::from_millis(750)];
 
 const MAX_NATIVE_IMAGES_PER_REQUEST: usize = 4;
 const MAX_NATIVE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
@@ -1824,6 +1826,43 @@ async fn await_with_cancellation<T>(
     Ok(future.await)
 }
 
+async fn start_provider_stream(
+    ctx: &StreamCtx,
+    provider: &dyn LlmProvider,
+    request: ChatRequest,
+) -> Result<tokio::sync::mpsc::Receiver<ChatDelta>, StepErr> {
+    let mut retry = 0;
+    loop {
+        match await_with_cancellation(ctx, provider.stream(request.clone())).await? {
+            Ok(stream) => return Ok(stream),
+            Err(error)
+                if ctx.scheduled_dispatch.is_none()
+                    && retry < PROVIDER_RETRY_DELAYS.len()
+                    && is_transient_provider_error(&error) =>
+            {
+                let delay = PROVIDER_RETRY_DELAYS[retry];
+                retry += 1;
+                tracing::warn!(attempt = retry, error = %error, "retrying transient provider failure");
+                await_with_cancellation(ctx, tokio::time::sleep(delay)).await?;
+            }
+            Err(_) => return Err(StepErr::Db(anyhow::anyhow!("provider execution failed"))),
+        }
+    }
+}
+
+fn is_transient_provider_error(error: &anyhow::Error) -> bool {
+    let Some(error) = error.downcast_ref::<reqwest::Error>() else {
+        return false;
+    };
+    error.is_connect()
+        || error.is_timeout()
+        || error.status().is_some_and(|status| {
+            status == reqwest::StatusCode::REQUEST_TIMEOUT
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error()
+        })
+}
+
 async fn wait_for_any_cancellation(ctx: &StreamCtx) {
     if cancellation_requested(ctx) {
         return;
@@ -2152,9 +2191,13 @@ async fn run_resume_inner(
         include_empty_tools: false,
         tools: Vec::new(),
     };
-    let mut deltas = match provider.stream(request).await {
+    let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
         Ok(deltas) => deltas,
-        Err(_error) => return fail_resume(ctx, "provider execution failed").await,
+        Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
+        Err(StepErr::Db(error)) => return fail_resume(ctx, &error.to_string()).await,
+        Err(StepErr::SchedulerPersistence) => {
+            return fail_resume(ctx, "scheduler persistence failed").await
+        }
     };
 
     let mut addition = String::new();
@@ -2251,7 +2294,7 @@ async fn run_resume_inner(
 async fn fail_resume(ctx: &mut StreamCtx, message: &str) -> Result<TurnOutcome, Cancelled> {
     let _ = ctx
         .allocator
-        .set_thread_status(&ctx.thread_id, "failed")
+        .set_thread_status(&ctx.thread_id, "paused")
         .await;
     ctx.fail(message).await
 }
@@ -2622,16 +2665,42 @@ async fn run_agent_turn(
             include_empty_tools: false,
             tools: invocation.tools.clone(),
         };
-        let mut deltas = await_with_cancellation(ctx, provider.stream(request))
-            .await?
-            .map_err(|_error| StepErr::Db(anyhow::anyhow!("provider execution failed")))?;
+        let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
+            Ok(deltas) => deltas,
+            Err(error) => {
+                maybe_persist_interrupted_agent(
+                    ctx,
+                    agent,
+                    &content,
+                    &turn,
+                    checkpoint_interrupted,
+                )
+                .await?;
+                return Err(error);
+            }
+        };
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
         // A reasoning delta starts a new segment when the previous delta was not
         // reasoning (so token/tool interleaving splits reasoning blocks).
         let mut last_was_reasoning = false;
 
-        while let Some(delta) = await_with_cancellation(ctx, deltas.recv()).await? {
+        loop {
+            let delta = match await_with_cancellation(ctx, deltas.recv()).await {
+                Ok(Some(delta)) => delta,
+                Ok(None) => break,
+                Err(error) => {
+                    maybe_persist_interrupted_agent(
+                        ctx,
+                        agent,
+                        &content,
+                        &turn,
+                        checkpoint_interrupted,
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
             match delta {
                 ChatDelta::Token(text) => {
                     last_was_reasoning = false;
@@ -3095,7 +3164,14 @@ async fn execute_tool_call(
     }
 
     let result =
-        await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await?;
+        match await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await {
+            Ok(result) => result,
+            Err(error) => {
+                maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
+                    .await?;
+                return Err(error);
+            }
+        };
     turn.record_tool_result(
         Some(call.id.clone()),
         Some(call.name.clone()),
@@ -3163,8 +3239,10 @@ async fn persist_interrupted_agent(
     content: &str,
     turn: &TurnData,
 ) -> Result<(), StepErr> {
-    let Some(content) = interrupted_visible_content(content) else {
-        return Ok(());
+    let content = match interrupted_visible_content(content) {
+        Some(content) => content,
+        None if !turn.is_empty() => String::new(),
+        None => return Ok(()),
     };
     let message = NewMessage {
         id: Uuid::new_v4().to_string(),

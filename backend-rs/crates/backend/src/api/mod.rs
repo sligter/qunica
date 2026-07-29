@@ -440,6 +440,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v2/threads/:thread_id", get(threads::get))
         .route(
+            "/api/v2/threads/:thread_id/cancel",
+            axum::routing::post(threads::cancel),
+        )
+        .route(
             "/api/v2/threads/:thread_id/resume",
             axum::routing::post(threads::resume),
         )
