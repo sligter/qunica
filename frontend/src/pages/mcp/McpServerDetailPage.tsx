@@ -4,7 +4,10 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
-import { McpServerForm } from '@/components/mcp/McpServerForm'
+import {
+  EDIT_MCP_SERVER_FORM_ID,
+  McpServerForm,
+} from '@/components/mcp/McpServerForm'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -16,6 +19,7 @@ import {
   useMcpServer,
   useTestMcpServer,
 } from '@/hooks/useMcpServers'
+import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
 import type { McpTransport } from '@/types/api'
 
 const TRANSPORT_KEYS: Record<McpTransport, 'stdio' | 'streamableHttp' | 'sse'> = {
@@ -32,7 +36,9 @@ export function McpServerDetailPage() {
   const test = useTestMcpServer()
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const saveReady = useEditSaveGuard(editing)
 
   if (server.isLoading) {
     return <PageState variant="loading" title={t('mcp:detail.loading')} />
@@ -56,15 +62,27 @@ export function McpServerDetailPage() {
       <DetailShell
         title={t('mcp:detail.editTitle', { name: s.name })}
         actions={
-          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-            {t('common:actions.cancel')}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              type="submit"
+              form={EDIT_MCP_SERVER_FORM_ID}
+              disabled={!saveReady || saving}
+            >
+              {saving
+                ? t('common:actions.saving')
+                : t('mcp:actions.saveChanges')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              {t('common:actions.cancel')}
+            </Button>
+          </>
         }
       >
         <McpServerForm
           server={s}
+          onSavingChange={setSaving}
           onSaved={() => setEditing(false)}
-          onCancel={() => setEditing(false)}
         />
       </DetailShell>
     )
@@ -88,7 +106,14 @@ export function McpServerDetailPage() {
             {test.isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
             {t('mcp:actions.test')}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSaving(false)
+              setEditing(true)
+            }}
+          >
             {t('common:actions.edit')}
           </Button>
           <Button

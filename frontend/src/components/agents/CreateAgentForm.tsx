@@ -391,6 +391,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       >
         <WorkspaceField
           value={form.watch('workspace_id')}
+          allowQuickCreate
           onChange={(workspaceId) =>
             form.setValue('workspace_id', workspaceId, { shouldValidate: true })
           }

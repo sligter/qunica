@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { I18nextProvider } from 'react-i18next'
@@ -15,6 +15,10 @@ const terminalMocks = vi.hoisted(() => ({
 
 const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
 const workspacePanelMocks = vi.hoisted(() => ({ group: vi.fn() }))
+const maintenanceMocks = vi.hoisted(() => ({
+  clear: vi.fn(),
+  reset: vi.fn(),
+}))
 
 vi.mock('@/components/chat/Composer', () => ({
   Composer: (props: {
@@ -58,6 +62,14 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     hasNextPage: false,
     isFetchingNextPage: false,
     fetchNextPage: vi.fn(),
+  }),
+  useClearConversationMessages: () => ({
+    mutateAsync: maintenanceMocks.clear,
+    isPending: false,
+  }),
+  useResetDirectChatContext: () => ({
+    mutateAsync: maintenanceMocks.reset,
+    isPending: false,
   }),
 }))
 vi.mock('@/hooks/usePersistentPaneWidth', () => ({
@@ -131,6 +143,8 @@ describe('ConversationChatView', () => {
     terminalMocks.isDockOpen = false
     composerMocks.render.mockReset()
     workspacePanelMocks.group.mockReset()
+    maintenanceMocks.clear.mockReset().mockResolvedValue(undefined)
+    maintenanceMocks.reset.mockReset().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
   })
 
@@ -155,6 +169,37 @@ describe('ConversationChatView', () => {
       workspaceId: 'workspace-1',
       scope: 'direct-chats',
     }))
+  })
+
+  it('places private-chat maintenance actions before the terminal controls', () => {
+    const view = renderConversation()
+
+    const reset = screen.getByRole('button', { name: 'Reset context' })
+    const clear = screen.getByRole('button', { name: 'Clear chat' })
+    const terminal = screen.getByRole('button', { name: 'Show terminal' })
+    expect(reset).not.toHaveTextContent('Reset context')
+    expect(clear).not.toHaveTextContent('Clear chat')
+    expect(reset.compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(clear.compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    view.rerender(conversationElement({ scope: 'groups' }))
+    expect(screen.queryByRole('button', { name: 'Reset context' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Clear chat' })).not.toBeInTheDocument()
+  })
+
+  it('confirms private-chat context reset and message clearing', async () => {
+    const user = userEvent.setup()
+    renderConversation()
+
+    await user.click(screen.getByRole('button', { name: 'Reset context' }))
+    let dialog = screen.getByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Reset context' }))
+    expect(maintenanceMocks.reset).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: 'Clear chat' }))
+    dialog = screen.getByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Clear chat' }))
+    expect(maintenanceMocks.clear).toHaveBeenCalledTimes(1)
   })
 
   it('registers its workspace and toggles the terminal from the header', async () => {

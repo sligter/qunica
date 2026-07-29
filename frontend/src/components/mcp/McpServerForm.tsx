@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -21,6 +21,7 @@ import {
   useUpdateMcpServer,
 } from '@/hooks/useMcpServers'
 import { ApiError } from '@/lib/api-v2/client'
+import { parseMcpConfig } from '@/lib/mcpConfigImport'
 import type {
   McpServerCreate,
   McpServerRead,
@@ -40,8 +41,10 @@ interface McpServerFormProps {
   /** The server being edited, or omitted to create a new one. */
   server?: McpServerRead
   onSaved?: (server: McpServerRead) => void
-  onCancel?: () => void
+  onSavingChange?: (saving: boolean) => void
 }
+
+export const EDIT_MCP_SERVER_FORM_ID = 'edit-mcp-server-form'
 
 /** Split a whitespace-separated argument line, honouring quoted segments. */
 function parseArgs(raw: string): string[] {
@@ -66,7 +69,11 @@ function formatArgs(args: string[]): string {
  * header values on an existing server: re-submitting the mask would store the
  * literal `****abcd` as the credential.
  */
-export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps) {
+export function McpServerForm({
+  server,
+  onSaved,
+  onSavingChange,
+}: McpServerFormProps) {
   const { t } = useTranslation(['mcp', 'common'])
   const create = useCreateMcpServer()
   const update = useUpdateMcpServer(server?.id)
@@ -86,11 +93,17 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
   const [timeoutSeconds, setTimeoutSeconds] = useState(server?.timeout_seconds ?? 60)
   const [toolFilterText, setToolFilterText] = useState((server?.tool_filter ?? []).join(', '))
   const [enabled, setEnabled] = useState(server?.enabled ?? true)
+  const [jsonConfig, setJsonConfig] = useState('')
+  const [jsonError, setJsonError] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<McpTestConnectionResult | null>(null)
 
   const isHttp = transport !== 'stdio'
   const saving = create.isPending || update.isPending
+
+  useEffect(() => {
+    onSavingChange?.(saving)
+  }, [onSavingChange, saving])
 
   const payload = useMemo((): McpServerCreate => {
     return {
@@ -133,6 +146,27 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
 
   const errorText = (err: unknown): string =>
     err instanceof ApiError ? err.message : t('mcp:errors.network')
+
+  const onApplyJson = () => {
+    try {
+      const config = parseMcpConfig(jsonConfig)
+      if (config.name !== undefined) setName(config.name)
+      if (config.description !== undefined) setDescription(config.description)
+      setTransport(config.transport)
+      setCommand(config.command ?? '')
+      setArgsText(formatArgs(config.args))
+      setEnvRows(rowsFromRecord(config.env))
+      setCwd(config.cwd ?? '')
+      setUrl(config.url ?? '')
+      setHeaderRows(rowsFromRecord(config.headers).map((row) => ({ ...row, dirty: true })))
+      if (config.timeoutSeconds !== undefined) setTimeoutSeconds(config.timeoutSeconds)
+      if (config.toolFilter !== undefined) setToolFilterText(config.toolFilter.join(', '))
+      if (config.enabled !== undefined) setEnabled(config.enabled)
+      setJsonError(false)
+    } catch {
+      setJsonError(true)
+    }
+  }
 
   const onTest = async () => {
     setError(null)
@@ -177,7 +211,48 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
   }
 
   return (
-    <form onSubmit={(event) => void onSubmit(event)} className="space-y-5">
+    <form
+      id={server ? EDIT_MCP_SERVER_FORM_ID : undefined}
+      onSubmit={(event) => void onSubmit(event)}
+      className="space-y-5"
+    >
+      {!server ? (
+        <div className="space-y-2 rounded-md border border-border bg-accent/20 p-3">
+          <div>
+            <Label htmlFor="mcp-json-config">{t('mcp:fields.jsonConfig')}</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('mcp:fields.jsonConfigHint')}
+            </p>
+          </div>
+          <Textarea
+            id="mcp-json-config"
+            rows={5}
+            value={jsonConfig}
+            spellCheck={false}
+            placeholder={'{\n  "command": "npx",\n  "args": ["chrome-devtools-mcp@latest"],\n  "type": "stdio"\n}'}
+            className="font-mono text-xs"
+            onChange={(event) => {
+              setJsonConfig(event.target.value)
+              setJsonError(false)
+            }}
+          />
+          {jsonError ? (
+            <p className="text-xs text-destructive" role="alert">
+              {t('mcp:validation.invalidJsonConfig')}
+            </p>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!jsonConfig.trim()}
+            onClick={onApplyJson}
+          >
+            {t('mcp:actions.applyJsonConfig')}
+          </Button>
+        </div>
+      ) : null}
+
       <div className="space-y-1.5">
         <Label htmlFor="mcp-name">{t('mcp:fields.name')}</Label>
         <Input
@@ -344,13 +419,11 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
       ) : null}
 
       <div className="flex items-center gap-2">
-        <Button type="submit" disabled={saving}>
-          {saving
-            ? t('common:actions.saving')
-            : server
-              ? t('mcp:actions.saveChanges')
-              : t('mcp:actions.add')}
-        </Button>
+        {!server ? (
+          <Button type="submit" disabled={saving}>
+            {saving ? t('common:actions.saving') : t('mcp:actions.add')}
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="outline"
@@ -362,11 +435,6 @@ export function McpServerForm({ server, onSaved, onCancel }: McpServerFormProps)
           ) : null}
           {t('mcp:actions.test')}
         </Button>
-        {onCancel ? (
-          <Button type="button" variant="ghost" onClick={onCancel}>
-            {t('common:actions.cancel')}
-          </Button>
-        ) : null}
       </div>
     </form>
   )

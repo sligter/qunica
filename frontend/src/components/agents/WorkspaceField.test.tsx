@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
@@ -18,11 +18,12 @@ const mocks = vi.hoisted(() => ({
       updated_at: '2026-07-18T00:00:00Z',
     },
   ],
+  createWorkspace: { mutateAsync: vi.fn(), isPending: false },
 }))
 
 vi.mock('@/hooks/useWorkspaces', () => ({
   useWorkspaces: () => ({ data: mocks.workspaces }),
-  useCreateWorkspace: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useCreateWorkspace: () => mocks.createWorkspace,
 }))
 
 const defaultWorkspaces = mocks.workspaces
@@ -31,6 +32,7 @@ describe('WorkspaceField', () => {
   afterEach(async () => {
     cleanup()
     mocks.workspaces = defaultWorkspaces
+    mocks.createWorkspace.mutateAsync.mockReset()
     await i18n.changeLanguage('en-US')
   })
 
@@ -57,6 +59,27 @@ describe('WorkspaceField', () => {
     expect(screen.getByRole('button', { name: 'New workspace' })).toBeInTheDocument()
     expect(screen.queryByText('Workspace', { selector: 'label' })).not.toBeInTheDocument()
     expect(screen.getByText(/Location: D:\/projects\/ag-swarmer/)).toBeInTheDocument()
+  })
+
+  it('creates and selects a random workspace in one click', async () => {
+    mocks.createWorkspace.mutateAsync.mockResolvedValueOnce({ id: 'workspace-2' })
+    const onChange = vi.fn()
+    render(
+      <WorkspaceField
+        value=""
+        allowQuickCreate
+        onChange={onChange}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create workspace instantly' }))
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('workspace-2'))
+    expect(mocks.createWorkspace.mutateAsync).toHaveBeenCalledWith({
+      name: expect.stringMatching(/^agent-[a-f0-9]{8}$/),
+      backend_type: 'local',
+      auto_create: true,
+    })
   })
 
   it('translates the workspace label, picker action, and selected location', async () => {

@@ -870,6 +870,86 @@ async fn direct_message_endpoints_are_kind_safe_and_preserve_unavailable_history
 }
 
 #[tokio::test]
+async fn direct_context_reset_preserves_history_and_starts_a_new_thread() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "direct-context-reset@example.com").await;
+    let workspace_id = create_workspace(&app, &token).await;
+    let agent_id = create_agent(&app, &token, &workspace_id, "Solo").await;
+    let chat = create_chat(&app, &token, &agent_id).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let (status, first) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            Some(&token),
+            json!({"content":"remember this"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {first:?}");
+    let first_thread_id = first["user_message"]["thread_id"].as_str().unwrap();
+
+    let (status, history_before) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/context/reset"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+
+    let old_thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(first_thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(old_thread_status, "cleared");
+
+    let (status, history_after) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(history_after, history_before);
+
+    let (status, second) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            Some(&token),
+            json!({"content":"start fresh"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {second:?}");
+    assert_ne!(
+        second["user_message"]["thread_id"].as_str().unwrap(),
+        first_thread_id
+    );
+}
+
+#[tokio::test]
 async fn direct_sessions_keep_threads_and_group_management_boundaries_isolated() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-isolation@example.com").await;

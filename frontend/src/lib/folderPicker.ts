@@ -33,6 +33,17 @@ export type FolderPickResult =
 const SEPARATOR_RE = /[\\/]/
 const ABSOLUTE_PREFIX_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/
 const TRAILING_SEPARATOR_RE = /[\\/]+$/
+const WINDOWS_DEVICE_PREFIX = '\\\\?\\'
+const WINDOWS_UNC_DEVICE_PREFIX = `${WINDOWS_DEVICE_PREFIX}UNC\\`
+
+export function normalizeWindowsPath(path: string): string {
+  if (path.startsWith(WINDOWS_UNC_DEVICE_PREFIX)) {
+    return `\\\\${path.slice(WINDOWS_UNC_DEVICE_PREFIX.length)}`
+  }
+  return path.startsWith(WINDOWS_DEVICE_PREFIX)
+    ? path.slice(WINDOWS_DEVICE_PREFIX.length)
+    : path
+}
 
 export async function pickFolder(): Promise<FolderPickResult> {
   const tauriPath = await pickTauriFolder()
@@ -97,13 +108,13 @@ async function pickTauriFolderCommand(): Promise<string | null | undefined> {
 
 function coerceTauriPath(value: unknown): string | null | undefined {
   if (value === null) return null
-  if (typeof value === 'string') return value
+  if (typeof value === 'string') return normalizeWindowsPath(value)
   if (Array.isArray(value)) return coerceTauriPath(value[0])
   if (typeof value !== 'object' || value === null) return undefined
   const record = value as Record<string, unknown>
   for (const key of ['path', 'Path', 'filePath', 'FilePath']) {
     const nested = record[key]
-    if (typeof nested === 'string') return nested
+    if (typeof nested === 'string') return normalizeWindowsPath(nested)
   }
   return undefined
 }

@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { PropsWithChildren, ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CreateAgentForm } from '@/components/agents/CreateAgentForm'
-import { EditAgentForm } from '@/components/agents/EditAgentForm'
+import { EDIT_AGENT_FORM_ID, EditAgentForm } from '@/components/agents/EditAgentForm'
 import type { AcpRuntimeCapabilitiesInput } from '@/hooks/useAcpRuntimeCapabilities'
 import { useAuthStore } from '@/stores/authStore'
 import type { AgentRead } from '@/types/api'
@@ -345,7 +345,7 @@ describe('agent runtime capabilities', () => {
 
     await user.clear(model)
     await user.type(model, 'private-provider-model')
-    await user.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.submit(document.getElementById(EDIT_AGENT_FORM_ID)!)
 
     await waitFor(() => expect(mocks.updateMutate).toHaveBeenCalledOnce())
     expect(mocks.updateMutate).toHaveBeenCalledWith(

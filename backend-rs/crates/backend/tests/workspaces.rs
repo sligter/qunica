@@ -123,6 +123,47 @@ async fn workspace_create_normalizes_local_path_and_is_owner_scoped() {
 }
 
 #[tokio::test]
+async fn workspace_create_can_make_a_random_local_directory() {
+    let app = app().await;
+    let token = register_and_login(&app, "automatic@example.com").await;
+    let root = tempfile::tempdir().unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"group_workspace_root": root.path()}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, workspace) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces",
+            &token,
+            json!({"name": "Automatic", "backend_type": "local", "auto_create": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let path = Path::new(workspace["local_path"].as_str().unwrap());
+    let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+    assert!(path.is_dir());
+    assert_eq!(path.parent(), Some(canonical_root.as_path()));
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("workspace-"));
+}
+
+#[tokio::test]
 async fn workspace_create_rejects_missing_or_nonexistent_local_path() {
     let app = app().await;
     let token = register_and_login(&app, "pathcheck@example.com").await;

@@ -6,6 +6,7 @@
  */
 
 import { isDesktopRuntime } from '@/lib/runtime'
+import type { SystemLogSnapshot } from '@/lib/systemLogs'
 
 export { isDesktopRuntime }
 
@@ -38,4 +39,24 @@ export async function saveFileViaDialog(
     contents_b64: bytesToBase64(data),
   })
   return result ?? null
+}
+
+export async function getSystemLogs(): Promise<SystemLogSnapshot> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<SystemLogSnapshot>('system_logs_snapshot')
+}
+
+export async function setSystemLogFilter(filter: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('set_system_log_filter', { filter })
+}
+
+export async function clearSystemLogs(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('clear_system_logs')
+}
+
+export async function openSystemLogsFolder(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('open_system_logs_folder')
 }

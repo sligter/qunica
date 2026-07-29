@@ -161,20 +161,42 @@ fn app_logs_dir(app: &tauri::AppHandle) -> tauri::Result<PathBuf> {
     Ok(log_dir)
 }
 
-fn open_logs_dir(app: &tauri::AppHandle) {
-    if let Ok(log_dir) = app_logs_dir(app) {
-        append_launcher_log(
-            &log_dir,
-            format!("opening logs directory: {}", log_dir.display()),
-        );
-        #[allow(deprecated)]
-        if let Err(err) = app.shell().open(
+fn open_logs_dir(app: &tauri::AppHandle) -> Result<(), String> {
+    let log_dir = app_logs_dir(app).map_err(|error| error.to_string())?;
+    append_launcher_log(
+        &log_dir,
+        format!("opening logs directory: {}", log_dir.display()),
+    );
+    #[allow(deprecated)]
+    app.shell()
+        .open(
             log_dir.to_string_lossy().to_string(),
             None::<tauri_plugin_shell::open::Program>,
-        ) {
-            append_launcher_log(&log_dir, format!("failed to open logs directory: {err}"));
-        }
-    }
+        )
+        .map_err(|error| {
+            append_launcher_log(&log_dir, format!("failed to open logs directory: {error}"));
+            error.to_string()
+        })
+}
+
+#[tauri::command]
+fn system_logs_snapshot() -> Result<telemetry::SystemLogSnapshot, String> {
+    telemetry::log_snapshot(1_000).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_system_log_filter(filter: String) -> Result<(), String> {
+    telemetry::set_log_filter(&filter).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clear_system_logs() -> Result<(), String> {
+    telemetry::clear_logs().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_system_logs_folder(app: tauri::AppHandle) -> Result<(), String> {
+    open_logs_dir(&app)
 }
 
 fn shutdown_backend(app: &tauri::AppHandle) {
@@ -369,7 +391,9 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_OPEN_MAIN_ID => open_route(app, "/groups"),
             TRAY_OPEN_SETTINGS_ID => open_route(app, "/settings/system"),
-            TRAY_OPEN_LOGS_ID => open_logs_dir(app),
+            TRAY_OPEN_LOGS_ID => {
+                let _ = open_logs_dir(app);
+            }
             TRAY_EXIT_ID => {
                 shutdown_terminal_sessions(app);
                 shutdown_backend(app);
@@ -485,6 +509,10 @@ fn main() {
             pick_workspace_folder,
             reveal_in_file_manager,
             save_file,
+            system_logs_snapshot,
+            set_system_log_filter,
+            clear_system_logs,
+            open_system_logs_folder,
             terminal_create,
             terminal_write,
             terminal_resize,

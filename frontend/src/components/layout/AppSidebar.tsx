@@ -15,6 +15,7 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react'
 
 import { avatarColorClass } from '@/lib/avatarColor'
@@ -113,6 +114,7 @@ export function AppSidebar() {
   const [collapsed, setCollapsed] = useState(readCollapsed)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [directDialogOpen, setDirectDialogOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [pendingDeleteChat, setPendingDeleteChat] = useState<{ id: string; title: string } | null>(null)
   const navigate = useNavigate()
@@ -143,6 +145,10 @@ export function AppSidebar() {
       chat.title.toLowerCase().includes(q) ||
       (chat.agent_name ?? '').toLowerCase().includes(q),
   )
+  const closeSearch = () => {
+    setQuery('')
+    setSearchOpen(false)
+  }
 
   return (
     <aside
@@ -246,21 +252,60 @@ export function AppSidebar() {
         <div className="min-h-0 flex-1" />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="shrink-0 px-3 pt-2">
-            <SidebarGroupLabel>{t('navigation:searchConversations')}</SidebarGroupLabel>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={t('navigation:searchConversations')}
-                aria-label={t('navigation:searchConversations')}
-                className="h-8 pl-8 text-xs"
-              />
+          {searchOpen ? (
+            <div className="shrink-0 px-3 pt-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') closeSearch()
+                  }}
+                  placeholder={t('navigation:searchConversations')}
+                  aria-label={t('navigation:searchConversations')}
+                  className="h-8 px-8 text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-0.5 top-1/2 h-7 w-7 -translate-y-1/2"
+                  aria-label={t('common:actions.close')}
+                  onClick={closeSearch}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
-          </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
-            <SidebarGroupLabel>{t('navigation:directChats')}</SidebarGroupLabel>
+            <div className="flex h-7 items-center justify-between px-1">
+              <SidebarGroupLabel className="px-0 pb-0">
+                {t('navigation:directChats')}
+              </SidebarGroupLabel>
+              {!searchOpen ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      aria-label={t('navigation:searchConversations')}
+                      aria-expanded={false}
+                      onClick={() => setSearchOpen(true)}
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {t('navigation:searchConversations')}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+            </div>
             {directChats.isLoading ? (
               <p className="px-2 pb-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
             ) : null}

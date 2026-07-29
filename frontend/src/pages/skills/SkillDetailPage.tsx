@@ -14,10 +14,13 @@ import { ProseBlock } from '@/components/ui/prose-block'
 import { Section } from '@/components/ui/section'
 import { Textarea } from '@/components/ui/textarea'
 import { useDeleteSkill, useSkill, useUpdateSkill } from '@/hooks/useSkills'
+import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
 import { ApiError } from '@/lib/api-v2/client'
 import type { SkillRead } from '@/types/api'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
+
+const EDIT_SKILL_FORM_ID = 'edit-skill-form'
 
 export function SkillDetailPage() {
   const { t } = useTranslation(['skills', 'common'])
@@ -26,6 +29,9 @@ export function SkillDetailPage() {
   const del = useDeleteSkill()
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [canSave, setCanSave] = useState(false)
+  const saveReady = useEditSaveGuard(editing)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (skill.isLoading) {
@@ -50,12 +56,29 @@ export function SkillDetailPage() {
       <DetailShell
         title={t('skills:detail.editTitle', { name: s.name })}
         actions={
-          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-            {t('common:actions.cancel')}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              type="submit"
+              form={EDIT_SKILL_FORM_ID}
+              disabled={!saveReady || !canSave}
+            >
+              {saving
+                ? t('common:actions.saving')
+                : t('skills:form.saveChanges')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              {t('common:actions.cancel')}
+            </Button>
+          </>
         }
       >
-        <EditSkillForm skill={s} onSaved={() => setEditing(false)} />
+        <EditSkillForm
+          skill={s}
+          onCanSaveChange={setCanSave}
+          onSavingChange={setSaving}
+          onSaved={() => setEditing(false)}
+        />
       </DetailShell>
     )
   }
@@ -79,7 +102,15 @@ export function SkillDetailPage() {
       }
       actions={
         <>
-          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setCanSave(false)
+              setSaving(false)
+              setEditing(true)
+            }}
+          >
             {t('common:actions.edit')}
           </Button>
           <Button
@@ -120,9 +151,16 @@ export function SkillDetailPage() {
 interface EditSkillFormProps {
   skill: SkillRead
   onSaved: () => void
+  onCanSaveChange: (canSave: boolean) => void
+  onSavingChange: (saving: boolean) => void
 }
 
-function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
+function EditSkillForm({
+  skill,
+  onSaved,
+  onCanSaveChange,
+  onSavingChange,
+}: EditSkillFormProps) {
   const { t } = useTranslation('skills')
   const update = useUpdateSkill(skill.id)
   const [name, setName] = useState(skill.name)
@@ -139,6 +177,11 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
   const dirty =
     trimmedName !== skill.name || trimmedDescription !== (skill.description ?? '')
   const canSave = dirty && trimmedName.length > 0 && !update.isPending
+
+  useEffect(() => {
+    onCanSaveChange(canSave)
+    onSavingChange(update.isPending)
+  }, [canSave, onCanSaveChange, onSavingChange, update.isPending])
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -158,7 +201,7 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form id={EDIT_SKILL_FORM_ID} onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-1.5">
         <Label htmlFor="skill-edit-name">{t('form.name')}</Label>
         <Input
@@ -184,9 +227,6 @@ function EditSkillForm({ skill, onSaved }: EditSkillFormProps) {
           {localizedErrorText(error, t)}
         </p>
       )}
-      <Button type="submit" disabled={!canSave}>
-        {update.isPending ? t('common:actions.saving') : t('form.saveChanges')}
-      </Button>
     </form>
   )
 }

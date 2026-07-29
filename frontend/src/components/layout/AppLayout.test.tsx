@@ -6,6 +6,7 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AppLayout } from '@/components/layout/AppLayout'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { enUS } from '@/i18n/resources/en-US'
 import { zhCN } from '@/i18n/resources/zh-CN'
 import { useAuthStore } from '@/stores/authStore'
@@ -37,17 +38,19 @@ async function renderAppLayout(
   return render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/settings']}>
-          <Routes>
-            <Route element={<AppLayout terminalTransport={terminalTransport} />}>
-              <Route
-                path="settings"
-                element={<><div>Settings content</div><Link to="/agents">Agents route</Link></>}
-              />
-              <Route path="agents" element={<div>Agents content</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <TooltipProvider>
+          <MemoryRouter initialEntries={['/settings']}>
+            <Routes>
+              <Route element={<AppLayout terminalTransport={terminalTransport} />}>
+                <Route
+                  path="settings"
+                  element={<><div>Settings content</div><Link to="/agents">Agents route</Link></>}
+                />
+                <Route path="agents" element={<div>Agents content</div>} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </TooltipProvider>
       </QueryClientProvider>
     </I18nextProvider>,
   )

@@ -394,6 +394,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(messages::clear_direct),
         )
         .route(
+            "/api/v2/direct-chats/:group_id/context/reset",
+            axum::routing::post(messages::reset_direct_context),
+        )
+        .route(
             "/api/v2/direct-chats/:group_id/messages/:message_id",
             axum::routing::delete(messages::delete_direct),
         )

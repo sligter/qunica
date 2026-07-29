@@ -124,4 +124,26 @@ describe('AppSidebar terminal cleanup', () => {
       code: 'terminal.cleanup_timeout', message: 'Cleanup timed out',
     })
   })
+
+  it('keeps conversation search collapsed until requested', async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+
+    expect(
+      screen.queryByRole('textbox', { name: 'Search conversations' }),
+    ).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Search conversations' }))
+    const search = screen.getByRole('textbox', { name: 'Search conversations' })
+    expect(search).toHaveFocus()
+
+    await user.type(search, 'missing')
+    expect(screen.queryByText('Direct chat')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(
+      screen.queryByRole('textbox', { name: 'Search conversations' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('Direct chat')).toBeInTheDocument()
+  })
 })

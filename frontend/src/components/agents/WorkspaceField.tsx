@@ -24,6 +24,7 @@ interface WorkspaceFieldProps {
   onChange: (workspaceId: string) => void
   error?: string
   variant?: 'default' | 'compact'
+  allowQuickCreate?: boolean
 }
 
 const PICKER_SCOPE = 'workspace-root'
@@ -60,6 +61,7 @@ export function WorkspaceField({
   onChange,
   error,
   variant = 'default',
+  allowQuickCreate = false,
 }: WorkspaceFieldProps) {
   const { t } = useTranslation(['agents', 'common'])
   const workspaces = useWorkspaces()
@@ -148,23 +150,65 @@ export function WorkspaceField({
     }
   }
 
+  const onQuickCreate = async () => {
+    setCreateError(null)
+    try {
+      const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8)
+      const created = await createWorkspace.mutateAsync({
+        name: `agent-${suffix}`,
+        backend_type: 'local',
+        auto_create: true,
+      })
+      onChange(created.id)
+    } catch (err) {
+      setCreateError(
+        err instanceof ApiError && err.code === 'workspace_root_required'
+          ? translatedError('agents:workspacePicker.rootRequired')
+          : err instanceof ApiError
+            ? messageError(err.message)
+            : translatedError('agents:errors.network'),
+      )
+    }
+  }
+
   return (
     <div className="space-y-2">
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
           {variant === 'default' ? <Label htmlFor="agent-workspace">{t('agents:fields.workspace')}</Label> : <span />}
-          <Button type="button" variant="outline" size="sm" onClick={() => setShowCreate(!showCreate)}>
-            {showCreate ? (
-              t('common:actions.cancel')
-            ) : variant === 'compact' ? (
-              <>
-                <FolderPlus className="h-3.5 w-3.5" />
-                {t('agents:workspacePicker.new')}
-              </>
-            ) : (
-              t('agents:workspacePicker.newLocal')
-            )}
-          </Button>
+          <div className="flex items-center gap-2">
+            {allowQuickCreate ? (
+              <Button
+                type="button"
+                size="sm"
+                disabled={createWorkspace.isPending}
+                title={t('agents:workspacePicker.quickCreateHint')}
+                onClick={() => void onQuickCreate()}
+              >
+                {createWorkspace.isPending
+                  ? t('agents:workspacePicker.creating')
+                  : t('agents:workspacePicker.quickCreate')}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={createWorkspace.isPending}
+              onClick={() => setShowCreate(!showCreate)}
+            >
+              {showCreate ? (
+                t('common:actions.cancel')
+              ) : variant === 'compact' ? (
+                <>
+                  <FolderPlus className="h-3.5 w-3.5" />
+                  {t('agents:workspacePicker.new')}
+                </>
+              ) : (
+                t('agents:workspacePicker.newLocal')
+              )}
+            </Button>
+          </div>
         </div>
         <select
           id="agent-workspace"
@@ -202,6 +246,11 @@ export function WorkspaceField({
             </p>
           )
         })()}
+        {localizedErrorText(createError, t) ? (
+          <p className="text-xs text-destructive" role="alert">
+            {localizedErrorText(createError, t)}
+          </p>
+        ) : null}
       </div>
 
       {showCreate && (
@@ -247,7 +296,6 @@ export function WorkspaceField({
               onChange={onFallbackChange}
             />
           </div>
-          {localizedErrorText(createError, t) && <p className="text-xs text-destructive">{localizedErrorText(createError, t)}</p>}
           <Button
             type="button"
             size="sm"

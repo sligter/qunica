@@ -391,6 +391,46 @@ async fn skills_import_package_accepts_safe_directory_entries() {
 }
 
 #[tokio::test]
+async fn skills_import_package_accepts_a_nested_skill_root() {
+    let app = app().await;
+    let token = register_and_login(&app, "skills-nested-zip@example.com").await;
+    let zip = zip_bytes(&[
+        (
+            "skills/academic-pptx/SKILL.md",
+            "---\nname: academic-pptx\ndescription: Academic presentations. Triggers include: conference talk.\n---\nUse the bundled guidance.",
+        ),
+        (
+            "skills/academic-pptx/content_guidelines.md",
+            "Build a clear argument.",
+        ),
+        ("skills/academic-pptx/assets/example.txt", "example"),
+    ]);
+
+    let (status, skill) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/skills/import-package",
+            &token,
+            json!({"filename": "academic-pptx.zip", "content_base64": STANDARD.encode(zip)}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(skill["name"], "academic-pptx");
+    assert_eq!(
+        skill["description"],
+        "Academic presentations. Triggers include: conference talk."
+    );
+    assert!(skill["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "content_guidelines.md"));
+}
+
+#[tokio::test]
 async fn skills_resource_update_is_path_safe_and_updates_size() {
     let app = app().await;
     let token = register_and_login(&app, "skills-resource-update@example.com").await;

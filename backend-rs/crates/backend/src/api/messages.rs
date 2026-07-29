@@ -271,6 +271,55 @@ pub async fn clear_direct(
     clear_for_kind(state, headers, group_id, ConversationKind::Direct).await
 }
 
+pub async fn reset_direct_context(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    ensure_active_owned_conversation(
+        state.db.pool(),
+        &group_id,
+        &owner_id,
+        ConversationKind::Direct,
+    )
+    .await?;
+
+    let _guard = state.write_lock.lock().await;
+    let thread_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM threads \
+         WHERE group_id = ? \
+           AND agent_id IS NULL \
+           AND status IN ('active', 'running', 'paused', 'completed', 'failed', 'created')",
+    )
+    .bind(&group_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to load direct chat context"))?;
+
+    if !thread_ids.is_empty() {
+        sqlx::query(
+            "UPDATE threads \
+             SET status = 'cleared', updated_at = ? \
+             WHERE group_id = ? \
+               AND agent_id IS NULL \
+               AND status IN ('active', 'running', 'paused', 'completed', 'failed', 'created')",
+        )
+        .bind(now_rfc3339())
+        .bind(&group_id)
+        .execute(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("failed to reset direct chat context"))?;
+    }
+    drop(_guard);
+
+    for thread_id in thread_ids {
+        state.active_turns.cancel_thread(&thread_id).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn clear_for_kind(
     state: AppState,
     headers: HeaderMap,

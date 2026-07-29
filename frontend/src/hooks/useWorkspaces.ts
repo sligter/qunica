@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api-v2/client'
+import { normalizeWindowsPath } from '@/lib/folderPicker'
 import { useAuthStore } from '@/stores/authStore'
 import type { WorkspaceCreate, WorkspaceRead, WorkspaceUpdate } from '@/types/api'
 
@@ -23,6 +24,9 @@ function normalizeWorkspace(workspace: WorkspaceReadV2): WorkspaceRead {
 
   return {
     ...workspace,
+    local_path: workspace.local_path
+      ? normalizeWindowsPath(workspace.local_path)
+      : null,
     sandbox_ref: null,
   }
 }

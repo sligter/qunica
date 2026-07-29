@@ -6,6 +6,7 @@ use axum::{
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
@@ -19,6 +20,8 @@ pub struct CreateRequest {
     name: String,
     backend_type: Option<String>,
     local_path: Option<String>,
+    #[serde(default)]
+    auto_create: bool,
     config: Option<Value>,
 }
 
@@ -89,10 +92,24 @@ pub async fn create(
 
     let name = validate_name(&body.name)?;
     let backend_type = normalize_backend_type(body.backend_type.as_deref())?;
-    let local_path = resolve_local_path(&backend_type, body.local_path.as_deref())?;
+    let id = Uuid::new_v4().to_string();
+    let local_path = if body.auto_create {
+        if backend_type != BACKEND_LOCAL
+            || body
+                .local_path
+                .as_deref()
+                .is_some_and(|path| !path.trim().is_empty())
+        {
+            return Err(ApiError::invalid_input(
+                "auto_create requires a local backend without local_path",
+            ));
+        }
+        Some(create_local_workspace_dir(state.db.pool(), &owner_id, &id).await?)
+    } else {
+        resolve_local_path(&backend_type, body.local_path.as_deref())?
+    };
     let config_json = to_config_json(body.config.as_ref());
 
-    let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
 
     sqlx::query(
@@ -116,6 +133,41 @@ pub async fn create(
         .await?
         .ok_or_else(|| ApiError::internal("workspace vanished after insert"))?;
     Ok((StatusCode::CREATED, Json(row.into())))
+}
+
+async fn create_local_workspace_dir(
+    pool: &SqlitePool,
+    owner_id: &str,
+    workspace_id: &str,
+) -> Result<String, ApiError> {
+    let root = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT group_workspace_root FROM system_settings WHERE owner_id = ?",
+    )
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .and_then(|(root,)| root)
+    .filter(|root| !root.trim().is_empty())
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "workspace_root_required",
+            "group_workspace_root is required",
+        )
+    })?;
+
+    let short_id: String = workspace_id
+        .chars()
+        .filter(|ch| *ch != '-')
+        .take(8)
+        .collect();
+    let path = PathBuf::from(root).join(format!("workspace-{short_id}"));
+    std::fs::create_dir_all(&path)
+        .map_err(|_| ApiError::internal("failed to create workspace directory"))?;
+    std::fs::canonicalize(path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|_| ApiError::internal("failed to resolve workspace directory"))
 }
 
 pub async fn list(

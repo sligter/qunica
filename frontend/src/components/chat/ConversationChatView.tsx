@@ -3,6 +3,7 @@ import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
+import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHeaderActions'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
@@ -209,6 +210,13 @@ export function ConversationChatView({
           {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {scope === 'direct-chats' ? (
+            <DirectChatHeaderActions
+              key={conversationId}
+              chatId={conversationId}
+              disabled={stream.isStreaming}
+            />
+          ) : null}
           <Button
             variant={isDockOpen ? 'secondary' : 'ghost'}
             size="icon"

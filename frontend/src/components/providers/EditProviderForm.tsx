@@ -9,7 +9,6 @@ import {
   type ProviderModelDraft,
 } from '@/components/providers/ProviderModelsField'
 import { ReasoningPassbackControl } from '@/components/providers/ReasoningPassbackControl'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -33,7 +32,10 @@ type FormValues = z.infer<ReturnType<typeof createSchema>>
 interface EditProviderFormProps {
   provider: LLMProviderRead
   onSaved?: (providerId: string) => void
+  onSavingChange?: (saving: boolean) => void
 }
+
+export const EDIT_PROVIDER_FORM_ID = 'edit-provider-form'
 
 const KIND_OPTIONS: ProviderKind[] = ['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']
 const KIND_KEYS: Record<ProviderKind, 'openai' | 'anthropic' | 'anthropicCompatible' | 'gemini'> = { 'openai-compatible': 'openai', anthropic: 'anthropic', 'anthropic-compatible': 'anthropicCompatible', gemini: 'gemini' }
@@ -46,7 +48,11 @@ function baseUrlPlaceholder(kind: ProviderKind): string {
   return 'https://api.openai.com/v1'
 }
 
-export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
+export function EditProviderForm({
+  provider,
+  onSaved,
+  onSavingChange,
+}: EditProviderFormProps) {
   const { t, i18n } = useTranslation('providers')
   const update = useUpdateProvider(provider.id)
   const catalog = useProviderModels(provider.id)
@@ -89,6 +95,10 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
     }
   }, [form, i18n.resolvedLanguage])
 
+  useEffect(() => {
+    onSavingChange?.(update.isPending)
+  }, [onSavingChange, update.isPending])
+
   const kind = form.watch('kind')
 
   const onSubmit = form.handleSubmit(async (values) => {
@@ -127,7 +137,7 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
   })
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form id={EDIT_PROVIDER_FORM_ID} onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-1.5">
         <Label htmlFor={`provider-name-${provider.id}`}>{t('fields.name')}</Label>
         <Input id={`provider-name-${provider.id}`} {...form.register('name')} />
@@ -212,9 +222,6 @@ export function EditProviderForm({ provider, onSaved }: EditProviderFormProps) {
           {localizedErrorText(submitError, t)}
         </p>
       )}
-      <Button type="submit" disabled={update.isPending}>
-        {update.isPending ? t('actions.saving') : t('form.saveChanges')}
-      </Button>
     </form>
   )
 }

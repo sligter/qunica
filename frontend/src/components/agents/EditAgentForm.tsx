@@ -28,7 +28,6 @@ import { ToolSelector } from '@/components/agents/ToolSelector'
 import { mergeToolConfig } from '@/components/agents/toolConfig'
 import { useCommittedAcpRuntimeCapabilities } from '@/components/agents/useCommittedAcpRuntimeCapabilities'
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
-import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -103,9 +102,16 @@ function optionalText(value: string | undefined): string | null {
 interface EditAgentFormProps {
   agent: AgentRead
   onSaved?: () => void
+  onSavingChange?: (saving: boolean) => void
 }
 
-export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
+export const EDIT_AGENT_FORM_ID = 'edit-agent-form'
+
+export function EditAgentForm({
+  agent,
+  onSaved,
+  onSavingChange,
+}: EditAgentFormProps) {
   const { t, i18n } = useTranslation(['agents', 'common'])
   const update = useUpdateAgent(agent.id)
   const providers = useProviders()
@@ -162,6 +168,10 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           : undefined,
     },
   })
+
+  useEffect(() => {
+    onSavingChange?.(update.isPending)
+  }, [onSavingChange, update.isPending])
 
   useEffect(() => {
     if (validationLanguage.current === i18n.resolvedLanguage) return
@@ -295,7 +305,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
   })
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form id={EDIT_AGENT_FORM_ID} onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-1.5">
         <Label htmlFor="ea-name">{t('agents:fields.name')}</Label>
         <Input id="ea-name" {...form.register('name')} />
@@ -370,6 +380,7 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
       >
         <WorkspaceField
           value={form.watch('workspace_id')}
+          allowQuickCreate
           onChange={(workspaceId) =>
             form.setValue('workspace_id', workspaceId, { shouldValidate: true })
           }
@@ -608,9 +619,6 @@ export function EditAgentForm({ agent, onSaved }: EditAgentFormProps) {
           {localizedErrorText(submitError, t)}
         </p>
       )}
-      <Button type="submit" disabled={update.isPending}>
-        {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
-      </Button>
     </form>
   )
 }

@@ -70,6 +70,9 @@ const WorkspacesIndexPage = lazy(() =>
 const SystemSettingsPage = lazy(() =>
   import('@/pages/settings/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })),
 )
+const SystemLogsPage = lazy(() =>
+  import('@/pages/settings/SystemLogsPage').then((m) => ({ default: m.SystemLogsPage })),
+)
 const GroupManagePage = lazy(() =>
   import('@/pages/group/GroupManagePage').then((m) => ({ default: m.GroupManagePage })),
 )
@@ -165,9 +168,13 @@ export const router = createBrowserRouter([
           {
             path: '/settings',
             element: <SettingsLayout />,
-            children: [{ index: true, element: <SystemSettingsPage /> }],
+            children: [
+              { index: true, element: <Navigate to="system" replace /> },
+              { path: 'system', element: <SystemSettingsPage /> },
+              { path: 'logs', element: <SystemLogsPage /> },
+            ],
           },
-          { path: '/settings/general', element: <Navigate to="/settings" replace /> },
+          { path: '/settings/general', element: <Navigate to="/settings/system" replace /> },
           // Legacy /settings/<area>* deep links redirect to the top-level areas.
           { path: '/settings/agents', element: <Navigate to="/agents" replace /> },
           {

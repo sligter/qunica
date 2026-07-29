@@ -61,9 +61,12 @@ pub fn parse_skill_markdown(raw: &str) -> Result<ParsedSkillMarkdown, ApiError> 
         .ok_or_else(|| ApiError::invalid_input("SKILL.md frontmatter is not delimited"))?;
     let (frontmatter, body_start) = split_frontmatter(rest)?;
 
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(frontmatter)
-        .map_err(|_| ApiError::invalid_input("SKILL.md frontmatter is not valid YAML"))?;
-    let metadata = yaml_mapping_to_json(yaml)?;
+    let metadata = match serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
+        Ok(yaml) => {
+            yaml_mapping_to_json(yaml).or_else(|_| parse_simple_frontmatter(frontmatter))?
+        }
+        Err(_) => parse_simple_frontmatter(frontmatter)?,
+    };
     let name = metadata
         .get("name")
         .and_then(Value::as_str)
@@ -103,7 +106,7 @@ pub fn parse_skill_package(bytes: &[u8]) -> Result<ParsedSkillPackage, ApiError>
     for index in 0..archive.len() {
         let file = archive
             .by_index(index)
-            .map_err(|_| ApiError::invalid_input("zip package cannot be read"))?;
+            .map_err(|_| ApiError::invalid_input("zip skill package cannot be read"))?;
         if file.is_dir() {
             let dir = file.name().trim_end_matches(['/', '\\']);
             if !dir.is_empty() {
@@ -122,7 +125,7 @@ pub fn parse_skill_package(bytes: &[u8]) -> Result<ParsedSkillPackage, ApiError>
         let rel = strip_prefix(&path, prefix.as_deref())?;
         if !seen.insert(rel.clone()) {
             return Err(ApiError::invalid_input(
-                "zip package contains duplicate resource paths",
+                "zip skill package contains duplicate resource paths",
             ));
         }
         normalized_entries.push((index, rel, size));
@@ -131,7 +134,7 @@ pub fn parse_skill_package(bytes: &[u8]) -> Result<ParsedSkillPackage, ApiError>
     let skill_md_index = normalized_entries
         .iter()
         .find_map(|(index, path, _)| (path == "SKILL.md").then_some(*index))
-        .ok_or_else(|| ApiError::invalid_input("zip package must contain SKILL.md"))?;
+        .ok_or_else(|| ApiError::invalid_input("zip skill package must contain SKILL.md"))?;
     let skill_md = read_zip_file_to_string(&mut archive, skill_md_index)?;
     let parsed = parse_skill_markdown(&skill_md)?;
 
@@ -290,6 +293,38 @@ fn yaml_mapping_to_json(value: serde_yaml::Value) -> Result<Value, ApiError> {
     Ok(Value::Object(out))
 }
 
+fn parse_simple_frontmatter(raw: &str) -> Result<Value, ApiError> {
+    let mut out = Map::new();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        if line != line.trim_start() {
+            return Err(ApiError::invalid_input(
+                "SKILL.md frontmatter is not valid YAML",
+            ));
+        }
+        let (key, value) = line
+            .split_once(':')
+            .ok_or_else(|| ApiError::invalid_input("SKILL.md frontmatter is not valid YAML"))?;
+        let key = key.trim();
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+            || out.contains_key(key)
+        {
+            return Err(ApiError::invalid_input(
+                "SKILL.md frontmatter is not valid YAML",
+            ));
+        }
+        out.insert(key.to_string(), Value::String(value.trim().to_string()));
+    }
+    if out.is_empty() {
+        return Err(ApiError::invalid_input(
+            "SKILL.md frontmatter is not valid YAML",
+        ));
+    }
+    Ok(Value::Object(out))
+}
+
 fn yaml_value_to_json(value: serde_yaml::Value) -> Value {
     match value {
         serde_yaml::Value::Null => Value::Null,
@@ -373,14 +408,13 @@ fn has_windows_drive_prefix(raw: &str) -> bool {
 
 fn detect_skill_root(entries: &[(usize, String, u64)]) -> Result<Option<String>, ApiError> {
     let mut root_skill = false;
-    let mut one_level_candidates = HashSet::new();
+    let mut candidates = HashSet::new();
 
     for (_, path, _) in entries {
-        let parts: Vec<&str> = path.split('/').collect();
         if path == "SKILL.md" {
             root_skill = true;
-        } else if parts.len() == 2 && parts[1] == "SKILL.md" {
-            one_level_candidates.insert(parts[0].to_string());
+        } else if let Some(prefix) = path.strip_suffix("/SKILL.md") {
+            candidates.insert(prefix.to_string());
         }
     }
 
@@ -388,18 +422,20 @@ fn detect_skill_root(entries: &[(usize, String, u64)]) -> Result<Option<String>,
         return Ok(None);
     }
 
-    if one_level_candidates.len() != 1 {
-        return Err(ApiError::invalid_input("zip package must contain SKILL.md"));
+    if candidates.len() != 1 {
+        return Err(ApiError::invalid_input(
+            "zip skill package must contain a single SKILL.md",
+        ));
     }
 
-    let prefix = one_level_candidates.into_iter().next().unwrap();
+    let prefix = candidates.into_iter().next().unwrap();
     let required_prefix = format!("{prefix}/");
     if entries
         .iter()
         .any(|(_, path, _)| !path.starts_with(&required_prefix))
     {
         return Err(ApiError::invalid_input(
-            "zip package must contain a single skill root directory",
+            "zip skill package must contain a single skill root directory",
         ));
     }
 
@@ -431,10 +467,10 @@ fn read_zip_file_to_bytes(
 ) -> Result<Vec<u8>, ApiError> {
     let mut file = archive
         .by_index(index)
-        .map_err(|_| ApiError::invalid_input("zip package cannot be read"))?;
+        .map_err(|_| ApiError::invalid_input("zip skill package cannot be read"))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
-        .map_err(|_| ApiError::invalid_input("zip package cannot be read"))?;
+        .map_err(|_| ApiError::invalid_input("zip skill package cannot be read"))?;
     Ok(bytes)
 }
 

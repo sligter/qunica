@@ -48,11 +48,20 @@ impl AppConfig {
     }
 
     pub fn for_desktop_app_data(app_data_dir: PathBuf, port: u16) -> Result<Self, ConfigError> {
+        let log_level = std::env::var("AG_SWARMER_LOG_LEVEL")
+            .ok()
+            .or_else(|| {
+                fs::read_to_string(app_data_dir.join("logs").join("log-filter.txt"))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or_else(|| "info".to_string());
         let mut config = Self {
             host: "127.0.0.1".to_string(),
             port,
             app_data_dir: Some(app_data_dir),
-            log_level: std::env::var("AG_SWARMER_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            log_level,
             database_url: std::env::var("AG_SWARMER_DATABASE_URL")
                 .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string()),
             secret_key: std::env::var("SECRET_KEY")

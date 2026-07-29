@@ -21,6 +21,7 @@ describe('ImportSkillForm', () => {
     const user = userEvent.setup()
     render(<ImportSkillForm />)
 
+    expect(screen.getByRole('tab', { name: 'Skill package (.zip)' })).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Paste SKILL.md' }))
     await user.click(screen.getByRole('button', { name: 'Import skill' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(

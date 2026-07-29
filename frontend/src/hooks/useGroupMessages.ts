@@ -37,26 +37,50 @@ function removeMessageFromPages(
   }
 }
 
-export function useClearGroupMessages(groupId: string | undefined) {
+export function useClearConversationMessages(
+  scope: ConversationScope,
+  conversationId: string | undefined,
+) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   const clearGroupMessages = useMessageStore((s) => s.clearGroupMessages)
   return useMutation({
     mutationFn: () =>
-      fetchJson<ClearGroupMessagesResponse>(`/groups/${groupId}/messages/clear`, {
+      fetchJson<ClearGroupMessagesResponse>(
+        `${conversationApiPath(scope, conversationId)}/messages/clear`,
+        {
+          method: 'POST',
+          token,
+        },
+      ),
+    onSuccess: () => {
+      if (conversationId) {
+        const messagesKey = conversationMessagesKey(scope, conversationId)
+        qc.setQueryData(messagesKey, emptyMessagePages())
+        clearGroupMessages(conversationId)
+        void qc.invalidateQueries({ queryKey: messagesKey })
+        // The backend resets each agent's last-known context usage on clear;
+        // refetch so the avatar ring/tooltip drop the stale baseline immediately.
+        if (scope === 'groups') {
+          void qc.invalidateQueries({ queryKey: ['groups', conversationId, 'agents'] })
+        }
+      }
+    },
+  })
+}
+
+export function useClearGroupMessages(groupId: string | undefined) {
+  return useClearConversationMessages('groups', groupId)
+}
+
+export function useResetDirectChatContext(chatId: string) {
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: () =>
+      fetchJson<void>(`/direct-chats/${chatId}/context/reset`, {
         method: 'POST',
         token,
       }),
-    onSuccess: () => {
-      if (groupId) {
-        qc.setQueryData(['groups', groupId, 'messages'], emptyMessagePages())
-        clearGroupMessages(groupId)
-        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'messages'] })
-        // The backend resets each agent's last-known context usage on clear;
-        // refetch so the avatar ring/tooltip drop the stale baseline immediately.
-        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
-      }
-    },
   })
 }
 

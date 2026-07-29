@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
-import { EditAgentForm } from '@/components/agents/EditAgentForm'
+import {
+  EDIT_AGENT_FORM_ID,
+  EditAgentForm,
+} from '@/components/agents/EditAgentForm'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,6 +16,7 @@ import { ProseBlock } from '@/components/ui/prose-block'
 import { Section } from '@/components/ui/section'
 import { useAgent } from '@/hooks/useAgents'
 import { useDeleteAgent } from '@/hooks/useDeleteAgent'
+import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
@@ -29,8 +33,10 @@ export function AgentDetailPage() {
   const navigate = useNavigate()
   const del = useDeleteAgent()
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [showAllSkills, setShowAllSkills] = useState(false)
+  const saveReady = useEditSaveGuard(editing)
 
   if (agent.isLoading) {
     return <PageState variant="loading" title={t('agents:detail.loading')} />
@@ -58,12 +64,26 @@ export function AgentDetailPage() {
       <DetailShell
         title={t('agents:detail.editTitle', { name: a.name })}
         actions={
-          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-            {t('common:actions.cancel')}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              type="submit"
+              form={EDIT_AGENT_FORM_ID}
+              disabled={!saveReady || saving}
+            >
+              {saving ? t('common:actions.saving') : t('common:actions.save')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              {t('common:actions.cancel')}
+            </Button>
+          </>
         }
       >
-        <EditAgentForm agent={a} onSaved={() => setEditing(false)} />
+        <EditAgentForm
+          agent={a}
+          onSavingChange={setSaving}
+          onSaved={() => setEditing(false)}
+        />
       </DetailShell>
     )
   }
@@ -81,7 +101,14 @@ export function AgentDetailPage() {
       subtitle={a.description || undefined}
       actions={
         <>
-          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setSaving(false)
+              setEditing(true)
+            }}
+          >
             {t('common:actions.edit')}
           </Button>
           <Button

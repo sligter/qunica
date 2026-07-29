@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
-import { EditProviderForm } from '@/components/providers/EditProviderForm'
+import {
+  EDIT_PROVIDER_FORM_ID,
+  EditProviderForm,
+} from '@/components/providers/EditProviderForm'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,6 +14,7 @@ import { Field, FieldGrid } from '@/components/ui/field'
 import { PageState } from '@/components/ui/page-state'
 import { Section } from '@/components/ui/section'
 import { useDeleteProvider, useProvider } from '@/hooks/useProviders'
+import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
 import { formatNumber } from '@/lib/format'
 import type { Language } from '@/i18n'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
@@ -22,7 +26,9 @@ export function ProviderDetailPage() {
   const del = useDeleteProvider()
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const saveReady = useEditSaveGuard(editing)
 
   if (provider.isLoading) {
     return <PageState variant="loading" title={t('providers:detail.loading')} />
@@ -46,12 +52,28 @@ export function ProviderDetailPage() {
       <DetailShell
         title={t('providers:detail.editTitle', { name: p.name })}
         actions={
-          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-            {t('common:actions.cancel')}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              type="submit"
+              form={EDIT_PROVIDER_FORM_ID}
+              disabled={!saveReady || saving}
+            >
+              {saving
+                ? t('providers:actions.saving')
+                : t('providers:form.saveChanges')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              {t('common:actions.cancel')}
+            </Button>
+          </>
         }
       >
-        <EditProviderForm provider={p} onSaved={() => setEditing(false)} />
+        <EditProviderForm
+          provider={p}
+          onSavingChange={setSaving}
+          onSaved={() => setEditing(false)}
+        />
       </DetailShell>
     )
   }
@@ -62,7 +84,14 @@ export function ProviderDetailPage() {
       subtitle={`${p.kind} · ${p.default_model}`}
       actions={
         <>
-          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSaving(false)
+              setEditing(true)
+            }}
+          >
             {t('common:actions.edit')}
           </Button>
           <Button

@@ -37,6 +37,7 @@ export interface WorkspaceCreate {
   name: string
   backend_type?: WorkspaceBackendType
   local_path?: string | null
+  auto_create?: boolean
   sandbox_ref?: string | null
   config?: Record<string, unknown> | null
 }
