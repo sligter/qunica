@@ -344,7 +344,6 @@ export function useSendMessageStream(
   const detachStreamRun = useMessageStore((s) => s.detachStreamRun)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunError = useMessageStore((s) => s.markStreamRunError)
-  const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
   const qc = useQueryClient()
 
   const [activeStreamCount, setActiveStreamCount] = useState(0)
@@ -541,7 +540,9 @@ export function useSendMessageStream(
 
     if (groupId) {
       if (legacyStreamIds.length > 0) {
-        markStreamRunCancelled(groupId, legacyStreamIds)
+        for (const streamId of legacyStreamIds) {
+          detachStreamRun(groupId, streamId)
+        }
       }
       if (streamIds.length > 0) {
         for (const streamId of streamIds) {
@@ -560,9 +561,9 @@ export function useSendMessageStream(
     clearActiveAgent,
     clearInFlight,
     clearStreamInFlight,
+    detachStreamRun,
     groupId,
     invalidate,
-    markStreamRunCancelled,
     reconcileSchedulerTurn,
     rejectSendBeforeAcknowledgement,
     refreshActiveCount,

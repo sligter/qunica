@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use ag_swarmer_backend::tools::{
-    resolve_workspace_path, ToolExecutor, ToolStatus, WorkspaceMount, WorkspaceTools,
+    resolve_workspace_path, FileEdit, ToolExecutor, ToolStatus, WorkspaceMount, WorkspaceTools,
     MAX_READ_LINES, SELF_MOUNT_NAME,
 };
 use serde_json::{json, Value};
@@ -145,33 +145,35 @@ async fn workspace_tools_read_write_edit_glob_and_grep_stay_inside_root() {
     // A second top-level file so glob/grep have more than one candidate.
     tools.write("README.md", "# Title\nfn note\n").unwrap();
 
-    // Read returns 1-based line numbers from the requested window.
+    // Read returns plain text, matching the content the model may edit.
     let read = tools.read("src/main.rs", 1, MAX_READ_LINES).unwrap();
-    assert_eq!(
-        read.output,
-        "1\tfn main() {\n2\t    println!(\"hi\");\n3\t}"
-    );
+    assert_eq!(read.output, "fn main() {\n    println!(\"hi\");\n}\n");
 
-    // Read window honors start_line and limit.
+    // Read window honors offset and limit and tells the model how to continue.
     let windowed = tools.read("src/main.rs", 2, 1).unwrap();
-    assert_eq!(windowed.output, "2\t    println!(\"hi\");");
+    assert_eq!(
+        windowed.output,
+        "    println!(\"hi\");\n\n[2 more lines in file. Use offset=3 to continue.]"
+    );
 
     // Edit replaces an exact unique match.
     let edited = tools
         .edit(
             "src/main.rs",
-            "println!(\"hi\")",
-            "println!(\"bye\")",
-            false,
+            &[FileEdit::new("println!(\"hi\")", "println!(\"bye\")")],
         )
         .unwrap();
-    assert!(edited.output.contains("replaced 1 occurrence"));
+    assert!(edited.output.contains("replaced 1 block"));
     let after = std::fs::read_to_string(root.path().join("src/main.rs")).unwrap();
     assert!(after.contains("bye"));
 
-    // Edit rejects a missing match and an empty old_string.
-    assert!(tools.edit("src/main.rs", "nope", "x", false).is_err());
-    assert!(tools.edit("src/main.rs", "", "x", false).is_err());
+    // Edit rejects a missing match and an empty oldText.
+    assert!(tools
+        .edit("src/main.rs", &[FileEdit::new("nope", "x")])
+        .is_err());
+    assert!(tools
+        .edit("src/main.rs", &[FileEdit::new("", "x")])
+        .is_err());
 
     // Glob over "**/*" finds both the nested and top-level files, sorted.
     let globbed = tools.glob("**/*", 200).unwrap();
@@ -195,6 +197,49 @@ async fn workspace_tools_read_write_edit_glob_and_grep_stay_inside_root() {
 
     // Reading a missing file is an error, not a panic.
     assert!(tools.read("does/not/exist.txt", 1, MAX_READ_LINES).is_err());
+}
+
+#[test]
+fn workspace_tools_edit_validates_every_block_before_writing() {
+    let root = tempdir().unwrap();
+    let tools = WorkspaceTools::new(root.path()).unwrap();
+    let original = "alpha\nbeta\ngamma\n";
+    tools.write("file.txt", original).unwrap();
+
+    tools
+        .edit(
+            "file.txt",
+            &[
+                FileEdit::new("alpha", "one"),
+                FileEdit::new("gamma", "three"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("file.txt")).unwrap(),
+        "one\nbeta\nthree\n"
+    );
+
+    tools.write("file.txt", original).unwrap();
+
+    let result = tools.edit(
+        "file.txt",
+        &[
+            FileEdit::new("alpha", "one"),
+            FileEdit::new("missing", "nope"),
+        ],
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("file.txt")).unwrap(),
+        original
+    );
+
+    tools.write("file.txt", "repeat\nrepeat\n").unwrap();
+    assert!(tools
+        .edit("file.txt", &[FileEdit::new("repeat", "once")])
+        .is_err());
 }
 
 #[tokio::test]
@@ -445,16 +490,14 @@ async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
     let written = executor
         .execute(
             "Write",
-            json!({ "file_path": "a/b.txt", "content": "line1\nline2\n" }),
+            json!({ "path": "a/b.txt", "content": "line1\nline2\n" }),
         )
         .await;
     assert_eq!(written.status, ToolStatus::Completed, "{}", written.output);
 
-    let read = executor
-        .execute("Read", json!({ "file_path": "a/b.txt" }))
-        .await;
+    let read = executor.execute("Read", json!({ "path": "a/b.txt" })).await;
     assert_eq!(read.status, ToolStatus::Completed);
-    assert!(read.output.contains("1\tline1"));
+    assert!(read.output.starts_with("line1\nline2"));
 
     // Glob (default pattern) and Grep dispatch to the file tools.
     let globbed = executor.execute("Glob", json!({})).await;
@@ -471,7 +514,10 @@ async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
     let edited = executor
         .execute(
             "Edit",
-            json!({ "file_path": "a/b.txt", "old_string": "line1", "new_string": "LINE1" }),
+            json!({
+                "path": "a/b.txt",
+                "edits": [{ "oldText": "line1", "newText": "LINE1" }]
+            }),
         )
         .await;
     assert_eq!(edited.status, ToolStatus::Completed);
@@ -493,7 +539,7 @@ async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
 
     // A path escape is rejected and never echoes the absolute local root.
     let escape = executor
-        .execute("Read", json!({ "file_path": "../secret.txt" }))
+        .execute("Read", json!({ "path": "../secret.txt" }))
         .await;
     assert_eq!(escape.status, ToolStatus::Failed);
     let absolute_root = root.path().to_string_lossy();
@@ -505,7 +551,7 @@ async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
     // Without a workspace, file tools report WORKSPACE_REQUIRED.
     let no_workspace = ToolExecutor::without_workspace();
     let needs_ws = no_workspace
-        .execute("Read", json!({ "file_path": "a.txt" }))
+        .execute("Read", json!({ "path": "a.txt" }))
         .await;
     assert_eq!(needs_ws.status, ToolStatus::WorkspaceRequired);
     let payload: Value = serde_json::from_str(&needs_ws.output).unwrap();
@@ -561,7 +607,9 @@ fn workspace_tools_mount_writes_and_edits_report_the_mounted_address() {
         "a mounted write must not land in the primary root"
     );
 
-    let edited = tools.edit("~self/notes/todo.md", "one", "two", false).unwrap();
+    let edited = tools
+        .edit("~self/notes/todo.md", &[FileEdit::new("one", "two")])
+        .unwrap();
     assert!(edited.output.contains("~self/notes/todo.md"));
     assert_eq!(
         std::fs::read_to_string(own.path().join("notes/todo.md")).unwrap(),
@@ -662,7 +710,7 @@ async fn workspace_tools_executor_exposes_mounts_to_file_tools_but_not_bash() {
     .unwrap();
 
     let read = executor
-        .execute("Read", json!({ "file_path": "~self/secret-plan.md" }))
+        .execute("Read", json!({ "path": "~self/secret-plan.md" }))
         .await;
     assert_eq!(read.status, ToolStatus::Completed);
     assert!(read.output.contains("mounted"));

@@ -18,7 +18,7 @@ export function InterruptedMessageActions({
   const { t } = useTranslation('chat')
   const { resume, isStreaming, error } = useResumeStream(groupId, threadId, messageId)
   return (
-    <div className="flex items-center gap-2 text-xs">
+    <div className={isStreaming ? 'hidden' : 'flex items-center gap-2 text-xs'}>
       <Button
         size="sm"
         variant="outline"

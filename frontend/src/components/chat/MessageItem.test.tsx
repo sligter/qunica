@@ -1,9 +1,10 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageItem } from '@/components/chat/MessageItem'
 import { useAuthStore } from '@/stores/authStore'
+import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 vi.mock('@/hooks/useGroupAgents', () => ({
@@ -30,6 +31,10 @@ vi.mock('@/components/chat/MessageAttachments', () => ({
   MessageAttachments: ({ attachments }: { attachments: Array<{ name: string }> }) => (
     <div>{attachments.map((attachment) => attachment.name).join(', ')}</div>
   ),
+}))
+
+vi.mock('@/components/chat/InterruptedMessageActions', () => ({
+  InterruptedMessageActions: () => <div data-testid="interrupted-message-actions" />,
 }))
 
 function message(overrides: Partial<Message>): Message {
@@ -59,6 +64,10 @@ function message(overrides: Partial<Message>): Message {
 afterEach(() => {
   cleanup()
   useAuthStore.setState({ user: null })
+  useMessageStore.setState({
+    resumingMessageIds: new Set(),
+    activeResumesByMessageId: {},
+  })
 })
 
 describe('MessageItem', () => {
@@ -146,5 +155,30 @@ describe('MessageItem', () => {
     )
 
     expect(screen.getByText('photo.png')).toBeVisible()
+  })
+
+  it('keeps the resume stream owner mounted until the resumed message finishes', () => {
+    const interrupted = message({ status: 'interrupted' })
+    const { rerender } = render(
+      <MessageItem groupId="group-1" message={interrupted} />,
+    )
+
+    expect(screen.getByTestId('interrupted-message-actions')).toBeInTheDocument()
+
+    act(() => useMessageStore.getState().startResume(
+      'group-1',
+      interrupted.id,
+      async () => undefined,
+    ))
+    rerender(
+      <MessageItem
+        groupId="group-1"
+        message={{ ...interrupted, status: 'visible' }}
+      />,
+    )
+    expect(screen.getByTestId('interrupted-message-actions')).toBeInTheDocument()
+
+    act(() => useMessageStore.getState().endResume(interrupted.id))
+    expect(screen.queryByTestId('interrupted-message-actions')).not.toBeInTheDocument()
   })
 })

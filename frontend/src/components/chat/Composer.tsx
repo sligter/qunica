@@ -29,8 +29,6 @@ import type {
   MessageSendInput,
 } from '@/types/api'
 
-export type WorkspacePathInserter = (paths: string[]) => void
-
 type UploadAttachment = {
   kind: 'upload'
   localId: string
@@ -79,7 +77,6 @@ interface ComposerProps {
   groupId?: string
   allowMentions?: boolean
   disabledReason?: string
-  onRegisterWorkspacePathInserter?: (insert: WorkspacePathInserter | null) => void
 }
 
 /** ~10 lines of text-sm (20px line-height) plus padding. */
@@ -176,7 +173,6 @@ export function Composer({
   groupId,
   allowMentions = true,
   disabledReason,
-  onRegisterWorkspacePathInserter,
 }: ComposerProps) {
   const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
@@ -407,11 +403,6 @@ export function Composer({
       }
     })()
   }, [addWorkspaceFiles, ensureWorkspaceContext, insertDirectoryPaths, resolvedConversationId, scope, showNotice, token])
-
-  useEffect(() => {
-    onRegisterWorkspacePathInserter?.(insertWorkspacePaths)
-    return () => onRegisterWorkspacePathInserter?.(null)
-  }, [insertWorkspacePaths, onRegisterWorkspacePathInserter])
 
   const send = async () => {
     if (isSending) return

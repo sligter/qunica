@@ -38,6 +38,22 @@ pub const MAX_WRITE_BYTES: usize = 1_000_000;
 /// conversation workspace stays primary.
 pub const SELF_MOUNT_NAME: &str = "~self";
 
+/// One exact replacement applied by [`WorkspaceTools::edit`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEdit {
+    pub old_text: String,
+    pub new_text: String,
+}
+
+impl FileEdit {
+    pub fn new(old_text: impl Into<String>, new_text: impl Into<String>) -> Self {
+        Self {
+            old_text: old_text.into(),
+            new_text: new_text.into(),
+        }
+    }
+}
+
 /// A named secondary root, addressable from tool paths as `<name>/...`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceMount {
@@ -124,20 +140,18 @@ impl WorkspaceTools {
         &self.mounts
     }
 
-    /// Read a UTF-8 text file with 1-based line numbers.
+    /// Read a UTF-8 text file, optionally from a 1-based line offset.
     ///
-    /// `start_line` must be `>= 1`; at most `min(limit, MAX_READ_LINES)` lines
-    /// from `start_line` onward are returned. Invalid bytes are replaced with
-    /// U+FFFD. Files larger than [`MAX_FILE_BYTES`] are rejected.
+    /// `offset=0` and `offset=1` both start at the first line. At most
+    /// `min(limit, MAX_READ_LINES)` lines are returned, with a continuation hint
+    /// when more remain. Invalid bytes are replaced with U+FFFD. Files larger
+    /// than [`MAX_FILE_BYTES`] are rejected.
     pub fn read(
         &self,
         file_path: &str,
-        start_line: usize,
+        offset: usize,
         limit: usize,
     ) -> Result<ToolResult, ToolError> {
-        if start_line < 1 {
-            return Err(ToolError::invalid("start_line must be >= 1"));
-        }
         if limit < 1 {
             return Err(ToolError::invalid("limit must be >= 1"));
         }
@@ -154,16 +168,25 @@ impl WorkspaceTools {
 
         let bytes = fs::read(&target)?;
         let text = String::from_utf8_lossy(&bytes);
-        let take = limit.min(MAX_READ_LINES);
-        let numbered = text
-            .lines()
-            .skip(start_line - 1)
-            .take(take)
-            .enumerate()
-            .map(|(offset, line)| format!("{}\t{}", start_line + offset, line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(ToolResult::completed(numbered))
+        let normalized = normalize_to_lf(&text);
+        let lines: Vec<&str> = normalized.split('\n').collect();
+        let start = offset.saturating_sub(1);
+        if start >= lines.len() {
+            return Err(ToolError::invalid(format!(
+                "offset {offset} is beyond end of file ({} lines total)",
+                lines.len()
+            )));
+        }
+        let end = (start + limit.min(MAX_READ_LINES)).min(lines.len());
+        let mut output = lines[start..end].join("\n");
+        let remaining = lines.len() - end;
+        if remaining > 0 {
+            output.push_str(&format!(
+                "\n\n[{remaining} more lines in file. Use offset={} to continue.]",
+                end + 1
+            ));
+        }
+        Ok(ToolResult::completed(output))
     }
 
     /// Create or replace a UTF-8 file under the workspace root.
@@ -195,21 +218,18 @@ impl WorkspaceTools {
         )))
     }
 
-    /// Replace exact text in an existing UTF-8 file.
+    /// Apply one or more exact replacements to an existing UTF-8 file.
     ///
-    /// `old_string` must be non-empty and must occur in the file. A non-unique
-    /// match is rejected unless `replace_all` is set, in which case every
-    /// occurrence is replaced. The resulting content must not exceed
+    /// Every `old_text` must be non-empty, unique in the original file, and not
+    /// overlap another edit. All edits are validated before the file is written,
+    /// so a bad block leaves the original untouched. Line endings are normalized
+    /// for matching and restored on write. The resulting content must not exceed
     /// [`MAX_WRITE_BYTES`].
-    pub fn edit(
-        &self,
-        file_path: &str,
-        old_string: &str,
-        new_string: &str,
-        replace_all: bool,
-    ) -> Result<ToolResult, ToolError> {
-        if old_string.is_empty() {
-            return Err(ToolError::invalid("old_string must be non-empty"));
+    pub fn edit(&self, file_path: &str, edits: &[FileEdit]) -> Result<ToolResult, ToolError> {
+        if edits.is_empty() {
+            return Err(ToolError::invalid(
+                "edits must contain at least one replacement",
+            ));
         }
         let (index, target) = self.resolve(file_path)?;
         let meta = fs::metadata(&target).map_err(|_| ToolError::invalid("file does not exist"))?;
@@ -223,32 +243,58 @@ impl WorkspaceTools {
         }
 
         let bytes = fs::read(&target)?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let occurrences = text.matches(old_string).count();
-        if occurrences == 0 {
-            return Err(ToolError::invalid("old_string was not found"));
-        }
-        if occurrences > 1 && !replace_all {
-            return Err(ToolError::invalid(
-                "old_string is not unique; set replace_all=true to replace all matches",
+        let text =
+            String::from_utf8(bytes).map_err(|_| ToolError::invalid("file is not valid UTF-8"))?;
+        let line_ending = detect_line_ending(&text);
+        let mut updated = normalize_to_lf(&text);
+        let mut replacements = Vec::with_capacity(edits.len());
+
+        for (edit_index, edit) in edits.iter().enumerate() {
+            let old_text = normalize_to_lf(&edit.old_text);
+            if old_text.is_empty() {
+                return Err(ToolError::invalid(format!(
+                    "edits[{edit_index}].oldText must be non-empty"
+                )));
+            }
+            let matches: Vec<usize> = updated.match_indices(&old_text).map(|(at, _)| at).collect();
+            if matches.is_empty() {
+                return Err(ToolError::invalid(format!(
+                    "edits[{edit_index}].oldText was not found"
+                )));
+            }
+            if matches.len() > 1 {
+                return Err(ToolError::invalid(format!(
+                    "edits[{edit_index}].oldText is not unique (found {} occurrences)",
+                    matches.len()
+                )));
+            }
+            let start = matches[0];
+            replacements.push((
+                start,
+                start + old_text.len(),
+                normalize_to_lf(&edit.new_text),
             ));
         }
 
-        let updated = if replace_all {
-            text.replace(old_string, new_string)
-        } else {
-            text.replacen(old_string, new_string, 1)
-        };
+        replacements.sort_by_key(|(start, _, _)| *start);
+        if replacements.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+            return Err(ToolError::invalid("edit blocks must not overlap"));
+        }
+        for (start, end, new_text) in replacements.into_iter().rev() {
+            updated.replace_range(start..end, &new_text);
+        }
+
+        let updated = restore_line_endings(updated, line_ending);
         if updated.len() > MAX_WRITE_BYTES {
             return Err(ToolError::invalid(
                 "edited content is too large to write with this tool",
             ));
         }
         fs::write(&target, updated.as_bytes())?;
-        let replaced = if replace_all { occurrences } else { 1 };
         let rel = self.relative_display(index, &target);
         Ok(ToolResult::completed(format!(
-            "Edited {rel}; replaced {replaced} occurrence(s)."
+            "Edited {rel}; replaced {} block(s).",
+            edits.len()
         )))
     }
 
@@ -468,4 +514,26 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, ToolError> {
 /// Convert a path to a forward-slash string for stable, OS-independent output.
 fn to_forward_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn normalize_to_lf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn detect_line_ending(text: &str) -> &'static str {
+    if text.contains("\r\n") {
+        "\r\n"
+    } else if text.contains('\r') {
+        "\r"
+    } else {
+        "\n"
+    }
+}
+
+fn restore_line_endings(text: String, line_ending: &str) -> String {
+    if line_ending == "\n" {
+        text
+    } else {
+        text.replace('\n', line_ending)
+    }
 }

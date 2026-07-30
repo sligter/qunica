@@ -1,12 +1,17 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import {
   ChevronLeft,
+  ClipboardPaste,
+  Copy,
   Download,
+  Eraser,
   File,
   Folder,
+  FolderInput,
   FolderOpen,
   Pencil,
   RefreshCw,
+  Scissors,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -19,6 +24,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -32,12 +38,14 @@ import {
 import {
   useDeleteGroupWorkspaceFile,
   useRenameGroupWorkspaceFile,
+  useWorkspaceFileActions,
 } from '@/hooks/useGroupFiles'
 import { normalizeLanguage } from '@/i18n'
 import {
   workspaceErrorMessageKey,
   type WorkspaceErrorMessageKey,
 } from '@/i18n/localizedError'
+import { isDesktopRuntime, revealInFileManager } from '@/lib/desktop'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -52,7 +60,6 @@ interface WorkspaceFilesTabProps {
   scope: ConversationScope
   conversationId: string | undefined
   workspaceId: string | null
-  onInsertPaths?: (paths: string[]) => void
 }
 
 function parentPath(path: string): string {
@@ -86,7 +93,6 @@ export function WorkspaceFilesTab({
   scope,
   conversationId,
   workspaceId,
-  onInsertPaths,
 }: WorkspaceFilesTabProps) {
   const { t, i18n } = useTranslation(['chat', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
@@ -98,7 +104,14 @@ export function WorkspaceFilesTab({
   )
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead[] | null>(null)
+  const [pendingClear, setPendingClear] = useState(false)
+  const [movePaths, setMovePaths] = useState<string[] | null>(null)
+  const [moveDestination, setMoveDestination] = useState('')
+  const [clipboard, setClipboard] = useState<{
+    mode: 'copy' | 'move'
+    paths: string[]
+  } | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [operationError, setOperationError] = useState<WorkspaceErrorMessageKey | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
@@ -111,12 +124,14 @@ export function WorkspaceFilesTab({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const menuFirstItemRef = useRef<HTMLButtonElement | null>(null)
+  const selectionAnchorRef = useRef<string | null>(null)
   const dragDescriptionId = useId()
   const contextMenuId = useId()
   const activeConversationId = workspaceId ? conversationId : undefined
   const hasConversation = Boolean(activeConversationId)
   const canUpload = hasConversation
   const canMutate = hasConversation
+  const canRevealInFileManager = isDesktopRuntime()
   const roots = useConversationWorkspaceRoots(scope, activeConversationId)
   const rootEntries = roots.data ?? []
   // A root can disappear (agent removed, mode changed); fall back to the
@@ -136,20 +151,43 @@ export function WorkspaceFilesTab({
   const download = useDownloadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
   const rename = useRenameGroupWorkspaceFile(activeConversationId, scope, activeAgentId)
   const del = useDeleteGroupWorkspaceFile(activeConversationId, scope, activeAgentId)
+  const actions = useWorkspaceFileActions(activeConversationId, scope, activeAgentId)
   const navRequest = useFileNavStore((state) => state.request)
   const clearNav = useFileNavStore((state) => state.clear)
 
   const title = currentPath || t('chat:workspace.root')
   const sortedFiles = files.data ?? []
   const selectedCount = selectedWorkspacePaths.size
+  const selectedFiles = sortedFiles.filter((file) => selectedWorkspacePaths.has(file.path))
 
-  const selectOnlyPath = (path: string) => setSelectedWorkspacePaths(new Set([path]))
+  const selectOnlyPath = (path: string) => {
+    selectionAnchorRef.current = path
+    setSelectedWorkspacePaths(new Set([path]))
+  }
 
   const toggleSelectedPath = (path: string) => {
+    selectionAnchorRef.current = path
     setSelectedWorkspacePaths((current) => {
       const next = new Set(current)
       if (next.has(path)) next.delete(path)
       else next.add(path)
+      return next
+    })
+  }
+
+  const selectPathRange = (path: string, additive: boolean) => {
+    const anchor = selectionAnchorRef.current
+    const anchorIndex = sortedFiles.findIndex((file) => file.path === anchor)
+    const targetIndex = sortedFiles.findIndex((file) => file.path === path)
+    if (anchorIndex < 0 || targetIndex < 0) {
+      selectOnlyPath(path)
+      return
+    }
+    const start = Math.min(anchorIndex, targetIndex)
+    const end = Math.max(anchorIndex, targetIndex)
+    setSelectedWorkspacePaths((current) => {
+      const next = additive ? new Set(current) : new Set<string>()
+      for (const file of sortedFiles.slice(start, end + 1)) next.add(file.path)
       return next
     })
   }
@@ -174,17 +212,26 @@ export function WorkspaceFilesTab({
     event: React.MouseEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    if (event.shiftKey) {
+      selectPathRange(file.path, event.ctrlKey || event.metaKey)
+      return
+    }
     if (event.ctrlKey || event.metaKey) {
       toggleSelectedPath(file.path)
       return
     }
-    openEntry(file)
+    selectOnlyPath(file.path)
   }
 
   const handleFileKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      openEntry(file)
+      return
+    }
     if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
     event.preventDefault()
     const rect = event.currentTarget.getBoundingClientRect()
@@ -206,17 +253,16 @@ export function WorkspaceFilesTab({
     event.dataTransfer.setData('text/plain', draggedFiles.map((item) => item.path).join('\n'))
   }
 
-  const insertSelectedPaths = () => {
-    if (selectedWorkspacePaths.size === 0) return
-    onInsertPaths?.(Array.from(selectedWorkspacePaths))
-  }
-
   useEffect(() => {
     setCurrentPath('')
     setPreviewFile(null)
     setIsPreviewOpen(false)
     setRenaming(null)
     setPendingDelete(null)
+    setPendingClear(false)
+    setMovePaths(null)
+    setMoveDestination('')
+    setClipboard(null)
     setOperationError(null)
     setMenu(null)
   }, [conversationId, scope, workspaceId])
@@ -247,12 +293,15 @@ export function WorkspaceFilesTab({
 
   useEffect(() => {
     setSelectedWorkspacePaths(new Set())
+    selectionAnchorRef.current = null
   }, [currentPath, conversationId, scope])
 
   useEffect(() => {
     setCurrentPath('')
     setPreviewFile(null)
     setIsPreviewOpen(false)
+    setClipboard(null)
+    setMovePaths(null)
   }, [activeAgentId])
 
   useEffect(() => {
@@ -367,9 +416,72 @@ export function WorkspaceFilesTab({
       .finally(() => setDownloadingPath(null))
   }
 
-  const performDelete = async (file: ConversationWorkspaceFileRead) => {
+  const revealFile = (file: ConversationWorkspaceFileRead) => {
+    if (!canRevealInFileManager || !file.abs_path) return
+    setOperationError(null)
+    void revealInFileManager(file.abs_path)
+      .catch((error: unknown) => setOperationError(workspaceErrorMessageKey(error)))
+  }
+
+  const filesForAction = (file: ConversationWorkspaceFileRead) => {
+    if (!selectedWorkspacePaths.has(file.path)) return [file]
+    return selectedFiles.length > 0 ? selectedFiles : [file]
+  }
+
+  const setWorkspaceClipboard = (
+    mode: 'copy' | 'move',
+    actionFiles: ConversationWorkspaceFileRead[],
+  ) => {
+    setClipboard({ mode, paths: actionFiles.map((file) => file.path) })
+  }
+
+  const pasteWorkspaceClipboard = async (destination: string) => {
+    if (!clipboard) return
+    setOperationError(null)
+    actions.reset()
     try {
-      await del.mutateAsync(file.path)
+      await actions.mutateAsync({
+        action: clipboard.mode,
+        paths: clipboard.paths,
+        destination,
+      })
+      setSelectedWorkspacePaths(new Set())
+      if (clipboard.mode === 'move') setClipboard(null)
+    } catch (error: unknown) {
+      setOperationError(workspaceErrorMessageKey(error))
+    }
+  }
+
+  const startMove = (actionFiles: ConversationWorkspaceFileRead[]) => {
+    setMovePaths(actionFiles.map((file) => file.path))
+    setMoveDestination('')
+    setOperationError(null)
+    actions.reset()
+  }
+
+  const submitMove = async () => {
+    if (!movePaths) return
+    setOperationError(null)
+    actions.reset()
+    try {
+      await actions.mutateAsync({
+        action: 'move',
+        paths: movePaths,
+        destination: moveDestination.trim(),
+      })
+      setMovePaths(null)
+      setMoveDestination('')
+      setSelectedWorkspacePaths(new Set())
+    } catch (error: unknown) {
+      setOperationError(workspaceErrorMessageKey(error))
+    }
+  }
+
+  const performDelete = async (actionFiles: ConversationWorkspaceFileRead[]) => {
+    const paths = actionFiles.map((file) => file.path)
+    try {
+      if (paths.length === 1) await del.mutateAsync(paths[0]!)
+      else await actions.mutateAsync({ action: 'delete', paths })
     } catch (error: unknown) {
       throw new Error(
         t('common:workspaceOperations.deletePathError', {
@@ -377,8 +489,10 @@ export function WorkspaceFilesTab({
         }),
       )
     }
-    const deletesPreview = previewFile?.path === file.path
+    const deletesPreview = actionFiles.some((file) => (
+      previewFile?.path === file.path
       || Boolean(file.is_dir && previewFile?.path.startsWith(`${file.path}/`))
+    ))
     if (deletesPreview) {
       setPreviewFile(null)
       setIsPreviewOpen(false)
@@ -386,13 +500,30 @@ export function WorkspaceFilesTab({
     setSelectedWorkspacePaths((current) => {
       const next = new Set<string>()
       for (const path of current) {
-        if (path === file.path) continue
-        if (file.is_dir && path.startsWith(`${file.path}/`)) continue
+        if (actionFiles.some((file) => (
+          path === file.path || (file.is_dir && path.startsWith(`${file.path}/`))
+        ))) continue
         next.add(path)
       }
       return next
     })
   }
+
+  const performClear = async () => {
+    try {
+      await actions.mutateAsync({ action: 'clear' })
+    } catch (error: unknown) {
+      throw new Error(t(`chat:${workspaceErrorMessageKey(error)}`))
+    }
+    setCurrentPath('')
+    setSelectedWorkspacePaths(new Set())
+    setClipboard(null)
+    setPreviewFile(null)
+    setIsPreviewOpen(false)
+  }
+
+  const menuActionFiles = menu ? filesForAction(menu.file) : []
+  const isSingleMenuAction = menuActionFiles.length === 1
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -454,6 +585,17 @@ export function WorkspaceFilesTab({
               >
                 <Upload className="h-4 w-4" />
               </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                onClick={() => setPendingClear(true)}
+                disabled={actions.isPending || !hasConversation}
+                aria-label={t('chat:workspace.fileActions.clearAria')}
+                title={t('chat:workspace.fileActions.clearAria')}
+              >
+                <Eraser className="h-4 w-4" />
+              </Button>
             </>
           ) : null}
           <Button
@@ -480,24 +622,83 @@ export function WorkspaceFilesTab({
         </button>
       ) : null}
 
-      {selectedCount > 0 ? (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+      {selectedCount > 0 || clipboard ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
           <span>
-            {t('common:workspaceOperations.selectedCount', {
-              count: selectedCount,
-              formattedCount: formatNumber(selectedCount, language),
-            })}
+            {selectedCount > 0
+              ? t('common:workspaceOperations.selectedCount', {
+                  count: selectedCount,
+                  formattedCount: formatNumber(selectedCount, language),
+                })
+              : t('chat:workspace.fileActions.clipboardReady', {
+                  count: clipboard?.paths.length ?? 0,
+                  formattedCount: formatNumber(clipboard?.paths.length ?? 0, language),
+                })}
           </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-2xs"
-            onClick={insertSelectedPaths}
-            disabled={!onInsertPaths}
-          >
-            {t('chat:workspace.insertSelected')}
-          </Button>
+          <div className="flex items-center gap-0.5">
+            {selectedCount > 0 ? (
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setWorkspaceClipboard('copy', selectedFiles)}
+                  aria-label={t('chat:workspace.fileActions.copySelected')}
+                  title={t('chat:workspace.fileActions.copySelected')}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setWorkspaceClipboard('move', selectedFiles)}
+                  aria-label={t('chat:workspace.fileActions.cutSelected')}
+                  title={t('chat:workspace.fileActions.cutSelected')}
+                >
+                  <Scissors className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => startMove(selectedFiles)}
+                  aria-label={t('chat:workspace.fileActions.moveSelected')}
+                  title={t('chat:workspace.fileActions.moveSelected')}
+                >
+                  <FolderInput className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 hover:text-destructive"
+                  onClick={() => setPendingDelete(selectedFiles)}
+                  aria-label={t('chat:workspace.fileActions.deleteSelected')}
+                  title={t('chat:workspace.fileActions.deleteSelected')}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : null}
+            {clipboard ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => void pasteWorkspaceClipboard(currentPath)}
+                disabled={actions.isPending}
+                aria-label={t('chat:workspace.fileActions.pasteHere')}
+                title={t('chat:workspace.fileActions.pasteHere')}
+              >
+                <ClipboardPaste className="h-3.5 w-3.5" />
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -556,6 +757,9 @@ export function WorkspaceFilesTab({
                   className={cn(
                     'group flex items-center gap-2 px-3 py-2 hover:bg-muted/70',
                     isSelected && 'bg-muted ring-1 ring-inset ring-ring/40',
+                    clipboard?.mode === 'move'
+                      && clipboard.paths.includes(file.path)
+                      && 'opacity-60',
                   )}
                   onContextMenu={(event) => {
                     event.preventDefault()
@@ -622,8 +826,8 @@ export function WorkspaceFilesTab({
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                        onClick={() => setPendingDelete(file)}
-                        disabled={del.isPending}
+                        onClick={() => setPendingDelete([file])}
+                        disabled={del.isPending || actions.isPending}
                         aria-label={t('chat:workspace.filePanel.deleteNamed', { name: file.name })}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -643,17 +847,95 @@ export function WorkspaceFilesTab({
           onOpenChange={(open) => {
             if (!open) setPendingDelete(null)
           }}
-          title={t('chat:workspace.deleteTitle', { path: pendingDelete.path })}
+          title={pendingDelete.length === 1
+            ? t('chat:workspace.deleteTitle', { path: pendingDelete[0]?.path })
+            : t('chat:workspace.fileActions.deleteManyTitle', {
+                count: pendingDelete.length,
+                formattedCount: formatNumber(pendingDelete.length, language),
+              })}
           description={
-            pendingDelete.is_dir
-              ? t('chat:workspace.filePanel.deleteFolderDescription')
-              : t('chat:workspace.filePanel.deleteFileDescription')
+            pendingDelete.length > 1
+              ? t('chat:workspace.fileActions.deleteManyDescription')
+              : pendingDelete[0]?.is_dir
+                ? t('chat:workspace.filePanel.deleteFolderDescription')
+                : t('chat:workspace.filePanel.deleteFileDescription')
           }
           confirmLabel={t('common:actions.delete')}
           destructive
           onConfirm={() => performDelete(pendingDelete)}
         />
       ) : null}
+
+      {pendingClear ? (
+        <ConfirmDialog
+          open
+          onOpenChange={setPendingClear}
+          title={t('chat:workspace.fileActions.clearTitle')}
+          description={t('chat:workspace.fileActions.clearDescription')}
+          confirmLabel={t('chat:workspace.fileActions.clearConfirm')}
+          destructive
+          onConfirm={performClear}
+        />
+      ) : null}
+
+      <Dialog
+        open={movePaths !== null}
+        onOpenChange={(open) => {
+          if (!open && !actions.isPending) {
+            setMovePaths(null)
+            setMoveDestination('')
+          }
+        }}
+      >
+        <DialogContent closeLabel={t('common:actions.close')} className="sm:max-w-md">
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void submitMove()
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{t('chat:workspace.fileActions.moveTitle')}</DialogTitle>
+              <DialogDescription>
+                {t('chat:workspace.fileActions.moveDescription')}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="workspace-move-destination">
+                {t('chat:workspace.fileActions.destinationFolder')}
+              </label>
+              <Input
+                id="workspace-move-destination"
+                value={moveDestination}
+                onChange={(event) => setMoveDestination(event.target.value)}
+                placeholder={t('chat:workspace.fileActions.destinationPlaceholder')}
+                autoFocus
+              />
+              {actions.error ? (
+                <p className="text-xs text-destructive" role="alert">
+                  {t('chat:workspace.filePanel.operationError', {
+                    message: t(`chat:${workspaceErrorMessageKey(actions.error)}`),
+                  })}
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setMovePaths(null)}
+                disabled={actions.isPending}
+              >
+                {t('common:actions.cancel')}
+              </Button>
+              <Button type="submit" disabled={actions.isPending}>
+                {t('chat:workspace.fileActions.moveConfirm')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isPreviewOpen && previewFile !== null} onOpenChange={setIsPreviewOpen}>
         <DialogContent
@@ -721,26 +1003,28 @@ export function WorkspaceFilesTab({
           onClick={(event) => event.stopPropagation()}
           onKeyDown={handleMenuKeyDown}
         >
-          <button
-            ref={menuFirstItemRef}
-            type="button"
-            role="menuitem"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
-            onClick={() => {
-              openEntry(menu.file)
-              setMenu(null)
-            }}
-          >
-            {menu.file.is_dir ? (
-              <FolderOpen className="h-3.5 w-3.5" />
-            ) : (
-              <File className="h-3.5 w-3.5" />
-            )}
-            {menu.file.is_dir
-              ? t('chat:workspace.filePanel.openFolder')
-              : t('chat:workspace.filePanel.openPreview')}
-          </button>
-          {!menu.file.is_dir ? (
+          {isSingleMenuAction ? (
+            <button
+              ref={menuFirstItemRef}
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+              onClick={() => {
+                openEntry(menu.file)
+                setMenu(null)
+              }}
+            >
+              {menu.file.is_dir ? (
+                <FolderOpen className="h-3.5 w-3.5" />
+              ) : (
+                <File className="h-3.5 w-3.5" />
+              )}
+              {menu.file.is_dir
+                ? t('chat:workspace.filePanel.openFolder')
+                : t('chat:workspace.filePanel.openPreview')}
+            </button>
+          ) : null}
+          {isSingleMenuAction && !menu.file.is_dir ? (
             <button
               type="button"
               role="menuitem"
@@ -754,26 +1038,98 @@ export function WorkspaceFilesTab({
               {t('chat:workspace.download')}
             </button>
           ) : null}
+          {isSingleMenuAction && canRevealInFileManager && menu.file.abs_path ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+              onClick={() => {
+                revealFile(menu.file)
+                setMenu(null)
+              }}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              {t('chat:workspace.reveal')}
+            </button>
+          ) : null}
           {canMutate ? (
             <>
+              {isSingleMenuAction ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                  onClick={() => {
+                    startRename(menu.file)
+                    setMenu(null)
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  {t('chat:workspace.rename')}
+                </button>
+              ) : null}
+              <div className="my-1 border-t border-border" role="separator" />
+              <button
+                ref={isSingleMenuAction ? undefined : menuFirstItemRef}
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                onClick={() => {
+                  setWorkspaceClipboard('copy', menuActionFiles)
+                  setMenu(null)
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                {t('chat:workspace.fileActions.copy')}
+              </button>
               <button
                 type="button"
                 role="menuitem"
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
                 onClick={() => {
-                  startRename(menu.file)
+                  setWorkspaceClipboard('move', menuActionFiles)
                   setMenu(null)
                 }}
               >
-                <Pencil className="h-3.5 w-3.5" />
-                {t('chat:workspace.rename')}
+                <Scissors className="h-3.5 w-3.5" />
+                {t('chat:workspace.fileActions.cut')}
+              </button>
+              {clipboard ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted disabled:opacity-50"
+                  disabled={actions.isPending}
+                  onClick={() => {
+                    const destination = menu.file.is_dir ? menu.file.path : currentPath
+                    void pasteWorkspaceClipboard(destination)
+                    setMenu(null)
+                  }}
+                >
+                  <ClipboardPaste className="h-3.5 w-3.5" />
+                  {menu.file.is_dir
+                    ? t('chat:workspace.fileActions.pasteInto', { name: menu.file.name })
+                    : t('chat:workspace.fileActions.pasteHere')}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                onClick={() => {
+                  startMove(menuActionFiles)
+                  setMenu(null)
+                }}
+              >
+                <FolderInput className="h-3.5 w-3.5" />
+                {t('chat:workspace.fileActions.moveTo')}
               </button>
               <button
                 type="button"
                 role="menuitem"
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-destructive hover:bg-muted"
                 onClick={() => {
-                  setPendingDelete(menu.file)
+                  setPendingDelete(menuActionFiles)
                   setMenu(null)
                 }}
               >

@@ -1,21 +1,14 @@
 //! Controlled (non-executing) tools and the shared controlled-result encoder.
 //!
 //! These are tools that return a structured status instead of performing an action:
-//! `WebSearch` (setup-required without a provider), `AskUser`, the media stubs
+//! unconfigured `WebSearch`, `AskUser`, the media stubs
 //! `GenerateImage`/`GenerateVideo`, `TodoWrite`, and `ExitPlanMode`. Each returns
 //! a [`ToolResult`] whose `output` is a JSON object carrying the stable `tool` /
 //! `status` / `message` shape used by the Rust runtime.
 
 use serde_json::{Map, Value};
 
-use super::{MountedSkill, ToolError, ToolResult, ToolStatus};
-
-/// Default number of search results requested.
-pub const DEFAULT_SEARCH_RESULTS: u32 = 5;
-/// Largest number of search results a caller may request.
-pub const MAX_SEARCH_RESULTS: u32 = 20;
-/// Largest search query length (in characters).
-pub const MAX_SEARCH_QUERY_CHARS: usize = 500;
+use super::{MountedSkill, ToolResult, ToolStatus};
 
 /// Maximum number of choices echoed back by `AskUser`.
 const MAX_ASK_CHOICES: usize = 8;
@@ -93,29 +86,14 @@ pub fn ask_user(question: &str, required: bool, choices: &[String]) -> ToolResul
     controlled_result("AskUser", status_label, status, Some(&message), extra)
 }
 
-/// `WebSearch`: validate arguments, then report `SETUP_REQUIRED` because no
-/// search provider is configured in this runtime.
-pub fn web_search(query: &str, max_results: u32) -> Result<ToolResult, ToolError> {
-    if query.trim().is_empty() {
-        return Err(ToolError::invalid("query must be non-empty"));
-    }
-    if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
-        return Err(ToolError::invalid(format!(
-            "query must be at most {MAX_SEARCH_QUERY_CHARS} characters"
-        )));
-    }
-    if !(1..=MAX_SEARCH_RESULTS).contains(&max_results) {
-        return Err(ToolError::invalid(format!(
-            "max_results must be between 1 and {MAX_SEARCH_RESULTS}"
-        )));
-    }
-    Ok(controlled_result(
+pub(crate) fn web_search_setup_required() -> ToolResult {
+    controlled_result(
         "WebSearch",
         "SETUP_REQUIRED",
         ToolStatus::SetupRequired,
         Some("No search provider is configured for this agent."),
         Vec::new(),
-    ))
+    )
 }
 
 /// `GenerateImage`: media stub that reports `SETUP_REQUIRED` without calling any

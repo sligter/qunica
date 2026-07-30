@@ -44,7 +44,7 @@ async function renderAppLayout(
               <Route element={<AppLayout terminalTransport={terminalTransport} />}>
                 <Route
                   path="settings"
-                  element={<><div>Settings content</div><Link to="/agents">Agents route</Link></>}
+                  element={<><div>Settings content</div><input aria-label="Settings input" /><Link to="/agents">Agents route</Link></>}
                 />
                 <Route path="agents" element={<div>Agents content</div>} />
               </Route>
@@ -63,12 +63,16 @@ describe('AppLayout', () => {
     vi.restoreAllMocks()
   })
 
-  it('prevents the native context menu anywhere in the application surface', async () => {
+  it('allows the native context menu in inputs while suppressing the rest of the app', async () => {
     const { container } = await renderAppLayout()
 
-    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
-    expect(container.firstElementChild?.dispatchEvent(event)).toBe(false)
-    expect(event.defaultPrevented).toBe(true)
+    const surfaceEvent = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    expect(container.firstElementChild?.dispatchEvent(surfaceEvent)).toBe(false)
+    expect(surfaceEvent.defaultPrevented).toBe(true)
+
+    const inputEvent = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    expect(screen.getByRole('textbox', { name: 'Settings input' }).dispatchEvent(inputEvent)).toBe(true)
+    expect(inputEvent.defaultPrevented).toBe(false)
   })
 
   it('clips the app shell so nothing can grow the document', async () => {

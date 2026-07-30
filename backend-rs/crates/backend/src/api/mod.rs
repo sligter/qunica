@@ -237,6 +237,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(groups::rename_workspace_file_route),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-files/actions",
+            axum::routing::post(groups::workspace_file_actions_route),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-roots",
             get(groups::list_workspace_roots_route),
         )
@@ -417,6 +421,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/direct-chats/:chat_id/workspace-files/rename",
             axum::routing::patch(direct_chats::rename_workspace_file),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/actions",
+            axum::routing::post(direct_chats::workspace_file_actions),
         )
         .route(
             "/api/v2/direct-chats/:chat_id/workspace-roots",

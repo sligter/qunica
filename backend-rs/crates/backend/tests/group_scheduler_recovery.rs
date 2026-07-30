@@ -118,6 +118,24 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
         .await
         .unwrap();
 
+    sqlx::query(
+        "UPDATE threads SET status = 'running' \
+         WHERE id IN ('thread-running', 'thread-resume')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, group_id, seq, sender_type, sender_id, message_type, content, status, created_at) \
+         VALUES \
+         ('message-resume', 'thread-resume', 'group-1', 1, 'agent', 'agent-1', 'text', '', 'interrupted', ?)",
+    )
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+
     let messages_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
         .fetch_one(&pool)
         .await
@@ -175,6 +193,22 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
     );
     assert_eq!(terminal.dispatches[0].status, DispatchStatus::Cancelled);
 
+    let recovered_threads: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, status FROM threads \
+         WHERE id IN ('thread-running', 'thread-resume') \
+         ORDER BY id",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        recovered_threads,
+        vec![
+            ("thread-resume".to_owned(), "paused".to_owned()),
+            ("thread-running".to_owned(), "active".to_owned()),
+        ]
+    );
+
     let messages_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
         .fetch_one(state.db.pool())
         .await
@@ -220,6 +254,7 @@ async fn seed_scheduler_entities(pool: &SqlitePool) {
         "thread-running",
         "thread-waiting",
         "thread-terminal",
+        "thread-resume",
     ] {
         sqlx::query(
             "INSERT INTO threads (id, group_id, created_at, updated_at) \

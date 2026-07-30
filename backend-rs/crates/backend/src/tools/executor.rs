@@ -18,8 +18,9 @@ use serde_json::Value;
 use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
-    bash, controlled, http, MountedSkill, ToolError, ToolResult, ToolStatus, WorkspaceMount,
-    WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
+    bash, controlled, http, web_search, FileEdit, MountedSkill, TavilySearchConfig, ToolError,
+    ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,
+    MAX_READ_LINES,
 };
 
 /// The MCP tools mounted into an executor, with the servers needed to call them.
@@ -113,6 +114,8 @@ pub struct ToolExecutor {
     workspace: Option<WorkspaceTools>,
     /// Skill metadata/instructions mounted for the non-executing SkillManager.
     mounted_skills: Vec<MountedSkill>,
+    /// Tavily settings resolved for the agent owner, if configured.
+    web_search: Option<TavilySearchConfig>,
     /// The MCP tools this agent may call.
     mcp_mount: McpMount,
     /// Shared connection pool, absent when no MCP tools are mounted.
@@ -126,6 +129,7 @@ impl std::fmt::Debug for ToolExecutor {
         f.debug_struct("ToolExecutor")
             .field("workspace", &self.workspace)
             .field("mounted_skills", &self.mounted_skills)
+            .field("web_search_configured", &self.web_search.is_some())
             .field("mcp_mount", &self.mcp_mount)
             .field("mcp_connected", &self.mcp_manager.is_some())
             .finish()
@@ -163,6 +167,7 @@ impl ToolExecutor {
         Ok(Self {
             workspace,
             mounted_skills,
+            web_search: None,
             mcp_mount: McpMount::default(),
             mcp_manager: None,
         })
@@ -178,6 +183,7 @@ impl ToolExecutor {
         Self {
             workspace: None,
             mounted_skills,
+            web_search: None,
             mcp_mount: McpMount::default(),
             mcp_manager: None,
         }
@@ -190,6 +196,12 @@ impl ToolExecutor {
     pub fn with_mcp(mut self, manager: Arc<McpManager>, mount: McpMount) -> Self {
         self.mcp_manager = Some(manager);
         self.mcp_mount = mount;
+        self
+    }
+
+    /// Bind the web-search settings resolved for this agent invocation.
+    pub(crate) fn with_web_search(mut self, config: Option<TavilySearchConfig>) -> Self {
+        self.web_search = config;
         self
     }
 
@@ -239,8 +251,8 @@ impl ToolExecutor {
             }
             "WebSearch" => {
                 let query = arg_str(&args, "query")?;
-                let max_results = arg_u32(&args, "max_results", controlled::DEFAULT_SEARCH_RESULTS);
-                controlled::web_search(query, max_results)
+                let max_results = arg_u32(&args, "max_results", web_search::DEFAULT_SEARCH_RESULTS);
+                web_search::search(self.web_search.as_ref(), query, max_results).await
             }
             "AskUser" => {
                 let question = arg_str(&args, "question")?;
@@ -328,25 +340,20 @@ impl ToolExecutor {
     ) -> Result<ToolResult, ToolError> {
         match name {
             "Read" => {
-                let file_path = arg_str(&args, "file_path")?.to_string();
-                let start_line = arg_usize(&args, "start_line", 1);
-                let limit = arg_usize(&args, "limit", MAX_READ_LINES);
-                run_blocking(move || workspace.read(&file_path, start_line, limit)).await
+                let path = arg_path(&args)?.to_string();
+                let offset = arg_usize_alias(&args, "offset", "start_line", 1)?;
+                let limit = arg_usize_alias(&args, "limit", "limit", MAX_READ_LINES)?;
+                run_blocking(move || workspace.read(&path, offset, limit)).await
             }
             "Write" => {
-                let file_path = arg_str(&args, "file_path")?.to_string();
+                let path = arg_path(&args)?.to_string();
                 let content = arg_str(&args, "content")?.to_string();
-                run_blocking(move || workspace.write(&file_path, &content)).await
+                run_blocking(move || workspace.write(&path, &content)).await
             }
             "Edit" => {
-                let file_path = arg_str(&args, "file_path")?.to_string();
-                let old_string = arg_str(&args, "old_string")?.to_string();
-                let new_string = arg_str(&args, "new_string")?.to_string();
-                let replace_all = arg_bool(&args, "replace_all", false);
-                run_blocking(move || {
-                    workspace.edit(&file_path, &old_string, &new_string, replace_all)
-                })
-                .await
+                let path = arg_path(&args)?.to_string();
+                let edits = arg_file_edits(&args)?;
+                run_blocking(move || workspace.edit(&path, &edits)).await
             }
             "Glob" => {
                 let pattern = arg_str_opt(&args, "pattern").unwrap_or("**/*").to_string();
@@ -410,6 +417,68 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
 /// Optional string argument.
 fn arg_str_opt<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
+}
+
+/// Tau-style file path, with the old key retained for interrupted calls.
+fn arg_path(args: &Value) -> Result<&str, ToolError> {
+    arg_str_opt(args, "path")
+        .or_else(|| arg_str_opt(args, "file_path"))
+        .ok_or_else(|| ToolError::invalid("missing required string argument 'path'"))
+}
+
+/// Parse Tau's `edits[]` shape, while accepting the previous single-edit keys.
+fn arg_file_edits(args: &Value) -> Result<Vec<FileEdit>, ToolError> {
+    if let Some(value) = args.get("edits") {
+        let items = value
+            .as_array()
+            .ok_or_else(|| ToolError::invalid("'edits' must be an array"))?;
+        if items.is_empty() {
+            return Err(ToolError::invalid(
+                "edits must contain at least one replacement",
+            ));
+        }
+        return items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let old_text = item.get("oldText").and_then(Value::as_str).ok_or_else(|| {
+                    ToolError::invalid(format!(
+                        "missing required string argument 'edits[{index}].oldText'"
+                    ))
+                })?;
+                let new_text = item.get("newText").and_then(Value::as_str).ok_or_else(|| {
+                    ToolError::invalid(format!(
+                        "missing required string argument 'edits[{index}].newText'"
+                    ))
+                })?;
+                Ok(FileEdit::new(old_text, new_text))
+            })
+            .collect();
+    }
+
+    let old_text = arg_str_opt(args, "oldText")
+        .or_else(|| arg_str_opt(args, "old_string"))
+        .ok_or_else(|| ToolError::invalid("missing required array argument 'edits'"))?;
+    let new_text = arg_str_opt(args, "newText")
+        .or_else(|| arg_str_opt(args, "new_string"))
+        .ok_or_else(|| ToolError::invalid("missing required array argument 'edits'"))?;
+    Ok(vec![FileEdit::new(old_text, new_text)])
+}
+
+/// Optional non-negative integer with a legacy alias and a default.
+fn arg_usize_alias(
+    args: &Value,
+    key: &str,
+    legacy_key: &str,
+    default: usize,
+) -> Result<usize, ToolError> {
+    let Some(value) = args.get(key).or_else(|| args.get(legacy_key)) else {
+        return Ok(default);
+    };
+    let value = value
+        .as_u64()
+        .ok_or_else(|| ToolError::invalid(format!("'{key}' must be a non-negative integer")))?;
+    usize::try_from(value).map_err(|_| ToolError::invalid(format!("'{key}' is too large")))
 }
 
 /// Optional `usize` argument with a default.

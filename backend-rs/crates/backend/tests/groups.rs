@@ -2937,7 +2937,7 @@ async fn workspace_files_rename_moves_files_and_rejects_invalid_destinations() {
 }
 
 #[tokio::test]
-async fn workspace_files_delete_removes_files_and_empty_directories_only() {
+async fn workspace_files_delete_removes_files_and_directories_recursively() {
     let app = app().await;
     let token = register_and_login(&app, "workspace-files-delete@example.com").await;
     let (root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
@@ -2985,9 +2985,212 @@ async fn workspace_files_delete_removes_files_and_empty_directories_only() {
         authed("DELETE", &workspace_file_url(group_id, "non-empty"), &token),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_input");
-    assert!(root.path().join("non-empty").exists());
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+    assert!(!root.path().join("non-empty").exists());
+}
+
+#[tokio::test]
+async fn workspace_file_actions_copy_move_delete_and_clear_safely() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-file-actions@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Actions").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let actions_url = format!("/api/v2/groups/{group_id}/workspace-files/actions");
+
+    std::fs::create_dir(root.path().join("copies")).unwrap();
+    std::fs::create_dir(root.path().join("tree")).unwrap();
+    std::fs::write(root.path().join("copy.txt"), b"copy").unwrap();
+    std::fs::write(root.path().join("tree").join("child.txt"), b"child").unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "copy",
+                "paths": ["copy.txt", "tree"],
+                "destination": "copies"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("copies").join("copy.txt")).unwrap(),
+        b"copy"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("copies").join("tree").join("child.txt")).unwrap(),
+        b"child"
+    );
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "copy",
+                "paths": ["copy.txt"],
+                "destination": ""
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("copy copy.txt")).unwrap(),
+        b"copy"
+    );
+
+    std::fs::create_dir(root.path().join("moved")).unwrap();
+    std::fs::create_dir(root.path().join("move-dir")).unwrap();
+    std::fs::write(root.path().join("move.txt"), b"move").unwrap();
+    std::fs::write(root.path().join("move-dir").join("child.txt"), b"child").unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "move",
+                "paths": ["move.txt", "move-dir"],
+                "destination": "moved"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert!(root.path().join("moved").join("move.txt").is_file());
+    assert!(root
+        .path()
+        .join("moved")
+        .join("move-dir")
+        .join("child.txt")
+        .is_file());
+    assert!(!root.path().join("move.txt").exists());
+    assert!(!root.path().join("move-dir").exists());
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "delete",
+                "paths": ["copies/copy.txt", "copies/tree"]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert!(!root.path().join("copies").join("copy.txt").exists());
+    assert!(!root.path().join("copies").join("tree").exists());
+
+    std::fs::write(root.path().join("keep-on-failure.txt"), b"keep").unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "delete",
+                "paths": ["keep-on-failure.txt", "missing.txt"]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:?}");
+    assert!(root.path().join("keep-on-failure.txt").is_file());
+
+    std::fs::create_dir(root.path().join("self")).unwrap();
+    std::fs::create_dir(root.path().join("self").join("child")).unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "move",
+                "paths": ["self"],
+                "destination": "self/child"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+    assert!(root.path().join("self").is_dir());
+
+    std::fs::create_dir(root.path().join("collision")).unwrap();
+    std::fs::write(root.path().join("collision.txt"), b"source").unwrap();
+    std::fs::write(
+        root.path().join("collision").join("collision.txt"),
+        b"destination",
+    )
+    .unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &actions_url,
+            &token,
+            json!({
+                "action": "move",
+                "paths": ["collision.txt"],
+                "destination": "collision"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {body:?}");
+    assert!(root.path().join("collision.txt").is_file());
+
+    for body in [
+        json!({"action": "delete", "paths": [""]}),
+        json!({"action": "delete", "paths": ["../outside"]}),
+        json!({"action": "copy", "paths": ["copy.txt"], "destination": "missing"}),
+    ] {
+        let (status, response) = send(&app, authed_json("POST", &actions_url, &token, body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response:?}");
+    }
+
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), b"keep").unwrap();
+    if create_dir_symlink(outside.path(), &root.path().join("outside-link")).is_ok() {
+        let (status, body) = send(
+            &app,
+            authed(
+                "DELETE",
+                &workspace_file_url(group_id, "outside-link"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+        assert!(!root.path().join("outside-link").exists());
+        assert_eq!(
+            std::fs::read(outside.path().join("keep.txt")).unwrap(),
+            b"keep"
+        );
+    }
+
+    std::fs::write(root.path().join(".hidden"), b"hidden").unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json("POST", &actions_url, &token, json!({"action": "clear"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert!(root.path().is_dir());
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
 
 #[tokio::test]

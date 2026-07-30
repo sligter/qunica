@@ -116,9 +116,11 @@ export function useResumeStream(
 
   useEffect(() => {
     return () => {
+      const wasStreaming = ctrlRef.current !== null
       ctrlRef.current?.abort()
+      if (wasStreaming && messageId) endResume(messageId)
     }
-  }, [])
+  }, [endResume, messageId])
 
   const finish = useCallback(() => {
     setIsStreaming(false)
@@ -131,11 +133,55 @@ export function useResumeStream(
     }
   }, [endResume, groupId, messageId, qc])
 
+  const cancel = useCallback(async () => {
+    const streamId = streamIdRef.current
+    const state = useMessageStore.getState()
+    const turnId =
+      (streamId ? state.streamRunsByGroup[groupId ?? '']?.[streamId]?.turn_id : null) ??
+      (groupId
+        ? state.byGroup[groupId]?.find((message) => message.id === messageId)?.turn_id
+        : null)
+    if (token && threadId) {
+      try {
+        if (groupId && turnId) {
+          const trace = parseGroupTurnTrace(
+            await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
+              method: 'POST',
+              token,
+            }),
+          )
+          reconcileSchedulerTurn(groupId, trace)
+        } else {
+          await fetchJson<void>(`/threads/${threadId}/cancel`, {
+            method: 'POST',
+            token,
+          })
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        return
+      }
+    }
+    ctrlRef.current?.abort()
+    if (groupId && streamId && !turnId) {
+      markStreamRunCancelled(groupId, [streamId])
+    }
+    finish()
+  }, [
+    finish,
+    groupId,
+    markStreamRunCancelled,
+    messageId,
+    reconcileSchedulerTurn,
+    threadId,
+    token,
+  ])
+
   const resume = useCallback(() => {
     if (!groupId || !threadId || !messageId || !token || isStreaming) return
     setError(null)
     setIsStreaming(true)
-    startResume(messageId)
+    startResume(groupId, messageId, cancel)
 
     const ctrl = openApiV2SseStream({
       url: `/api/v2/threads/${threadId}/resume`,
@@ -242,6 +288,7 @@ export function useResumeStream(
     appendToMessage,
     acceptsStreamEvent,
     applySchedulerEvent,
+    cancel,
     finish,
     groupId,
     isStreaming,
@@ -252,50 +299,6 @@ export function useResumeStream(
     qc,
     replaceMessage,
     startResume,
-    threadId,
-    token,
-  ])
-
-  const cancel = useCallback(async () => {
-    const streamId = streamIdRef.current
-    const state = useMessageStore.getState()
-    const turnId =
-      (streamId ? state.streamRunsByGroup[groupId ?? '']?.[streamId]?.turn_id : null) ??
-      (groupId
-        ? state.byGroup[groupId]?.find((message) => message.id === messageId)?.turn_id
-        : null)
-    if (token && threadId) {
-      try {
-        if (groupId && turnId) {
-          const trace = parseGroupTurnTrace(
-            await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
-              method: 'POST',
-              token,
-            }),
-          )
-          reconcileSchedulerTurn(groupId, trace)
-        } else {
-          await fetchJson<void>(`/threads/${threadId}/cancel`, {
-            method: 'POST',
-            token,
-          })
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-        return
-      }
-    }
-    ctrlRef.current?.abort()
-    if (groupId && streamId && !turnId) {
-      markStreamRunCancelled(groupId, [streamId])
-    }
-    finish()
-  }, [
-    finish,
-    groupId,
-    markStreamRunCancelled,
-    messageId,
-    reconcileSchedulerTurn,
     threadId,
     token,
   ])

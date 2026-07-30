@@ -19,12 +19,21 @@ const maintenanceMocks = vi.hoisted(() => ({
   clear: vi.fn(),
   reset: vi.fn(),
 }))
+const messageStoreMocks = vi.hoisted(() => ({
+  clearWarnings: vi.fn(),
+  activeResumesByMessageId: {} as Record<
+    string,
+    { group_id: string; cancel: () => Promise<void> }
+  >,
+}))
 
 vi.mock('@/components/chat/Composer', () => ({
   Composer: (props: {
     allowMentions?: boolean
     conversationId?: string
     disabledReason?: string
+    isStreaming?: boolean
+    onCancel?: () => void
     scope?: 'groups' | 'direct-chats'
     workspaceId?: string | null
   }) => {
@@ -85,7 +94,11 @@ vi.mock('@/hooks/useSendMessageStream', () => ({
   useSendMessageStream: () => ({ error: null, isStreaming: false, send: vi.fn(), cancel: vi.fn() }),
 }))
 vi.mock('@/stores/fileNavStore', () => ({ useFileNavStore: () => null }))
-vi.mock('@/stores/messageStore', () => ({ useMessageStore: () => vi.fn() }))
+vi.mock('@/stores/messageStore', () => ({
+  useMessageStore: (selector: (state: typeof messageStoreMocks) => unknown) => (
+    selector(messageStoreMocks)
+  ),
+}))
 vi.mock('@/terminal/useTerminalConversationRegistration', () => ({
   useTerminalConversationRegistration: terminalMocks.register,
 }))
@@ -145,6 +158,8 @@ describe('ConversationChatView', () => {
     workspacePanelMocks.group.mockReset()
     maintenanceMocks.clear.mockReset().mockResolvedValue(undefined)
     maintenanceMocks.reset.mockReset().mockResolvedValue(undefined)
+    messageStoreMocks.clearWarnings.mockReset()
+    messageStoreMocks.activeResumesByMessageId = {}
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
   })
 
@@ -243,6 +258,19 @@ describe('ConversationChatView', () => {
     }))
 
     expect(screen.getByTestId('composer-instance')).toHaveTextContent('chat-2')
+  })
+
+  it('shows streaming controls and stops an active resumed message', () => {
+    const cancelResume = vi.fn().mockResolvedValue(undefined)
+    messageStoreMocks.activeResumesByMessageId = {
+      'message-1': { group_id: 'chat-1', cancel: cancelResume },
+    }
+    renderConversation()
+
+    const props = composerMocks.render.mock.lastCall?.[0]
+    expect(props).toEqual(expect.objectContaining({ isStreaming: true }))
+    props?.onCancel?.()
+    expect(cancelResume).toHaveBeenCalledTimes(1)
   })
 
   it('handles Ctrl+` on Windows and ignores unsafe or ordinary key events', () => {

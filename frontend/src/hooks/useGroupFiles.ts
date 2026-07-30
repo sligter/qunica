@@ -53,6 +53,18 @@ function fileQuery(path: string, agentId: WorkspaceAgentScope) {
   return `${withPath(path)}${scope}`
 }
 
+function agentQuery(agentId: WorkspaceAgentScope) {
+  return agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
+}
+
+export type WorkspaceFileAction = 'copy' | 'move' | 'delete' | 'clear'
+
+export interface WorkspaceFileActionVariables {
+  action: WorkspaceFileAction
+  paths?: string[]
+  destination?: string
+}
+
 export function useGroupWorkspaceFiles(groupId: string | undefined, path = '') {
   const token = useAuthStore((s) => s.token)
   return useQuery({
@@ -239,6 +251,30 @@ export function useDeleteGroupWorkspaceFile(
       return fetchJson<void>(
         `${conversationWorkspaceFilesApiPath(scope, conversationId)}?${fileQuery(path, agentId)}`,
         { token, method: 'DELETE' },
+      )
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: conversationWorkspaceFilesQueryKey(scope, conversationId),
+      })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(conversationId) })
+    },
+  })
+}
+
+export function useWorkspaceFileActions(
+  conversationId: string | undefined,
+  scope: ConversationScope = 'groups',
+  agentId: WorkspaceAgentScope = null,
+) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: WorkspaceFileActionVariables) => {
+      if (!conversationId) throw new Error('Conversation is required for workspace file actions')
+      return fetchJson<void>(
+        `${conversationWorkspaceFilesApiPath(scope, conversationId)}/actions${agentQuery(agentId)}`,
+        { token, method: 'POST', body },
       )
     },
     onSuccess: () => {

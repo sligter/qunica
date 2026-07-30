@@ -67,6 +67,7 @@ const NOTE_FILE_SUFFIX: &str = ".md";
 const GROUP_FILE_COLUMNS: &str = "id, group_id, filename, file_size, mime_type, created_at";
 const UPLOADS_DIR: &str = "uploads";
 const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
+const MAX_WORKSPACE_ACTION_PATHS: usize = 1_000;
 const MAX_COMMIT_DIFF_PROMPT_CHARS: usize = 20_000;
 const MAX_COMMIT_SUBJECT_CHARS: usize = 72;
 
@@ -288,6 +289,24 @@ impl GroupWorkspaceUploadQuery {
 #[derive(Debug, Deserialize)]
 pub struct GroupWorkspaceFileRenameRequest {
     new_path: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupWorkspaceFileAction {
+    Copy,
+    Move,
+    Delete,
+    Clear,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceFileActionRequest {
+    action: GroupWorkspaceFileAction,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    destination: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1515,26 +1534,75 @@ pub async fn delete_group_workspace_file(
         ),
     )
     .await?;
-    let target = resolve_group_workspace_file_path(&root, &query.path)?;
-    if target == root {
-        return Err(ApiError::invalid_input("cannot delete the workspace root"));
+    let target = resolve_group_workspace_entry_path(&root, &query.path)?;
+    if !path_exists_or_symlink(&target)? {
+        return Err(ApiError::not_found("workspace path not found"));
     }
-    if target.is_dir() {
-        fs::remove_dir(&target).map_err(|err| {
-            if err.kind() == io::ErrorKind::DirectoryNotEmpty {
-                ApiError::invalid_input("directory must be empty before it can be deleted")
-            } else {
-                ApiError::internal("failed to delete workspace directory")
+    remove_workspace_entry(&target)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn act_on_group_workspace_files(
+    state: AppState,
+    headers: HeaderMap,
+    scope: ConversationScope,
+    conversation_id: String,
+    query: workspace_files::WorkspaceFilePathQuery,
+    body: GroupWorkspaceFileActionRequest,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let conversation_id = validate_uuid(&conversation_id, "conversation id")?;
+    let root = conversation_files_root(
+        state.db.pool(),
+        workspace_files::ConversationRoot::from_query(
+            scope,
+            &conversation_id,
+            &owner_id,
+            query.agent_id(),
+        ),
+    )
+    .await?;
+
+    match body.action {
+        GroupWorkspaceFileAction::Clear => clear_workspace_files(&root)?,
+        GroupWorkspaceFileAction::Delete => {
+            let sources = resolve_workspace_action_sources(&root, &body.paths)?;
+            for source in sources {
+                remove_workspace_entry(&source)?;
             }
-        })?;
-    } else if target.is_file() {
-        fs::remove_file(&target)
-            .map_err(|_| ApiError::internal("failed to delete workspace file"))?;
-    } else {
-        return Err(ApiError::invalid_input(
-            "workspace path is not a file or directory",
-        ));
+        }
+        GroupWorkspaceFileAction::Copy | GroupWorkspaceFileAction::Move => {
+            let sources = resolve_workspace_action_sources(&root, &body.paths)?;
+            let destination = resolve_workspace_action_destination(
+                &root,
+                body.destination.as_deref().unwrap_or_default(),
+            )?;
+            validate_action_destination(&sources, &destination)?;
+
+            match body.action {
+                GroupWorkspaceFileAction::Copy => {
+                    for source in &sources {
+                        validate_copy_tree(source)?;
+                    }
+                    let destinations = copy_destinations(&sources, &destination)?;
+                    for (source, destination) in sources.iter().zip(destinations) {
+                        copy_workspace_entry(source, &destination)?;
+                    }
+                }
+                GroupWorkspaceFileAction::Move => {
+                    let destinations = move_destinations(&sources, &destination)?;
+                    for (source, destination) in sources.iter().zip(destinations) {
+                        fs::rename(source, &destination)
+                            .map_err(|_| ApiError::internal("failed to move workspace entry"))?;
+                    }
+                }
+                GroupWorkspaceFileAction::Delete | GroupWorkspaceFileAction::Clear => {
+                    unreachable!()
+                }
+            }
+        }
     }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2964,6 +3032,24 @@ pub async fn delete_workspace_file_route(
     delete_group_workspace_file(state, headers, ConversationScope::Groups, group_id, query).await
 }
 
+pub async fn workspace_file_actions_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
+    Json(body): Json<GroupWorkspaceFileActionRequest>,
+) -> Result<StatusCode, ApiError> {
+    act_on_group_workspace_files(
+        state,
+        headers,
+        ConversationScope::Groups,
+        group_id,
+        query,
+        body,
+    )
+    .await
+}
+
 pub async fn list_workspace_roots_route(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3986,6 +4072,275 @@ fn resolve_group_workspace_file_path(root: &FsPath, raw: &str) -> Result<PathBuf
         Some(relative) => resolve_workspace_path(root, &relative).map_err(workspace_path_error),
         None => Ok(root.to_path_buf()),
     }
+}
+
+/// Resolve an existing workspace entry without following its final component.
+/// Parents are still canonicalized, so a symlinked parent cannot escape the
+/// workspace, while deleting or moving a symlink removes the link itself.
+fn resolve_group_workspace_entry_path(root: &FsPath, raw: &str) -> Result<PathBuf, ApiError> {
+    let relative = workspace_file_relative_path(raw)?
+        .ok_or_else(|| ApiError::invalid_input("cannot operate on the workspace root"))?;
+    let relative_path = FsPath::new(&relative);
+    let name = relative_path
+        .file_name()
+        .ok_or_else(|| ApiError::invalid_input("workspace path is invalid"))?;
+    let parent_relative = relative_path.parent().unwrap_or_else(|| FsPath::new(""));
+    let parent = if parent_relative.as_os_str().is_empty() {
+        fs::canonicalize(root).map_err(|_| ApiError::invalid_input("workspace root is invalid"))?
+    } else {
+        resolve_workspace_path(root, &parent_relative.to_string_lossy())
+            .map_err(workspace_path_error)?
+    };
+    if !parent.is_dir() {
+        return Err(ApiError::invalid_input(
+            "workspace path parent does not exist",
+        ));
+    }
+    Ok(parent.join(name))
+}
+
+fn resolve_workspace_action_sources(
+    root: &FsPath,
+    raw_paths: &[String],
+) -> Result<Vec<PathBuf>, ApiError> {
+    if raw_paths.is_empty() {
+        return Err(ApiError::invalid_input(
+            "at least one workspace path is required",
+        ));
+    }
+    if raw_paths.len() > MAX_WORKSPACE_ACTION_PATHS {
+        return Err(ApiError::invalid_input("too many workspace paths"));
+    }
+
+    let mut sources = Vec::with_capacity(raw_paths.len());
+    for raw in raw_paths {
+        let source = resolve_group_workspace_entry_path(root, raw)?;
+        if !path_exists_or_symlink(&source)? {
+            return Err(ApiError::not_found("workspace path not found"));
+        }
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+
+    for (index, source) in sources.iter().enumerate() {
+        if sources
+            .iter()
+            .enumerate()
+            .any(|(other_index, other)| other_index != index && source.starts_with(other))
+        {
+            return Err(ApiError::invalid_input(
+                "workspace paths must not contain one another",
+            ));
+        }
+    }
+    Ok(sources)
+}
+
+fn resolve_workspace_action_destination(root: &FsPath, raw: &str) -> Result<PathBuf, ApiError> {
+    let destination = if raw.trim().is_empty() {
+        fs::canonicalize(root).map_err(|_| ApiError::invalid_input("workspace root is invalid"))?
+    } else {
+        resolve_group_workspace_file_path(root, raw)?
+    };
+    if !destination.is_dir() {
+        return Err(ApiError::invalid_input(
+            "destination directory does not exist",
+        ));
+    }
+    Ok(destination)
+}
+
+fn validate_action_destination(sources: &[PathBuf], destination: &FsPath) -> Result<(), ApiError> {
+    for source in sources {
+        let metadata = fs::symlink_metadata(source)
+            .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        if !metadata_is_link_or_reparse(&metadata)
+            && metadata.is_dir()
+            && destination.starts_with(source)
+        {
+            return Err(ApiError::invalid_input(
+                "cannot place a directory inside itself",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn move_destinations(sources: &[PathBuf], destination: &FsPath) -> Result<Vec<PathBuf>, ApiError> {
+    let mut reserved = BTreeSet::new();
+    let mut paths = Vec::with_capacity(sources.len());
+    for source in sources {
+        let name = source
+            .file_name()
+            .ok_or_else(|| ApiError::invalid_input("workspace path is invalid"))?;
+        let target = destination.join(name);
+        if path_exists_or_symlink(&target)? || !reserved.insert(target.clone()) {
+            return Err(ApiError::conflict("destination already exists"));
+        }
+        paths.push(target);
+    }
+    Ok(paths)
+}
+
+fn copy_destinations(sources: &[PathBuf], destination: &FsPath) -> Result<Vec<PathBuf>, ApiError> {
+    let mut reserved = BTreeSet::new();
+    let mut paths = Vec::with_capacity(sources.len());
+    for source in sources {
+        let metadata = fs::symlink_metadata(source)
+            .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        let name = source
+            .file_name()
+            .ok_or_else(|| ApiError::invalid_input("workspace path is invalid"))?
+            .to_string_lossy();
+        let direct = destination.join(name.as_ref());
+        if !path_exists_or_symlink(&direct)? && reserved.insert(direct.clone()) {
+            paths.push(direct);
+            continue;
+        }
+
+        let mut available = None;
+        for index in 1..=10_000 {
+            let candidate = destination.join(copy_name(&name, metadata.is_dir(), index));
+            if !path_exists_or_symlink(&candidate)? && reserved.insert(candidate.clone()) {
+                available = Some(candidate);
+                break;
+            }
+        }
+        paths.push(available.ok_or_else(|| ApiError::conflict("no copy name is available"))?);
+    }
+    Ok(paths)
+}
+
+fn copy_name(name: &str, is_dir: bool, index: usize) -> String {
+    let suffix = if index == 1 {
+        " copy".to_string()
+    } else {
+        format!(" copy {index}")
+    };
+    if is_dir {
+        return format!("{name}{suffix}");
+    }
+    let path = FsPath::new(name);
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_else(|| name.into());
+    match path.extension() {
+        Some(extension) => format!("{stem}{suffix}.{}", extension.to_string_lossy()),
+        None => format!("{stem}{suffix}"),
+    }
+}
+
+fn validate_copy_tree(path: &FsPath) -> Result<(), ApiError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+    if metadata_is_link_or_reparse(&metadata) {
+        return Err(ApiError::invalid_input("symbolic links cannot be copied"));
+    }
+    if metadata.is_file() {
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(ApiError::invalid_input(
+            "workspace path is not a file or directory",
+        ));
+    }
+    for entry in fs::read_dir(path)
+        .map_err(|_| ApiError::internal("failed to inspect workspace directory"))?
+    {
+        let entry =
+            entry.map_err(|_| ApiError::internal("failed to inspect workspace directory"))?;
+        validate_copy_tree(&entry.path())?;
+    }
+    Ok(())
+}
+
+fn copy_workspace_entry(source: &FsPath, destination: &FsPath) -> Result<(), ApiError> {
+    let result = copy_workspace_entry_inner(source, destination);
+    if result.is_err() && path_exists_or_symlink(destination).unwrap_or(false) {
+        let _ = remove_workspace_entry(destination);
+    }
+    result
+}
+
+fn copy_workspace_entry_inner(source: &FsPath, destination: &FsPath) -> Result<(), ApiError> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+    if metadata_is_link_or_reparse(&metadata) {
+        return Err(ApiError::invalid_input("symbolic links cannot be copied"));
+    }
+    if metadata.is_file() {
+        fs::copy(source, destination)
+            .map(|_| ())
+            .map_err(|_| ApiError::internal("failed to copy workspace file"))?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(ApiError::invalid_input(
+            "workspace path is not a file or directory",
+        ));
+    }
+
+    fs::create_dir(destination)
+        .map_err(|_| ApiError::internal("failed to create workspace directory"))?;
+    for entry in fs::read_dir(source)
+        .map_err(|_| ApiError::internal("failed to read workspace directory"))?
+    {
+        let entry = entry.map_err(|_| ApiError::internal("failed to read workspace directory"))?;
+        copy_workspace_entry_inner(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn clear_workspace_files(root: &FsPath) -> Result<(), ApiError> {
+    let entries = fs::read_dir(root)
+        .map_err(|_| ApiError::internal("failed to read workspace directory"))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|_| ApiError::internal("failed to read workspace directory"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for entry in entries {
+        remove_workspace_entry(&entry)?;
+    }
+    Ok(())
+}
+
+fn remove_workspace_entry(path: &FsPath) -> Result<(), ApiError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| ApiError::not_found("workspace path not found"))?;
+    if metadata_is_link_or_reparse(&metadata) {
+        fs::remove_file(path)
+            .or_else(|_| fs::remove_dir(path))
+            .map_err(|_| ApiError::internal("failed to delete workspace link"))?;
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|_| ApiError::internal("failed to delete workspace directory"))?;
+    } else if metadata.is_file() {
+        fs::remove_file(path).map_err(|_| ApiError::internal("failed to delete workspace file"))?;
+    } else {
+        return Err(ApiError::invalid_input(
+            "workspace path is not a file or directory",
+        ));
+    }
+    Ok(())
+}
+
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 fn workspace_file_response(

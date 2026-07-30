@@ -18,6 +18,14 @@ import type {
   ConversationWorkspaceRootEntry,
 } from '@/types/api'
 
+const desktopMocks = vi.hoisted(() => ({
+  isDesktopRuntime: vi.fn(() => false),
+  revealInFileManager: vi.fn(async () => undefined),
+  saveFileViaDialog: vi.fn(async () => null),
+}))
+
+vi.mock('@/lib/desktop', () => desktopMocks)
+
 vi.mock('@/components/chat/workspace-preview/WorkspacePreviewRouter', () => ({
   WorkspacePreviewRouter: ({
     scope,
@@ -44,6 +52,15 @@ const rawFolder: ConversationWorkspaceFileRead = {
   size: null,
   modified_at: '2026-07-18T00:00:00Z',
   abs_path: 'D:\\raw dir\\docs',
+}
+
+const notesFile: ConversationWorkspaceFileRead = {
+  path: 'raw dir/notes.txt',
+  name: 'notes.txt',
+  is_dir: false,
+  size: 24,
+  modified_at: '2026-07-18T00:00:00Z',
+  abs_path: 'D:\\raw dir\\notes.txt',
 }
 
 interface RenderTabOptions {
@@ -83,7 +100,6 @@ function renderTab({
         scope={scope}
         conversationId={conversationId}
         workspaceId={workspaceId}
-        onInsertPaths={() => undefined}
       />
     </QueryClientProvider>,
   )
@@ -92,6 +108,8 @@ function renderTab({
 
 describe('WorkspaceFilesTab', () => {
   beforeEach(async () => {
+    desktopMocks.isDesktopRuntime.mockReset().mockReturnValue(false)
+    desktopMocks.revealInFileManager.mockReset().mockResolvedValue(undefined)
     useAuthStore.setState({ token: null })
     await i18n.changeLanguage('en-US')
   })
@@ -110,7 +128,7 @@ describe('WorkspaceFilesTab', () => {
       is_dir: false,
       size: 12,
       modified_at: '2026-07-18T00:00:00Z',
-      abs_path: 'D:\solo\draft.md',
+      abs_path: 'D:\\solo\\draft.md',
     }
 
     // A conversation with only its own root shows no picker at all.
@@ -176,6 +194,160 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByLabelText('Download README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Rename README_RAW_原文.md')).toBeVisible()
     expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
+  })
+
+  it('supports single, additive, range, and right-click multi-selection', async () => {
+    const user = userEvent.setup()
+    renderTab({ files: [rawFolder, rawFile, notesFile] })
+    const folderButton = screen.getByText('docs').closest('button')!
+    const rawButton = screen.getByText(rawFile.name).closest('button')!
+    const notesButton = screen.getByText('notes.txt').closest('button')!
+
+    await user.click(folderButton)
+    expect(screen.getByText('1 selected')).toBeVisible()
+    expect(screen.queryByText(`preview:groups:${rawFolder.path}`)).not.toBeInTheDocument()
+
+    fireEvent.click(rawButton, { ctrlKey: true })
+    expect(screen.getByText('2 selected')).toBeVisible()
+
+    await user.click(folderButton)
+    fireEvent.click(notesButton, { shiftKey: true })
+    expect(screen.getByText('3 selected')).toBeVisible()
+
+    fireEvent.contextMenu(rawButton.closest('li')!)
+    expect(screen.getByText('3 selected')).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Copy' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: 'Open preview' })).not.toBeInTheDocument()
+  })
+
+  it('copies and cuts the current selection, then pastes into a folder', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab({ files: [rawFolder, rawFile] })
+    const folderRow = screen.getByText('docs').closest('li')!
+    const fileRow = screen.getByText(rawFile.name).closest('li')!
+
+    fireEvent.contextMenu(fileRow)
+    await user.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    fireEvent.contextMenu(folderRow)
+    await user.click(screen.getByRole('menuitem', { name: 'Paste into docs' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/actions'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copy',
+          paths: [rawFile.path],
+          destination: rawFolder.path,
+        }),
+      }),
+    ))
+
+    fetchMock.mockClear()
+    fireEvent.contextMenu(fileRow)
+    await user.click(screen.getByRole('menuitem', { name: 'Cut' }))
+    fireEvent.contextMenu(folderRow)
+    await user.click(screen.getByRole('menuitem', { name: 'Paste into docs' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/actions'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'move',
+          paths: [rawFile.path],
+          destination: rawFolder.path,
+        }),
+      }),
+    ))
+  })
+
+  it('opens only the context menu on right-click without changing selection', async () => {
+    const user = userEvent.setup()
+    renderTab({ files: [rawFolder, rawFile] })
+    const folderButton = screen.getByText('docs').closest('button')!
+    const fileButton = screen.getByText(rawFile.name).closest('button')!
+
+    await user.click(folderButton)
+    fireEvent.contextMenu(fileButton.closest('li')!)
+
+    expect(screen.getByRole('menu', { name: 'File actions' })).toBeVisible()
+    expect(folderButton).toHaveAttribute('aria-pressed', 'true')
+    expect(fileButton).toHaveAttribute('aria-pressed', 'false')
+    expect(
+      screen.queryByRole('button', { name: 'Insert selected paths' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('moves and deletes multiple selected entries through batch actions', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab({ files: [rawFolder, rawFile] })
+    const folderButton = screen.getByText('docs').closest('button')!
+    const fileButton = screen.getByText(rawFile.name).closest('button')!
+
+    await user.click(folderButton)
+    fireEvent.click(fileButton, { ctrlKey: true })
+    await user.click(screen.getByRole('button', { name: 'Move selected items' }))
+    expect(screen.getByRole('heading', { name: 'Move selected items' })).toBeVisible()
+    await user.type(screen.getByLabelText('Destination folder'), 'archive')
+    await user.click(screen.getByRole('button', { name: 'Move' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/actions'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'move',
+          paths: [rawFolder.path, rawFile.path],
+          destination: 'archive',
+        }),
+      }),
+    ))
+
+    fetchMock.mockClear()
+    await user.click(folderButton)
+    fireEvent.click(fileButton, { ctrlKey: true })
+    fireEvent.contextMenu(fileButton.closest('li')!)
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(screen.getByRole('heading', { name: 'Delete 2 selected items?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/actions'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'delete',
+          paths: [rawFolder.path, rawFile.path],
+        }),
+      }),
+    ))
+  })
+
+  it('places a confirmed clear-workspace action directly beside upload', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab()
+    const uploadButton = screen.getByRole('button', { name: 'Upload file to workspace uploads' })
+    const clearButton = screen.getByRole('button', { name: 'Clear workspace files' })
+
+    expect(uploadButton.nextElementSibling).toBe(clearButton)
+    await user.click(clearButton)
+    expect(screen.getByRole('heading', { name: 'Clear all workspace files?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Clear workspace' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/actions'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ action: 'clear' }),
+      }),
+    ))
   })
 
   it('gives direct chats the same file operations as groups, on their own routes', async () => {
@@ -297,11 +469,26 @@ describe('WorkspaceFilesTab', () => {
     await waitFor(() => expect(fileButton).toHaveFocus())
   })
 
+  it('reveals the native absolute path from the desktop context menu', async () => {
+    desktopMocks.isDesktopRuntime.mockReturnValue(true)
+    const user = userEvent.setup()
+    renderTab()
+    const fileButton = screen.getByText(rawFile.name).closest('button')!
+
+    fireEvent.keyDown(fileButton, { key: 'F10', shiftKey: true })
+    await user.click(screen.getByRole('menuitem', { name: 'Show in file manager' }))
+
+    await waitFor(() => {
+      expect(desktopMocks.revealInFileManager).toHaveBeenCalledWith(rawFile.abs_path)
+    })
+    expect(screen.queryByRole('menu', { name: 'File actions' })).not.toBeInTheDocument()
+  })
+
   it('localizes the Chinese preview framing without changing the raw path', async () => {
     await i18n.changeLanguage('zh-CN')
     renderTab()
 
-    fireEvent.click(screen.getByText('README_RAW_原文.md'))
+    fireEvent.doubleClick(screen.getByText(rawFile.name))
     expect(screen.getByRole('dialog')).toBeVisible()
     expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'raw dir/README_RAW_原文.md' })).toBeVisible()

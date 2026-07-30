@@ -36,7 +36,7 @@ export async function saveFileViaDialog(
   const { invoke } = await import('@tauri-apps/api/core')
   const result = await invoke<string | null>('save_file', {
     name,
-    contents_b64: bytesToBase64(data),
+    contentsB64: bytesToBase64(data),
   })
   return result ?? null
 }

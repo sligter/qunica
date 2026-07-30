@@ -784,6 +784,55 @@ async fn fake_provider_sequence(bodies: Vec<String>) -> String {
     format!("http://{addr}")
 }
 
+async fn recording_fake_tavily() -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let authorized = Arc::new(AtomicBool::new(false));
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        let authorized = Arc::clone(&authorized);
+        move |request: Request<Body>| {
+            let requests = Arc::clone(&requests);
+            let authorized = Arc::clone(&authorized);
+            async move {
+                authorized.store(
+                    request
+                        .headers()
+                        .get(header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        == Some("Bearer tavily-test-key"),
+                    Ordering::Release,
+                );
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                requests
+                    .lock()
+                    .await
+                    .push(serde_json::from_slice(&bytes).unwrap());
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    json!({
+                        "answer": "provider answer",
+                        "results": [{
+                            "title": "Result",
+                            "url": "https://example.test/result",
+                            "content": "provider snippet"
+                        }]
+                    })
+                    .to_string(),
+                )
+                    .into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/search"), requests, authorized)
+}
+
 async fn fake_provider_status_sequence(responses: Vec<(StatusCode, String)>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -993,6 +1042,53 @@ async fn only_dispatch(state: &AppState, group_id: &str) -> (String, String) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "direct-prompt@example.com").await;
+    let owner = owner_id(&state, "direct-prompt@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let conversation = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) =
+        recording_fake_provider_sequence(vec![text_body("Hello privately")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &conversation,
+        &provider,
+        "Solo",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE groups SET conversation_kind = 'direct', direct_agent_id = ?, name = 'Private chat' \
+         WHERE id = ?",
+    )
+    .bind(&agent)
+    .bind(&conversation)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/direct-chats/{conversation}/messages/stream"),
+        &token,
+        json!({"content": "Hello"}),
+    )
+    .await;
+    assert_eq!(events.last().unwrap()["kind"], "done");
+
+    let requests = requests.lock().await;
+    let system_prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(system_prompt.contains("Private chat context:"));
+    assert!(system_prompt
+        .contains("This is a private one-to-one conversation with the user, not a group."));
+    assert!(system_prompt.contains("- mode: conversation"));
+    assert!(!system_prompt.contains("Group context:"));
+}
 
 #[tokio::test]
 async fn conversation_identity_llm_preserves_speakers_and_escapes_untrusted_content() {
@@ -2772,6 +2868,79 @@ async fn group_stream_executes_native_tool_and_continues_model() {
 }
 
 #[tokio::test]
+async fn group_stream_web_search_uses_saved_tavily_settings() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "tavily-tool-loop@example.com").await;
+    let owner = owner_id(&state, "tavily-tool-loop@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (tavily_url, tavily_requests, tavily_authorized) = recording_fake_tavily().await;
+    let (status, saved) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({
+                "web_search_provider": "tavily",
+                "tavily_api_key": "tavily-test-key",
+                "tavily_search_url": tavily_url,
+                "tavily_max_results": 3,
+                "tavily_search_depth": "advanced",
+                "tavily_include_answer": true,
+                "tavily_include_raw_content": false
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["tavily_api_key_configured"], true);
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_search",
+            "WebSearch",
+            json!({"query": "latest", "max_results": 10}),
+        )]),
+        text_body("Search complete."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Searcher",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"web_search": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "search the web"}),
+    )
+    .await;
+
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "completed");
+    let output: Value = serde_json::from_str(results[0]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output["status"], "COMPLETED");
+    assert_eq!(output["answer"], "provider answer");
+    assert_eq!(output["results"][0]["content"], "provider snippet");
+    assert!(tavily_authorized.load(Ordering::Acquire));
+    let requests = tavily_requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["api_key"], "tavily-test-key");
+    assert_eq!(requests[0]["max_results"], 3);
+    assert_eq!(requests[0]["search_depth"], "advanced");
+}
+
+#[tokio::test]
 async fn provider_retry_preserves_completed_tool_context() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "provider-retry@example.com").await;
@@ -2866,6 +3035,14 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
             StatusCode::INTERNAL_SERVER_ERROR,
             "temporary provider failure".to_string(),
         ),
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "call_read_resume",
+                "Read",
+                json!({"file_path": "note.txt"}),
+            )]),
+        ),
         (StatusCode::OK, text_body(" resumed from checkpoint")),
     ])
     .await;
@@ -2920,14 +3097,39 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
     let resumed_message = payloads_of_kind(&resumed, StreamEventKind::AgentMessage);
     assert_eq!(resumed_message[0]["message_id"], interrupted_id);
     assert_eq!(resumed_message[0]["content"], " resumed from checkpoint");
+    let resumed_checkpoint: String =
+        sqlx::query_scalar("SELECT content_json FROM messages WHERE id = ?")
+            .bind(&interrupted_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let resumed_checkpoint: Value = serde_json::from_str(&resumed_checkpoint).unwrap();
+    assert_eq!(resumed_checkpoint["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        resumed_checkpoint["tool_calls"][1]["tool_call_id"],
+        "call_read_resume"
+    );
 
     let requests = requests.lock().await;
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     let resume_messages = requests[4]["messages"].as_array().unwrap();
+    assert!(requests[4]["tools"]
+        .as_array()
+        .is_some_and(|tools| { tools.iter().any(|tool| tool["function"]["name"] == "Read") }));
     assert!(resume_messages.iter().any(|message| {
         message["role"] == "assistant" && message["tool_calls"][0]["id"] == "call_read"
     }));
     assert!(resume_messages.iter().any(|message| {
+        message["role"] == "tool"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("durable tool result"))
+    }));
+    let continued_messages = requests[5]["messages"].as_array().unwrap();
+    assert!(continued_messages.iter().any(|message| {
+        message["role"] == "assistant" && message["tool_calls"][0]["id"] == "call_read_resume"
+    }));
+    assert!(continued_messages.iter().any(|message| {
         message["role"] == "tool"
             && message["content"]
                 .as_str()
@@ -6831,6 +7033,7 @@ async fn resume_thread_disconnect_completes_message_for_replay() {
         agent_id: agent.clone(),
         message_id: interrupted.clone(),
         existing_content: "Start".to_string(),
+        content_json: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_thread_resume(services, request, tx));
@@ -6958,6 +7161,22 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
 
     let requests = requests.lock().await;
     let system_prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system_prompt.contains(&format!(
+            "Runtime environment:\n- operating_system: {}\n- architecture: {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )),
+        "got: {system_prompt}"
+    );
+    assert!(
+        system_prompt.contains(if cfg!(windows) {
+            "- shell: cmd.exe"
+        } else {
+            "- shell: sh"
+        }),
+        "got: {system_prompt}"
+    );
     assert!(
         system_prompt.contains("- mode: group_and_self"),
         "got: {system_prompt}"

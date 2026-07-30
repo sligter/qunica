@@ -381,6 +381,23 @@ impl SchedulerStore {
         .execute(&mut *tx)
         .await?;
 
+        sqlx::query(
+            "UPDATE threads \
+             SET status = CASE \
+                     WHEN EXISTS ( \
+                         SELECT 1 FROM messages \
+                         WHERE messages.thread_id = threads.id \
+                           AND messages.status = 'interrupted' \
+                     ) THEN 'paused' \
+                     ELSE 'active' \
+                 END, \
+                 updated_at = ? \
+             WHERE status = 'running'",
+        )
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
         Ok(())
     }

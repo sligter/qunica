@@ -185,6 +185,7 @@ pub struct ResumeRequest {
     pub agent_id: String,
     pub message_id: String,
     pub existing_content: String,
+    pub content_json: Option<String>,
 }
 
 /// How a turn ended.
@@ -273,6 +274,7 @@ pub async fn run_group_turn_with_stream_id(
         private_execution: false,
         turn_cancellation: Some(runtime_active_turn.cancellation.clone()),
         active_turn: None,
+        resume: None,
         cancellation: services.cancellation.clone(),
     };
 
@@ -295,18 +297,48 @@ pub async fn run_thread_resume(
     tx: Sender<StreamEvent<Value>>,
 ) -> TurnOutcome {
     let stream_id = Uuid::new_v4();
+    let allocator = services.allocator();
+    let claim_error = match allocator.claim_paused_thread(&req.thread_id).await {
+        Ok(true) => None,
+        Ok(false) => Some("thread is not paused"),
+        Err(error) => {
+            tracing::error!(
+                thread_id = req.thread_id,
+                error = %error,
+                "failed to claim thread for resume"
+            );
+            Some("failed to resume thread")
+        }
+    };
+    if let Some(message) = claim_error {
+        let _ = tx
+            .send(StreamEvent::new(
+                stream_id,
+                0,
+                StreamEventKind::Error,
+                json!({ "message": message }),
+            ))
+            .await;
+        let _ = tx
+            .send(StreamEvent::new(
+                stream_id,
+                1,
+                StreamEventKind::Done,
+                json!({}),
+            ))
+            .await;
+        return TurnOutcome::Error;
+    }
+
     let runtime_active_turn = services
         .active_turns
-        .register(
-            req.thread_id.clone(),
-            format!("runtime:{}", Uuid::new_v4()),
-        )
+        .register(req.thread_id.clone(), format!("runtime:{}", Uuid::new_v4()))
         .await;
     let mut ctx = StreamCtx {
         stream_id,
         seq: 0,
         tx,
-        allocator: services.allocator(),
+        allocator,
         thread_id: req.thread_id.clone(),
         group_id: req.group_id.clone(),
         scheduled_dispatch: None,
@@ -315,6 +347,11 @@ pub async fn run_thread_resume(
         private_execution: false,
         turn_cancellation: Some(runtime_active_turn.cancellation.clone()),
         active_turn: None,
+        resume: Some(ResumeState {
+            message_id: req.message_id.clone(),
+            existing_content: req.existing_content.clone(),
+            turn: TurnData::from_content_json(req.content_json.as_deref()),
+        }),
         cancellation: services.cancellation.clone(),
     };
 
@@ -341,7 +378,14 @@ struct StreamCtx {
     private_execution: bool,
     turn_cancellation: Option<TurnCancellation>,
     active_turn: Option<ActiveTurn>,
+    resume: Option<ResumeState>,
     cancellation: Option<Arc<AtomicBool>>,
+}
+
+struct ResumeState {
+    message_id: String,
+    existing_content: String,
+    turn: TurnData,
 }
 
 #[derive(Clone)]
@@ -454,6 +498,7 @@ impl StreamCtx {
         payload: Value,
         message_id: &str,
         content: &str,
+        content_json: Option<&str>,
     ) -> Result<(), StepErr> {
         let message_event = self.next_event(StreamEventKind::AgentMessage, payload);
         let done_event = self.next_event(StreamEventKind::Done, json!({}));
@@ -462,6 +507,7 @@ impl StreamCtx {
                 &self.thread_id,
                 message_id,
                 content,
+                content_json,
                 &message_event,
                 &done_event,
             )
@@ -2110,164 +2156,30 @@ async fn run_resume_inner(
     req: &ResumeRequest,
     ctx: &mut StreamCtx,
 ) -> Result<TurnOutcome, Cancelled> {
-    if let Err(err) = ctx
-        .allocator
-        .set_thread_status(&ctx.thread_id, "running")
-        .await
-    {
-        return ctx.fail(&err.to_string()).await;
-    }
-
     let agent = match load_resume_candidate(&services.pool, &req.group_id, &req.agent_id).await {
         Ok(agent) => agent,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
-
-    if ctx
-        .emit(
-            StreamEventKind::AgentStart,
-            json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
-        )
-        .await
-        .is_err()
-    {
-        let _ = ctx
-            .allocator
-            .set_thread_status(&ctx.thread_id, "paused")
-            .await;
-        return Ok(TurnOutcome::Cancelled);
-    }
-
-    let provider_cfg = match resolve_provider(&services.pool, &agent).await {
-        Ok(config) => config,
-        Err(err) => return fail_resume(ctx, &err.to_string()).await,
-    };
-    let provider = match build_provider(&provider_cfg) {
-        Ok(provider) => provider,
-        Err(err) => return fail_resume(ctx, &err.to_string()).await,
-    };
-    let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
     let group = match load_group_runtime_config(&services.pool, &req.group_id).await {
         Ok(group) => group,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
-    let workspace_root = match resolve_group_workspace_root(&services.pool, &group).await {
-        Ok(root) => root,
-        Err(err) => return fail_resume(ctx, &err.to_string()).await,
-    };
-    let workspaces = match resolve_workspaces(&services.pool, &agent, &group).await {
-        Ok(workspaces) => workspaces,
-        Err(err) => return fail_resume(ctx, &err.to_string()).await,
-    };
-    let (messages, image_warnings) = match build_resume_messages(
-        &services.pool,
-        &ctx.thread_id,
-        &agent.system_prompt,
-        &req.message_id,
-        &agent.agent_id,
-        workspace_root.as_deref(),
-        attachment_access(workspaces.primary.as_deref(), workspace_root.as_deref()),
-        vision_enabled(agent.model_config_json.as_deref()),
-    )
-    .await
-    {
-        Ok(messages) => messages,
-        Err(err) => return fail_resume(ctx, &err.to_string()).await,
-    };
-    for warning in image_warnings {
-        if ctx
-            .emit(StreamEventKind::Warning, json!({ "message": warning }))
-            .await
-            .is_err()
-        {
+    let execution = match run_agent_turn(services, ctx, &agent, &group, 0, None, None).await {
+        Ok(AgentRunResult::Private(execution)) => execution,
+        Ok(_) => return fail_resume(ctx, "agent did not produce a resumable response").await,
+        Err(StepErr::Cancelled) => {
+            let _ = ctx
+                .allocator
+                .set_thread_status(&ctx.thread_id, "paused")
+                .await;
             return Ok(TurnOutcome::Cancelled);
         }
-    }
-    let request = ChatRequest {
-        model,
-        messages,
-        temperature: None,
-        reasoning_passback: provider_cfg.reasoning_passback,
-        include_empty_tools: false,
-        tools: Vec::new(),
-    };
-    let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
-        Ok(deltas) => deltas,
-        Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
-        Err(StepErr::Db(error)) => return fail_resume(ctx, &error.to_string()).await,
+        Err(StepErr::Db(err)) => return fail_resume(ctx, &err.to_string()).await,
         Err(StepErr::SchedulerPersistence) => {
             return fail_resume(ctx, "scheduler persistence failed").await
         }
     };
-
-    let mut addition = String::new();
-    while let Some(delta) = deltas.recv().await {
-        match delta {
-            ChatDelta::Token(text) => {
-                match ctx
-                    .emit(
-                        StreamEventKind::Token,
-                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
-                    )
-                    .await
-                {
-                    Ok(()) => addition.push_str(&text),
-                    Err(StepErr::Cancelled) => {
-                        append_resume_cancellation(ctx, req, &addition).await?;
-                        return Ok(TurnOutcome::Cancelled);
-                    }
-                    Err(StepErr::Db(err)) => return fail_resume(ctx, &err.to_string()).await,
-                    Err(StepErr::SchedulerPersistence) => {
-                        return fail_resume(ctx, "scheduler persistence failed").await
-                    }
-                }
-            }
-            ChatDelta::Reasoning(text) => {
-                if let Err(err) = ctx
-                    .emit(
-                        StreamEventKind::Reasoning,
-                        json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
-                    )
-                    .await
-                {
-                    return match err {
-                        StepErr::Cancelled => {
-                            append_resume_cancellation(ctx, req, &addition).await?;
-                            Ok(TurnOutcome::Cancelled)
-                        }
-                        StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
-                        StepErr::SchedulerPersistence => {
-                            fail_resume(ctx, "scheduler persistence failed").await
-                        }
-                    };
-                }
-            }
-            ChatDelta::Usage(usage) => {
-                let usage = augment_context_usage(usage, &provider_cfg);
-                let usage_json = context_usage_to_json(&usage);
-                let payload = json!({
-                    "agent_id": agent.agent_id,
-                    "context_usage": usage_json,
-                });
-                if let Err(err) = ctx.emit(StreamEventKind::ContextUsage, payload).await {
-                    return match err {
-                        StepErr::Cancelled => {
-                            append_resume_cancellation(ctx, req, &addition).await?;
-                            Ok(TurnOutcome::Cancelled)
-                        }
-                        StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
-                        StepErr::SchedulerPersistence => {
-                            fail_resume(ctx, "scheduler persistence failed").await
-                        }
-                    };
-                }
-            }
-            ChatDelta::ToolCall(_) => {}
-            ChatDelta::Done => break,
-        }
-    }
-
-    let final_content = format!("{}{}", req.existing_content, addition);
+    let final_content = execution.final_content;
     let message_payload = json!({
         "message_id": req.message_id,
         "agent_id": agent.agent_id,
@@ -2275,16 +2187,22 @@ async fn run_resume_inner(
         "display_name": agent.display_name,
         "content": final_content,
     });
+    let content_json = execution.turn_data.to_content_json();
     match ctx
-        .emit_resume_completion(message_payload, &req.message_id, &final_content)
+        .emit_resume_completion(
+            message_payload,
+            &req.message_id,
+            &final_content,
+            content_json.as_deref(),
+        )
         .await
     {
+        Ok(()) if execution.outcome == AgentExecutionOutcome::WaitingForUser => {
+            Ok(TurnOutcome::WaitingForUser)
+        }
         Ok(()) => Ok(TurnOutcome::Completed),
         Err(err) => match err {
-            StepErr::Cancelled => {
-                append_resume_cancellation(ctx, req, &addition).await?;
-                Ok(TurnOutcome::Cancelled)
-            }
+            StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
             StepErr::Db(err) => fail_resume(ctx, &err.to_string()).await,
             StepErr::SchedulerPersistence => fail_resume(ctx, "scheduler persistence failed").await,
         },
@@ -2297,21 +2215,6 @@ async fn fail_resume(ctx: &mut StreamCtx, message: &str) -> Result<TurnOutcome, 
         .set_thread_status(&ctx.thread_id, "paused")
         .await;
     ctx.fail(message).await
-}
-
-async fn append_resume_cancellation(
-    ctx: &mut StreamCtx,
-    req: &ResumeRequest,
-    addition: &str,
-) -> Result<(), Cancelled> {
-    if let Err(err) = ctx
-        .allocator
-        .append_interrupted_message(&req.thread_id, &req.message_id, addition, "paused")
-        .await
-    {
-        return fail_resume(ctx, &err.to_string()).await.map(|_| ());
-    }
-    Ok(())
 }
 
 /// An active agent eligible to respond in the group.
@@ -2338,6 +2241,7 @@ struct GroupRuntimeConfig {
     id: String,
     owner_id: String,
     name: String,
+    conversation_kind: String,
     description: Option<String>,
     announcement: Option<String>,
     workspace_id: Option<String>,
@@ -2426,7 +2330,7 @@ struct PendingMention {
 }
 
 /// One tool call recorded for persistence in `content_json`.
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
 struct RecordedToolCall {
     tool_call_id: Option<String>,
     tool_name: Option<String>,
@@ -2441,14 +2345,23 @@ struct RecordedToolCall {
 /// cards, and the final context usage survive a restart (persisted in
 /// `content_json`). Transient stream events remain the live source of truth;
 /// this is the durable mirror.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Deserialize)]
 struct TurnData {
+    #[serde(default)]
     reasoning: Vec<String>,
+    #[serde(default)]
     tool_calls: Vec<RecordedToolCall>,
+    #[serde(default)]
     context_usage: Option<Value>,
 }
 
 impl TurnData {
+    fn from_content_json(content_json: Option<&str>) -> Self {
+        content_json
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default()
+    }
+
     /// Append a reasoning delta to the current (last) reasoning segment,
     /// starting a new segment when the previous content was interrupted by a
     /// non-reasoning event.
@@ -2641,6 +2554,7 @@ async fn run_agent_turn(
             conversation_workspace_root.as_deref(),
         ),
         vision_enabled(agent.model_config_json.as_deref()),
+        ctx.resume.as_ref().map(|resume| resume.message_id.as_str()),
     )
     .await
     .map_err(StepErr::Db)?;
@@ -2652,9 +2566,17 @@ async fn run_agent_turn(
         messages.push(ChatMessage::text("user", input));
     }
 
-    let mut content = String::new();
+    let mut content = ctx
+        .resume
+        .as_ref()
+        .map(|resume| resume.existing_content.clone())
+        .unwrap_or_default();
     let checkpoint_interrupted = handoff_depth == 0;
-    let mut turn = TurnData::default();
+    let mut turn = ctx
+        .resume
+        .as_ref()
+        .map(|resume| resume.turn.clone())
+        .unwrap_or_default();
 
     loop {
         let request = ChatRequest {
@@ -2854,7 +2776,7 @@ async fn run_agent_turn(
         }
 
         if let Some(input_request) = wait_for_user {
-            if ctx.private_execution {
+            if ctx.private_execution || ctx.resume.is_some() {
                 return Ok(AgentRunResult::Private(AgentExecution {
                     final_content: "Helper requested additional input.".to_string(),
                     turn_data: turn,
@@ -3244,6 +3166,19 @@ async fn persist_interrupted_agent(
         None if !turn.is_empty() => String::new(),
         None => return Ok(()),
     };
+    if let Some(message_id) = ctx.resume.as_ref().map(|resume| resume.message_id.clone()) {
+        let content_json = turn.to_content_json();
+        ctx.allocator
+            .checkpoint_interrupted_message(
+                &ctx.thread_id,
+                &message_id,
+                &content,
+                content_json.as_deref(),
+            )
+            .await
+            .map_err(StepErr::Db)?;
+        return Ok(());
+    }
     let message = NewMessage {
         id: Uuid::new_v4().to_string(),
         sender_type: "agent".to_string(),
@@ -3982,7 +3917,7 @@ async fn finish_agent_content(
     let trimmed = content.trim();
 
     if proactive && trimmed == SILENT_MARKER {
-        if ctx.private_execution {
+        if ctx.private_execution || ctx.resume.is_some() {
             return Ok(AgentRunResult::Private(AgentExecution {
                 final_content: String::new(),
                 turn_data: turn.clone(),
@@ -4010,7 +3945,7 @@ async fn finish_agent_content(
     };
 
     if visible.trim().is_empty() {
-        if ctx.private_execution {
+        if ctx.private_execution || ctx.resume.is_some() {
             return Ok(AgentRunResult::Private(AgentExecution {
                 final_content: String::new(),
                 turn_data: turn.clone(),
@@ -4020,7 +3955,7 @@ async fn finish_agent_content(
         return Ok(AgentRunResult::NoVisible);
     }
 
-    if ctx.private_execution {
+    if ctx.private_execution || ctx.resume.is_some() {
         return Ok(AgentRunResult::Private(AgentExecution {
             final_content: visible,
             turn_data: turn.clone(),
@@ -4155,6 +4090,7 @@ struct GroupRuntimeRow {
     id: String,
     owner_id: String,
     name: String,
+    conversation_kind: String,
     description: Option<String>,
     announcement: Option<String>,
     workspace_id: Option<String>,
@@ -4185,7 +4121,7 @@ async fn load_group_runtime_config(
     group_id: &str,
 ) -> anyhow::Result<GroupRuntimeConfig> {
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
-        "SELECT id, owner_id, name, description, announcement, workspace_id, free_speech, \
+        "SELECT id, owner_id, name, conversation_kind, description, announcement, workspace_id, free_speech, \
                 proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
                 agent_free_mention_max_dispatches, \
                 communication_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
@@ -4199,6 +4135,7 @@ async fn load_group_runtime_config(
         id: row.id,
         owner_id: row.owner_id,
         name: row.name,
+        conversation_kind: row.conversation_kind,
         description: row.description,
         announcement: row.announcement,
         workspace_id: row.workspace_id,
@@ -4572,12 +4509,20 @@ async fn build_invocation_context(
     let mounted_skills = load_mounted_skills(pool, agent).await?;
     let workspaces = resolve_workspaces(pool, agent, group).await?;
     let mcp = resolve_mcp_tools(services, agent).await;
+    let web_search = if enabled_tools.iter().any(|name| name == "WebSearch") {
+        crate::api::system_settings::tavily_search_config(pool, &agent.owner_id)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to load web search settings"))?
+    } else {
+        None
+    };
     let executor = ToolExecutor::new_with_mounts(
         workspaces.primary.clone(),
         workspaces.mounts(),
         mounted_skills.clone(),
     )
     .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?
+    .with_web_search(web_search)
     .with_mcp(services.mcp.clone(), mcp);
 
     let mut tools = enabled_tools
@@ -4843,10 +4788,17 @@ async fn build_agent_system_prompt(
     } else {
         enabled_tools.join(", ")
     };
+    let direct_chat = group.conversation_kind == "direct";
+    let conversation_heading = if direct_chat {
+        "Private chat context:\nThis is a private one-to-one conversation with the user, not a group. Never describe it as a group chat or say that you joined a group."
+    } else {
+        "Group context:"
+    };
     let mut sections = vec![
         agent.system_prompt.clone(),
+        render_runtime_environment(executor),
         format!(
-            "Group context:\n- id: {}\n- owner_id: {}\n- name: {}\n- description: {}\n- announcement: {}\n- communication_mode: {}\n- proactive_reply_multiplier: {}\n- allow_agent_free_mention: {}\n- self_display_name: {}\n- self_response_mode: {}\n- self_topology_role: {}\n- self_speaking_order: {}",
+            "{conversation_heading}\n- id: {}\n- owner_id: {}\n- name: {}\n- description: {}\n- announcement: {}\n- communication_mode: {}\n- proactive_reply_multiplier: {}\n- allow_agent_free_mention: {}\n- self_display_name: {}\n- self_response_mode: {}\n- self_topology_role: {}\n- self_speaking_order: {}",
             group.id,
             group.owner_id,
             group.name,
@@ -4863,8 +4815,8 @@ async fn build_agent_system_prompt(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string()),
         ),
-        format!("Roster:\n{roster}"),
-        render_workspace_section(agent.workspace_mode, executor),
+        format!("{}:\n{roster}", if direct_chat { "Participants" } else { "Roster" }),
+        render_workspace_section(agent.workspace_mode, executor, direct_chat),
         format!("Enabled provider-native tools: {tools}"),
         render_mcp_section(executor),
         format!("Mounted skills:\n{skill_lines}"),
@@ -4876,6 +4828,20 @@ async fn build_agent_system_prompt(
         ));
     }
     Ok(sections.join("\n\n"))
+}
+
+/// Describe the host that executes provider-native tools for this turn.
+fn render_runtime_environment(executor: &ToolExecutor) -> String {
+    let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+    let cwd = executor
+        .workspace_root()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "not configured".to_string());
+    format!(
+        "Runtime environment:\n- operating_system: {}\n- architecture: {}\n- shell: {shell}\n- current_working_directory: {cwd}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
 }
 
 /// Render the MCP section of the system prompt.
@@ -4914,21 +4880,38 @@ fn render_mcp_section(executor: &ToolExecutor) -> String {
 ///
 /// Reads the roots off the executor so the prompt describes the address space
 /// the tools really have.
-fn render_workspace_section(mode: WorkspaceMode, executor: &ToolExecutor) -> String {
+fn render_workspace_section(
+    mode: WorkspaceMode,
+    executor: &ToolExecutor,
+    direct_chat: bool,
+) -> String {
+    let mode_name = if direct_chat {
+        match mode {
+            WorkspaceMode::Group => "conversation",
+            WorkspaceMode::GroupAndSelf => "conversation_and_self",
+            WorkspaceMode::SelfOnly => "self",
+        }
+    } else {
+        mode.as_str()
+    };
     let Some(primary) = executor.workspace_root() else {
         return format!(
             "Workspace:\n- mode: {}\n- source: none\n- location: not configured\n\
              No workspace is configured, so file and shell tools are unavailable this turn.",
-            mode.as_str()
+            mode_name
         );
     };
     let source = if mode.uses_group_workspace() {
-        "group"
+        if direct_chat {
+            "conversation"
+        } else {
+            "group"
+        }
     } else {
         "agent"
     };
     let mut lines = vec![
-        format!("Workspace:\n- mode: {}", mode.as_str()),
+        format!("Workspace:\n- mode: {mode_name}"),
         format!("- source: {source}"),
         format!(
             "- primary (plain relative paths resolve here): {}",
@@ -4952,7 +4935,7 @@ fn render_workspace_section(mode: WorkspaceMode, executor: &ToolExecutor) -> Str
         ));
     }
     lines.push(
-        "Address a mounted file by keeping its prefix, e.g. `Read` with file_path \
+        "Address a mounted file by keeping its prefix, e.g. `Read` with path \
          `~self/notes.md`. Glob and Grep return mounted matches with the same prefix. \
          Bash runs in the primary root only and cannot reach mounts."
             .to_string(),
@@ -5206,34 +5189,74 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
 fn tool_definition(name: &str) -> Option<ToolDefinition> {
     let (description, schema) = match name {
         "Read" => (
-            "Read a UTF-8 file from the bound workspace.",
-            object_schema(
-                &[
-                    ("file_path", "string"),
-                    ("start_line", "integer"),
-                    ("limit", "integer"),
-                ],
-                &["file_path"],
-            ),
+            "Read UTF-8 file contents. Output is capped at 2000 lines; use offset and limit for large files.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path to the file"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "1-based line number to start from; 0 also starts at the beginning"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of lines to read"
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
         ),
         "Write" => (
-            "Create or replace a UTF-8 file in the bound workspace.",
-            object_schema(
-                &[("file_path", "string"), ("content", "string")],
-                &["file_path", "content"],
-            ),
+            "Create or overwrite a UTF-8 file, creating parent directories when needed.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path to write"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Complete file content"
+                    }
+                },
+                "required": ["path", "content"],
+                "additionalProperties": false
+            }),
         ),
         "Edit" => (
-            "Replace exact text in a UTF-8 workspace file.",
-            object_schema(
-                &[
-                    ("file_path", "string"),
-                    ("old_string", "string"),
-                    ("new_string", "string"),
-                    ("replace_all", "boolean"),
-                ],
-                &["file_path", "old_string", "new_string"],
-            ),
+            "Make precise, atomic edits to one UTF-8 file. Every oldText must match one unique, non-overlapping block in the original file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path to edit"
+                    },
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "One or more exact replacements, all validated before writing",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": { "type": "string" },
+                                "newText": { "type": "string" }
+                            },
+                            "required": ["oldText", "newText"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["path", "edits"],
+                "additionalProperties": false
+            }),
         ),
         "Glob" => (
             "Find workspace files by glob pattern.",
@@ -5466,16 +5489,27 @@ async fn build_vision_messages(
     workspace_root: Option<&std::path::Path>,
     access: AttachmentAccess,
     use_native_images: bool,
+    interrupted_message_id: Option<&str>,
 ) -> anyhow::Result<(Vec<ChatMessage>, Vec<String>)> {
-    let rows = load_conversation(pool, thread_id).await?;
-    Ok(vision_messages_from_rows(
+    let rows = match interrupted_message_id {
+        Some(message_id) => load_conversation_for_resume(pool, thread_id, message_id).await?,
+        None => load_conversation(pool, thread_id).await?,
+    };
+    let (mut messages, warnings) = vision_messages_from_rows(
         system_prompt,
         current_agent_id,
         &rows,
         workspace_root,
         access,
         use_native_images,
-    ))
+    );
+    if interrupted_message_id.is_some() {
+        messages.push(ChatMessage::text(
+            "user",
+            RESUME_CONTINUATION_PROMPT.to_string(),
+        ));
+    }
+    Ok((messages, warnings))
 }
 
 fn vision_messages_from_rows(
@@ -5679,33 +5713,6 @@ fn acp_context_hash(system_prompt: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn build_resume_messages(
-    pool: &SqlitePool,
-    thread_id: &str,
-    system_prompt: &str,
-    interrupted_message_id: &str,
-    current_agent_id: &str,
-    workspace_root: Option<&std::path::Path>,
-    access: AttachmentAccess,
-    use_native_images: bool,
-) -> anyhow::Result<(Vec<ChatMessage>, Vec<String>)> {
-    let rows = load_conversation_for_resume(pool, thread_id, interrupted_message_id).await?;
-    let (mut messages, warnings) = vision_messages_from_rows(
-        system_prompt,
-        current_agent_id,
-        &rows,
-        workspace_root,
-        access,
-        use_native_images,
-    );
-    messages.push(ChatMessage::text(
-        "user",
-        RESUME_CONTINUATION_PROMPT.to_string(),
-    ));
-    Ok((messages, warnings))
-}
-
 /// Resolve the turn's thread: validate a supplied id, reuse the active group
 /// thread, or create one. Creation is serialized behind the write lock and
 /// re-checks for a race winner.
@@ -5788,6 +5795,41 @@ mod tests {
             persistence.disposition(),
             CandidateLoadDisposition::FailTurn
         );
+    }
+
+    #[test]
+    fn tau_style_file_tool_schemas_are_exposed() {
+        let read = tool_definition("Read").unwrap();
+        assert!(read.input_schema["properties"].get("path").is_some());
+        assert!(read.input_schema["properties"].get("offset").is_some());
+        assert!(read.input_schema["properties"].get("file_path").is_none());
+
+        let edit = tool_definition("Edit").unwrap();
+        assert_eq!(
+            edit.input_schema["properties"]["edits"]["items"]["type"],
+            "object"
+        );
+        assert_eq!(
+            edit.input_schema["properties"]["edits"]["items"]["required"],
+            json!(["oldText", "newText"])
+        );
+    }
+
+    #[test]
+    fn runtime_environment_section_matches_host() {
+        let root = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+        let section = render_runtime_environment(&executor);
+
+        assert!(section.contains(&format!("- operating_system: {}", std::env::consts::OS)));
+        assert!(section.contains(&format!("- architecture: {}", std::env::consts::ARCH)));
+        assert!(section.contains(if cfg!(windows) {
+            "- shell: cmd.exe"
+        } else {
+            "- shell: sh"
+        }));
+        assert!(section.contains(&root.path().to_string_lossy().to_string()));
     }
 
     #[test]

@@ -170,7 +170,7 @@ export function MessageItem({
           )}
           {!inputRequest && message.attachments.length > 0 ? <MessageAttachments groupId={groupId} attachments={message.attachments} /> : null}
         </div>
-        {isInterrupted && !isResuming && message.thread_id && (
+        {(isInterrupted || isResuming) && message.thread_id && (
           <InterruptedMessageActions
             groupId={groupId}
             threadId={message.thread_id}

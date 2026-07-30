@@ -462,7 +462,7 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
-  it('cancels the legacy server thread before aborting its stream', async () => {
+  it('cancels the legacy server thread and removes its replaced live timeline', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useSendMessageStream('group-1', false), {
       wrapper: wrapper(queryClient),
@@ -488,8 +488,8 @@ describe('useSendMessageStream scheduler events', () => {
     })
     expect(stream.abort).toHaveBeenCalledTimes(1)
     expect(
-      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].status,
-    ).toBe('cancelled')
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'],
+    ).toBeUndefined()
   })
 
   it('reconciles an idempotent completed cancel response before aborting', async () => {

@@ -1160,6 +1160,21 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
     assert!(!root.path().join("empty").exists());
 
+    std::fs::create_dir(root.path().join("nested")).unwrap();
+    std::fs::write(root.path().join("nested").join("child.txt"), b"child").unwrap();
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/actions"),
+            Some(&token),
+            json!({"action": "delete", "paths": ["nested"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+    assert!(!root.path().join("nested").exists());
+
     let (status, initialized) = send(
         &app,
         request(

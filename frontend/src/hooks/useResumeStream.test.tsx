@@ -362,7 +362,7 @@ describe('useResumeStream scheduler events', () => {
     ])
   })
 
-  it('cancels a legacy resume on the server before aborting its stream', async () => {
+  it('registers a legacy resume so shared controls cancel the server and stream', async () => {
     useMessageStore.getState().setHistory('group-1', [
       { ...interruptedMessage, turn_id: null, dispatch_id: null },
     ])
@@ -381,13 +381,18 @@ describe('useResumeStream scheduler events', () => {
       payload: { agent_id: 'agent-1', display_name: 'Agent One' },
     })
 
-    await act(async () => hook.result.current.cancel())
+    const registered = useMessageStore.getState().activeResumesByMessageId['message-1']
+    expect(registered.group_id).toBe('group-1')
+    await act(async () => registered.cancel())
 
     expect(mocks.fetchJson).toHaveBeenCalledWith('/threads/thread-1/cancel', {
       method: 'POST',
       token: 'token-1',
     })
     expect(stream.abort).toHaveBeenCalledTimes(1)
+    expect(
+      useMessageStore.getState().activeResumesByMessageId['message-1'],
+    ).toBeUndefined()
   })
 
   it('reconciles waiting_for_user to the parsed cancel response before aborting', async () => {

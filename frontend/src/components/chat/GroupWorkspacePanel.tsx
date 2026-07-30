@@ -17,7 +17,6 @@ interface GroupWorkspacePanelProps {
   workspaceId?: string | null
   width?: number
   className?: string
-  onInsertPaths?: (paths: string[]) => void
 }
 
 type WorkspaceTab = 'files' | 'git'
@@ -34,7 +33,6 @@ export function GroupWorkspacePanel({
   workspaceId = null,
   width,
   className,
-  onInsertPaths,
 }: GroupWorkspacePanelProps) {
   const { t } = useTranslation('chat')
   const [tab, setTab] = useState<WorkspaceTab>(() => readStoredTab())
@@ -86,7 +84,6 @@ export function GroupWorkspacePanel({
             scope={scope}
             conversationId={groupId}
             workspaceId={workspaceId}
-            onInsertPaths={onInsertPaths}
           />
         </TabsContent>
         <TabsContent value="git" className="mt-0 min-h-0 flex-1">

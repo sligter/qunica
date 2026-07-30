@@ -9,6 +9,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::tools::TavilySearchConfig;
 
 const DEFAULT_WEB_SEARCH_PROVIDER: &str = "tavily";
 const DEFAULT_TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
@@ -104,6 +105,31 @@ impl From<SettingsRow> for SettingsResponse {
             updated_at: row.updated_at,
         }
     }
+}
+
+pub(crate) async fn tavily_search_config(
+    pool: &SqlitePool,
+    owner_id: &str,
+) -> Result<Option<TavilySearchConfig>, ApiError> {
+    let row = get_or_create(pool, owner_id).await?;
+    let Some(api_key) = row
+        .tavily_api_key
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+    else {
+        return Ok(None);
+    };
+    if row.web_search_provider != DEFAULT_WEB_SEARCH_PROVIDER {
+        return Ok(None);
+    }
+    Ok(Some(TavilySearchConfig {
+        api_key,
+        search_url: row.tavily_search_url,
+        max_results: row.tavily_max_results.clamp(1, 20) as u32,
+        search_depth: row.tavily_search_depth,
+        include_answer: row.tavily_include_answer != 0,
+        include_raw_content: row.tavily_include_raw_content != 0,
+    }))
 }
 
 pub async fn get(

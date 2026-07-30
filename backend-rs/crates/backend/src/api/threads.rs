@@ -16,7 +16,6 @@ use axum::{
 use futures_util::{stream::BoxStream, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -71,6 +70,7 @@ struct InterruptedMessageRow {
     sender_id: Option<String>,
     message_type: String,
     content: Option<String>,
+    content_json: Option<String>,
 }
 
 struct ResumeTarget {
@@ -79,6 +79,7 @@ struct ResumeTarget {
     agent_id: String,
     message_id: String,
     existing_content: String,
+    content_json: Option<String>,
 }
 
 impl From<ThreadAccessRow> for ThreadResponse {
@@ -143,13 +144,6 @@ pub async fn resume(
     }
 
     let target = resolve_resume_target(state.db.pool(), &thread_id, &owner_id).await?;
-    claim_resume_thread(
-        state.db.pool(),
-        state.write_lock.as_ref(),
-        &target.thread_id,
-    )
-    .await?;
-
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_active_turn_registry(state.active_turns.clone());
@@ -159,6 +153,7 @@ pub async fn resume(
         agent_id: target.agent_id,
         message_id: target.message_id,
         existing_content: target.existing_content,
+        content_json: target.content_json,
     };
     tokio::spawn(async move {
         run_thread_resume(services, request, tx).await;
@@ -201,31 +196,8 @@ async fn resolve_resume_target(
         agent_id,
         message_id: interrupted.id,
         existing_content: interrupted.content.unwrap_or_default(),
+        content_json: interrupted.content_json,
     })
-}
-
-async fn claim_resume_thread(
-    pool: &sqlx::SqlitePool,
-    write_lock: &tokio::sync::Mutex<()>,
-    thread_id: &str,
-) -> Result<(), ApiError> {
-    let _guard = write_lock.lock().await;
-    let now = now_rfc3339();
-    let result = sqlx::query(
-        "UPDATE threads \
-         SET status = 'running', updated_at = ? \
-         WHERE id = ? AND status = 'paused'",
-    )
-    .bind(&now)
-    .bind(thread_id)
-    .execute(pool)
-    .await
-    .map_err(|_| ApiError::internal("database error"))?;
-
-    if result.rows_affected() == 0 {
-        return Err(ApiError::conflict("thread is not paused"));
-    }
-    Ok(())
 }
 
 async fn fetch_owned_thread(
@@ -266,7 +238,7 @@ async fn latest_interrupted_message(
     thread_id: &str,
 ) -> Result<InterruptedMessageRow, ApiError> {
     sqlx::query_as(
-        "SELECT id, sender_type, sender_id, message_type, content \
+        "SELECT id, sender_type, sender_id, message_type, content, content_json \
          FROM messages \
          WHERE thread_id = ? AND status = 'interrupted' \
          ORDER BY seq DESC, id DESC \
@@ -315,10 +287,4 @@ fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {
     Uuid::parse_str(raw.trim())
         .map(|id| id.to_string())
         .map_err(|_| ApiError::invalid_input(format!("invalid {field}")))
-}
-
-fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_default()
 }

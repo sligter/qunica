@@ -11,7 +11,6 @@ export interface ConversationWorkspacePanelProps {
   workspaceId: string | null
   width?: number
   className?: string
-  onInsertPaths?: (paths: string[]) => void
   embedded?: boolean
 }
 
@@ -21,7 +20,6 @@ export function ConversationWorkspacePanel({
   workspaceId,
   width,
   className,
-  onInsertPaths,
   embedded = false,
 }: ConversationWorkspacePanelProps) {
   const { t } = useTranslation('chat')
@@ -30,7 +28,6 @@ export function ConversationWorkspacePanel({
       scope={scope}
       conversationId={conversationId}
       workspaceId={workspaceId}
-      onInsertPaths={onInsertPaths}
     />
   )
 

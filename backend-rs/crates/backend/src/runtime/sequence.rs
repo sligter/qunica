@@ -117,14 +117,13 @@ impl SequenceAllocator {
         Ok(next_seq)
     }
 
-    /// Append resume output to an existing interrupted message and keep the
-    /// thread in the supplied state.
-    pub async fn append_interrupted_message(
+    /// Replace an interrupted checkpoint in place and pause its thread.
+    pub async fn checkpoint_interrupted_message(
         &self,
         thread_id: &str,
         message_id: &str,
-        addition: &str,
-        thread_status: &str,
+        content: &str,
+        content_json: Option<&str>,
     ) -> anyhow::Result<()> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
@@ -133,10 +132,11 @@ impl SequenceAllocator {
 
         let result = sqlx::query(
             "UPDATE messages \
-             SET content = COALESCE(content, '') || ? \
+             SET content = ?, content_json = ? \
              WHERE id = ? AND thread_id = ? AND status = 'interrupted'",
         )
-        .bind(addition)
+        .bind(content)
+        .bind(content_json)
         .bind(message_id)
         .bind(thread_id)
         .execute(&mut *tx)
@@ -145,8 +145,7 @@ impl SequenceAllocator {
             return Err(anyhow::anyhow!("interrupted message not found"));
         }
 
-        sqlx::query("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
-            .bind(thread_status)
+        sqlx::query("UPDATE threads SET status = 'paused', updated_at = ? WHERE id = ?")
             .bind(&now)
             .bind(thread_id)
             .execute(&mut *tx)
@@ -163,6 +162,7 @@ impl SequenceAllocator {
         thread_id: &str,
         message_id: &str,
         content: &str,
+        content_json: Option<&str>,
         message_event: &StreamEvent<Value>,
         done_event: &StreamEvent<Value>,
     ) -> anyhow::Result<()> {
@@ -173,10 +173,11 @@ impl SequenceAllocator {
 
         let result = sqlx::query(
             "UPDATE messages \
-             SET content = ?, status = 'visible' \
+             SET content = ?, content_json = ?, status = 'visible' \
              WHERE id = ? AND thread_id = ? AND status = 'interrupted'",
         )
         .bind(content)
+        .bind(content_json)
         .bind(message_id)
         .bind(thread_id)
         .execute(&mut *tx)
@@ -214,6 +215,22 @@ impl SequenceAllocator {
             return Err(anyhow::anyhow!("thread is not writable"));
         }
         Ok(())
+    }
+
+    /// Atomically claim a paused thread for a detached resume task.
+    pub async fn claim_paused_thread(&self, thread_id: &str) -> anyhow::Result<bool> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        let result = sqlx::query(
+            "UPDATE threads \
+             SET status = 'running', updated_at = ? \
+             WHERE id = ? AND status = 'paused'",
+        )
+        .bind(&now)
+        .bind(thread_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Persist a durable stream event with no associated message row (terminal

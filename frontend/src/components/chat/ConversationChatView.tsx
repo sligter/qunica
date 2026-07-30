@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Composer, type WorkspacePathInserter } from '@/components/chat/Composer'
+import { Composer } from '@/components/chat/Composer'
 import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHeaderActions'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
@@ -116,8 +116,21 @@ export function ConversationChatView({
     void sendMessage(content).catch(() => undefined)
   }, [sendMessage])
   const clearWarnings = useMessageStore((state) => state.clearWarnings)
+  const activeResumesByMessageId = useMessageStore(
+    (state) => state.activeResumesByMessageId,
+  )
+  const activeResumes = useMemo(
+    () => Object.values(activeResumesByMessageId).filter(
+      (resume) => resume.group_id === conversationId,
+    ),
+    [activeResumesByMessageId, conversationId],
+  )
+  const isConversationStreaming = stream.isStreaming || activeResumes.length > 0
+  const cancelConversationStream = useCallback(() => {
+    if (stream.isStreaming) void stream.cancel()
+    for (const resume of activeResumes) void resume.cancel()
+  }, [activeResumes, stream])
   const fileNavRequest = useFileNavStore((state) => state.request)
-  const composerPathInserterRef = useRef<WorkspacePathInserter | null>(null)
   const traceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
     capabilities.showWorkspace ? readWorkspaceFilesOpen(conversationId) : false,
@@ -173,14 +186,6 @@ export function ConversationChatView({
     [conversationId],
   )
 
-  const registerComposerPathInserter = useCallback((insert: WorkspacePathInserter | null) => {
-    composerPathInserterRef.current = insert
-  }, [])
-
-  const insertWorkspacePaths = useCallback((paths: string[]) => {
-    composerPathInserterRef.current?.(paths)
-  }, [])
-
   const openTurnTrace = useCallback((turnId: string, trigger: HTMLButtonElement) => {
     traceTriggerRef.current = trigger
     setSelectedTurnId(turnId)
@@ -214,7 +219,7 @@ export function ConversationChatView({
             <DirectChatHeaderActions
               key={conversationId}
               chatId={conversationId}
-              disabled={stream.isStreaming}
+              disabled={isConversationStreaming}
             />
           ) : null}
           <Button
@@ -272,14 +277,13 @@ export function ConversationChatView({
             conversationId={conversationId}
             workspaceId={workspaceId}
             scope={scope}
-            isStreaming={stream.isStreaming}
+            isStreaming={isConversationStreaming}
             onSend={sendMessage}
-            onCancel={stream.cancel}
+            onCancel={cancelConversationStream}
             hint={hint}
             groupAgents={agents}
             allowMentions={capabilities.allowMentions}
             disabledReason={disabledComposerReason}
-            onRegisterWorkspacePathInserter={registerComposerPathInserter}
           />
         </div>
         {capabilities.showWorkspace && workspaceFilesOpen ? (
@@ -298,7 +302,6 @@ export function ConversationChatView({
               groupId={conversationId}
               workspaceId={workspaceId}
               width={workspaceFilesPane.width}
-              onInsertPaths={insertWorkspacePaths}
             />
           </>
         ) : null}

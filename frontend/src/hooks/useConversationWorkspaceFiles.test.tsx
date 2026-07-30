@@ -22,6 +22,7 @@ import {
   useSaveConversationWorkspaceFileText,
   useUploadConversationWorkspaceFile,
 } from './useConversationWorkspaceFiles'
+import { useWorkspaceFileActions } from './useGroupFiles'
 
 vi.mock('@/lib/api-v2/client', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/api-v2/client')>()
@@ -360,6 +361,43 @@ describe('conversation workspace file client', () => {
     expect(mockedFetchFormData.mock.calls[0]?.[0]).toBe(
       '/groups/group-1/workspace-files/upload?agent_id=agent-7',
     )
+  })
+
+  it('sends batch file actions to either conversation scope and refreshes file and Git state', async () => {
+    mockedFetchJson.mockResolvedValue(undefined)
+    const client = testClient()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(
+      () => useWorkspaceFileActions('chat-1', 'direct-chats', 'agent-7'),
+      { wrapper: wrapper(client) },
+    )
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        action: 'move',
+        paths: ['first.txt', 'folder'],
+        destination: 'archive',
+      })
+    })
+
+    expect(mockedFetchJson).toHaveBeenCalledWith(
+      '/direct-chats/chat-1/workspace-files/actions?agent_id=agent-7',
+      {
+        method: 'POST',
+        body: {
+          action: 'move',
+          paths: ['first.txt', 'folder'],
+          destination: 'archive',
+        },
+        token: 'owner-token',
+      },
+    )
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['direct-chats', 'chat-1', 'workspace-files'],
+    })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'chat-1', 'workspace-git'],
+    })
   })
 
   it('provides an explicit, idempotent Object URL revoke lifecycle', () => {

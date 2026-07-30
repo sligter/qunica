@@ -182,6 +182,11 @@ export interface StreamRun {
   events: StreamTimelineEvent[]
 }
 
+interface ActiveResume {
+  group_id: string
+  cancel: () => Promise<void>
+}
+
 interface MessageState {
   byGroup: Record<string, Message[]>
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
@@ -192,6 +197,7 @@ interface MessageState {
   streamRunIdByUserMessageIdByGroup: Record<string, Record<string, string>>
   streamRunOrderByGroup: Record<string, string[]>
   resumingMessageIds: Set<string>
+  activeResumesByMessageId: Record<string, ActiveResume>
 
   setHistory: (groupId: string, messages: Message[]) => void
   prependHistory: (groupId: string, messages: Message[]) => void
@@ -263,7 +269,11 @@ interface MessageState {
   markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
   appendToMessage: (groupId: string, messageId: string, delta: string) => void
   replaceMessage: (groupId: string, message: Message) => void
-  startResume: (messageId: string) => void
+  startResume: (
+    groupId: string,
+    messageId: string,
+    cancel: () => Promise<void>,
+  ) => void
   endResume: (messageId: string) => void
 }
 
@@ -650,6 +660,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   streamRunIdByUserMessageIdByGroup: {},
   streamRunOrderByGroup: {},
   resumingMessageIds: new Set(),
+  activeResumesByMessageId: {},
 
   setHistory: (groupId, messages) =>
     set((s) => ({
@@ -1616,17 +1627,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return { byGroup: { ...s.byGroup, [groupId]: next } }
     }),
 
-  startResume: (messageId) =>
+  startResume: (groupId, messageId, cancel) =>
     set((s) => {
       const next = new Set(s.resumingMessageIds)
       next.add(messageId)
-      return { resumingMessageIds: next }
+      return {
+        resumingMessageIds: next,
+        activeResumesByMessageId: {
+          ...s.activeResumesByMessageId,
+          [messageId]: { group_id: groupId, cancel },
+        },
+      }
     }),
 
   endResume: (messageId) =>
     set((s) => {
       const next = new Set(s.resumingMessageIds)
       next.delete(messageId)
-      return { resumingMessageIds: next }
+      const activeResumesByMessageId = { ...s.activeResumesByMessageId }
+      delete activeResumesByMessageId[messageId]
+      return { resumingMessageIds: next, activeResumesByMessageId }
     }),
 }))
