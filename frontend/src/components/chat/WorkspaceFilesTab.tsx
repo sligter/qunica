@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import {
   ChevronLeft,
+  ChevronRight,
   ClipboardPaste,
   Copy,
   Download,
@@ -119,7 +120,7 @@ export function WorkspaceFilesTab({
   const [menu, setMenu] = useState<{
     x: number
     y: number
-    file: ConversationWorkspaceFileRead
+    file: ConversationWorkspaceFileRead | null
   } | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>())
@@ -155,7 +156,10 @@ export function WorkspaceFilesTab({
   const navRequest = useFileNavStore((state) => state.request)
   const clearNav = useFileNavStore((state) => state.clear)
 
-  const title = currentPath || t('chat:workspace.root')
+  const title = currentPath
+    || activeRoot?.display_name
+    || activeRoot?.name
+    || t('chat:workspace.root')
   const sortedFiles = files.data ?? []
   const selectedCount = selectedWorkspacePaths.size
   const selectedFiles = sortedFiles.filter((file) => selectedWorkspacePaths.has(file.path))
@@ -220,7 +224,20 @@ export function WorkspaceFilesTab({
       toggleSelectedPath(file.path)
       return
     }
-    selectOnlyPath(file.path)
+    openEntry(file)
+  }
+
+  const openContextMenu = (
+    x: number,
+    y: number,
+    file: ConversationWorkspaceFileRead | null,
+  ) => {
+    if (!file && !hasConversation) return
+    setMenu({
+      x: Math.max(8, Math.min(x, window.innerWidth - 192)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 360)),
+      file,
+    })
   }
 
   const handleFileKeyDown = (
@@ -235,7 +252,7 @@ export function WorkspaceFilesTab({
     if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
     event.preventDefault()
     const rect = event.currentTarget.getBoundingClientRect()
-    setMenu({ x: rect.left + 8, y: rect.bottom, file })
+    openContextMenu(rect.left + 8, rect.bottom, file)
   }
 
   const handleFileDragStart = (
@@ -268,35 +285,6 @@ export function WorkspaceFilesTab({
   }, [conversationId, scope, workspaceId])
 
   useEffect(() => {
-    if (!navRequest || navRequest.groupId !== conversationId || !workspaceId) return
-    setSelectedAgentId(navRequest.agentId ?? null)
-    // An empty path means "show me this root", not "open this file".
-    if (!navRequest.path) {
-      setCurrentPath('')
-      setPreviewFile(null)
-      setIsPreviewOpen(false)
-      clearNav()
-      return
-    }
-    const requestedFile: ConversationWorkspaceFileRead = {
-      path: navRequest.path,
-      name: fileName(navRequest.path),
-      is_dir: false,
-      size: null,
-      modified_at: null,
-    }
-    setCurrentPath(parentPath(navRequest.path))
-    setPreviewFile(requestedFile)
-    setIsPreviewOpen(true)
-    clearNav()
-  }, [clearNav, conversationId, navRequest, workspaceId])
-
-  useEffect(() => {
-    setSelectedWorkspacePaths(new Set())
-    selectionAnchorRef.current = null
-  }, [currentPath, conversationId, scope])
-
-  useEffect(() => {
     setCurrentPath('')
     setPreviewFile(null)
     setIsPreviewOpen(false)
@@ -305,12 +293,49 @@ export function WorkspaceFilesTab({
   }, [activeAgentId])
 
   useEffect(() => {
+    if (!navRequest || navRequest.groupId !== conversationId || !workspaceId) return
+    const requestedAgentId = navRequest.agentId ?? null
+    if (requestedAgentId !== activeAgentId) {
+      setSelectedAgentId(requestedAgentId)
+      return
+    }
+    // An empty path means "show me this root", not "open this file".
+    if (!navRequest.path) {
+      setCurrentPath('')
+      setPreviewFile(null)
+      setIsPreviewOpen(false)
+      clearNav()
+      return
+    }
+    const visibleMatch = navRequest.agentId === activeAgentId
+      && !navRequest.path.includes('/')
+      ? files.data?.find((file) => !file.is_dir && file.name === navRequest.path)
+      : undefined
+    const requestedFile: ConversationWorkspaceFileRead = visibleMatch ?? {
+      path: navRequest.path,
+      name: fileName(navRequest.path),
+      is_dir: false,
+      size: null,
+      modified_at: null,
+    }
+    setCurrentPath(parentPath(requestedFile.path))
+    setPreviewFile(requestedFile)
+    setIsPreviewOpen(true)
+    clearNav()
+  }, [activeAgentId, clearNav, conversationId, files.data, navRequest, workspaceId])
+
+  useEffect(() => {
+    setSelectedWorkspacePaths(new Set())
+    selectionAnchorRef.current = null
+  }, [currentPath, conversationId, scope])
+
+  useEffect(() => {
     if (!menu) return
     menuFirstItemRef.current?.focus()
     const close = () => setMenu(null)
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      const trigger = fileButtonRefs.current.get(menu.file.path)
+      const trigger = menu.file ? fileButtonRefs.current.get(menu.file.path) : null
       setMenu(null)
       requestAnimationFrame(() => trigger?.focus())
     }
@@ -331,7 +356,7 @@ export function WorkspaceFilesTab({
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()
-      const trigger = fileButtonRefs.current.get(menu.file.path)
+      const trigger = menu.file ? fileButtonRefs.current.get(menu.file.path) : null
       setMenu(null)
       requestAnimationFrame(() => trigger?.focus())
       return
@@ -522,7 +547,8 @@ export function WorkspaceFilesTab({
     setIsPreviewOpen(false)
   }
 
-  const menuActionFiles = menu ? filesForAction(menu.file) : []
+  const menuFile = menu?.file ?? null
+  const menuActionFiles = menuFile ? filesForAction(menuFile) : []
   const isSingleMenuAction = menuActionFiles.length === 1
 
   return (
@@ -560,8 +586,12 @@ export function WorkspaceFilesTab({
         </div>
       ) : null}
 
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <p className="min-w-0 truncate text-2xs text-muted-foreground" title={title}>
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border px-2">
+        <p
+          className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium"
+          title={activeRoot?.root ?? title}
+        >
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           {title}
         </p>
         <div className="flex shrink-0 items-center gap-1">
@@ -577,7 +607,7 @@ export function WorkspaceFilesTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 shrink-0"
+                className="h-7 w-7 shrink-0"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={upload.isPending || !hasConversation}
                 aria-label={t('chat:workspace.filePanel.uploadAria')}
@@ -588,7 +618,7 @@ export function WorkspaceFilesTab({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
                 onClick={() => setPendingClear(true)}
                 disabled={actions.isPending || !hasConversation}
                 aria-label={t('chat:workspace.fileActions.clearAria')}
@@ -601,7 +631,7 @@ export function WorkspaceFilesTab({
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0"
+            className="h-7 w-7 shrink-0"
             onClick={() => void files.refetch()}
             disabled={files.isFetching || !hasConversation}
             aria-label={t('chat:workspace.filePanel.refresh')}
@@ -614,7 +644,7 @@ export function WorkspaceFilesTab({
       {currentPath ? (
         <button
           type="button"
-          className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+          className="flex h-8 items-center gap-1.5 border-b border-border px-2 text-xs text-muted-foreground hover:bg-muted/70 hover:text-foreground"
           onClick={() => setCurrentPath(parentPath(currentPath))}
         >
           <ChevronLeft className="h-3.5 w-3.5" />
@@ -724,7 +754,21 @@ export function WorkspaceFilesTab({
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto py-1"
+        role="region"
+        aria-label={t('chat:workspace.files')}
+        onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest('li')) return
+          selectionAnchorRef.current = null
+          setSelectedWorkspacePaths(new Set())
+        }}
+        onContextMenu={(event) => {
+          if (event.target instanceof Element && event.target.closest('li')) return
+          event.preventDefault()
+          openContextMenu(event.clientX, event.clientY, null)
+        }}
+      >
         {!conversationId ? (
           <p className="p-3 text-sm text-muted-foreground">
             {t('chat:workspace.filePanel.selectConversation')}
@@ -747,7 +791,7 @@ export function WorkspaceFilesTab({
           </div>
         ) : null}
         {sortedFiles.length > 0 ? (
-          <ul className="divide-y divide-border">
+          <ul>
             {sortedFiles.map((file) => {
               const isSelected = selectedWorkspacePaths.has(file.path)
               const kind = file.is_dir ? 'directory' : 'file'
@@ -755,15 +799,16 @@ export function WorkspaceFilesTab({
                 <li
                   key={file.path}
                   className={cn(
-                    'group flex items-center gap-2 px-3 py-2 hover:bg-muted/70',
-                    isSelected && 'bg-muted ring-1 ring-inset ring-ring/40',
+                    'mx-1 rounded-sm hover:bg-muted/70',
+                    isSelected && 'bg-muted text-foreground',
                     clipboard?.mode === 'move'
                       && clipboard.paths.includes(file.path)
                       && 'opacity-60',
                   )}
                   onContextMenu={(event) => {
                     event.preventDefault()
-                    setMenu({ x: event.clientX, y: event.clientY, file })
+                    event.stopPropagation()
+                    openContextMenu(event.clientX, event.clientY, file)
                   }}
                 >
                   <button
@@ -773,67 +818,35 @@ export function WorkspaceFilesTab({
                     }}
                     type="button"
                     draggable
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-8 w-full min-w-0 items-center gap-1.5 rounded-sm px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={(event) => handleFileClick(event, file)}
-                    onDoubleClick={() => openEntry(file)}
                     onKeyDown={(event) => handleFileKeyDown(event, file)}
                     onDragStart={(event) => handleFileDragStart(event, file)}
                     onDragEnd={() => setDraggingPath(null)}
                     aria-pressed={isSelected}
                     aria-grabbed={draggingPath === file.path}
                     aria-haspopup="menu"
-                    aria-controls={menu?.file.path === file.path ? contextMenuId : undefined}
+                    aria-controls={menu?.file?.path === file.path ? contextMenuId : undefined}
                     aria-describedby={`${dragDescriptionId}-${kind}`}
                   >
                     {file.is_dir ? (
-                      <Folder className="h-4 w-4 shrink-0 text-primary" />
+                      <>
+                        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                        <Folder className="h-4 w-4 shrink-0 text-primary" />
+                      </>
                     ) : (
-                      <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <>
+                        <span className="w-3 shrink-0" aria-hidden="true" />
+                        <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      </>
                     )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{file.name}</span>
-                      <span className="block text-[10px] text-muted-foreground">
-                        {file.is_dir
-                          ? t('chat:workspace.filePanel.folder')
-                          : formatSize(file.size, language)}
+                    <span className="min-w-0 flex-1 truncate text-xs">{file.name}</span>
+                    {!file.is_dir ? (
+                      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                        {formatSize(file.size, language)}
                       </span>
-                    </span>
+                    ) : null}
                   </button>
-                  {!file.is_dir ? (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                      onClick={() => downloadFile(file)}
-                      disabled={downloadingPath === file.path}
-                      aria-label={t('chat:workspace.filePanel.downloadNamed', { name: file.name })}
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                    </Button>
-                  ) : null}
-                  {canMutate ? (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                        onClick={() => startRename(file)}
-                        aria-label={t('chat:workspace.filePanel.renameNamed', { name: file.name })}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                        onClick={() => setPendingDelete([file])}
-                        disabled={del.isPending || actions.isPending}
-                        aria-label={t('chat:workspace.filePanel.deleteNamed', { name: file.name })}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </>
-                  ) : null}
                 </li>
               )
             })}
@@ -958,6 +971,7 @@ export function WorkspaceFilesTab({
                 scope={scope}
                 conversationId={activeConversationId}
                 file={previewFile}
+                agentId={activeAgentId}
               />
             ) : null}
           </div>
@@ -1003,34 +1017,35 @@ export function WorkspaceFilesTab({
           onClick={(event) => event.stopPropagation()}
           onKeyDown={handleMenuKeyDown}
         >
-          {isSingleMenuAction ? (
+          {menuFile && isSingleMenuAction ? (
             <button
               ref={menuFirstItemRef}
               type="button"
               role="menuitem"
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
               onClick={() => {
-                openEntry(menu.file)
+                openEntry(menuFile)
                 setMenu(null)
               }}
             >
-              {menu.file.is_dir ? (
+              {menuFile.is_dir ? (
                 <FolderOpen className="h-3.5 w-3.5" />
               ) : (
                 <File className="h-3.5 w-3.5" />
               )}
-              {menu.file.is_dir
+              {menuFile.is_dir
                 ? t('chat:workspace.filePanel.openFolder')
                 : t('chat:workspace.filePanel.openPreview')}
             </button>
           ) : null}
-          {isSingleMenuAction && !menu.file.is_dir ? (
+          {menuFile && isSingleMenuAction && !menuFile.is_dir ? (
             <button
               type="button"
               role="menuitem"
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+              disabled={downloadingPath === menuFile.path}
               onClick={() => {
-                downloadFile(menu.file)
+                downloadFile(menuFile)
                 setMenu(null)
               }}
             >
@@ -1038,13 +1053,13 @@ export function WorkspaceFilesTab({
               {t('chat:workspace.download')}
             </button>
           ) : null}
-          {isSingleMenuAction && canRevealInFileManager && menu.file.abs_path ? (
+          {menuFile && isSingleMenuAction && canRevealInFileManager && menuFile.abs_path ? (
             <button
               type="button"
               role="menuitem"
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
               onClick={() => {
-                revealFile(menu.file)
+                revealFile(menuFile)
                 setMenu(null)
               }}
             >
@@ -1052,7 +1067,7 @@ export function WorkspaceFilesTab({
               {t('chat:workspace.reveal')}
             </button>
           ) : null}
-          {canMutate ? (
+          {canMutate && menuFile ? (
             <>
               {isSingleMenuAction ? (
                 <button
@@ -1060,7 +1075,7 @@ export function WorkspaceFilesTab({
                   role="menuitem"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
                   onClick={() => {
-                    startRename(menu.file)
+                    startRename(menuFile)
                     setMenu(null)
                   }}
                 >
@@ -1101,14 +1116,14 @@ export function WorkspaceFilesTab({
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted disabled:opacity-50"
                   disabled={actions.isPending}
                   onClick={() => {
-                    const destination = menu.file.is_dir ? menu.file.path : currentPath
+                    const destination = menuFile.is_dir ? menuFile.path : currentPath
                     void pasteWorkspaceClipboard(destination)
                     setMenu(null)
                   }}
                 >
                   <ClipboardPaste className="h-3.5 w-3.5" />
-                  {menu.file.is_dir
-                    ? t('chat:workspace.fileActions.pasteInto', { name: menu.file.name })
+                  {menuFile.is_dir
+                    ? t('chat:workspace.fileActions.pasteInto', { name: menuFile.name })
                     : t('chat:workspace.fileActions.pasteHere')}
                 </button>
               ) : null}
@@ -1135,6 +1150,54 @@ export function WorkspaceFilesTab({
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 {t('common:actions.delete')}
+              </button>
+            </>
+          ) : null}
+          {!menuFile ? (
+            <>
+              {canUpload ? (
+                <button
+                  ref={menuFirstItemRef}
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                  onClick={() => {
+                    fileInputRef.current?.click()
+                    setMenu(null)
+                  }}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  {t('chat:workspace.upload')}
+                </button>
+              ) : null}
+              {clipboard ? (
+                <button
+                  ref={canUpload ? undefined : menuFirstItemRef}
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted disabled:opacity-50"
+                  disabled={actions.isPending}
+                  onClick={() => {
+                    void pasteWorkspaceClipboard(currentPath)
+                    setMenu(null)
+                  }}
+                >
+                  <ClipboardPaste className="h-3.5 w-3.5" />
+                  {t('chat:workspace.fileActions.pasteHere')}
+                </button>
+              ) : null}
+              <button
+                ref={!canUpload && !clipboard ? menuFirstItemRef : undefined}
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                onClick={() => {
+                  void files.refetch()
+                  setMenu(null)
+                }}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                {t('chat:workspace.refresh')}
               </button>
             </>
           ) : null}

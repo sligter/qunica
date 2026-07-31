@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { WorkspaceFileFallback, type WorkspaceFileMetadata } from '@/components/chat/workspace-preview/WorkspaceFileFallback'
+import type { WorkspaceAgentScope } from '@/hooks/useConversationWorkspaceFiles'
 import type { ConversationScope } from '@/types/api'
 
 interface WorkspaceHtmlPreviewProps {
   scope: ConversationScope
   conversationId: string
+  agentId?: WorkspaceAgentScope
   metadata: WorkspaceFileMetadata
   objectUrl: string
   onPreviewError: () => void
@@ -15,6 +17,7 @@ interface WorkspaceHtmlPreviewProps {
 export function WorkspaceHtmlPreview({
   scope,
   conversationId,
+  agentId = null,
   metadata,
   objectUrl,
   onPreviewError,
@@ -34,6 +37,7 @@ export function WorkspaceHtmlPreview({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.previewPanel.htmlError')}
       />

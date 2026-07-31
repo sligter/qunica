@@ -4,11 +4,13 @@ import { useTranslation } from 'react-i18next'
 
 import { WorkspaceFileFallback, type WorkspaceFileMetadata } from '@/components/chat/workspace-preview/WorkspaceFileFallback'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import type { WorkspaceAgentScope } from '@/hooks/useConversationWorkspaceFiles'
 import type { ConversationScope } from '@/types/api'
 
 interface WorkspaceImagePreviewProps {
   scope: ConversationScope
   conversationId: string
+  agentId?: WorkspaceAgentScope
   metadata: WorkspaceFileMetadata
   objectUrl: string
   onPreviewError: () => void
@@ -17,6 +19,7 @@ interface WorkspaceImagePreviewProps {
 export function WorkspaceImagePreview({
   scope,
   conversationId,
+  agentId = null,
   metadata,
   objectUrl,
   onPreviewError,
@@ -40,6 +43,7 @@ export function WorkspaceImagePreview({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.previewPanel.imageError')}
       />

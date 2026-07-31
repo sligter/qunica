@@ -63,16 +63,38 @@ describe('AppLayout', () => {
     vi.restoreAllMocks()
   })
 
-  it('allows the native context menu in inputs while suppressing the rest of the app', async () => {
+  it('uses the compact text editing menu in inputs while suppressing the rest of the app', async () => {
     const { container } = await renderAppLayout()
 
     const surfaceEvent = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
     expect(container.firstElementChild?.dispatchEvent(surfaceEvent)).toBe(false)
     expect(surfaceEvent.defaultPrevented).toBe(true)
 
-    const inputEvent = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
-    expect(screen.getByRole('textbox', { name: 'Settings input' }).dispatchEvent(inputEvent)).toBe(true)
-    expect(inputEvent.defaultPrevented).toBe(false)
+    const input = screen.getByRole('textbox', { name: 'Settings input' }) as HTMLInputElement
+    input.value = 'hello'
+    input.setSelectionRange(1, 3)
+    const inputEvent = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 40,
+      clientY: 50,
+    })
+    expect(input.dispatchEvent(inputEvent)).toBe(false)
+    expect(inputEvent.defaultPrevented).toBe(true)
+
+    const menu = await screen.findByRole('menu', { name: 'Text editing menu' })
+    expect(menu).toHaveStyle({ left: '40px', top: '50px' })
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'CutCtrl+X',
+      'CopyCtrl+C',
+      'PasteCtrl+V',
+      'Paste as plain text',
+      'Select allCtrl+A',
+    ])
+
+    fireEvent.click(screen.getByRole('menuitem', { name: /Select all/ }))
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(input.value.length)
   })
 
   it('clips the app shell so nothing can grow the document', async () => {

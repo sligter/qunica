@@ -20,7 +20,7 @@ use crate::runtime::workspace_scope::WorkspaceMode;
 
 const SELECT_DIRECT_CHAT: &str = "SELECT g.id, g.name AS title, g.title_source, \
     g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, \
-    g.workspace_id, g.status, g.created_at, g.updated_at \
+    a.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at \
     FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id \
     WHERE g.id = ? AND g.owner_id = ? AND g.status = 'active' \
     AND g.conversation_kind = 'direct'";
@@ -122,7 +122,7 @@ pub async fn list(
     headers: HeaderMap,
 ) -> Result<Json<Vec<DirectChatResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let rows = sqlx::query_as::<_, DirectChatResponse>("SELECT g.id, g.name AS title, g.title_source, g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, g.workspace_id, g.status, g.created_at, g.updated_at FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id WHERE g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' ORDER BY g.updated_at DESC, g.id DESC")
+    let rows = sqlx::query_as::<_, DirectChatResponse>("SELECT g.id, g.name AS title, g.title_source, g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, a.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id WHERE g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' ORDER BY g.updated_at DESC, g.id DESC")
         .bind(&owner_id).fetch_all(state.db.pool()).await.map_err(|_| ApiError::internal("database error"))?;
     Ok(Json(rows))
 }

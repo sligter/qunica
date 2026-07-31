@@ -6,6 +6,14 @@ type TranslationShape<T> = {
 
 export const zhCN: TranslationShape<typeof enUS> = {
   common: {
+    textMenu: {
+      label: '文本编辑菜单',
+      cut: '剪切',
+      copy: '复制',
+      paste: '粘贴',
+      pastePlain: '粘贴为纯文本',
+      selectAll: '全选',
+    },
     actions: {
       save: '保存',
       saving: '正在保存…',

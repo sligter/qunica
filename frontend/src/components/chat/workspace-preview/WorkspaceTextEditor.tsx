@@ -5,7 +5,10 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { useSaveConversationWorkspaceFileText } from '@/hooks/useConversationWorkspaceFiles'
+import {
+  useSaveConversationWorkspaceFileText,
+  type WorkspaceAgentScope,
+} from '@/hooks/useConversationWorkspaceFiles'
 import {
   workspaceErrorMessageKey,
   type WorkspaceErrorMessageKey,
@@ -20,6 +23,7 @@ import type {
 interface WorkspaceTextEditorProps {
   scope: ConversationScope
   conversationId: string
+  agentId?: WorkspaceAgentScope
   file: ConversationWorkspaceFileTextResponse
   onRefresh: () => Promise<ConversationWorkspaceFileTextResponse>
 }
@@ -43,11 +47,12 @@ function snapshotFromFile(file: ConversationWorkspaceFileTextResponse): EditorSn
 export function WorkspaceTextEditor({
   scope,
   conversationId,
+  agentId = null,
   file,
   onRefresh,
 }: WorkspaceTextEditorProps) {
   const { t } = useTranslation('chat')
-  const save = useSaveConversationWorkspaceFileText(scope, conversationId)
+  const save = useSaveConversationWorkspaceFileText(scope, conversationId, agentId)
   const [snapshot, setSnapshot] = useState<EditorSnapshot>(() => snapshotFromFile(file))
   const [draft, setDraft] = useState(() => file.content ?? '')
   const [conflict, setConflict] = useState(false)

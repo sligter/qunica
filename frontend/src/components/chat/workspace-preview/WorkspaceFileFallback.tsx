@@ -2,7 +2,10 @@ import { Download, FileQuestion } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { useDownloadConversationWorkspaceFile } from '@/hooks/useConversationWorkspaceFiles'
+import {
+  useDownloadConversationWorkspaceFile,
+  type WorkspaceAgentScope,
+} from '@/hooks/useConversationWorkspaceFiles'
 import { normalizeLanguage } from '@/i18n'
 import { workspaceErrorMessageKey } from '@/i18n/localizedError'
 import { formatNumber } from '@/lib/format'
@@ -30,6 +33,7 @@ function formatWorkspaceFileSize(
 interface WorkspaceFileFallbackProps {
   scope: ConversationScope
   conversationId: string
+  agentId?: WorkspaceAgentScope
   metadata: WorkspaceFileMetadata
   reason?: string
   className?: string
@@ -38,13 +42,14 @@ interface WorkspaceFileFallbackProps {
 export function WorkspaceFileFallback({
   scope,
   conversationId,
+  agentId = null,
   metadata,
   reason,
   className,
 }: WorkspaceFileFallbackProps) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const download = useDownloadConversationWorkspaceFile(scope, conversationId)
+  const download = useDownloadConversationWorkspaceFile(scope, conversationId, agentId)
 
   return (
     <div

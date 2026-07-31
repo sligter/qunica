@@ -1,5 +1,13 @@
 export const enUS = {
   common: {
+    textMenu: {
+      label: 'Text editing menu',
+      cut: 'Cut',
+      copy: 'Copy',
+      paste: 'Paste',
+      pastePlain: 'Paste as plain text',
+      selectAll: 'Select all',
+    },
     actions: {
       save: 'Save',
       saving: 'Saving…',

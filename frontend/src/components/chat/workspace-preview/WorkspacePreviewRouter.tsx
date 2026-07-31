@@ -14,6 +14,7 @@ import {
   conversationWorkspaceFileBlobQueryKey,
   useConversationWorkspaceFileBlob,
   useConversationWorkspaceFileText,
+  type WorkspaceAgentScope,
 } from '@/hooks/useConversationWorkspaceFiles'
 import { workspaceErrorMessageKey } from '@/i18n/localizedError'
 import type {
@@ -90,16 +91,18 @@ interface WorkspacePreviewRouterProps {
   scope: ConversationScope
   conversationId: string
   file: ConversationWorkspaceFileRead
+  agentId?: WorkspaceAgentScope
 }
 
 export function WorkspacePreviewRouter({
   scope,
   conversationId,
   file,
+  agentId = null,
 }: WorkspacePreviewRouterProps) {
   const { t } = useTranslation('chat')
   const queryClient = useQueryClient()
-  const text = useConversationWorkspaceFileText(scope, conversationId, file.path)
+  const text = useConversationWorkspaceFileText(scope, conversationId, file.path, agentId)
   const kind = text.data ? selectWorkspacePreviewKind(text.data) : null
   const previewIdentity = `${file.path}:${kind ?? 'loading'}`
   const [failedPreview, setFailedPreview] = useState<string | null>(null)
@@ -116,6 +119,7 @@ export function WorkspacePreviewRouter({
     scope,
     conversationId,
     needsBlob ? file.path : null,
+    agentId,
   )
   const objectUrl = useWorkspaceObjectUrl(needsBlob ? blob.data : undefined)
 
@@ -124,11 +128,16 @@ export function WorkspacePreviewRouter({
   useEffect(() => {
     return () => {
       queryClient.removeQueries({
-        queryKey: conversationWorkspaceFileBlobQueryKey(scope, conversationId, file.path),
+        queryKey: conversationWorkspaceFileBlobQueryKey(
+          scope,
+          conversationId,
+          file.path,
+          agentId,
+        ),
         exact: true,
       })
     }
-  }, [conversationId, file.path, queryClient, scope])
+  }, [agentId, conversationId, file.path, queryClient, scope])
 
   const fallbackMetadata: WorkspaceFileMetadata = {
     path: file.path,
@@ -151,6 +160,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={fallbackMetadata}
         reason={t('workspace.filePanel.previewError', {
           message: text.error
@@ -173,6 +183,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceTextEditor
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         file={text.data}
         onRefresh={async () => {
           const result = await text.refetch()
@@ -203,6 +214,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.binaryPreview')}
       />
@@ -214,6 +226,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.previewPanel.previewTooLarge', {
           maxSize: MAX_WORKSPACE_BINARY_PREVIEW_BYTES / (1024 * 1024),
@@ -232,6 +245,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={reason}
       />
@@ -243,6 +257,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.previewPanel.blobError', {
           message: t(workspaceErrorMessageKey(blob.error)),
@@ -265,6 +280,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceImagePreview
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         objectUrl={objectUrl}
         onPreviewError={() => setFailedPreview(previewIdentity)}
@@ -277,6 +293,7 @@ export function WorkspacePreviewRouter({
       <WorkspaceHtmlPreview
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         objectUrl={objectUrl}
         onPreviewError={() => setFailedPreview(previewIdentity)}
@@ -288,6 +305,7 @@ export function WorkspacePreviewRouter({
     <WorkspacePdfPreview
       scope={scope}
       conversationId={conversationId}
+      agentId={agentId}
       metadata={metadata}
       objectUrl={objectUrl}
       onPreviewError={() => setFailedPreview(previewIdentity)}

@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { WorkspaceFileFallback, type WorkspaceFileMetadata } from '@/components/chat/workspace-preview/WorkspaceFileFallback'
+import type { WorkspaceAgentScope } from '@/hooks/useConversationWorkspaceFiles'
 import type { ConversationScope } from '@/types/api'
 
 interface WorkspacePdfPreviewProps {
   scope: ConversationScope
   conversationId: string
+  agentId?: WorkspaceAgentScope
   metadata: WorkspaceFileMetadata
   objectUrl: string
   onPreviewError: () => void
@@ -15,6 +17,7 @@ interface WorkspacePdfPreviewProps {
 export function WorkspacePdfPreview({
   scope,
   conversationId,
+  agentId = null,
   metadata,
   objectUrl,
   onPreviewError,
@@ -34,6 +37,7 @@ export function WorkspacePdfPreview({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.previewPanel.pdfError')}
       />
@@ -55,6 +59,7 @@ export function WorkspacePdfPreview({
       <WorkspaceFileFallback
         scope={scope}
         conversationId={conversationId}
+        agentId={agentId}
         metadata={metadata}
         reason={t('workspace.previewPanel.pdfUnsupported')}
         className="m-4 rounded-lg border border-border bg-muted/25 p-4"

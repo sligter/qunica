@@ -55,20 +55,26 @@ function renderRouter(
   file: ConversationWorkspaceFileRead,
   text: ConversationWorkspaceFileTextResponse,
   blob?: Blob,
+  agentId: string | null = null,
 ) {
   client.setQueryData(
-    conversationWorkspaceFileTextQueryKey('groups', 'group-1', file.path),
+    conversationWorkspaceFileTextQueryKey('groups', 'group-1', file.path, agentId),
     text,
   )
   if (blob) {
     client.setQueryData(
-      conversationWorkspaceFileBlobQueryKey('groups', 'group-1', file.path),
+      conversationWorkspaceFileBlobQueryKey('groups', 'group-1', file.path, agentId),
       blob,
     )
   }
   return render(
     <QueryClientProvider client={client}>
-      <WorkspacePreviewRouter scope="groups" conversationId="group-1" file={file} />
+      <WorkspacePreviewRouter
+        scope="groups"
+        conversationId="group-1"
+        file={file}
+        agentId={agentId}
+      />
     </QueryClientProvider>,
   )
 }
@@ -159,6 +165,34 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
 
     expect(screen.getByRole('textbox', { name: 'Edit photo.png' })).toHaveValue('hello')
     expect(document.querySelector('[data-preview-kind="text"]')).not.toBeNull()
+  })
+
+  it('loads HTML text and Blob data from the selected agent root', async () => {
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:agent-html-preview'),
+      revokeObjectURL: vi.fn(),
+    })
+    const client = testClient()
+    const htmlFile = { ...baseFile, path: 'index.html', name: 'index.html' }
+    const htmlText = textResponse({
+      path: htmlFile.path,
+      name: htmlFile.name,
+      mime_type: 'text/html',
+      content: '<h1>Agent workspace</h1>',
+    })
+
+    renderRouter(
+      client,
+      htmlFile,
+      htmlText,
+      new Blob([htmlText.content ?? ''], { type: 'text/html' }),
+      'agent-1',
+    )
+
+    expect(await screen.findByTitle('Sandboxed HTML preview of index.html')).toHaveAttribute(
+      'src',
+      'blob:agent-html-preview',
+    )
   })
 
   it('renders Markdown files instead of opening the raw text editor', () => {

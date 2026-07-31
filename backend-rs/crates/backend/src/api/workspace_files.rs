@@ -6,9 +6,10 @@
 //! canonical workspace root before touching the filesystem.
 //!
 //! A conversation can expose more than one root.  [`ConversationRoot`] names
-//! which one a request addresses: the conversation workspace by default, or a
-//! member agent's own workspace when `agent_id` is given.  An agent working in
-//! its own workspace would otherwise write files that appear nowhere in the UI.
+//! which one a request addresses: the group workspace (or direct agent's live
+//! workspace) by default, or a member agent's own workspace when `agent_id` is
+//! given. An agent working elsewhere would otherwise write files that appear
+//! nowhere in the UI.
 
 use std::{
     collections::HashSet,
@@ -79,10 +80,9 @@ impl ConversationScope {
 
 /// Which root inside a conversation a request addresses.
 ///
-/// `agent_id` is `None` for the conversation's own workspace — the default and
-/// the only root before agents could work elsewhere. `Some(id)` addresses that
-/// member agent's own workspace, which is how the UI surfaces files an isolated
-/// agent produced.
+/// `agent_id` is `None` for the default root: the group workspace for groups or
+/// the direct agent's live workspace for direct chats. `Some(id)` addresses a
+/// member agent's additional workspace.
 #[derive(Debug, Clone, Copy)]
 pub struct ConversationRoot<'a> {
     pub scope: ConversationScope,
@@ -92,7 +92,7 @@ pub struct ConversationRoot<'a> {
 }
 
 impl<'a> ConversationRoot<'a> {
-    /// Address the conversation's own workspace.
+    /// Address the conversation's default workspace.
     pub fn conversation(
         scope: ConversationScope,
         conversation_id: &'a str,
@@ -154,7 +154,7 @@ impl WorkspaceFilePathQuery {
 /// One browsable root inside a conversation.
 #[derive(Debug, Serialize, Clone)]
 pub struct ConversationRootEntry {
-    /// `None` marks the conversation's own workspace.
+    /// `None` marks the conversation's default workspace.
     pub agent_id: Option<String>,
     pub display_name: Option<String>,
     /// The agent's workspace mode; `None` for the conversation entry.
@@ -163,7 +163,7 @@ pub struct ConversationRootEntry {
     pub name: String,
     pub root: String,
     /// Whether an agent's plain relative paths resolve here. True for the
-    /// conversation entry, and for an agent that works only in its own folder;
+    /// default entry, and for an agent that works only in its own folder;
     /// false for a folder the agent merely has mounted.
     pub is_primary: bool,
 }
@@ -223,6 +223,12 @@ struct ConversationRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+struct DirectAgentWorkspaceRow {
+    display_name: String,
+    workspace_id: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
 struct WorkspaceRow {
     owner_id: String,
     backend_type: String,
@@ -245,9 +251,13 @@ pub async fn load_owned_local_workspace(
     target: ConversationRoot<'_>,
 ) -> Result<OwnedLocalWorkspace, ApiError> {
     let conversation = load_owned_conversation(pool, target).await?;
-    let workspace_id = match target.agent_id {
-        Some(agent_id) => member_agent_workspace_id(pool, target, agent_id).await?,
-        None => conversation
+    let workspace_id = match (target.agent_id, target.scope) {
+        (Some(agent_id), _) => member_agent_workspace_id(pool, target, agent_id).await?,
+        (None, ConversationScope::DirectChats) => direct_agent_workspace(pool, target)
+            .await?
+            .workspace_id
+            .ok_or_else(|| ApiError::invalid_input("agent has no bound workspace"))?,
+        (None, ConversationScope::Groups) => conversation
             .workspace_id
             .ok_or_else(|| ApiError::invalid_input("conversation has no bound workspace"))?,
     };
@@ -289,6 +299,23 @@ async fn load_owned_conversation(
         ));
     }
     Ok(conversation)
+}
+
+async fn direct_agent_workspace(
+    pool: &SqlitePool,
+    target: ConversationRoot<'_>,
+) -> Result<DirectAgentWorkspaceRow, ApiError> {
+    sqlx::query_as(
+        "SELECT a.name AS display_name, a.workspace_id \
+         FROM groups g JOIN agents a ON a.id = g.direct_agent_id \
+         WHERE g.id = ? AND a.owner_id = ?",
+    )
+    .bind(target.conversation_id)
+    .bind(target.owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::invalid_input("direct chat has no bound agent"))
 }
 
 /// The workspace bound to an agent that is an active member of this
@@ -382,6 +409,26 @@ pub async fn list_conversation_roots(
     let conversation = load_owned_conversation(pool, target).await?;
     let mut entries = Vec::new();
 
+    if scope == ConversationScope::DirectChats {
+        let agent = direct_agent_workspace(pool, target).await?;
+        if let Some(workspace_id) = agent.workspace_id.as_deref() {
+            if let Some(entry) = root_entry(
+                pool,
+                workspace_id,
+                owner_id,
+                None,
+                Some(agent.display_name),
+                Some(WorkspaceMode::SelfOnly.as_str().to_string()),
+                true,
+            )
+            .await?
+            {
+                entries.push(entry);
+            }
+        }
+        return Ok(entries);
+    }
+
     let conversation_workspace_id = conversation.workspace_id.clone();
     if let Some(workspace_id) = conversation_workspace_id.as_deref() {
         if let Some(entry) =
@@ -413,10 +460,7 @@ pub async fn list_conversation_roots(
             continue;
         }
         let mode = WorkspaceMode::from_context_scope(member.context_scope_json.as_deref());
-        if !matches!(
-            mode,
-            WorkspaceMode::SelfOnly | WorkspaceMode::GroupAndSelf
-        ) {
+        if !matches!(mode, WorkspaceMode::SelfOnly | WorkspaceMode::GroupAndSelf) {
             continue;
         }
         if let Some(entry) = root_entry(

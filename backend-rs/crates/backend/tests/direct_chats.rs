@@ -413,7 +413,7 @@ async fn direct_attachment_message_persists_local_workspace_metadata() {
 }
 
 #[tokio::test]
-async fn direct_workspace_files_cloud_and_unbound_workspaces_are_rejected() {
+async fn direct_workspace_files_reject_cloud_and_ignore_stale_conversation_workspace() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-errors@example.com").await;
 
@@ -430,8 +430,9 @@ async fn direct_workspace_files_cloud_and_unbound_workspaces_are_rejected() {
     )
     .await;
 
-    let (_root, local_workspace_id) =
+    let (root, local_workspace_id) =
         create_local_workspace(&app, &token, "Unbound Direct Workspace").await;
+    std::fs::write(root.path().join("agent.txt"), b"agent").unwrap();
     let local_agent_id = create_agent(&app, &token, &local_workspace_id, "Unbound Agent").await;
     let local_chat = create_chat(&app, &token, &local_agent_id).await;
     let local_chat_id = local_chat["id"].as_str().unwrap();
@@ -440,14 +441,43 @@ async fn direct_workspace_files_cloud_and_unbound_workspaces_are_rejected() {
         .execute(state.db.pool())
         .await
         .unwrap();
-    assert_direct_workspace_file_route_errors(
+
+    let (status, chat) = send(
         &app,
-        &token,
-        local_chat_id,
-        StatusCode::BAD_REQUEST,
-        "invalid_input",
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{local_chat_id}"),
+            &token,
+        ),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "body: {chat:?}");
+    assert_eq!(chat["workspace_id"], local_workspace_id);
+
+    let (status, files) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{local_chat_id}/workspace-files"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {files:?}");
+    assert_eq!(files[0]["name"], "agent.txt");
+
+    let (status, roots) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{local_chat_id}/workspace-roots"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {roots:?}");
+    assert_eq!(roots[0]["workspace_id"], local_workspace_id);
+    assert_eq!(roots[0]["display_name"], "Unbound Agent");
 }
 
 #[tokio::test]

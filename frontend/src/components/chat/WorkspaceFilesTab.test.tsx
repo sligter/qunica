@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,6 +12,7 @@ import i18n from '@/i18n'
 import { formatNumber } from '@/lib/format'
 import { WORKSPACE_ITEM_MIME } from '@/lib/workspaceDrag'
 import { useAuthStore } from '@/stores/authStore'
+import { useFileNavStore } from '@/stores/fileNavStore'
 import type {
   ConversationScope,
   ConversationWorkspaceFileRead,
@@ -30,10 +31,12 @@ vi.mock('@/components/chat/workspace-preview/WorkspacePreviewRouter', () => ({
   WorkspacePreviewRouter: ({
     scope,
     file,
+    agentId,
   }: {
     scope: ConversationScope
     file: ConversationWorkspaceFileRead
-  }) => <div>preview:{scope}:{file.path}</div>,
+    agentId?: string | null
+  }) => <div data-agent-id={agentId ?? ''}>preview:{scope}:{file.path}</div>,
 }))
 
 const rawFile: ConversationWorkspaceFileRead = {
@@ -111,6 +114,7 @@ describe('WorkspaceFilesTab', () => {
     desktopMocks.isDesktopRuntime.mockReset().mockReturnValue(false)
     desktopMocks.revealInFileManager.mockReset().mockResolvedValue(undefined)
     useAuthStore.setState({ token: null })
+    useFileNavStore.setState({ request: null })
     await i18n.changeLanguage('en-US')
   })
 
@@ -118,6 +122,7 @@ describe('WorkspaceFilesTab', () => {
     cleanup()
     vi.unstubAllGlobals()
     useAuthStore.setState({ token: null })
+    useFileNavStore.setState({ request: null })
   })
 
   it('offers an agent root only when there is one, and browses it when picked', async () => {
@@ -146,6 +151,7 @@ describe('WorkspaceFilesTab', () => {
       ],
     })
     expect(screen.queryByRole('combobox', { name: 'Workspace to browse' })).toBeNull()
+    expect(screen.getByText('Shared')).toBeVisible()
     single.unmount()
 
     renderTab({
@@ -182,39 +188,46 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByText('D:/solo')).toBeVisible()
     await waitFor(() => expect(screen.getByText('draft.md')).toBeVisible())
     expect(screen.queryByText('README_RAW_原文.md')).toBeNull()
+
+    await user.click(screen.getByText('draft.md'))
+    expect(screen.getByText('preview:groups:draft.md')).toHaveAttribute(
+      'data-agent-id',
+      'agent-1',
+    )
   })
 
-  it('keeps group mutation actions and preserves the file name', () => {
+  it('keeps file actions in the context menu and preserves the file name', () => {
     renderTab()
 
     expect(screen.getByText('Workspace root')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Upload file to workspace uploads' })).toBeVisible()
     expect(screen.getByLabelText('Refresh workspace files')).toBeVisible()
     expect(screen.getByText('README_RAW_原文.md')).toBeVisible()
-    expect(screen.getByLabelText('Download README_RAW_原文.md')).toBeVisible()
-    expect(screen.getByLabelText('Rename README_RAW_原文.md')).toBeVisible()
-    expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
+    fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
+    expect(screen.getByRole('menuitem', { name: 'Download' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
   })
 
-  it('supports single, additive, range, and right-click multi-selection', async () => {
+  it('opens on single click and preserves modifier multi-selection', async () => {
     const user = userEvent.setup()
     renderTab({ files: [rawFolder, rawFile, notesFile] })
     const folderButton = screen.getByText('docs').closest('button')!
-    const rawButton = screen.getByText(rawFile.name).closest('button')!
-    const notesButton = screen.getByText('notes.txt').closest('button')!
 
     await user.click(folderButton)
-    expect(screen.getByText('1 selected')).toBeVisible()
-    expect(screen.queryByText(`preview:groups:${rawFolder.path}`)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Up one folder' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Up one folder' }))
+    await user.click(screen.getByRole('button', { name: 'Up one folder' }))
 
-    fireEvent.click(rawButton, { ctrlKey: true })
+    fireEvent.click(screen.getByText('docs').closest('button')!, { ctrlKey: true })
+    fireEvent.click(screen.getByText(rawFile.name).closest('button')!, { ctrlKey: true })
     expect(screen.getByText('2 selected')).toBeVisible()
 
-    await user.click(folderButton)
-    fireEvent.click(notesButton, { shiftKey: true })
+    fireEvent.click(screen.getByText('docs').closest('button')!, { ctrlKey: true })
+    fireEvent.click(screen.getByText('notes.txt').closest('button')!, { shiftKey: true })
     expect(screen.getByText('3 selected')).toBeVisible()
 
-    fireEvent.contextMenu(rawButton.closest('li')!)
+    fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
     expect(screen.getByText('3 selected')).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Copy' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: 'Open preview' })).not.toBeInTheDocument()
@@ -264,21 +277,55 @@ describe('WorkspaceFilesTab', () => {
     ))
   })
 
-  it('opens only the context menu on right-click without changing selection', async () => {
-    const user = userEvent.setup()
+  it('opens a row context menu without changing the current selection', () => {
     renderTab({ files: [rawFolder, rawFile] })
     const folderButton = screen.getByText('docs').closest('button')!
     const fileButton = screen.getByText(rawFile.name).closest('button')!
 
-    await user.click(folderButton)
+    fireEvent.click(folderButton, { ctrlKey: true })
     fireEvent.contextMenu(fileButton.closest('li')!)
 
     expect(screen.getByRole('menu', { name: 'File actions' })).toBeVisible()
     expect(folderButton).toHaveAttribute('aria-pressed', 'true')
     expect(fileButton).toHaveAttribute('aria-pressed', 'false')
-    expect(
-      screen.queryByRole('button', { name: 'Insert selected paths' }),
-    ).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Open preview' })).toBeVisible()
+  })
+
+  it('resolves a bare message file link against the folder currently being viewed', async () => {
+    const nestedFile: ConversationWorkspaceFileRead = {
+      path: 'workspace-1/index.html',
+      name: 'index.html',
+      is_dir: false,
+      size: 512,
+      modified_at: '2026-07-31T00:00:00Z',
+    }
+    const { queryClient } = renderTab({
+      files: [{ ...rawFolder, path: 'workspace-1', name: 'workspace-1' }],
+    })
+    queryClient.setQueryData(
+      conversationWorkspaceFileListQueryKey('groups', 'group-1', 'workspace-1'),
+      [nestedFile],
+    )
+
+    fireEvent.click(screen.getByText('workspace-1'))
+    expect(await screen.findByText('index.html')).toBeVisible()
+    act(() => useFileNavStore.getState().openFile('group-1', 'index.html'))
+
+    expect(await screen.findByText('preview:groups:workspace-1/index.html')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'workspace-1/index.html' })).toBeVisible()
+  })
+
+  it('opens workspace actions from blank-space right-click', () => {
+    renderTab({ files: [] })
+    fireEvent.contextMenu(screen.getByText('This folder is empty.'))
+    expect(screen.getByRole('menuitem', { name: 'Upload file' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Refresh' })).toBeVisible()
+  })
+
+  it('does not offer workspace actions without a bound workspace', () => {
+    renderTab({ workspaceId: null })
+    fireEvent.contextMenu(screen.getByText('This conversation does not have a local workspace.'))
+    expect(screen.queryByRole('menu', { name: 'File actions' })).toBeNull()
   })
 
   it('moves and deletes multiple selected entries through batch actions', async () => {
@@ -289,7 +336,7 @@ describe('WorkspaceFilesTab', () => {
     const folderButton = screen.getByText('docs').closest('button')!
     const fileButton = screen.getByText(rawFile.name).closest('button')!
 
-    await user.click(folderButton)
+    fireEvent.click(folderButton, { ctrlKey: true })
     fireEvent.click(fileButton, { ctrlKey: true })
     await user.click(screen.getByRole('button', { name: 'Move selected items' }))
     expect(screen.getByRole('heading', { name: 'Move selected items' })).toBeVisible()
@@ -309,7 +356,7 @@ describe('WorkspaceFilesTab', () => {
     ))
 
     fetchMock.mockClear()
-    await user.click(folderButton)
+    fireEvent.click(folderButton, { ctrlKey: true })
     fireEvent.click(fileButton, { ctrlKey: true })
     fireEvent.contextMenu(fileButton.closest('li')!)
     await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
@@ -367,11 +414,9 @@ describe('WorkspaceFilesTab', () => {
     expect(
       screen.getByRole('button', { name: 'Upload file to workspace uploads' }),
     ).toBeVisible()
-    expect(screen.getByLabelText('Rename README_RAW_原文.md')).toBeVisible()
-    expect(screen.getByLabelText('Delete README_RAW_原文.md')).toBeVisible()
-    expect(screen.getByLabelText('Download README_RAW_原文.md')).toBeVisible()
-
-    await user.click(screen.getByLabelText('Rename README_RAW_原文.md'))
+    fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
+    expect(screen.getByRole('menuitem', { name: 'Download' })).toBeVisible()
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
     await user.clear(screen.getByLabelText('Rename path'))
     await user.type(screen.getByLabelText('Rename path'), 'raw dir/renamed.md')
     await user.click(screen.getByRole('button', { name: 'Save' }))
@@ -389,7 +434,8 @@ describe('WorkspaceFilesTab', () => {
       queryKey: ['direct-chats', 'chat-1', 'workspace-files'],
     })
 
-    await user.click(screen.getByLabelText('Delete README_RAW_原文.md'))
+    fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
     await user.click(screen.getByRole('button', { name: 'Delete' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -441,11 +487,6 @@ describe('WorkspaceFilesTab', () => {
     fireEvent.dragEnd(fileButton)
     expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
 
-    setData.mockClear()
-    fireEvent.dragStart(screen.getByLabelText('Download README_RAW_原文.md'), {
-      dataTransfer: { effectAllowed: 'none', setData },
-    })
-    expect(setData).not.toHaveBeenCalled()
   })
 
   it('preserves keyboard opening and provides keyboard context-menu navigation', async () => {
@@ -488,7 +529,7 @@ describe('WorkspaceFilesTab', () => {
     await i18n.changeLanguage('zh-CN')
     renderTab()
 
-    fireEvent.doubleClick(screen.getByText(rawFile.name))
+    fireEvent.click(screen.getByText(rawFile.name))
     expect(screen.getByRole('dialog')).toBeVisible()
     expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'raw dir/README_RAW_原文.md' })).toBeVisible()
@@ -500,7 +541,8 @@ describe('WorkspaceFilesTab', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('DELETE_RAW_ERROR')))
     renderTab()
 
-    fireEvent.click(screen.getByLabelText('Delete README_RAW_原文.md'))
+    fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -514,7 +556,8 @@ describe('WorkspaceFilesTab', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue('DELETE_RAW_NON_ERROR'))
     renderTab()
 
-    fireEvent.click(screen.getByLabelText('删除 README_RAW_原文.md'))
+    fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }))
     fireEvent.click(screen.getByRole('button', { name: '删除' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
