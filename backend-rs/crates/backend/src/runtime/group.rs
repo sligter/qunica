@@ -2783,22 +2783,25 @@ async fn run_agent_turn(
                     outcome: AgentExecutionOutcome::WaitingForUser,
                 }));
             }
-            let dispatch = ctx
-                .scheduled_dispatch
-                .clone()
-                .ok_or(StepErr::SchedulerPersistence)?;
-            dispatch
-                .store
-                .finish_dispatch(FinishDispatch {
-                    dispatch_id: dispatch.id,
-                    next: DispatchStatus::WaitingForUser,
-                    artifact: None,
-                    total_tokens: token_count_i64(ctx.scheduled_total_tokens),
-                    failure_code: None,
-                    output: None,
-                })
-                .await
-                .map_err(|_| StepErr::SchedulerPersistence)?;
+            // The legacy fan-out path — which every direct chat takes, since
+            // `direct_chats::create` writes `scheduler_enabled = 0` and
+            // `groups::update` refuses `conversation_kind = 'direct'` — runs
+            // with no dispatch row. There is nothing to terminalize there; the
+            // pause is carried entirely by the stream event and the result.
+            if let Some(dispatch) = ctx.scheduled_dispatch.clone() {
+                dispatch
+                    .store
+                    .finish_dispatch(FinishDispatch {
+                        dispatch_id: dispatch.id,
+                        next: DispatchStatus::WaitingForUser,
+                        artifact: None,
+                        total_tokens: token_count_i64(ctx.scheduled_total_tokens),
+                        failure_code: None,
+                        output: None,
+                    })
+                    .await
+                    .map_err(|_| StepErr::SchedulerPersistence)?;
+            }
             ctx.emit_durable_event(
                 StreamEventKind::WaitingForUser,
                 json!({

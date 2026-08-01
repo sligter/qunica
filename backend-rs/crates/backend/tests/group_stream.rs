@@ -7661,3 +7661,65 @@ async fn agent_mention_follow_ups_stop_when_free_mention_is_disabled() {
     assert!(!kinds(&events).iter().any(|kind| kind == "error"));
     assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
 }
+
+/// `AskUser` must pause the turn on the legacy fan-out path too.
+///
+/// Direct chats are inserted with `scheduler_enabled = 0` and `groups::update`
+/// refuses `conversation_kind = 'direct'`, so they can never reach the bounded
+/// scheduler. That path leaves `ctx.scheduled_dispatch` unset, and the wait
+/// branch used to require it, turning every `AskUser` call into a failed turn.
+#[tokio::test]
+async fn ask_user_pauses_a_turn_without_the_scheduler() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "unscheduled-tool-wait@example.com").await;
+    let owner = owner_id(&state, "unscheduled-tool-wait@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": false})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![tool_body(vec![(
+            "ask",
+            "AskUser",
+            json!({"question": "Proceed?", "required": true}),
+        )])])
+        .await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Waiter",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"ask_user": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Waiter ask"}),
+    )
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "waiting_for_user"),
+        "kinds: {:?}",
+        kinds(&events)
+    );
+    assert!(
+        !kinds(&events).iter().any(|kind| kind == "error"),
+        "events: {events:?}"
+    );
+    // No scheduler means no dispatch rows to terminalize.
+    let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatches, 0);
+}
