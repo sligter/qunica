@@ -19,9 +19,14 @@ import type { AppActionStatus } from '@/types/api'
 
 interface AssistantApprovalCardProps {
   action: PendingAppAction
+  /**
+   * Hide the summary line. Set where the surrounding row already shows it —
+   * repeating it reads as two separate changes.
+   */
+  hideSummary?: boolean
 }
 
-export function AssistantApprovalCard({ action }: AssistantApprovalCardProps) {
+export function AssistantApprovalCard({ action, hideSummary }: AssistantApprovalCardProps) {
   const { t } = useTranslation('assistant')
   const resolve = useResolveAppAction()
   const [resolved, setResolved] = useState<AppActionStatus | null>(null)
@@ -87,7 +92,7 @@ export function AssistantApprovalCard({ action }: AssistantApprovalCardProps) {
       <div className="text-xs font-semibold text-warning-foreground">
         {t('actions.pending')}
       </div>
-      <p className="mt-1 leading-6">{action.summary}</p>
+      {hideSummary ? null : <p className="mt-1 leading-6">{action.summary}</p>}
 
       {resolved ? (
         <p className="mt-2 text-xs font-medium">{statusLabel[resolved] ?? resolved}</p>

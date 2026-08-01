@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ScrollText, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, ScrollText, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 
 /** Global settings shell with a compact system/logs navigation. */
 export function SettingsLayout() {
-  const { t } = useTranslation(['navigation', 'settings'])
+  const { t } = useTranslation(['navigation', 'settings', 'assistant'])
   const navigate = useNavigate()
 
   return (
@@ -36,6 +36,11 @@ export function SettingsLayout() {
             {[
               { to: '/settings/system', label: t('settings:tabs.system'), icon: SlidersHorizontal },
               { to: '/settings/logs', label: t('settings:tabs.logs'), icon: ScrollText },
+              {
+                to: '/settings/assistant-actions',
+                label: t('assistant:actions.title'),
+                icon: Sparkles,
+              },
             ].map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
