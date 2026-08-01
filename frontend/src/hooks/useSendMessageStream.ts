@@ -16,6 +16,7 @@ import {
   parseConversationUpdatedEvent,
   parseGroupTurnTrace,
   parseSchedulerStreamEvent,
+  waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
 import { pendingActionFromOutput } from '@/lib/appActions'
@@ -89,12 +90,6 @@ const agentMessagePayloadSchema = z.object({
   content: z.string().nullable().optional(),
   thread_id: z.string().nullable().optional(),
   context_usage: contextUsageSchema.nullable().optional(),
-})
-
-const waitingForUserPayloadSchema = z.object({
-  agent_id: z.string().optional(),
-  display_name: z.string().optional(),
-  message: z.string().optional(),
 })
 
 const toolCallPayloadSchema = z.object({
@@ -871,6 +866,7 @@ export function useSendMessageStream(
                   agent_id: payload?.agent_id,
                   display_name: agentDisplayName(payload?.agent_id, payload?.display_name),
                   message,
+                  input_request: payload?.input_request,
                 })
                 pushWarning(groupId, message)
                 const turnId = markStreamRunWaitingForUser(groupId, streamId)

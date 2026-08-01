@@ -12,7 +12,11 @@ import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
 import { fetchJson } from '@/lib/api-v2/client'
-import { parseGroupTurnTrace, parseSchedulerStreamEvent } from '@/lib/api-v2/schemas'
+import {
+  parseGroupTurnTrace,
+  parseSchedulerStreamEvent,
+  waitingForUserPayloadSchema,
+} from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
 import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
@@ -104,6 +108,7 @@ export function useResumeStream(
   const linkStreamRunToUserMessage = useMessageStore((s) => s.linkStreamRunToUserMessage)
   const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
+  const appendStreamNotice = useMessageStore((s) => s.appendStreamNotice)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
   const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
@@ -248,6 +253,17 @@ export function useResumeStream(
               return
             }
             case 'waiting_for_user': {
+              // Replay the notice too, not just the run status. Reloading while
+              // an agent waits would otherwise lose the question entirely.
+              const parsed = waitingForUserPayloadSchema.safeParse(event.payload)
+              const payload = parsed.success ? parsed.data : undefined
+              appendStreamNotice(groupId, streamId, {
+                type: 'waiting_for_user',
+                agent_id: payload?.agent_id,
+                display_name: payload?.display_name,
+                message: payload?.message ?? 'Waiting for your input',
+                input_request: payload?.input_request,
+              })
               const turnId = markStreamRunWaitingForUser(groupId, streamId)
               if (turnId) {
                 void qc.invalidateQueries({
@@ -285,6 +301,7 @@ export function useResumeStream(
     })
     ctrlRef.current = ctrl
   }, [
+    appendStreamNotice,
     appendToMessage,
     acceptsStreamEvent,
     applySchedulerEvent,

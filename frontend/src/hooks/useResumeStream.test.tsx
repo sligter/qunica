@@ -216,6 +216,34 @@ describe('useResumeStream scheduler events', () => {
     })
   })
 
+  it('replays a pending question when resuming', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'waiting_for_user',
+      payload: {
+        agent_id: 'agent-1',
+        message: 'Waiting for your input',
+        input_request: { question: 'Shall I fix the Tavily key?', required: true },
+      },
+    })
+
+    // Reloading while an agent waits must not lose what it asked.
+    const run = useMessageStore.getState().streamRunsByGroup['group-1']?.['stream-1']
+    const notice = run?.events.find((event) => event.type === 'waiting_for_user')
+    expect(notice).toMatchObject({
+      input_request: { question: 'Shall I fix the Tavily key?' },
+    })
+  })
+
   it('rejects resumed tokens and final messages after the turn is superseded', () => {
     const queryClient = new QueryClient()
     const hook = renderHook(

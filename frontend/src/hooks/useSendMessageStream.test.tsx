@@ -462,6 +462,42 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
+  it('keeps the question and choices from a waiting_for_user event', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1', false), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => ignoreSend(hook.result.current.send('hello')))
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'waiting_for_user',
+      payload: {
+        agent_id: 'agent-1',
+        message: 'Waiting for your input',
+        input_request: {
+          question: 'Shall I fix the Tavily key first?',
+          required: true,
+          choices: ['Yes, fix it', 'Skip for now'],
+        },
+      },
+    })
+
+    // Without this the timeline renders a bare "Waiting for your input" badge
+    // and the user never sees what they were asked.
+    const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    const notice = run.events.find((event) => event.type === 'waiting_for_user')
+    expect(notice).toMatchObject({
+      input_request: {
+        question: 'Shall I fix the Tavily key first?',
+        required: true,
+        choices: ['Yes, fix it', 'Skip for now'],
+      },
+    })
+  })
+
   it('cancels the legacy server thread and removes its replaced live timeline', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useSendMessageStream('group-1', false), {

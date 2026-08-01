@@ -408,3 +408,24 @@ export function parseSchedulerStreamEvent(
 export function parseGroupTurnTrace(value: unknown): GroupTurnTraceResponse {
   return groupTurnTraceSchema.parse(value)
 }
+
+/**
+ * The question an agent is waiting on, as `AskUser` returns it.
+ *
+ * Shared by the live-stream and resume paths: zod strips undeclared keys, so a
+ * copy that drifts silently drops the question and leaves the timeline showing
+ * a bare "waiting" badge.
+ */
+export const humanInputRequestSchema = z.object({
+  question: z.string(),
+  required: z.boolean().optional(),
+  input_type: z.enum(['text', 'choice']).optional(),
+  choices: z.array(z.string()).optional(),
+})
+
+export const waitingForUserPayloadSchema = z.object({
+  agent_id: z.string().optional(),
+  display_name: z.string().optional(),
+  message: z.string().optional(),
+  input_request: humanInputRequestSchema.optional(),
+})
