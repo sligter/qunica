@@ -440,3 +440,29 @@ async fn app_docs_requires_a_query_or_slug() {
     let result = execute(&executor, "AppDocs", json!({})).await;
     assert_eq!(result.status, ToolStatus::Failed);
 }
+
+#[tokio::test]
+async fn app_state_reports_whether_auto_created_workspaces_are_possible() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-state-root@example.com").await;
+    let executor = executor_for(pool, &owner);
+
+    // `auto_create` needs a configured root. Without knowing that, the
+    // Assistant proposes a workspace that fails on approval with an error it
+    // cannot explain.
+    let value = parsed(&execute(&executor, "AppState", json!({})).await);
+    assert_eq!(value["can_auto_create_workspace"], json!(false));
+
+    sqlx::query(
+        "INSERT INTO system_settings (id, owner_id, group_workspace_root, created_at, updated_at)          VALUES (?, ?, 'C:/tmp/roots', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&owner)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let value = parsed(&execute(&executor, "AppState", json!({})).await);
+    assert_eq!(value["can_auto_create_workspace"], json!(true));
+}

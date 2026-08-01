@@ -92,11 +92,30 @@ pub fn ask_user(question: &str, required: bool, choices: &[String]) -> ToolResul
         .map(|choice| Value::String(choice.to_string()))
         .collect();
     let message = format!("Human input requested: {}", truncate_chars(question, 1000));
-    let extra = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        vec![("choices", Value::Array(normalized))]
-    };
+
+    // The runtime lifts `input_request` onto the `waiting_for_user` stream
+    // event, and the UI renders the form from it. Without this key the client
+    // falls back to a generic "The agent requested input." and the question is
+    // lost, so it travels structured rather than only inside `message`.
+    let mut request = Map::new();
+    request.insert(
+        "question".to_string(),
+        Value::String(truncate_chars(question, 1000)),
+    );
+    request.insert("required".to_string(), Value::Bool(required));
+    if !normalized.is_empty() {
+        request.insert(
+            "input_type".to_string(),
+            Value::String("choice".to_string()),
+        );
+        request.insert("choices".to_string(), Value::Array(normalized.clone()));
+    }
+
+    let mut extra = vec![("input_request", Value::Object(request))];
+    // `choices` is kept alongside for older clients that read it flat.
+    if !normalized.is_empty() {
+        extra.push(("choices", Value::Array(normalized)));
+    }
     controlled_result("AskUser", status_label, status, Some(&message), extra)
 }
 

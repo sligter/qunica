@@ -595,3 +595,69 @@ async fn propose_is_unavailable_without_an_app_control_context() {
         assert_eq!(result.status, ToolStatus::SetupRequired, "{name}");
     }
 }
+
+#[tokio::test]
+async fn a_workspace_can_be_proposed_with_auto_create() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "auto-create@example.com").await;
+    let owner = owner_id(&state, "auto-create@example.com").await;
+    let root = tempfile::tempdir().unwrap();
+
+    // `auto_create` needs a configured root to create the folder under.
+    let (status, _) = send(
+        &app,
+        request(
+            "PATCH",
+            "/api/v2/settings/system",
+            Some(&token),
+            json!({ "group_workspace_root": root.path().to_string_lossy() }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let executor = executor_for(&state, &owner);
+    let staged = executor
+        .execute(
+            "AppPropose",
+            json!({
+                "target_kind": "workspace",
+                "action": "create",
+                "payload": {"name": "Scratch", "backend_type": "local", "auto_create": true}
+            }),
+        )
+        .await;
+    assert_eq!(
+        staged.status,
+        ToolStatus::ApprovalRequired,
+        "{}",
+        staged.output
+    );
+
+    let action = action_id_of(&staged);
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/app-actions/{action}/approve"),
+            Some(&token),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body:?}");
+
+    // The point of auto_create: a real directory exists afterwards, so the user
+    // never has to go find or type a path.
+    let local_path: Option<String> =
+        sqlx::query_scalar("SELECT local_path FROM workspaces WHERE owner_id = ?")
+            .bind(&owner)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let local_path = local_path.expect("auto-created workspaces store a path");
+    assert!(
+        std::path::Path::new(&local_path).is_dir(),
+        "expected a real directory at {local_path}"
+    );
+}

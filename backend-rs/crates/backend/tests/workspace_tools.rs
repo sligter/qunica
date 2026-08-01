@@ -568,11 +568,7 @@ fn mounted_pair() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceTools) {
     let own = tempdir().unwrap();
     std::fs::write(primary.path().join("shared.md"), "shared note\n").unwrap();
     std::fs::create_dir(own.path().join("templates")).unwrap();
-    std::fs::write(
-        own.path().join("templates/letter.md"),
-        "private template\n",
-    )
-    .unwrap();
+    std::fs::write(own.path().join("templates/letter.md"), "private template\n").unwrap();
     let mount = WorkspaceMount::new(SELF_MOUNT_NAME, own.path()).unwrap();
     let tools = WorkspaceTools::with_mounts(primary.path(), vec![mount]).unwrap();
     (primary, own, tools)
@@ -632,7 +628,10 @@ fn workspace_tools_mount_glob_and_grep_prefix_mounted_matches() {
     assert_eq!(scoped, "~self/templates/letter.md");
 
     let matches = tools.grep("note|template", "**/*.md", 100).unwrap().output;
-    assert!(matches.contains("shared.md:1:shared note"), "got: {matches}");
+    assert!(
+        matches.contains("shared.md:1:shared note"),
+        "got: {matches}"
+    );
     assert!(
         matches.contains("~self/templates/letter.md:1:private template"),
         "got: {matches}"
@@ -721,4 +720,44 @@ async fn workspace_tools_executor_exposes_mounts_to_file_tools_but_not_bash() {
         Some(std::fs::canonicalize(primary.path()).unwrap())
     );
     assert_eq!(executor.workspace_mounts().len(), 1);
+}
+
+/// `AskUser` must carry a structured `input_request`.
+///
+/// The runtime lifts that key out of the tool output onto the
+/// `waiting_for_user` event; without it the UI falls back to a generic "The
+/// agent requested input." and the user never sees the question.
+#[tokio::test]
+async fn workspace_tools_ask_user_emits_a_structured_input_request() {
+    let executor = ToolExecutor::without_workspace();
+
+    let required = executor
+        .execute(
+            "AskUser",
+            json!({ "question": "Which workspace?", "required": true }),
+        )
+        .await;
+    let payload: Value = serde_json::from_str(&required.output).unwrap();
+    assert_eq!(payload["input_request"]["question"], "Which workspace?");
+    assert_eq!(payload["input_request"]["required"], json!(true));
+
+    let with_choices = executor
+        .execute(
+            "AskUser",
+            json!({
+                "question": "Pick one",
+                "required": false,
+                "choices": ["Create a new one", " Use an existing one ", ""]
+            }),
+        )
+        .await;
+    let payload: Value = serde_json::from_str(&with_choices.output).unwrap();
+    assert_eq!(payload["input_request"]["question"], "Pick one");
+    assert_eq!(payload["input_request"]["required"], json!(false));
+    assert_eq!(
+        payload["input_request"]["choices"],
+        json!(["Create a new one", "Use an existing one"])
+    );
+    // The rendered choices become buttons, so a choice-shaped request says so.
+    assert_eq!(payload["input_request"]["input_type"], "choice");
 }

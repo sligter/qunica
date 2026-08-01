@@ -5433,7 +5433,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                     },
                     "payload": {
                         "type": "object",
-                        "description": "The same fields the REST API takes for this kind.                                         Must not contain an API key, MCP headers, or env."
+                        "description": "The same fields the REST API takes for this kind.                                         Must not contain an API key, MCP headers, or env.                                         For a workspace, prefer {\"backend_type\": \"local\",                                         \"auto_create\": true} and omit local_path: that                                         creates the folder for the user rather than asking                                         them to find or type a path. Only ask for a path if                                         they want a specific existing folder."
                     }
                 },
                 "required": ["target_kind", "action"],

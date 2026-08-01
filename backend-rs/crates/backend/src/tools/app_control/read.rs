@@ -106,8 +106,23 @@ pub(crate) async fn state(ctx: &AppControlContext) -> Result<ToolResult, ToolErr
         counts.insert(kind.as_str().to_string(), json!(count));
     }
 
+    // `auto_create` needs a configured root directory. Reporting it here lets
+    // the Assistant offer to create a workspace outright when it will work, and
+    // explain what is missing when it will not, instead of proposing something
+    // that fails on approval.
+    let workspace_root: Option<String> = sqlx::query_scalar(
+        "SELECT group_workspace_root FROM system_settings WHERE owner_id = ? LIMIT 1",
+    )
+    .bind(ctx.owner_id())
+    .fetch_optional(ctx.pool())
+    .await
+    .map_err(|_| ToolError::invalid("could not read the app state"))?
+    .flatten()
+    .filter(|root: &String| !root.trim().is_empty());
+
     let has = |kind: TargetKind| counts[kind.as_str()].as_i64().unwrap_or(0) > 0;
     Ok(completed(json!({
+        "can_auto_create_workspace": workspace_root.is_some(),
         "counts": Value::Object(counts.clone()),
         // The onboarding order: a provider is the hard prerequisite, then a
         // workspace to work in, then an agent to do the work.
