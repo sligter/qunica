@@ -32,7 +32,7 @@ const ACP_OUTPUT_LIMIT: usize = 8 * 1024;
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, name, description, system_prompt, \
      runtime_kind, provider_id, model_config_json, tool_config_json, external_runtime_json, \
-     skill_ids_json, status, created_at, updated_at";
+     skill_ids_json, status, is_system, created_at, updated_at";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
@@ -192,6 +192,8 @@ struct AgentRow {
     external_runtime_json: Option<String>,
     skill_ids_json: String,
     status: String,
+    /// `1` for the built-in Assistant. Guards the mutating routes below.
+    is_system: i64,
     created_at: String,
     #[allow(dead_code)]
     updated_at: String,
@@ -406,9 +408,12 @@ pub async fn list(
 ) -> Result<Json<Vec<AgentResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
 
+    // System agents (the built-in Assistant) are reached through their own
+    // route, not the library. Listing them would offer the user edit and delete
+    // controls that the handlers below refuse anyway.
     let sql = format!(
         "SELECT {AGENT_COLUMNS} FROM agents \
-         WHERE owner_id = ? AND status = 'active' \
+         WHERE owner_id = ? AND status = 'active' AND is_system = 0 \
          ORDER BY created_at DESC, id DESC"
     );
     let rows = sqlx::query_as::<_, AgentRow>(&sql)
@@ -441,7 +446,7 @@ pub async fn update(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
 
-    let existing = load_active_owned(state.db.pool(), &agent_id, &owner_id).await?;
+    let existing = load_active_owned_writable(state.db.pool(), &agent_id, &owner_id).await?;
 
     let name = match body.name {
         Some(ref raw) => validate_name(raw)?,
@@ -553,7 +558,7 @@ pub async fn delete(
     let agent_id = validate_uuid(&agent_id, "agent id")?;
 
     // Confirms existence/ownership (and that it is not already deleted) first.
-    load_active_owned(state.db.pool(), &agent_id, &owner_id).await?;
+    load_active_owned_writable(state.db.pool(), &agent_id, &owner_id).await?;
 
     let now = now_rfc3339();
     sqlx::query(
@@ -587,6 +592,25 @@ async fn load_active_owned(
     }
     if row.owner_id != owner_id {
         return Err(ApiError::permission_denied("agent belongs to another user"));
+    }
+    Ok(row)
+}
+
+/// Like [`load_active_owned`], but refuses the built-in Assistant.
+///
+/// Its name, prompt, tools and workspace define what it is safe for it to do;
+/// letting the generic agent routes rewrite any of those would turn the one
+/// agent with app-control tools into an arbitrary one.
+async fn load_active_owned_writable(
+    pool: &SqlitePool,
+    agent_id: &str,
+    owner_id: &str,
+) -> Result<AgentRow, ApiError> {
+    let row = load_active_owned(pool, agent_id, owner_id).await?;
+    if row.is_system != 0 {
+        return Err(ApiError::permission_denied(
+            "the built-in assistant cannot be modified",
+        ));
     }
     Ok(row)
 }

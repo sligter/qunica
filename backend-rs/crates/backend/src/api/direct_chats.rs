@@ -82,28 +82,54 @@ pub async fn create(
             .fetch_optional(state.db.pool())
             .await
             .map_err(|_| ApiError::internal("database error"))?;
+    let title = direct_chat_title(language.as_deref(), &agent.name);
+    let id = insert_direct_chat(
+        state.db.pool(),
+        &owner_id,
+        &agent.id,
+        agent.workspace_id.as_deref(),
+        &title,
+        WorkspaceMode::default(),
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(fetch(state.db.pool(), &id, &owner_id).await?),
+    ))
+}
+
+/// Insert the four rows a direct chat is made of, in one transaction.
+///
+/// Shared with the built-in Assistant, which is an ordinary direct chat over an
+/// ordinary agent row. Duplicating these inserts there would be a second place
+/// for the conversation shape to drift.
+pub(crate) async fn insert_direct_chat(
+    pool: &SqlitePool,
+    owner_id: &str,
+    agent_id: &str,
+    workspace_id: Option<&str>,
+    title: &str,
+    workspace_mode: WorkspaceMode,
+) -> Result<String, ApiError> {
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
-    let title = direct_chat_title(language.as_deref(), &agent.name);
-    let mut tx = state
-        .db
-        .pool()
+    let mut tx = pool
         .begin()
         .await
         .map_err(|_| ApiError::internal("failed to start direct chat transaction"))?;
     sqlx::query("INSERT INTO groups (id, owner_id, workspace_id, name, free_speech, proactive_mode, scheduler_enabled, conversation_kind, direct_agent_id, title_source, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, 0, 'direct', ?, 'automatic', 'active', ?, ?)")
-        .bind(&id).bind(&owner_id).bind(&agent.workspace_id).bind(&title).bind(&agent.id).bind(&now).bind(&now).execute(&mut *tx).await
+        .bind(&id).bind(owner_id).bind(workspace_id).bind(title).bind(agent_id).bind(&now).bind(&now).execute(&mut *tx).await
         .map_err(|_| ApiError::internal("failed to create direct chat"))?;
     sqlx::query("INSERT INTO group_members (group_id, user_id, role, status, joined_at) VALUES (?, ?, 'owner', 'active', ?)")
-        .bind(&id).bind(&owner_id).bind(&now).execute(&mut *tx).await
+        .bind(&id).bind(owner_id).bind(&now).execute(&mut *tx).await
         .map_err(|_| ApiError::internal("failed to create direct chat membership"))?;
     // The conversation workspace is a copy of the agent's own binding, so the
     // default `group` mode points the agent right back at its own directory.
-    let context_scope_json = WorkspaceMode::default()
+    let context_scope_json = workspace_mode
         .to_context_scope(None)
         .map_err(|_| ApiError::internal("failed to serialize context scope"))?;
     sqlx::query("INSERT INTO group_agents (group_id, agent_id, response_mode, context_scope_json, status, joined_at, updated_at) VALUES (?, ?, 'default', ?, 'active', ?, ?)")
-        .bind(&id).bind(&agent.id).bind(&context_scope_json).bind(&now).bind(&now).execute(&mut *tx).await
+        .bind(&id).bind(agent_id).bind(&context_scope_json).bind(&now).bind(&now).execute(&mut *tx).await
         .map_err(|_| ApiError::internal("failed to bind direct chat agent"))?;
     sqlx::query("INSERT INTO threads (id, group_id, agent_id, status, next_seq, created_at, updated_at) VALUES (?, ?, NULL, 'active', 1, ?, ?)")
         .bind(Uuid::new_v4().to_string()).bind(&id).bind(&now).bind(&now).execute(&mut *tx).await
@@ -111,10 +137,7 @@ pub async fn create(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit direct chat"))?;
-    Ok((
-        StatusCode::CREATED,
-        Json(fetch(state.db.pool(), &id, &owner_id).await?),
-    ))
+    Ok(id)
 }
 
 pub async fn list(
@@ -122,7 +145,10 @@ pub async fn list(
     headers: HeaderMap,
 ) -> Result<Json<Vec<DirectChatResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let rows = sqlx::query_as::<_, DirectChatResponse>("SELECT g.id, g.name AS title, g.title_source, g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, a.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id WHERE g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' ORDER BY g.updated_at DESC, g.id DESC")
+    // The Assistant's chat is reached through the floating dock, never the chat
+    // list; showing it there would put a conversation the user cannot delete
+    // alongside ones they can.
+    let rows = sqlx::query_as::<_, DirectChatResponse>("SELECT g.id, g.name AS title, g.title_source, g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, a.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id WHERE g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' AND COALESCE(a.is_system, 0) = 0 ORDER BY g.updated_at DESC, g.id DESC")
         .bind(&owner_id).fetch_all(state.db.pool()).await.map_err(|_| ApiError::internal("database error"))?;
     Ok(Json(rows))
 }

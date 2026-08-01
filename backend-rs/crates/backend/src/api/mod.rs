@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod assistant;
 pub mod auth;
 pub mod conversations;
 pub mod direct_chats;
@@ -97,6 +98,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(agents::create).get(agents::list),
         )
         .route("/api/v2/agents/tool-catalog", get(agents::tool_catalog))
+        .route(
+            "/api/v2/assistant",
+            get(assistant::get).patch(assistant::update),
+        )
         .route(
             "/api/v2/agents/acp-runtime-presets",
             get(agents::acp_runtime_presets),
