@@ -2232,6 +2232,9 @@ struct Candidate {
     skill_ids_json: Option<String>,
     workspace_id: Option<String>,
     workspace_mode: WorkspaceMode,
+    /// `true` for the built-in Assistant. The only thing it changes at runtime
+    /// is whether the app-control tools get a context to run against.
+    is_system: bool,
     response_mode: String,
     topology_role: Option<String>,
     speaking_order: Option<i64>,
@@ -4251,6 +4254,7 @@ struct CandidateRow {
     external_runtime_json: Option<String>,
     skill_ids_json: Option<String>,
     workspace_id: Option<String>,
+    is_system: i64,
     context_scope_json: Option<String>,
     response_mode: String,
     topology_role: Option<String>,
@@ -4273,7 +4277,7 @@ async fn load_candidates(
     let rows: Vec<CandidateRow> = sqlx::query_as(
         "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
                 a.provider_id, a.model_config_json, a.tool_config_json, \
-                a.external_runtime_json, a.skill_ids_json, a.workspace_id, \
+                a.external_runtime_json, a.skill_ids_json, a.workspace_id, a.is_system, \
                 ga.context_scope_json, ga.response_mode, ga.topology_role, ga.speaking_order \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
@@ -4310,7 +4314,7 @@ async fn load_resume_candidate(
     let row: Option<CandidateRow> = sqlx::query_as(
         "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
                 a.provider_id, a.model_config_json, a.tool_config_json, \
-                a.external_runtime_json, a.skill_ids_json, a.workspace_id, \
+                a.external_runtime_json, a.skill_ids_json, a.workspace_id, a.is_system, \
                 ga.context_scope_json, ga.response_mode, ga.topology_role, ga.speaking_order \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
@@ -4341,7 +4345,7 @@ async fn load_candidate_by_id(
     let row: Option<CandidateRow> = sqlx::query_as(
         "SELECT a.id, a.owner_id, ga.display_name, a.name, a.system_prompt, a.runtime_kind, \
                 a.provider_id, a.model_config_json, a.tool_config_json, \
-                a.external_runtime_json, a.skill_ids_json, a.workspace_id, \
+                a.external_runtime_json, a.skill_ids_json, a.workspace_id, a.is_system, \
                 ga.context_scope_json, ga.response_mode, ga.topology_role, ga.speaking_order \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
@@ -4396,6 +4400,7 @@ fn candidate_from_row(row: CandidateRow) -> Candidate {
         skill_ids_json: row.skill_ids_json,
         workspace_id: row.workspace_id,
         workspace_mode: WorkspaceMode::from_context_scope(row.context_scope_json.as_deref()),
+        is_system: row.is_system != 0,
         response_mode: row.response_mode,
         topology_role: row.topology_role,
         speaking_order: row.speaking_order,
@@ -4527,6 +4532,18 @@ async fn build_invocation_context(
     .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?
     .with_web_search(web_search)
     .with_mcp(services.mcp.clone(), mcp);
+
+    // Only the built-in Assistant gets a context, so the app-control tools stay
+    // inert for every other agent even if one somehow names them.
+    let executor = if agent.is_system {
+        executor.with_app_control(crate::tools::AppControlContext::new(
+            pool.clone(),
+            agent.owner_id.clone(),
+            group.id.clone(),
+        ))
+    } else {
+        executor
+    };
 
     let mut tools = enabled_tools
         .iter()
@@ -5185,6 +5202,12 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
         "skill_manager" => Some("SkillManager"),
         "todo_write" => Some("TodoWrite"),
         "exit_plan_mode" => Some("ExitPlanMode"),
+        // App-control tools. Only the built-in Assistant has these in its
+        // `tool_config_json`; they are absent from `GET /agents/tool-catalog`
+        // so the agent tool picker never offers them.
+        "app_list" => Some("AppList"),
+        "app_get" => Some("AppGet"),
+        "app_state" => Some("AppState"),
         _ => None,
     }
 }
@@ -5327,6 +5350,41 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
         "ExitPlanMode" => (
             "Request user approval for an implementation plan.",
             object_schema(&[("plan", "string")], &["plan"]),
+        ),
+        "AppList" => (
+            "List the user's configured resources of one kind. Use this before proposing a              change, so you do not propose something that already exists.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["agent", "provider", "mcp", "skill", "workspace", "group", "chat"],
+                        "description": "Which family of resources to list"
+                    }
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+            }),
+        ),
+        "AppGet" => (
+            "Read one configured resource in full. Secrets are never returned: a provider              reports whether an API key is set, not the key itself.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["agent", "provider", "mcp", "skill", "workspace", "group", "chat"],
+                        "description": "Which family the id belongs to"
+                    },
+                    "id": { "type": "string", "description": "The resource id" }
+                },
+                "required": ["kind", "id"],
+                "additionalProperties": false
+            }),
+        ),
+        "AppState" => (
+            "Summarize what the user has configured so far, including which first-run setup              steps are still missing.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         AGENT_AS_TOOL_NAME => (
             "Dispatch a task to a bound assistant that is active in this group.",

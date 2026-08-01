@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
+    app_control::{read as app_read, AppControlContext},
     bash, controlled, http, web_search, FileEdit, MountedSkill, TavilySearchConfig, ToolError,
     ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,
     MAX_READ_LINES,
@@ -120,6 +121,9 @@ pub struct ToolExecutor {
     mcp_mount: McpMount,
     /// Shared connection pool, absent when no MCP tools are mounted.
     mcp_manager: Option<Arc<McpManager>>,
+    /// Present only for the built-in Assistant. Its absence is what makes the
+    /// app-control tools unavailable to every other agent.
+    app_control: Option<AppControlContext>,
 }
 
 // `McpManager` holds live connections and so cannot derive `Debug`; the rest of
@@ -132,6 +136,7 @@ impl std::fmt::Debug for ToolExecutor {
             .field("web_search_configured", &self.web_search.is_some())
             .field("mcp_mount", &self.mcp_mount)
             .field("mcp_connected", &self.mcp_manager.is_some())
+            .field("app_control", &self.app_control.is_some())
             .finish()
     }
 }
@@ -170,6 +175,7 @@ impl ToolExecutor {
             web_search: None,
             mcp_mount: McpMount::default(),
             mcp_manager: None,
+            app_control: None,
         })
     }
 
@@ -186,6 +192,7 @@ impl ToolExecutor {
             web_search: None,
             mcp_mount: McpMount::default(),
             mcp_manager: None,
+            app_control: None,
         }
     }
 
@@ -196,6 +203,16 @@ impl ToolExecutor {
     pub fn with_mcp(mut self, manager: Arc<McpManager>, mount: McpMount) -> Self {
         self.mcp_manager = Some(manager);
         self.mcp_mount = mount;
+        self
+    }
+
+    /// Grant the app-control tools, scoped to one owner and conversation.
+    ///
+    /// Only the built-in Assistant gets this. Everything the app-control tools
+    /// can reach is decided by the context, so an executor without one cannot
+    /// read another owner's configuration by accident.
+    pub fn with_app_control(mut self, context: AppControlContext) -> Self {
+        self.app_control = Some(context);
         self
     }
 
@@ -259,6 +276,19 @@ impl ToolExecutor {
                 let required = arg_bool(&args, "required", true);
                 let choices = arg_string_list(&args, "choices");
                 Ok(controlled::ask_user(question, required, &choices))
+            }
+            "AppList" | "AppGet" | "AppState" => {
+                let Some(context) = self.app_control.as_ref() else {
+                    return Ok(controlled::setup_required(
+                        name,
+                        "app control is not available to this agent",
+                    ));
+                };
+                match name {
+                    "AppList" => app_read::list(context, &args).await,
+                    "AppGet" => app_read::get(context, &args).await,
+                    _ => app_read::state(context).await,
+                }
             }
             "GenerateImage" => Ok(controlled::generate_image(arg_str(&args, "prompt")?)),
             "GenerateVideo" => Ok(controlled::generate_video(arg_str(&args, "prompt")?)),

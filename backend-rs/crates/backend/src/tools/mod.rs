@@ -12,6 +12,7 @@
 //! [`executor`] that dispatches a named tool with JSON arguments and maps every
 //! internal failure to model-safe text.
 
+pub mod app_control;
 pub mod bash;
 pub mod controlled;
 pub mod executor;
@@ -20,6 +21,7 @@ pub mod path_safety;
 pub(crate) mod web_search;
 pub mod workspace;
 
+pub use app_control::AppControlContext;
 pub use executor::{McpMount, ToolExecutor};
 pub use path_safety::resolve_workspace_path;
 pub(crate) use web_search::TavilySearchConfig;

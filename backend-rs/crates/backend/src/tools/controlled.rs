@@ -62,6 +62,20 @@ pub fn workspace_required(tool: &str) -> ToolResult {
     )
 }
 
+/// Controlled result for a tool whose supporting configuration is absent.
+///
+/// Distinct from a failure: nothing about the request was wrong, the runtime
+/// just cannot serve it here. The model should say so rather than retry.
+pub fn setup_required(tool: &str, reason: &str) -> ToolResult {
+    controlled_result(
+        tool,
+        "SETUP_REQUIRED",
+        ToolStatus::SetupRequired,
+        Some(reason),
+        Vec::new(),
+    )
+}
+
 /// `AskUser`: request bounded human input without blocking execution. A required
 /// prompt reports `WAITING_FOR_USER`; an optional one reports `INPUT_REQUESTED`.
 pub fn ask_user(question: &str, required: bool, choices: &[String]) -> ToolResult {

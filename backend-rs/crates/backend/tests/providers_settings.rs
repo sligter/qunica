@@ -1318,6 +1318,23 @@ async fn tool_catalog_includes_required_builtin_tools_with_stable_ids() {
     assert_eq!(by_id["exit_plan_mode"]["name"], "ExitPlanMode");
     assert_eq!(by_id["read"]["requires_workspace"], true);
     assert_eq!(by_id["skill_manager"]["runtime_status"], "available");
+
+    // App-control tools belong to the built-in Assistant alone. Offering them
+    // in the picker would let a user hand a workspace-bound agent with Bash the
+    // ability to rewrite the app's configuration too.
+    for id in [
+        "app_list",
+        "app_get",
+        "app_state",
+        "app_docs",
+        "app_propose",
+        "app_prefill",
+    ] {
+        assert!(
+            !by_id.contains_key(id),
+            "app-control tool {id} must not appear in the agent tool picker"
+        );
+    }
 }
 
 #[tokio::test]
