@@ -363,3 +363,107 @@ fn completed(payload: Value) -> ToolResult {
         output: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()),
     }
 }
+
+/// Answer a "how does this work?" question from the bundled guide.
+///
+/// Takes either a free-text `query` or an exact `slug`. Unlike the other
+/// app-control tools this touches no database, but it lives here because it is
+/// part of the same capability and shares the same availability rule.
+pub(crate) fn docs(args: &Value) -> Result<ToolResult, ToolError> {
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let slug = args
+        .get("slug")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let Some(slug) = slug {
+        let doc = crate::docs::by_slug(slug).ok_or_else(|| {
+            ToolError::invalid(format!(
+                "no page with slug '{slug}'; available pages: {}",
+                available_slugs()
+            ))
+        })?;
+        return Ok(bounded_docs(json!({
+            "documents": [{
+                "slug": doc.slug,
+                "title": doc.title,
+                "content": doc.body,
+            }],
+        })));
+    }
+
+    let Some(query) = query else {
+        return Err(ToolError::invalid("query or slug is required"));
+    };
+
+    let matches = crate::docs::search(query);
+    if matches.is_empty() {
+        // Returning the least-bad page here would be worse than nothing: the
+        // model would summarize it as the answer. Say so, and offer the index
+        // so it can pick a page by name instead.
+        return Ok(bounded_docs(json!({
+            "documents": [],
+            "message": format!(
+                "no matching page for '{query}'. This guide covers only AG Swarmer itself; \
+                 if the question is about something else, say so rather than guessing."
+            ),
+            "available": doc_index(),
+        })));
+    }
+
+    Ok(bounded_docs(json!({
+        "documents": matches
+            .into_iter()
+            .map(|hit| json!({
+                "slug": hit.slug,
+                "title": hit.title,
+                "content": hit.excerpt,
+            }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+fn doc_index() -> Value {
+    Value::Array(
+        crate::docs::index()
+            .into_iter()
+            .map(|(slug, title)| json!({ "slug": slug, "title": title }))
+            .collect(),
+    )
+}
+
+fn available_slugs() -> String {
+    crate::docs::index()
+        .into_iter()
+        .map(|(slug, _)| slug)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Serialize a docs payload, degrading to the index if it somehow exceeds the
+/// budget. The per-document excerpt cap makes that unreachable today; this
+/// keeps it true if the guide grows or the caps are raised.
+fn bounded_docs(payload: Value) -> ToolResult {
+    let output = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    if output.len() <= crate::docs::MAX_DOCS_OUTPUT_BYTES {
+        return ToolResult {
+            status: ToolStatus::Completed,
+            output,
+        };
+    }
+    let fallback = json!({
+        "documents": [],
+        "message": "the matching pages were too large to return together; \
+                    request one by slug",
+        "available": doc_index(),
+    });
+    ToolResult {
+        status: ToolStatus::Completed,
+        output: serde_json::to_string(&fallback).unwrap_or_else(|_| "{}".to_string()),
+    }
+}

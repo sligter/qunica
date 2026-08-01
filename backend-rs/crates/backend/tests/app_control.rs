@@ -342,3 +342,101 @@ async fn app_control_hides_the_assistant_from_agent_listings() {
     assert!(!result.output.contains("AG Assistant"), "{}", result.output);
     assert!(result.output.contains("Researcher"));
 }
+
+// ---------------------------------------------------------------------------
+// AppDocs: the bundled usage guide
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_bundled_doc_has_a_title_and_a_body() {
+    let docs = ag_swarmer_backend::docs::all();
+    assert!(!docs.is_empty());
+    for doc in docs {
+        assert!(!doc.slug.is_empty());
+        assert!(!doc.title.is_empty(), "{} has no title", doc.slug);
+        assert!(!doc.body.trim().is_empty(), "{} has no body", doc.slug);
+    }
+    // Slugs address documents in tool output; a duplicate would make one
+    // unreachable.
+    let mut slugs: Vec<&str> = docs.iter().map(|doc| doc.slug).collect();
+    slugs.sort_unstable();
+    let count = slugs.len();
+    slugs.dedup();
+    assert_eq!(slugs.len(), count, "duplicate doc slug");
+}
+
+#[tokio::test]
+async fn app_docs_finds_a_real_feature_and_stays_bounded() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-docs@example.com").await;
+    let executor = executor_for(pool, &owner);
+
+    let result = execute(&executor, "AppDocs", json!({"query": "mcp stdio server"})).await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    assert!(
+        result.output.contains("mcp-servers"),
+        "expected the mcp-servers doc: {}",
+        result.output
+    );
+    assert!(
+        result.output.len() <= ag_swarmer_backend::docs::MAX_DOCS_OUTPUT_BYTES,
+        "output was {} bytes",
+        result.output.len()
+    );
+}
+
+#[tokio::test]
+async fn app_docs_can_return_one_document_whole() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-docs-slug@example.com").await;
+    let executor = executor_for(pool, &owner);
+
+    let result = execute(&executor, "AppDocs", json!({"slug": "getting-started"})).await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    assert_eq!(parsed(&result)["documents"][0]["slug"], "getting-started");
+
+    let result = execute(&executor, "AppDocs", json!({"slug": "no-such-page"})).await;
+    assert_eq!(result.status, ToolStatus::Failed);
+}
+
+#[tokio::test]
+async fn app_docs_says_so_rather_than_returning_an_arbitrary_page() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-docs-miss@example.com").await;
+    let executor = executor_for(pool, &owner);
+
+    // An unmatched query must not hand back whichever doc scored least badly:
+    // the model would present it as the answer.
+    let result = execute(
+        &executor,
+        "AppDocs",
+        json!({"query": "kubernetes helm chart ingress"}),
+    )
+    .await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    let value = parsed(&result);
+    assert_eq!(value["documents"].as_array().unwrap().len(), 0);
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no matching"),
+        "{value}"
+    );
+    // The index is still offered so the model can pick a page by name.
+    assert!(value["available"].is_array());
+}
+
+#[tokio::test]
+async fn app_docs_requires_a_query_or_slug() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-docs-empty@example.com").await;
+    let executor = executor_for(pool, &owner);
+
+    let result = execute(&executor, "AppDocs", json!({})).await;
+    assert_eq!(result.status, ToolStatus::Failed);
+}

@@ -5208,6 +5208,7 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
         "app_list" => Some("AppList"),
         "app_get" => Some("AppGet"),
         "app_state" => Some("AppState"),
+        "app_docs" => Some("AppDocs"),
         _ => None,
     }
 }
@@ -5385,6 +5386,23 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
         "AppState" => (
             "Summarize what the user has configured so far, including which first-run setup              steps are still missing.",
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        ),
+        "AppDocs" => (
+            "Search the bundled AG Swarmer usage guide. Prefer this over your own recollection              for any question about how this app works. Pass a query to search, or a slug to              read one page whole.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for, in the user's own words"
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "Read one page by its exact slug instead of searching"
+                    }
+                },
+                "additionalProperties": false
+            }),
         ),
         AGENT_AS_TOOL_NAME => (
             "Dispatch a task to a bound assistant that is active in this group.",

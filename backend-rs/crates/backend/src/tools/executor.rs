@@ -277,7 +277,7 @@ impl ToolExecutor {
                 let choices = arg_string_list(&args, "choices");
                 Ok(controlled::ask_user(question, required, &choices))
             }
-            "AppList" | "AppGet" | "AppState" => {
+            "AppList" | "AppGet" | "AppState" | "AppDocs" => {
                 let Some(context) = self.app_control.as_ref() else {
                     return Ok(controlled::setup_required(
                         name,
@@ -287,6 +287,7 @@ impl ToolExecutor {
                 match name {
                     "AppList" => app_read::list(context, &args).await,
                     "AppGet" => app_read::get(context, &args).await,
+                    "AppDocs" => app_read::docs(&args),
                     _ => app_read::state(context).await,
                 }
             }

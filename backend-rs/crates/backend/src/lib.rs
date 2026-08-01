@@ -2,6 +2,7 @@ pub mod acp;
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod docs;
 pub mod git;
 pub mod llm;
 pub mod mcp;
