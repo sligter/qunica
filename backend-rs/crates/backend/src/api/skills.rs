@@ -141,6 +141,22 @@ pub async fn create(
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(create_inner(&state, &owner_id, body).await?),
+    ))
+}
+
+/// The body of [`create`] without the axum extractors.
+///
+/// Approved app-actions call this, so a staged proposal runs exactly the
+/// validation the UI path does. A second implementation would drift.
+pub(crate) async fn create_inner(
+    state: &AppState,
+    owner_id: &str,
+    body: CreateRequest,
+) -> Result<SkillResponse, ApiError> {
+    let owner_id = owner_id.to_string();
 
     let name = validate_name(&body.name)?;
     let description = normalize_description(body.description.as_deref());
@@ -169,7 +185,7 @@ pub async fn create(
     let row = fetch_row(state.db.pool(), &id)
         .await?
         .ok_or_else(|| ApiError::internal("skill vanished after insert"))?;
-    Ok((StatusCode::CREATED, Json(row.into())))
+    Ok(row.into())
 }
 
 pub async fn import_raw(
@@ -337,7 +353,18 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<SkillResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let skill_id = validate_uuid(&skill_id, "skill id")?;
+    Ok(Json(update_inner(&state, &owner_id, &skill_id, body).await?))
+}
+
+/// The body of [`update`] without the axum extractors. See [`create_inner`].
+pub(crate) async fn update_inner(
+    state: &AppState,
+    owner_id: &str,
+    skill_id: &str,
+    body: UpdateRequest,
+) -> Result<SkillResponse, ApiError> {
+    let owner_id = owner_id.to_string();
+    let skill_id = validate_uuid(skill_id, "skill id")?;
     let existing = load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;
 
     let name = match body.name {
@@ -376,7 +403,7 @@ pub async fn update(
     let row = fetch_row(state.db.pool(), &skill_id)
         .await?
         .ok_or_else(|| ApiError::internal("skill vanished after update"))?;
-    Ok(Json(row.into()))
+    Ok(row.into())
 }
 
 pub async fn delete(

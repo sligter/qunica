@@ -5209,6 +5209,8 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
         "app_get" => Some("AppGet"),
         "app_state" => Some("AppState"),
         "app_docs" => Some("AppDocs"),
+        "app_propose" => Some("AppPropose"),
+        "app_prefill" => Some("AppPrefill"),
         _ => None,
     }
 }
@@ -5386,6 +5388,54 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
         "AppState" => (
             "Summarize what the user has configured so far, including which first-run setup              steps are still missing.",
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        ),
+        "AppPropose" => (
+            "Stage a configuration change for the user to approve. This does NOT apply the              change: the user sees a card and must approve it first. Never tell the user              something has changed after calling this — say you have proposed it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target_kind": {
+                        "type": "string",
+                        "enum": ["agent", "skill", "workspace", "group", "mcp"],
+                        "description": "What to change. Providers, secrets and deletions                                         cannot be staged; use AppPrefill for those."
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "update"],
+                        "description": "Deletion cannot be proposed"
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": "The id to update. Required when action is update."
+                    },
+                    "payload": {
+                        "type": "object",
+                        "description": "The same fields the REST API takes for this kind.                                         Must not contain an API key, MCP headers, or env."
+                    }
+                },
+                "required": ["target_kind", "action"],
+                "additionalProperties": false
+            }),
+        ),
+        "AppPrefill" => (
+            "Hand the user a link to a prefilled form for a change you are not allowed to              stage — provider API keys, stdio MCP servers, CLI installs, and deletions.              Writes nothing.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target_kind": {
+                        "type": "string",
+                        "enum": ["agent", "provider", "mcp", "skill", "workspace"]
+                    },
+                    "action": { "type": "string", "enum": ["create", "update"] },
+                    "target_id": { "type": "string" },
+                    "fields": {
+                        "type": "object",
+                        "description": "Values to prefill. Never include a secret; leave                                         those for the user."
+                    }
+                },
+                "required": ["target_kind", "action"],
+                "additionalProperties": false
+            }),
         ),
         "AppDocs" => (
             "Search the bundled AG Swarmer usage guide. Prefer this over your own recollection              for any question about how this app works. Pass a query to search, or a slug to              read one page whole.",

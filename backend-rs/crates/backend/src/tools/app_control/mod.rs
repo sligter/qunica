@@ -7,10 +7,11 @@
 //! column added to a table later would then start flowing to the model by
 //! default, which is exactly how an API key escapes.
 //!
-//! [`read`] holds the inspection tools. Staged writes arrive in a later change;
-//! nothing in this module mutates a row.
+//! [`read`] holds the inspection tools. [`write`] stages changes into
+//! `app_actions` — it never applies one; only the approval endpoint does.
 
 pub(crate) mod read;
+pub(crate) mod write;
 
 use sqlx::SqlitePool;
 
@@ -26,7 +27,6 @@ pub struct AppControlContext {
     owner_id: String,
     /// The conversation the call came from. Staged actions record it so the
     /// approval card can be traced back to the exchange that produced it.
-    #[allow(dead_code)]
     conversation_id: String,
 }
 
@@ -46,6 +46,10 @@ impl AppControlContext {
     pub(crate) fn owner_id(&self) -> &str {
         &self.owner_id
     }
+
+    pub(crate) fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
 }
 
 /// The resource families the Assistant may address.
@@ -54,7 +58,7 @@ impl AppControlContext {
 /// so a table this module was never meant to expose cannot be reached by
 /// guessing a name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TargetKind {
+pub enum TargetKind {
     Agent,
     Provider,
     Mcp,
@@ -65,7 +69,7 @@ pub(crate) enum TargetKind {
 }
 
 impl TargetKind {
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
+    pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim() {
             "agent" => Some(Self::Agent),
             "provider" => Some(Self::Provider),
@@ -78,7 +82,7 @@ impl TargetKind {
         }
     }
 
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Agent => "agent",
             Self::Provider => "provider",
@@ -92,7 +96,7 @@ impl TargetKind {
 
     /// Every kind, for `AppState`'s counts and for error messages that list
     /// what the caller could have asked for.
-    pub(crate) const ALL: [Self; 7] = [
+    pub const ALL: [Self; 7] = [
         Self::Agent,
         Self::Provider,
         Self::Mcp,

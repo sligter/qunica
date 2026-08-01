@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
-    app_control::{read as app_read, AppControlContext},
+    app_control::{read as app_read, write as app_write, AppControlContext},
     bash, controlled, http, web_search, FileEdit, MountedSkill, TavilySearchConfig, ToolError,
     ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,
     MAX_READ_LINES,
@@ -277,7 +277,7 @@ impl ToolExecutor {
                 let choices = arg_string_list(&args, "choices");
                 Ok(controlled::ask_user(question, required, &choices))
             }
-            "AppList" | "AppGet" | "AppState" | "AppDocs" => {
+            "AppList" | "AppGet" | "AppState" | "AppDocs" | "AppPropose" | "AppPrefill" => {
                 let Some(context) = self.app_control.as_ref() else {
                     return Ok(controlled::setup_required(
                         name,
@@ -288,6 +288,8 @@ impl ToolExecutor {
                     "AppList" => app_read::list(context, &args).await,
                     "AppGet" => app_read::get(context, &args).await,
                     "AppDocs" => app_read::docs(&args),
+                    "AppPropose" => app_write::propose(context, &args).await,
+                    "AppPrefill" => app_write::prefill(&args),
                     _ => app_read::state(context).await,
                 }
             }

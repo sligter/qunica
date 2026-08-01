@@ -11,7 +11,10 @@ ALTER TABLE agents ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0
 CREATE TABLE app_actions (
   id TEXT PRIMARY KEY NOT NULL,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  conversation_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
+  -- Deliberately not a foreign key. This is an audit trail: it has to outlive
+  -- the conversation that produced it, and clearing the column on delete would
+  -- erase where a change came from.
+  conversation_id TEXT,
   tool_call_id TEXT,
   target_kind TEXT NOT NULL,
   action TEXT NOT NULL,

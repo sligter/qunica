@@ -89,6 +89,22 @@ pub async fn create(
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<WorkspaceResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(create_inner(&state, &owner_id, body).await?),
+    ))
+}
+
+/// The body of [`create`] without the axum extractors.
+///
+/// Approved app-actions call this, so a staged proposal runs exactly the
+/// validation the UI path does. A second implementation would drift.
+pub(crate) async fn create_inner(
+    state: &AppState,
+    owner_id: &str,
+    body: CreateRequest,
+) -> Result<WorkspaceResponse, ApiError> {
+    let owner_id = owner_id.to_string();
 
     let name = validate_name(&body.name)?;
     let backend_type = normalize_backend_type(body.backend_type.as_deref())?;
@@ -132,7 +148,7 @@ pub async fn create(
     let row = fetch_row(state.db.pool(), &id)
         .await?
         .ok_or_else(|| ApiError::internal("workspace vanished after insert"))?;
-    Ok((StatusCode::CREATED, Json(row.into())))
+    Ok(row.into())
 }
 
 async fn create_local_workspace_dir(
@@ -211,7 +227,18 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<WorkspaceResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let workspace_id = parse_id(&workspace_id)?;
+    Ok(Json(update_inner(&state, &owner_id, &workspace_id, body).await?))
+}
+
+/// The body of [`update`] without the axum extractors. See [`create_inner`].
+pub(crate) async fn update_inner(
+    state: &AppState,
+    owner_id: &str,
+    workspace_id: &str,
+    body: UpdateRequest,
+) -> Result<WorkspaceResponse, ApiError> {
+    let owner_id = owner_id.to_string();
+    let workspace_id = parse_id(workspace_id)?;
 
     let existing = load_owned(state.db.pool(), &workspace_id, &owner_id).await?;
 
@@ -262,7 +289,7 @@ pub async fn update(
     let row = fetch_row(state.db.pool(), &workspace_id)
         .await?
         .ok_or_else(|| ApiError::internal("workspace vanished after update"))?;
-    Ok(Json(row.into()))
+    Ok(row.into())
 }
 
 pub async fn delete(

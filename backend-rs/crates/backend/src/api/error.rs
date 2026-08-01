@@ -74,6 +74,19 @@ impl ApiError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
     }
+
+    /// The HTTP status this error would produce.
+    ///
+    /// The approval endpoint applies a change by calling a handler core and has
+    /// to record and re-raise the failure rather than let it become a 500.
+    pub fn status_code(&self) -> StatusCode {
+        self.status
+    }
+
+    /// The human-readable message, for recording in the action ledger.
+    pub fn message_text(&self) -> String {
+        self.message.clone()
+    }
 }
 
 impl IntoResponse for ApiError {

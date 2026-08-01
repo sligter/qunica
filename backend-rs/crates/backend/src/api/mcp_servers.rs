@@ -176,6 +176,22 @@ pub async fn create(
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<McpServerResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(create_inner(&state, &owner_id, body).await?),
+    ))
+}
+
+/// The body of [`create`] without the axum extractors.
+///
+/// Approved app-actions call this, so a staged proposal runs exactly the
+/// validation the UI path does. A second implementation would drift.
+pub(crate) async fn create_inner(
+    state: &AppState,
+    owner_id: &str,
+    body: CreateRequest,
+) -> Result<McpServerResponse, ApiError> {
+    let owner_id = owner_id.to_string();
 
     let name = validate_name(&body.name)?;
     ensure_slug_is_free(state.db.pool(), &owner_id, &name, None).await?;
@@ -248,7 +264,7 @@ pub async fn create(
     let row = fetch_row(state.db.pool(), &id)
         .await?
         .ok_or_else(|| ApiError::internal("MCP server vanished after insert"))?;
-    Ok((StatusCode::CREATED, Json(row.into())))
+    Ok(row.into())
 }
 
 pub async fn list(
@@ -288,7 +304,18 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let server_id = validate_uuid(&server_id)?;
+    Ok(Json(update_inner(&state, &owner_id, &server_id, body).await?))
+}
+
+/// The body of [`update`] without the axum extractors. See [`create_inner`].
+pub(crate) async fn update_inner(
+    state: &AppState,
+    owner_id: &str,
+    server_id: &str,
+    body: UpdateRequest,
+) -> Result<McpServerResponse, ApiError> {
+    let owner_id = owner_id.to_string();
+    let server_id = validate_uuid(server_id)?;
     let existing = load_owned(state.db.pool(), &server_id, &owner_id).await?;
     let current = existing.to_config();
 
@@ -394,7 +421,7 @@ pub async fn update(
     let row = fetch_row(state.db.pool(), &server_id)
         .await?
         .ok_or_else(|| ApiError::internal("MCP server vanished after update"))?;
-    Ok(Json(row.into()))
+    Ok(row.into())
 }
 
 pub async fn delete(

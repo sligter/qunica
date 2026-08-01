@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod app_actions;
 pub mod assistant;
 pub mod auth;
 pub mod conversations;
@@ -101,6 +102,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/assistant",
             get(assistant::get).patch(assistant::update),
+        )
+        .route("/api/v2/app-actions", get(app_actions::list))
+        .route(
+            "/api/v2/app-actions/:action_id/approve",
+            axum::routing::post(app_actions::approve),
+        )
+        .route(
+            "/api/v2/app-actions/:action_id/reject",
+            axum::routing::post(app_actions::reject),
         )
         .route(
             "/api/v2/agents/acp-runtime-presets",
