@@ -23,7 +23,9 @@ Some changes it cannot stage at all, and will instead hand you a prefilled form 
 
 ## Setting it up
 
-The assistant is an LLM agent, so it needs a provider before it can talk. Until one is configured it shows a setup checklist instead of a chat.
+The assistant is an LLM agent, so it needs its own provider binding before it can talk. This is separate from the providers your other agents use: adding a provider does not bind it.
+
+Until one is bound, the panel shows the providers you have and lets you pick which the assistant should use. If you have none yet, it links to the provider form instead.
 
 Its model can be chosen per message from the composer, independently of the agent it is bound to.
 

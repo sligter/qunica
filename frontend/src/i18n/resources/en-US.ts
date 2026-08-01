@@ -442,6 +442,8 @@ export const enUS = {
         'The assistant needs an LLM provider before it can chat. Add one and it takes over from here.',
       loading: 'Loading the assistant…',
       error: 'The assistant is unavailable.',
+      chooseTitle: 'Choose a provider',
+      chooseDescription: 'Pick which provider the assistant should use. You can change it later.',
       provider: 'Add an LLM provider',
       providerHint: 'API credentials and the models to offer. Required.',
       workspace: 'Add a workspace',

@@ -33,11 +33,16 @@ async function renderDock(
     provider_id: 'provider-1',
     provider_configured: true,
   },
+  providers: Array<Record<string, unknown>> = [],
 ) {
-  fetchJson.mockImplementation((path: string) => {
+  fetchJson.mockImplementation((path: string, options?: { method?: string }) => {
     if (path === '/assistant') {
+      if (options?.method === 'PATCH') {
+        return Promise.resolve({ ...assistant, provider_configured: true })
+      }
       return assistant ? Promise.resolve(assistant) : Promise.reject(new Error('nope'))
     }
+    if (path === '/llm-providers') return Promise.resolve(providers)
     return Promise.resolve([])
   })
 
@@ -113,21 +118,44 @@ describe('AssistantDock', () => {
     expect(dragOver.defaultPrevented).toBe(false)
   })
 
-  it('shows the setup checklist instead of a chat when no provider is bound', async () => {
+  it('offers a provider to bind when one exists but none is bound', async () => {
     const user = userEvent.setup()
-    await renderDock({
-      agent_id: 'agent-1',
-      chat_id: 'chat-1',
-      provider_id: null,
-      provider_configured: false,
-    })
+    // The exact dead end a user hits after configuring providers and agents:
+    // everything looks set up, but the assistant has no provider of its own.
+    await renderDock(
+      { agent_id: 'agent-1', chat_id: 'chat-1', provider_id: null, provider_configured: false },
+      [{ id: 'provider-1', name: 'DeepSeek', kind: 'openai-compatible', default_model: 'deepseek-v4-flash' }],
+    )
 
     await user.click(await screen.findByRole('button', { name: /assistant/i }))
 
-    // The Assistant is itself an LLM agent, so it cannot talk the user through
-    // configuring the provider it needs in order to talk.
-    expect(await screen.findByRole('link', { name: /provider/i })).toBeVisible()
-    expect(screen.queryByTestId('assistant-chat')).toBeNull()
+    const choice = await screen.findByRole('button', { name: /DeepSeek/ })
+    await user.click(choice)
+
+    await waitFor(() =>
+      expect(fetchJson).toHaveBeenCalledWith(
+        '/assistant',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: { llm_provider_id: 'provider-1' },
+        }),
+      ),
+    )
+    // Binding must unblock the dock, not leave the user where they started.
+    expect(await screen.findByTestId('assistant-chat')).toBeVisible()
+  })
+
+  it('points at creating a provider when there are none at all', async () => {
+    const user = userEvent.setup()
+    await renderDock(
+      { agent_id: 'agent-1', chat_id: 'chat-1', provider_id: null, provider_configured: false },
+      [],
+    )
+    await user.click(await screen.findByRole('button', { name: /assistant/i }))
+    expect(await screen.findByRole('link', { name: /provider/i })).toHaveAttribute(
+      'href',
+      '/providers/new',
+    )
   })
 
   it('shows the chat once a provider is configured', async () => {

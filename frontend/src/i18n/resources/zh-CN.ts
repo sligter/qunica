@@ -384,6 +384,8 @@ export const zhCN: TranslationShape<typeof enUS> = {
       description: '助手需要先配置 LLM 供应商才能对话。配置完成后，接下来的事就可以交给它。',
       loading: '正在加载助手…',
       error: '助手当前不可用。',
+      chooseTitle: '选择供应商',
+      chooseDescription: '选择助手使用哪个供应商，之后可以随时更改。',
       provider: '添加 LLM 供应商',
       providerHint: 'API 凭据和可用模型。必填。',
       workspace: '添加工作区',
