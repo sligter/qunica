@@ -265,6 +265,39 @@ export interface AgentRead {
   created_at: string
 }
 
+export interface AssistantRead {
+  agent_id: string
+  chat_id: string
+  provider_id: string | null
+  /**
+   * Whether the Assistant can hold a conversation yet. False means the dock
+   * shows its scripted setup checklist: an LLM agent cannot talk the user
+   * through configuring the provider it needs in order to talk.
+   */
+  provider_configured: boolean
+}
+
+export type AppActionStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'applied'
+  | 'failed'
+  | 'expired'
+
+export interface AppActionRead {
+  id: string
+  conversation_id: string | null
+  target_kind: string
+  action: string
+  target_id: string | null
+  summary: string
+  status: AppActionStatus
+  result_json: string | null
+  created_at: string
+  resolved_at: string | null
+}
+
 export interface ContextUsage {
   input_tokens: number | null
   output_tokens: number | null

@@ -2,6 +2,7 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet } from 'react-router-dom'
 
+import { AssistantDock } from '@/components/assistant/AssistantDock'
 import { AppSidebar } from '@/components/layout/AppSidebar'
 import { RouteFallback } from '@/components/layout/RouteFallback'
 import {
@@ -147,6 +148,11 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
           </div>
           <TerminalDock />
         </main>
+        {/* Portals to document.body, so it floats over the whole shell rather
+            than being clipped by the main column's overflow. Only mounted
+            inside the authenticated tree: the login and register routes render
+            outside AppLayout. */}
+        <AssistantDock />
         {textMenu ? (
           <div
             ref={menuRef}
