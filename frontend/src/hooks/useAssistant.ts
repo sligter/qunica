@@ -24,15 +24,30 @@ export function useAssistant() {
   })
 }
 
-export function useBindAssistantProvider() {
+export interface AssistantSettingsInput {
+  llm_provider_id: string | null
+  /** Omitted or null follows the provider's default model. */
+  model?: string | null
+}
+
+/**
+ * Update the Assistant's provider and model.
+ *
+ * The backend treats an omitted field as "clear", so this always sends both:
+ * a partial send would silently unbind whatever it left out.
+ */
+export function useUpdateAssistant() {
   const token = useAuthStore((state) => state.token)
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (llmProviderId: string | null) =>
+    mutationFn: (input: AssistantSettingsInput) =>
       fetchJson<AssistantRead>('/assistant', {
         method: 'PATCH',
         token,
-        body: { llm_provider_id: llmProviderId },
+        body: {
+          llm_provider_id: input.llm_provider_id,
+          model: input.model ?? null,
+        },
       }),
     onSuccess: (assistant) => {
       qc.setQueryData(assistantQueryKey, assistant)

@@ -17,7 +17,7 @@ import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { PageState } from '@/components/ui/page-state'
-import { useBindAssistantProvider } from '@/hooks/useAssistant'
+import { useUpdateAssistant } from '@/hooks/useAssistant'
 import { useProviders } from '@/hooks/useProviders'
 
 interface AssistantSetupChecklistProps {
@@ -28,7 +28,7 @@ interface AssistantSetupChecklistProps {
 export function AssistantSetupChecklist({ loading, error }: AssistantSetupChecklistProps) {
   const { t } = useTranslation('assistant')
   const providers = useProviders()
-  const bind = useBindAssistantProvider()
+  const bind = useUpdateAssistant()
   const [bindError, setBindError] = useState<string | null>(null)
 
   if (loading || providers.isLoading) {
@@ -67,7 +67,7 @@ export function AssistantSetupChecklist({ loading, error }: AssistantSetupCheckl
   const choose = async (providerId: string) => {
     setBindError(null)
     try {
-      await bind.mutateAsync(providerId)
+      await bind.mutateAsync({ llm_provider_id: providerId })
     } catch (cause) {
       setBindError(cause instanceof Error ? cause.message : String(cause))
     }

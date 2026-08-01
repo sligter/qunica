@@ -140,7 +140,9 @@ describe('AssistantDock', () => {
         '/assistant',
         expect.objectContaining({
           method: 'PATCH',
-          body: { llm_provider_id: 'provider-1' },
+          // Both fields always travel: the backend treats an omitted one as
+          // "clear", so a partial send would silently drop the other.
+          body: { llm_provider_id: 'provider-1', model: null },
         }),
       ),
     )
@@ -165,6 +167,22 @@ describe('AssistantDock', () => {
     const user = userEvent.setup()
     await renderDock()
     await user.click(await screen.findByRole('button', { name: /assistant/i }))
+    expect(await screen.findByTestId('assistant-chat')).toBeVisible()
+  })
+
+  it('opens settings from the header and returns to the chat on cancel', async () => {
+    const user = userEvent.setup()
+    await renderDock()
+    await user.click(await screen.findByRole('button', { name: /assistant/i }))
+    expect(await screen.findByTestId('assistant-chat')).toBeVisible()
+
+    // Reachable once a provider is bound — otherwise there is no way to change
+    // the assistant's provider or model after the initial setup.
+    await user.click(screen.getByRole('button', { name: /assistant settings/i }))
+    expect(await screen.findByLabelText(/provider/i)).toBeVisible()
+    expect(screen.queryByTestId('assistant-chat')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: /cancel/i }))
     expect(await screen.findByTestId('assistant-chat')).toBeVisible()
   })
 

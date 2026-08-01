@@ -452,6 +452,18 @@ export const enUS = {
       agentHint: 'A prompt, a model, and the tools it may use.',
       afterProvider: 'Once a provider is configured, ask the assistant here and it can do the rest.',
     },
+    settings: {
+      title: 'Assistant settings',
+      description: 'Which provider and model the assistant uses. Its prompt and tools are fixed.',
+      provider: 'Provider',
+      noProvider: 'None — the assistant cannot chat',
+      model: 'Model',
+      providerDefault: "The provider's default",
+      providerDefaultNamed: "Provider default ({{model}})",
+      save: 'Save',
+      saving: 'Saving…',
+      cancel: 'Cancel',
+    },
     actions: {
       title: 'Assistant actions',
       description: 'Changes the assistant proposed, and what became of each one.',

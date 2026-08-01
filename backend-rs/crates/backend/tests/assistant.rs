@@ -321,3 +321,117 @@ async fn each_owner_gets_their_own_assistant() {
     assert_ne!(one["agent_id"], two["agent_id"]);
     assert_ne!(one["chat_id"], two["chat_id"]);
 }
+
+#[tokio::test]
+async fn assistant_provider_can_be_changed_and_unbound() {
+    let app = router_for_tests().await;
+    let token = register(&app, "assistant-rebind@example.com").await;
+    let first = create_provider(&app, &token).await;
+    let second = create_named_provider(&app, &token, "Secondary", "gpt-4o").await;
+
+    patch_assistant(&app, &token, json!({"llm_provider_id": first})).await;
+    let bound = patch_assistant(&app, &token, json!({"llm_provider_id": second})).await;
+    assert_eq!(bound["provider_id"], json!(second));
+
+    // Omitting the field clears the binding, which is how the UI unbinds.
+    let cleared = patch_assistant(&app, &token, json!({})).await;
+    assert_eq!(cleared["provider_id"], Value::Null);
+    assert_eq!(cleared["provider_configured"], json!(false));
+}
+
+#[tokio::test]
+async fn assistant_model_can_be_chosen_and_survives_a_provider_change() {
+    let app = router_for_tests().await;
+    let token = register(&app, "assistant-model@example.com").await;
+    let provider = create_named_provider(&app, &token, "Primary", "gpt-4o-mini").await;
+
+    let bound = patch_assistant(
+        &app,
+        &token,
+        json!({"llm_provider_id": provider, "model": "gpt-4o-mini"}),
+    )
+    .await;
+    assert_eq!(bound["model"], json!("gpt-4o-mini"));
+
+    let reread = get_assistant(&app, &token).await;
+    assert_eq!(reread["model"], json!("gpt-4o-mini"));
+
+    // Clearing the model falls back to the provider's default rather than
+    // pinning the assistant to a model the new provider may not offer.
+    let cleared = patch_assistant(&app, &token, json!({"llm_provider_id": provider})).await;
+    assert_eq!(cleared["model"], Value::Null);
+}
+
+#[tokio::test]
+async fn assistant_model_must_be_offered_by_the_bound_provider() {
+    let app = router_for_tests().await;
+    let token = register(&app, "assistant-bad-model@example.com").await;
+    let provider = create_named_provider(&app, &token, "Primary", "gpt-4o-mini").await;
+
+    let (status, body) = send(
+        &app,
+        request(
+            "PATCH",
+            "/api/v2/assistant",
+            Some(&token),
+            json!({"llm_provider_id": provider, "model": "not-a-model"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+}
+
+#[tokio::test]
+async fn assistant_model_needs_a_provider_to_validate_against() {
+    let app = router_for_tests().await;
+    let token = register(&app, "assistant-model-no-provider@example.com").await;
+    get_assistant(&app, &token).await;
+
+    let (status, body) = send(
+        &app,
+        request(
+            "PATCH",
+            "/api/v2/assistant",
+            Some(&token),
+            json!({"model": "gpt-4o"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+}
+
+async fn create_named_provider(
+    app: &Router,
+    token: &str,
+    name: &str,
+    default_model: &str,
+) -> String {
+    let (status, body) = send(
+        app,
+        request(
+            "POST",
+            "/api/v2/llm-providers",
+            Some(token),
+            json!({
+                "name": name,
+                "kind": "openai-compatible",
+                "base_url": "https://example.invalid/v1",
+                "api_key": "sk-not-a-real-key",
+                "default_model": default_model
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body:?}");
+    body["id"].as_str().unwrap().to_string()
+}
+
+async fn patch_assistant(app: &Router, token: &str, body: Value) -> Value {
+    let (status, response) = send(
+        app,
+        request("PATCH", "/api/v2/assistant", Some(token), body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {response:?}");
+    response
+}

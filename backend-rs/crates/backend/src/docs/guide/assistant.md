@@ -27,7 +27,16 @@ The assistant is an LLM agent, so it needs its own provider binding before it ca
 
 Until one is bound, the panel shows the providers you have and lets you pick which the assistant should use. If you have none yet, it links to the provider form instead.
 
-Its model can be chosen per message from the composer, independently of the agent it is bound to.
+## Changing its settings
+
+The gear icon in the panel header opens the assistant's settings at any time. Two things are configurable:
+
+- **Provider** — which one it calls. Clearing it stops the assistant chatting until another is chosen.
+- **Model** — which model to use, or the provider's default. Only models the selected provider offers are listed, and switching providers clears a model the new one does not have.
+
+Its prompt, its tools, and its lack of a workspace are fixed. Those are what make it safe to give app-control tools, so they are not editable.
+
+Its model can also be chosen per message from the composer, which overrides the setting above for that one message.
 
 ## The panel
 

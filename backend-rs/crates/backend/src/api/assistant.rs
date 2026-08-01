@@ -14,7 +14,7 @@
 
 use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
@@ -82,19 +82,25 @@ pub struct AssistantResponse {
     agent_id: String,
     chat_id: String,
     provider_id: Option<String>,
+    /// Model to use, or `None` to follow the provider's default. Kept out of
+    /// the provider row so changing providers does not silently pin the
+    /// Assistant to a model the new one may not offer.
+    model: Option<String>,
     /// Whether the Assistant can actually hold a conversation yet. The dock
-    /// shows its scripted setup checklist while this is false, because an LLM
-    /// agent cannot talk the user through configuring the provider it needs in
-    /// order to talk.
+    /// shows its setup panel while this is false, because an LLM agent cannot
+    /// talk the user through configuring the provider it needs in order to
+    /// talk.
     provider_configured: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateRequest {
-    /// The only field the caller may set. Everything else about the Assistant
-    /// is fixed by construction.
+    /// Provider to call. Omitted clears the binding.
     #[serde(default)]
     llm_provider_id: Option<String>,
+    /// Model to use. Omitted follows the provider's default.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 pub async fn get(
@@ -117,20 +123,89 @@ pub async fn update(
         Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
         None => None,
     };
-    sqlx::query("UPDATE agents SET provider_id = ?, updated_at = ? WHERE id = ? AND owner_id = ?")
-        .bind(&provider_id)
-        .bind(now_rfc3339())
-        .bind(&existing.agent_id)
-        .bind(&owner_id)
-        .execute(state.db.pool())
-        .await
-        .map_err(|_| ApiError::internal("failed to update the assistant"))?;
+    let model = match body
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
+        Some(model) => {
+            let Some(provider_id) = provider_id.as_deref() else {
+                return Err(ApiError::invalid_input(
+                    "a provider is required before choosing a model",
+                ));
+            };
+            Some(validate_model(state.db.pool(), provider_id, model).await?)
+        }
+        None => None,
+    };
+    // `model_config_json` is the same shape a normal agent uses, so the runtime
+    // reads it through the existing `model_from_config` path.
+    let model_config_json = model
+        .as_deref()
+        .map(|model| json!({ "model": model }).to_string());
+
+    sqlx::query(
+        "UPDATE agents SET provider_id = ?, model_config_json = ?, updated_at = ?          WHERE id = ? AND owner_id = ?",
+    )
+    .bind(&provider_id)
+    .bind(&model_config_json)
+    .bind(now_rfc3339())
+    .bind(&existing.agent_id)
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to update the assistant"))?;
 
     Ok(Json(AssistantResponse {
         provider_configured: provider_id.is_some(),
         provider_id,
+        model,
         ..existing
     }))
+}
+
+/// Confirm a model is one the bound provider actually offers.
+///
+/// Without this the Assistant can be pinned to a model that only fails at send
+/// time, inside a stream, with no obvious cause.
+async fn validate_model(
+    pool: &SqlitePool,
+    provider_id: &str,
+    model: &str,
+) -> Result<String, ApiError> {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT default_model, models_json FROM llm_providers WHERE id = ?")
+            .bind(provider_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiError::internal("database error"))?;
+    let Some((default_model, models_json)) = row else {
+        return Err(ApiError::invalid_input(
+            "llm_provider_id does not reference a provider",
+        ));
+    };
+    if default_model == model {
+        return Ok(model.to_string());
+    }
+    let listed = models_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| {
+            value.as_array().map(|models| {
+                models
+                    .iter()
+                    .any(|entry| entry.get("id").and_then(Value::as_str) == Some(model))
+            })
+        })
+        .unwrap_or(false);
+    if listed {
+        Ok(model.to_string())
+    } else {
+        Err(ApiError::invalid_input(
+            "model is not offered by that provider",
+        ))
+    }
 }
 
 /// Return this owner's Assistant, creating it on first use.
@@ -197,11 +272,12 @@ struct AssistantRow {
     agent_id: String,
     chat_id: String,
     provider_id: Option<String>,
+    model_config_json: Option<String>,
 }
 
 async fn load(pool: &SqlitePool, owner_id: &str) -> Result<Option<AssistantResponse>, ApiError> {
     let row = sqlx::query_as::<_, AssistantRow>(
-        "SELECT a.id AS agent_id, g.id AS chat_id, a.provider_id AS provider_id \
+        "SELECT a.id AS agent_id, g.id AS chat_id, a.provider_id AS provider_id,                 a.model_config_json AS model_config_json \
          FROM agents a \
          JOIN groups g ON g.direct_agent_id = a.id \
            AND g.conversation_kind = 'direct' AND g.status = 'active' \
@@ -218,6 +294,16 @@ async fn load(pool: &SqlitePool, owner_id: &str) -> Result<Option<AssistantRespo
         chat_id: row.chat_id,
         provider_configured: row.provider_id.is_some(),
         provider_id: row.provider_id,
+        model: row
+            .model_config_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|value| {
+                value
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
     }))
 }
 

@@ -394,6 +394,18 @@ export const zhCN: TranslationShape<typeof enUS> = {
       agentHint: '提示词、模型，以及它可以使用的工具。',
       afterProvider: '配置好供应商后，在这里直接告诉助手你要做什么。',
     },
+    settings: {
+      title: '助手设置',
+      description: '助手使用的供应商和模型。提示词与工具是固定的。',
+      provider: '供应商',
+      noProvider: '未选择 — 助手无法对话',
+      model: '模型',
+      providerDefault: '供应商默认模型',
+      providerDefaultNamed: '供应商默认（{{model}}）',
+      save: '保存',
+      saving: '正在保存…',
+      cancel: '取消',
+    },
     actions: {
       title: '助手操作记录',
       description: '助手提议过的更改，以及每一项的结果。',

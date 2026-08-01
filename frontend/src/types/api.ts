@@ -269,6 +269,8 @@ export interface AssistantRead {
   agent_id: string
   chat_id: string
   provider_id: string | null
+  /** Model to use, or null to follow the provider's default. */
+  model: string | null
   /**
    * Whether the Assistant can hold a conversation yet. False means the dock
    * shows its scripted setup checklist: an LLM agent cannot talk the user

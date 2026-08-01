@@ -11,11 +11,18 @@
  * cover it rather than fighting it.
  */
 
-import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Minus, Sparkles } from 'lucide-react'
+import { Bot, Minus, Settings2, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { AssistantSettings } from '@/components/assistant/AssistantSettings'
 import { AssistantSetupChecklist } from '@/components/assistant/AssistantSetupChecklist'
 import {
   MIN_DOCK_HEIGHT,
@@ -75,6 +82,7 @@ export function AssistantDock() {
   const restoreFocusRef = useRef(false)
 
   const assistant = useAssistant()
+  const [showSettings, setShowSettings] = useState(false)
   // The dock is a single-agent conversation, so a per-message model is
   // unambiguous here too.
   const provider = useProvider(assistant.data?.provider_id ?? undefined)
@@ -230,20 +238,35 @@ export function AssistantDock() {
           <Bot className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
           <span className="truncate text-sm font-medium">{t('title')}</span>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          aria-label={t('collapse')}
-          onClick={collapse}
-        >
-          <Minus className="h-4 w-4" aria-hidden />
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label={t('settings.title')}
+            aria-pressed={showSettings}
+            onClick={() => setShowSettings((open) => !open)}
+          >
+            <Settings2 className="h-4 w-4" aria-hidden />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label={t('collapse')}
+            onClick={collapse}
+          >
+            <Minus className="h-4 w-4" aria-hidden />
+          </Button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {assistant.data?.provider_configured && assistant.data.chat_id ? (
+        {showSettings ? (
+          <AssistantSettings onClose={() => setShowSettings(false)} />
+        ) : assistant.data?.provider_configured && assistant.data.chat_id ? (
           <ConversationChatView
             conversationId={assistant.data.chat_id}
             workspaceId={null}
