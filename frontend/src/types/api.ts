@@ -345,6 +345,8 @@ export interface ProviderModelConfig {
   id: string
   context_window_tokens: number | null
   context_output_reserve_ratio: number | null
+  /** Whether this model accepts a reasoning-effort setting. */
+  supports_reasoning_effort?: boolean
 }
 
 export interface LLMProviderRead {

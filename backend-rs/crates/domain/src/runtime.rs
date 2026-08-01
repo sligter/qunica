@@ -104,6 +104,54 @@ pub struct ChatRequest {
     #[serde(default)]
     pub include_empty_tools: bool,
     pub tools: Vec<ToolDefinition>,
+    /// How hard the model should think before answering.
+    ///
+    /// A neutral three-level abstraction, not a passthrough: the providers
+    /// spell this very differently — an enum for OpenAI, a token budget for
+    /// Anthropic, a nested config for Gemini — so each maps it itself.
+    /// `None` means the key is omitted entirely rather than sent as null.
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Reasoning depth, in terms every supported provider can express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    /// A thinking-token budget for providers that take one.
+    ///
+    /// Callers must keep the result below the request's `max_tokens`; the
+    /// provider rejects a budget that is not.
+    pub const fn thinking_budget_tokens(self) -> i64 {
+        match self {
+            Self::Low => 1024,
+            Self::Medium => 2048,
+            Self::High => 3072,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

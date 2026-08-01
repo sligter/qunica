@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use ag_swarmer_backend::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider, ToolCall,
+    OpenAiCompatibleProvider, ReasoningEffort, ToolCall,
 };
 use ag_swarmer_domain::runtime::ChatContentPart;
 use axum::{body::Body, http::header, response::IntoResponse, Router};
@@ -77,6 +77,7 @@ fn request() -> ChatRequest {
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
@@ -94,6 +95,7 @@ fn image_request(role: &str) -> ChatRequest {
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
@@ -118,6 +120,7 @@ fn continuation_request() -> ChatRequest {
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
@@ -150,6 +153,7 @@ fn parallel_continuation_request() -> ChatRequest {
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
@@ -175,6 +179,7 @@ fn gemini_thought_signature_request() -> ChatRequest {
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
+        reasoning_effort: None,
     }
 }
 
@@ -613,5 +618,107 @@ async fn llm_contract_gemini_replays_function_call_thought_signature() {
     assert_eq!(
         contents[2]["parts"][0]["functionResponse"]["name"],
         "search"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning effort: one three-level abstraction, three provider dialects
+// ---------------------------------------------------------------------------
+
+fn effort_request(effort: Option<ReasoningEffort>) -> ChatRequest {
+    ChatRequest {
+        model: "test-model".to_string(),
+        messages: vec![ChatMessage::text("user", "think")],
+        temperature: Some(0.0),
+        reasoning_passback: false,
+        include_empty_tools: false,
+        tools: Vec::new(),
+        reasoning_effort: effort,
+    }
+}
+
+async fn captured_body(
+    provider: &dyn LlmProvider,
+    captures: &Arc<Mutex<Vec<Value>>>,
+    effort: Option<ReasoningEffort>,
+) -> Value {
+    let _ = collect(provider.stream(effort_request(effort)).await.unwrap()).await;
+    let body = captures.lock().await.last().cloned().expect("a request");
+    captures.lock().await.clear();
+    body
+}
+
+#[tokio::test]
+async fn llm_contract_openai_maps_effort_to_its_own_enum() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    for (effort, expected) in [
+        (ReasoningEffort::Low, "low"),
+        (ReasoningEffort::Medium, "medium"),
+        (ReasoningEffort::High, "high"),
+    ] {
+        let body = captured_body(&provider, &captures, Some(effort)).await;
+        assert_eq!(body["reasoning_effort"], json!(expected));
+    }
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_maps_effort_to_a_thinking_budget() {
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let mut previous = 0;
+    for effort in [
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+    ] {
+        let body = captured_body(&provider, &captures, Some(effort)).await;
+        assert_eq!(body["thinking"]["type"], "enabled");
+        let budget = body["thinking"]["budget_tokens"].as_i64().unwrap();
+        // Anthropic rejects a budget that is not below max_tokens, so the
+        // mapping has to stay under whatever the request asks for.
+        let max_tokens = body["max_tokens"].as_i64().unwrap();
+        assert!(
+            budget < max_tokens,
+            "budget {budget} vs max_tokens {max_tokens}"
+        );
+        assert!(budget > previous, "effort must increase the budget");
+        previous = budget;
+    }
+}
+
+#[tokio::test]
+async fn llm_contract_gemini_maps_effort_to_a_thinking_config() {
+    let (url, captures) = capture_server("data: {}\n").await;
+    let provider = GeminiProvider::new(url, "test-key");
+
+    let body = captured_body(&provider, &captures, Some(ReasoningEffort::High)).await;
+    let thinking = &body["generationConfig"]["thinkingConfig"];
+    assert!(thinking.is_object(), "{body}");
+    assert!(thinking["thinkingBudget"].as_i64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn llm_contract_absent_effort_omits_the_key_entirely() {
+    // A `null` is not the same as absence: a strict provider rejects the key
+    // outright, and an older gateway may not know it at all.
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let openai = OpenAiCompatibleProvider::new(url, "test-key");
+    let body = captured_body(&openai, &captures, None).await;
+    assert!(body.get("reasoning_effort").is_none(), "{body}");
+
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let anthropic = AnthropicProvider::new(url, "test-key");
+    let body = captured_body(&anthropic, &captures, None).await;
+    assert!(body.get("thinking").is_none(), "{body}");
+
+    let (url, captures) = capture_server("data: {}\n").await;
+    let gemini = GeminiProvider::new(url, "test-key");
+    let body = captured_body(&gemini, &captures, None).await;
+    assert!(
+        body["generationConfig"].get("thinkingConfig").is_none(),
+        "{body}"
     );
 }

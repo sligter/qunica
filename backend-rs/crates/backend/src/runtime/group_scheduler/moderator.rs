@@ -181,6 +181,9 @@ fn moderator_chat_request(config: &ModeratorConfig, request: &ModeratorRequest) 
         reasoning_passback: false,
         include_empty_tools: true,
         tools: Vec::new(),
+        // The moderator picks a speaker; the user's per-message choice is
+        // about the answer, not about routing.
+        reasoning_effort: None,
     }
 }
 

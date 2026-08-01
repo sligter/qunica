@@ -160,6 +160,7 @@ pub async fn create(
                 id: default_model.clone(),
                 context_window_tokens: body.context_window_tokens,
                 context_output_reserve_ratio: body.context_output_reserve_ratio,
+                supports_reasoning_effort: false,
             }]
         }),
         &default_model,
@@ -294,6 +295,7 @@ pub async fn update(
             id: default_model.clone(),
             context_window_tokens,
             context_output_reserve_ratio,
+            supports_reasoning_effort: false,
         });
     }
     if body.models.is_none() {
@@ -554,6 +556,7 @@ fn stored_models(row: &ProviderRow) -> Vec<ProviderModelConfig> {
                 id: row.default_model.clone(),
                 context_window_tokens: row.context_window_tokens,
                 context_output_reserve_ratio: row.context_output_reserve_ratio,
+                supports_reasoning_effort: false,
             }]
         })
 }

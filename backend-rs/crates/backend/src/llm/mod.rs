@@ -21,7 +21,7 @@ pub use openai_compatible::OpenAiCompatibleProvider;
 // crate directly. The domain crate holds only pure data types; the streaming
 // provider behaviour below lives here in the backend.
 pub use ag_swarmer_domain::runtime::{
-    ChatDelta, ChatMessage, ChatRequest, ContextUsage, ToolCall, ToolDefinition,
+    ChatDelta, ChatMessage, ChatRequest, ContextUsage, ReasoningEffort, ToolCall, ToolDefinition,
 };
 
 use async_trait::async_trait;
@@ -50,6 +50,14 @@ pub struct ProviderModelConfig {
     pub context_window_tokens: Option<i64>,
     #[serde(default)]
     pub context_output_reserve_ratio: Option<f64>,
+    /// Whether this model accepts a reasoning-effort setting.
+    ///
+    /// Defaults to false so the control stays hidden until someone says
+    /// otherwise: sending the field to a model that rejects it turns a normal
+    /// question into a provider error, and models that predate this flag have
+    /// no value stored.
+    #[serde(default)]
+    pub supports_reasoning_effort: bool,
 }
 
 pub fn model_context_config(models_json: Option<&str>, model: &str) -> (Option<i64>, Option<f64>) {

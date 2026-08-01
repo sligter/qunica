@@ -2010,6 +2010,8 @@ pub async fn generate_group_workspace_git_commit_message(
         reasoning_passback: provider_config.reasoning_passback,
         include_empty_tools: false,
         tools: Vec::new(),
+        // A commit-message generation, not a chat turn: no user override.
+        reasoning_effort: None,
     };
     let mut deltas = provider.stream(request).await.map_err(|err| {
         ApiError::invalid_input(format!("commit message generation failed: {err}"))

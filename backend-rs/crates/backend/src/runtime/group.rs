@@ -50,7 +50,7 @@ use crate::acp::{
 };
 use crate::llm::{
     build_provider, model_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest,
-    LlmProvider, ProviderConfig, ToolCall, ToolDefinition,
+    LlmProvider, ProviderConfig, ReasoningEffort, ToolCall, ToolDefinition,
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
@@ -154,6 +154,8 @@ pub struct TurnRequest {
     /// configured model. Already validated against the provider by the API
     /// layer; the runtime only applies it.
     pub model_override: Option<String>,
+    /// Reasoning depth for this one message.
+    pub effort_override: Option<ReasoningEffort>,
 }
 
 /// Durable metadata for a workspace file referenced by a user message.
@@ -273,6 +275,7 @@ pub async fn run_group_turn_with_stream_id(
         thread_id,
         group_id: req.group_id.clone(),
         model_override: req.model_override.clone(),
+        effort_override: req.effort_override,
         scheduled_dispatch: None,
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
@@ -346,9 +349,10 @@ pub async fn run_thread_resume(
         allocator,
         thread_id: req.thread_id.clone(),
         group_id: req.group_id.clone(),
-        // Resuming replays an interrupted turn; the model it started on is the
-        // right one, and there is no new message to carry an override.
+        // Resuming replays an interrupted turn; the settings it started on are
+        // the right ones, and there is no new message to carry an override.
         model_override: None,
+        effort_override: None,
         scheduled_dispatch: None,
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
@@ -384,6 +388,8 @@ struct StreamCtx {
     /// in the turn, since the user picked it for the message rather than for a
     /// particular responder.
     model_override: Option<String>,
+    /// Reasoning depth chosen for this one message, on the same terms.
+    effort_override: Option<ReasoningEffort>,
     scheduled_dispatch: Option<ScheduledDispatch>,
     scheduled_total_tokens: u64,
     scheduled_accounted_tokens: u64,
@@ -2553,10 +2559,9 @@ async fn run_agent_turn(
     let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
     // A per-message override wins over the agent's configured model. The API
     // layer already checked it against the bound provider's catalog.
-    let model = ctx
-        .model_override
-        .clone()
-        .unwrap_or_else(|| model_from_config(&agent.model_config_json, &provider_cfg.default_model));
+    let model = ctx.model_override.clone().unwrap_or_else(|| {
+        model_from_config(&agent.model_config_json, &provider_cfg.default_model)
+    });
     let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
@@ -2606,6 +2611,7 @@ async fn run_agent_turn(
             reasoning_passback: provider_cfg.reasoning_passback,
             include_empty_tools: false,
             tools: invocation.tools.clone(),
+            reasoning_effort: ctx.effort_override,
         };
         let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
             Ok(deltas) => deltas,

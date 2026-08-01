@@ -82,10 +82,14 @@ interface ComposerProps {
    * picker: a group whose agents span several providers has no one catalog to
    * offer, and one model is not a choice.
    */
-  models?: Array<{ id: string }>
+  models?: Array<{ id: string; supports_reasoning_effort?: boolean }>
   /** The model used when the user has not picked one. */
   defaultModel?: string
 }
+
+/** Reasoning depth, matching the backend's three levels. */
+const EFFORT_LEVELS = ['low', 'medium', 'high'] as const
+type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
 /** ~10 lines of text-sm (20px line-height) plus padding. */
 const MAX_TEXTAREA_HEIGHT = 208
@@ -198,6 +202,13 @@ export function Composer({
   const [modelOverride, setModelOverride] = useState<string | null>(null)
   const [showModels, setShowModels] = useState(false)
   const selectedModel = modelOverride ?? defaultModel ?? models[0]?.id ?? ''
+  const [effortOverride, setEffortOverride] = useState<EffortLevel | null>(null)
+  const [showEfforts, setShowEfforts] = useState(false)
+  // Only offered when the selected model advertises support. Sending the field
+  // to a model that rejects it turns a normal question into a provider error.
+  const effortSupported = Boolean(
+    models.find((model) => model.id === selectedModel)?.supports_reasoning_effort,
+  )
   const [mentionStart, setMentionStart] = useState(-1)
   const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -442,6 +453,7 @@ export function Composer({
         // current default would pin the message to whatever the agent happened
         // to be set to at send time.
         ...(modelOverride ? { model_override: modelOverride } : {}),
+        ...(effortOverride && effortSupported ? { effort_override: effortOverride } : {}),
       })
       if (draftRevisionRef.current === sentDraftRevision) updateValue('')
       updateAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.localId)))
@@ -826,6 +838,54 @@ export function Composer({
             ) : (
               <div className="flex-1" />
             )}
+            {effortSupported ? (
+              <div className="relative shrink-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-2xs text-muted-foreground"
+                  onClick={() => setShowEfforts((open) => !open)}
+                  aria-haspopup="listbox"
+                  aria-expanded={showEfforts}
+                >
+                  <span className="truncate">
+                    {effortOverride
+                      ? t(`composer.effort.${effortOverride}`)
+                      : t('composer.effort.label')}
+                  </span>
+                  <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
+                </Button>
+                {showEfforts ? (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40 cursor-default"
+                      onClick={() => setShowEfforts(false)}
+                    />
+                    <div
+                      role="listbox"
+                      className="absolute bottom-full right-0 z-50 mb-2 w-40 rounded-md border border-border bg-background p-1 shadow-md"
+                    >
+                      {EFFORT_LEVELS.map((level) => (
+                        <button
+                          key={level}
+                          type="button"
+                          role="option"
+                          aria-selected={level === effortOverride}
+                          className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                          onClick={() => {
+                            setEffortOverride(level)
+                            setShowEfforts(false)
+                          }}
+                        >
+                          {t(`composer.effort.${level}`)}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
             {models.length > 1 ? (
               <div className="relative shrink-0">
                 <Button

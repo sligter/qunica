@@ -239,6 +239,15 @@ impl LlmProvider for AnthropicProvider {
         if let Some(system) = system {
             body["system"] = system;
         }
+        // Anthropic takes a token budget, not a level, and rejects one that is
+        // not strictly below `max_tokens`. Clamp rather than trust the table:
+        // if DEFAULT_MAX_TOKENS is ever lowered, the request must still be
+        // valid instead of failing at the provider.
+        if let Some(effort) = request.reasoning_effort {
+            let ceiling = DEFAULT_MAX_TOKENS - 1;
+            let budget = effort.thinking_budget_tokens().min(ceiling).max(1024);
+            body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+        }
         if request.include_empty_tools || !request.tools.is_empty() {
             body["tools"] = Value::Array(
                 request

@@ -8,6 +8,7 @@
 use std::convert::Infallible;
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
+use ag_swarmer_domain::runtime::ReasoningEffort;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -58,6 +59,9 @@ pub struct MessageInput {
     /// starts, so a bad value is a normal 400 rather than an in-stream error.
     #[serde(default)]
     model_override: Option<String>,
+    /// Reasoning depth for this message: `low`, `medium`, or `high`.
+    #[serde(default)]
+    effort_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -583,6 +587,7 @@ async fn send_for_kind(
         body.model_override.as_deref(),
     )
     .await?;
+    let effort_override = parse_effort_override(body.effort_override.as_deref())?;
     let request = TurnRequest {
         group_id: group_id.clone(),
         owner_id,
@@ -590,6 +595,7 @@ async fn send_for_kind(
         content,
         attachments,
         model_override,
+        effort_override,
     };
     let handle = tokio::spawn(async move { run_group_turn(services, request, tx).await });
 
@@ -767,6 +773,21 @@ async fn validate_model_override(
     Ok(Some(requested.to_string()))
 }
 
+/// Parse a per-message reasoning-effort level.
+///
+/// Whether the chosen model actually supports thinking is a client-side
+/// concern — the UI hides the control for models that do not advertise it —
+/// but an unrecognized level is still rejected here rather than silently
+/// dropped, so a typo does not quietly produce an ordinary answer.
+fn parse_effort_override(raw: Option<&str>) -> Result<Option<ReasoningEffort>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    ReasoningEffort::parse(raw)
+        .map(Some)
+        .ok_or_else(|| ApiError::invalid_input("effort_override must be low, medium, or high"))
+}
+
 pub async fn stream_group(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -853,6 +874,7 @@ async fn stream_for_kind(
         body.model_override.as_deref(),
     )
     .await?;
+    let effort_override = parse_effort_override(body.effort_override.as_deref())?;
     let request = TurnRequest {
         group_id,
         owner_id,
@@ -860,6 +882,7 @@ async fn stream_for_kind(
         content,
         attachments,
         model_override,
+        effort_override,
     };
     tokio::spawn(async move {
         run_group_turn_with_stream_id(services, request, tx, stream_id).await;

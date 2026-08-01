@@ -181,6 +181,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        // Absent rather than null: a strict gateway rejects the key outright.
+        if let Some(effort) = request.reasoning_effort {
+            body["reasoning_effort"] = json!(effort.as_str());
+        }
         if request.include_empty_tools || !request.tools.is_empty() {
             body["tools"] = Value::Array(
                 request

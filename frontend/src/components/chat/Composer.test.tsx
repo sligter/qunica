@@ -178,6 +178,42 @@ describe('Composer', () => {
     expect(screen.queryByRole('combobox')).toBeNull()
   })
 
+  it('sends the chosen reasoning effort as a per-message override', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    render(
+      <Composer
+        onSend={onSend}
+        models={[{ id: 'o3', supports_reasoning_effort: true }]}
+        defaultModel="o3"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /thinking/i }))
+    await user.click(screen.getByRole('option', { name: 'High' }))
+    await user.type(screen.getByRole('textbox'), 'hard question')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({ effort_override: 'high' }),
+      ),
+    )
+  })
+
+  it('hides the effort control for a model that does not support it', async () => {
+    // Sending the field to a model that rejects it turns a normal question
+    // into a provider error.
+    render(
+      <Composer
+        onSend={vi.fn()}
+        models={[{ id: 'gpt-4o-mini' }, { id: 'gpt-4o' }]}
+        defaultModel="gpt-4o-mini"
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /thinking/i })).toBeNull()
+  })
+
   it('localizes the composer placeholder and stream cancellation action', async () => {
     await i18n.changeLanguage('en-US')
     render(<Composer onSend={vi.fn()} onCancel={vi.fn()} isStreaming />)

@@ -212,6 +212,12 @@ impl LlmProvider for GeminiProvider {
         if let Some(temp) = request.temperature {
             generation_config.insert("temperature".to_string(), json!(temp));
         }
+        if let Some(effort) = request.reasoning_effort {
+            generation_config.insert(
+                "thinkingConfig".to_string(),
+                json!({ "thinkingBudget": effort.thinking_budget_tokens() }),
+            );
+        }
         let mut body = json!({
             "contents": to_contents(&request.messages),
             "generationConfig": Value::Object(generation_config),

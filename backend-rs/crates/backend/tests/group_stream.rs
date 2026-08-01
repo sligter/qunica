@@ -1599,6 +1599,7 @@ async fn vision_attachment_unsupported_or_unavailable_workspace_files_are_refere
             content: "Continue.".to_string(),
             attachments: Vec::new(),
             model_override: None,
+            effort_override: None,
         },
         tx,
     )
@@ -4436,6 +4437,7 @@ async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
         content: "cancel while moderator is selecting".to_owned(),
         attachments: Vec::new(),
         model_override: None,
+        effort_override: None,
     };
     let (tx, mut rx) = mpsc::channel(128);
     let moderator_started = started.notified();
@@ -5678,6 +5680,7 @@ async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_onc
         content: "@Caller start".to_string(),
         attachments: Vec::new(),
         model_override: None,
+        effort_override: None,
     };
     let (tx, mut rx) = mpsc::channel(128);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -6485,6 +6488,7 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
         content: "hi".to_string(),
         attachments: Vec::new(),
         model_override: None,
+        effort_override: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -6582,6 +6586,7 @@ async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal
         content: "hi".to_string(),
         attachments: Vec::new(),
         model_override: None,
+        effort_override: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -6660,6 +6665,7 @@ async fn bounded_stream_client_disconnect_runs_to_replayable_scheduler_terminal_
         content: "hi".to_string(),
         attachments: Vec::new(),
         model_override: None,
+        effort_override: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
