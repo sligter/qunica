@@ -5,10 +5,14 @@
  * would need its own IPC bridge, its own token, and its own always-on-top
  * handling, and would not exist at all in the browser build.
  *
- * Layering is deliberate. The dock sits at `z-[90]`: above the terminal dock
- * and the workspace panel, below the `z-50` Radix overlays and the `z-[100]`
- * text context menu in `AppLayout`, so dialogs and right-click menus still
- * cover it rather than fighting it.
+ * Layering is deliberate. The dock sits at `z-[30]`: above the ordinary page
+ * content it floats over, but below the `z-50` Radix overlays and the `z-[100]`
+ * text context menu in `AppLayout`.
+ *
+ * Below, not above. Radix portals its dialogs to `document.body`, so they are
+ * siblings of this panel rather than descendants — a dock stacked above them
+ * covers its own confirm dialogs, which then render visibly but cannot be
+ * clicked.
  */
 
 import {
@@ -208,7 +212,7 @@ export function AssistantDock() {
         aria-label={t('title')}
         title={t('title')}
         onClick={toggleCollapsed}
-        className="fixed bottom-4 right-4 z-[90] flex h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-background text-foreground shadow-lg outline-none transition hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        className="fixed bottom-4 right-4 z-[30] flex h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-background text-foreground shadow-lg outline-none transition hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Sparkles className="h-5 w-5" aria-hidden />
       </button>,
@@ -221,7 +225,7 @@ export function AssistantDock() {
       ref={panelRef}
       role="dialog"
       aria-label={t('title')}
-      className="fixed z-[90] flex flex-col overflow-hidden rounded-xl border border-border/70 bg-background shadow-2xl"
+      className="fixed z-[30] flex flex-col overflow-hidden rounded-xl border border-border/70 bg-background shadow-2xl"
       style={{
         left: placement.x,
         top: placement.y,

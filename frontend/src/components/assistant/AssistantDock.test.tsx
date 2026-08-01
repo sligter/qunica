@@ -186,6 +186,27 @@ describe('AssistantDock', () => {
     expect(await screen.findByTestId('assistant-chat')).toBeVisible()
   })
 
+  it('sits below the dialog layer so dialogs opened from it are usable', async () => {
+    const user = userEvent.setup()
+    await renderDock()
+    await user.click(await screen.findByRole('button', { name: /assistant/i }))
+    const dialog = await screen.findByRole('dialog')
+
+    // Radix dialogs portal to document.body at z-50, as siblings of the dock
+    // rather than descendants. A dock above that renders over its own confirm
+    // dialogs, leaving them visible but unclickable.
+    const layer = (element: Element) => {
+      const match = /(?:^|\s)z-\[(\d+)\]/.exec(element.className)
+      return match ? Number(match[1]) : 0
+    }
+    expect(layer(dialog)).toBeLessThan(50)
+
+    // The collapsed launcher is the other portalled surface.
+    await user.click(screen.getByRole('button', { name: 'Collapse assistant' }))
+    const launcher = await screen.findByRole('button', { name: 'Assistant' })
+    expect(layer(launcher)).toBeLessThan(50)
+  })
+
   it('remembers that it was left expanded', async () => {
     localStorage.setItem(
       ASSISTANT_PLACEMENT_KEY,
