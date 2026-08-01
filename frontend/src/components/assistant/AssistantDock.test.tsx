@@ -7,7 +7,10 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AssistantDock } from '@/components/assistant/AssistantDock'
-import { ASSISTANT_PLACEMENT_KEY } from '@/components/assistant/useAssistantDockPlacement'
+import {
+  ASSISTANT_PLACEMENT_KEY,
+  MIN_DOCK_WIDTH,
+} from '@/components/assistant/useAssistantDockPlacement'
 import { enUS } from '@/i18n/resources/en-US'
 import { zhCN } from '@/i18n/resources/zh-CN'
 import { useAuthStore } from '@/stores/authStore'
@@ -172,6 +175,50 @@ describe('AssistantDock', () => {
     )
     await renderDock()
     expect(await screen.findByRole('dialog')).toBeVisible()
+  })
+
+  it('resizes from every edge and corner', async () => {
+    localStorage.setItem(
+      ASSISTANT_PLACEMENT_KEY,
+      JSON.stringify({ x: 400, y: 200, width: 380, height: 560, collapsed: false }),
+    )
+    await renderDock()
+    const dialog = await screen.findByRole('dialog')
+
+    for (const direction of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) {
+      const handle = screen.getByTestId(`assistant-dock-resize-${direction}`)
+      const before = { w: dialog.style.width, h: dialog.style.height }
+
+      fireEvent.pointerDown(handle, { clientX: 600, clientY: 500, pointerId: 1, button: 0 })
+      fireEvent.pointerMove(window, { clientX: 660, clientY: 560, pointerId: 1 })
+      fireEvent.pointerUp(window, { clientX: 660, clientY: 560, pointerId: 1 })
+
+      const changed =
+        dialog.style.width !== before.w || dialog.style.height !== before.h
+      expect(changed, `dragging ${direction} changed nothing`).toBe(true)
+    }
+  })
+
+  it('stops at the minimum size instead of sliding the panel sideways', async () => {
+    localStorage.setItem(
+      ASSISTANT_PLACEMENT_KEY,
+      JSON.stringify({ x: 400, y: 200, width: 380, height: 560, collapsed: false }),
+    )
+    await renderDock()
+    const dialog = await screen.findByRole('dialog')
+
+    // Drag the west edge far past the minimum width. The east edge is what the
+    // user is holding still, so x must stop once width bottoms out rather than
+    // marching right and dragging the whole panel with it.
+    const handle = screen.getByTestId('assistant-dock-resize-w')
+    fireEvent.pointerDown(handle, { clientX: 400, clientY: 500, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(window, { clientX: 2000, clientY: 500, pointerId: 1 })
+    fireEvent.pointerUp(window, { clientX: 2000, clientY: 500, pointerId: 1 })
+
+    expect(parseInt(dialog.style.width, 10)).toBe(MIN_DOCK_WIDTH)
+    // Right edge stays where it started: 400 + 380.
+    const right = parseInt(dialog.style.left, 10) + parseInt(dialog.style.width, 10)
+    expect(right).toBe(780)
   })
 
   it('moves with a pointer drag on the title bar', async () => {

@@ -17,12 +17,51 @@ import { Bot, Minus, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { AssistantSetupChecklist } from '@/components/assistant/AssistantSetupChecklist'
-import { useAssistantDockPlacement } from '@/components/assistant/useAssistantDockPlacement'
+import {
+  MIN_DOCK_HEIGHT,
+  MIN_DOCK_WIDTH,
+  useAssistantDockPlacement,
+} from '@/components/assistant/useAssistantDockPlacement'
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { Button } from '@/components/ui/button'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useProvider } from '@/hooks/useProviders'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
+
+/** Every edge and corner the panel can be resized from. */
+const RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
+type ResizeDirection = (typeof RESIZE_DIRECTIONS)[number]
+
+const RESIZE_CURSORS: Record<ResizeDirection, string> = {
+  n: 'ns-resize',
+  s: 'ns-resize',
+  e: 'ew-resize',
+  w: 'ew-resize',
+  ne: 'nesw-resize',
+  sw: 'nesw-resize',
+  nw: 'nwse-resize',
+  se: 'nwse-resize',
+}
+
+/**
+ * Hit areas. Edges are 6px thick and inset past the corners so a corner drag
+ * is never captured by the edge lying under it; corners are 14px squares.
+ */
+const RESIZE_HANDLE_CLASSES: Record<ResizeDirection, string> = {
+  n: 'left-3 right-3 top-0 h-1.5',
+  s: 'left-3 right-3 bottom-0 h-1.5',
+  e: 'top-3 bottom-3 right-0 w-1.5',
+  w: 'top-3 bottom-3 left-0 w-1.5',
+  ne: 'top-0 right-0 h-3.5 w-3.5',
+  nw: 'top-0 left-0 h-3.5 w-3.5',
+  se: 'bottom-0 right-0 h-3.5 w-3.5',
+  sw: 'bottom-0 left-0 h-3.5 w-3.5',
+}
+
+function clampSize(value: number, minimum: number): number {
+  return Math.max(minimum, value)
+}
 
 export function AssistantDock() {
   const { t } = useTranslation('assistant')
@@ -99,30 +138,41 @@ export function AssistantDock() {
   )
 
   const startResize = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
+    (event: ReactPointerEvent<HTMLElement>, direction: ResizeDirection) => {
       if (event.button !== 0) return
       event.preventDefault()
       event.stopPropagation()
       const startX = event.clientX
       const startY = event.clientY
-      const originWidth = placement.width
-      const originHeight = placement.height
-      const originX = placement.x
+      const origin = { ...placement }
 
       const previousCursor = document.body.style.cursor
       const previousSelect = document.body.style.userSelect
-      document.body.style.cursor = 'nwse-resize'
+      document.body.style.cursor = RESIZE_CURSORS[direction]
       document.body.style.userSelect = 'none'
 
       const onMove = (move: PointerEvent) => {
-        // The handle is on the leading (left) edge, so growing means the panel
-        // extends leftwards and its origin moves with it.
-        const deltaX = startX - move.clientX
-        setPlacement({
-          width: originWidth + deltaX,
-          height: originHeight + (move.clientY - startY),
-          x: originX - deltaX,
-        })
+        const deltaX = move.clientX - startX
+        const deltaY = move.clientY - startY
+        let { x, y, width, height } = origin
+
+        // Dragging a leading edge moves the origin as well as the size. Clamp
+        // the size first and derive the origin from it, so hitting the minimum
+        // pins the trailing edge instead of sliding the whole panel along.
+        if (direction.includes('e')) {
+          width = origin.width + deltaX
+        } else if (direction.includes('w')) {
+          width = clampSize(origin.width - deltaX, MIN_DOCK_WIDTH)
+          x = origin.x + (origin.width - width)
+        }
+        if (direction.includes('s')) {
+          height = origin.height + deltaY
+        } else if (direction.includes('n')) {
+          height = clampSize(origin.height - deltaY, MIN_DOCK_HEIGHT)
+          y = origin.y + (origin.height - height)
+        }
+
+        setPlacement({ x, y, width, height })
       }
       const onUp = () => {
         document.body.style.cursor = previousCursor
@@ -135,7 +185,7 @@ export function AssistantDock() {
       window.addEventListener('pointerup', onUp)
       window.addEventListener('pointercancel', onUp)
     },
-    [placement.height, placement.width, placement.x, setPlacement],
+    [placement, setPlacement],
   )
 
   // Signed out means the login and register routes, where a floating helper
@@ -221,11 +271,18 @@ export function AssistantDock() {
         )}
       </div>
 
-      <div
-        onPointerDown={startResize}
-        aria-hidden
-        className="absolute bottom-0 left-0 h-4 w-4 cursor-nesw-resize"
-      />
+      {/* Edges and corners, each with a hit area wider than the visible border
+          so the pointer does not have to land on a hairline. */}
+      {RESIZE_DIRECTIONS.map((direction) => (
+        <div
+          key={direction}
+          data-testid={`assistant-dock-resize-${direction}`}
+          onPointerDown={(event) => startResize(event, direction)}
+          aria-hidden
+          className={cn('absolute touch-none', RESIZE_HANDLE_CLASSES[direction])}
+          style={{ cursor: RESIZE_CURSORS[direction] }}
+        />
+      ))}
     </div>,
     document.body,
   )

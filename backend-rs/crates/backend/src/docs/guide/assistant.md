@@ -31,4 +31,4 @@ Its model can be chosen per message from the composer, independently of the agen
 
 ## The panel
 
-Collapsed, it sits as an icon in a corner. Expanded, it can be dragged by its title bar, resized from its edge, and snapped to any corner. Its position and size are remembered. `Esc` collapses it.
+Collapsed, it sits as an icon in a corner. Expanded, it can be dragged by its title bar and resized from any edge or corner, and snaps to a corner when dragged near one. Its position and size are remembered. `Esc` collapses it.
