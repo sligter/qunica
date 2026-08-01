@@ -53,6 +53,11 @@ pub struct MessageInput {
     thread_id: Option<String>,
     #[serde(default)]
     client_request_id: Option<String>,
+    /// Model to use for this message only, overriding the agent's configured
+    /// one. Validated against the bound provider's model list before the turn
+    /// starts, so a bad value is a normal 400 rather than an in-stream error.
+    #[serde(default)]
+    model_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,12 +576,20 @@ async fn send_for_kind(
     let (tx, mut rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_active_turn_registry(state.active_turns.clone());
+    let model_override = validate_model_override(
+        state.db.pool(),
+        &group_id,
+        &owner_id,
+        body.model_override.as_deref(),
+    )
+    .await?;
     let request = TurnRequest {
         group_id: group_id.clone(),
         owner_id,
         thread_id: body.thread_id,
         content,
         attachments,
+        model_override,
     };
     let handle = tokio::spawn(async move { run_group_turn(services, request, tx).await });
 
@@ -700,6 +713,60 @@ async fn send_for_kind(
     ))
 }
 
+/// Resolve a per-message model override against the providers the responding
+/// agents are bound to.
+///
+/// Validated here rather than in the runtime so an unknown model is a normal
+/// JSON 400 the client can show as a form error, instead of a turn that opens
+/// an SSE stream and then fails inside it. `None` means the agents keep their
+/// configured models.
+async fn validate_model_override(
+    pool: &sqlx::SqlitePool,
+    group_id: &str,
+    owner_id: &str,
+    requested: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    // Every distinct provider bound to an agent that could respond in this
+    // conversation. A model listed by any of them is acceptable; which agent
+    // ends up speaking is the scheduler's decision, not ours.
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT DISTINCT p.default_model, p.models_json          FROM group_agents ga          JOIN agents a ON a.id = ga.agent_id          JOIN llm_providers p ON p.id = a.provider_id          WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active'            AND p.owner_id = ? AND p.status = 'active'",
+    )
+    .bind(group_id)
+    .bind(owner_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+
+    let known = rows.iter().any(|(default_model, models_json)| {
+        if default_model == requested {
+            return true;
+        }
+        models_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|value| {
+                value.as_array().map(|models| {
+                    models
+                        .iter()
+                        .any(|model| model.get("id").and_then(Value::as_str) == Some(requested))
+                })
+            })
+            .unwrap_or(false)
+    });
+
+    if !known {
+        return Err(ApiError::invalid_input(
+            "model_override is not offered by the provider bound to this conversation",
+        ));
+    }
+    Ok(Some(requested.to_string()))
+}
+
 pub async fn stream_group(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -779,12 +846,20 @@ async fn stream_for_kind(
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_active_turn_registry(state.active_turns.clone());
+    let model_override = validate_model_override(
+        state.db.pool(),
+        &group_id,
+        &owner_id,
+        body.model_override.as_deref(),
+    )
+    .await?;
     let request = TurnRequest {
         group_id,
         owner_id,
         thread_id: body.thread_id,
         content,
         attachments,
+        model_override,
     };
     tokio::spawn(async move {
         run_group_turn_with_stream_id(services, request, tx, stream_id).await;

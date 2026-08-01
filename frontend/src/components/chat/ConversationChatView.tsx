@@ -46,6 +46,13 @@ export interface ConversationChatViewProps {
   }
   onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
   disabledComposerReason?: string
+  /**
+   * Models the composer may offer for a single message. Supplied by the page,
+   * which already knows the conversation's agent and provider; resolving it
+   * here would make this component fetch on behalf of every caller.
+   */
+  models?: Array<{ id: string }>
+  defaultModel?: string
 }
 
 function workspaceFilesOpenStorageKey(conversationId: string): string {
@@ -102,6 +109,8 @@ export function ConversationChatView({
   capabilities,
   onConversationUpdated,
   disabledComposerReason,
+  models,
+  defaultModel,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
@@ -273,6 +282,8 @@ export function ConversationChatView({
           ) : null}
 
           <Composer
+            models={models}
+            defaultModel={defaultModel}
             key={`${scope}:${conversationId}:${workspaceId ?? 'no-workspace'}`}
             conversationId={conversationId}
             workspaceId={workspaceId}

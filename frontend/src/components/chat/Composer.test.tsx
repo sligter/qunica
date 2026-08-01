@@ -125,6 +125,59 @@ describe('Composer', () => {
     await i18n.changeLanguage('en-US')
   })
 
+  it('sends the chosen model as a per-message override', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    render(
+      <Composer
+        onSend={onSend}
+        models={[{ id: 'gpt-4o-mini' }, { id: 'gpt-4o' }]}
+        defaultModel="gpt-4o-mini"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /gpt-4o-mini/i }))
+    await user.click(screen.getByRole('option', { name: 'gpt-4o' }))
+    await user.type(screen.getByRole('textbox'), 'hello')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'hello', model_override: 'gpt-4o' }),
+      ),
+    )
+  })
+
+  it('omits the override while the default model is selected', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    render(
+      <Composer
+        onSend={onSend}
+        models={[{ id: 'gpt-4o-mini' }, { id: 'gpt-4o' }]}
+        defaultModel="gpt-4o-mini"
+      />,
+    )
+
+    await user.type(screen.getByRole('textbox'), 'hello')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    // Sending the configured model as an override would pin the message to
+    // whatever the agent happened to be set to at send time.
+    await waitFor(() => expect(onSend).toHaveBeenCalled())
+    expect(onSend.mock.calls[0][0]).not.toHaveProperty('model_override')
+  })
+
+  it('hides the model picker when there is nothing to choose between', async () => {
+    render(<Composer onSend={vi.fn()} models={[{ id: 'only-model' }]} defaultModel="only-model" />)
+    expect(screen.queryByRole('button', { name: /only-model/i })).toBeNull()
+
+    cleanup()
+    // No catalog at all — a group whose agents span several providers.
+    render(<Composer onSend={vi.fn()} />)
+    expect(screen.queryByRole('combobox')).toBeNull()
+  })
+
   it('localizes the composer placeholder and stream cancellation action', async () => {
     await i18n.changeLanguage('en-US')
     render(<Composer onSend={vi.fn()} onCancel={vi.fn()} isStreaming />)

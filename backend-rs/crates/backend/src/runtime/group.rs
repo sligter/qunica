@@ -150,6 +150,10 @@ pub struct TurnRequest {
     pub thread_id: Option<String>,
     pub content: String,
     pub attachments: Vec<MessageAttachment>,
+    /// Model chosen for this one message, overriding each responding agent's
+    /// configured model. Already validated against the provider by the API
+    /// layer; the runtime only applies it.
+    pub model_override: Option<String>,
 }
 
 /// Durable metadata for a workspace file referenced by a user message.
@@ -268,6 +272,7 @@ pub async fn run_group_turn_with_stream_id(
         allocator: services.allocator(),
         thread_id,
         group_id: req.group_id.clone(),
+        model_override: req.model_override.clone(),
         scheduled_dispatch: None,
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
@@ -341,6 +346,9 @@ pub async fn run_thread_resume(
         allocator,
         thread_id: req.thread_id.clone(),
         group_id: req.group_id.clone(),
+        // Resuming replays an interrupted turn; the model it started on is the
+        // right one, and there is no new message to carry an override.
+        model_override: None,
         scheduled_dispatch: None,
         scheduled_total_tokens: 0,
         scheduled_accounted_tokens: 0,
@@ -372,6 +380,10 @@ struct StreamCtx {
     allocator: SequenceAllocator,
     thread_id: String,
     group_id: String,
+    /// Model chosen for this one message. Applies to every agent that responds
+    /// in the turn, since the user picked it for the message rather than for a
+    /// particular responder.
+    model_override: Option<String>,
     scheduled_dispatch: Option<ScheduledDispatch>,
     scheduled_total_tokens: u64,
     scheduled_accounted_tokens: u64,
@@ -2539,7 +2551,12 @@ async fn run_agent_turn(
         .await
         .map_err(StepErr::Db)?;
     let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
-    let model = model_from_config(&agent.model_config_json, &provider_cfg.default_model);
+    // A per-message override wins over the agent's configured model. The API
+    // layer already checked it against the bound provider's catalog.
+    let model = ctx
+        .model_override
+        .clone()
+        .unwrap_or_else(|| model_from_config(&agent.model_config_json, &provider_cfg.default_model));
     let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;

@@ -364,6 +364,7 @@ async fn run_turn(
         thread_id: None,
         content: content.to_string(),
         attachments: Vec::new(),
+        model_override: None,
     };
     let (tx, mut rx) = mpsc::channel(64);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -995,6 +996,7 @@ mod agent_as_tool {
             thread_id: None,
             content: "@Caller delegate".to_string(),
             attachments: Vec::new(),
+            model_override: None,
         };
         let (tx, mut rx) = mpsc::channel(1);
         let handle = tokio::spawn(run_group_turn(services, request, tx));

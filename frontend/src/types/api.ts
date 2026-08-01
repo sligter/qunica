@@ -627,6 +627,8 @@ export interface MessageAttachment {
 export interface MessageSendInput {
   content: string
   attachments: Array<Pick<MessageAttachment, 'path'>>
+  /** Model for this message only. Omitted means the agent's configured one. */
+  model_override?: string
 }
 
 /** One persisted tool call, mirrored from the backend `content_json` schema. */

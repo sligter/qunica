@@ -1598,6 +1598,7 @@ async fn vision_attachment_unsupported_or_unavailable_workspace_files_are_refere
             thread_id: Some(thread),
             content: "Continue.".to_string(),
             attachments: Vec::new(),
+            model_override: None,
         },
         tx,
     )
@@ -4434,6 +4435,7 @@ async fn moderator_cancellation_terminalizes_turn_without_dispatch() {
         thread_id: None,
         content: "cancel while moderator is selecting".to_owned(),
         attachments: Vec::new(),
+        model_override: None,
     };
     let (tx, mut rx) = mpsc::channel(128);
     let moderator_started = started.notified();
@@ -5675,6 +5677,7 @@ async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_onc
         thread_id: None,
         content: "@Caller start".to_string(),
         attachments: Vec::new(),
+        model_override: None,
     };
     let (tx, mut rx) = mpsc::channel(128);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -6481,6 +6484,7 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
         thread_id: None,
         content: "hi".to_string(),
         attachments: Vec::new(),
+        model_override: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -6577,6 +6581,7 @@ async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal
         thread_id: None,
         content: "hi".to_string(),
         attachments: Vec::new(),
+        model_override: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -6654,6 +6659,7 @@ async fn bounded_stream_client_disconnect_runs_to_replayable_scheduler_terminal_
         thread_id: None,
         content: "hi".to_string(),
         attachments: Vec::new(),
+        model_override: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
@@ -7722,4 +7728,140 @@ async fn ask_user_pauses_a_turn_without_the_scheduler() {
         .await
         .unwrap();
     assert_eq!(dispatches, 0);
+}
+
+/// Seed a provider whose `models_json` lists more than the default model, so
+/// a per-message override has something valid to select.
+async fn seed_provider_with_models(
+    state: &AppState,
+    owner_id: &str,
+    base_url: &str,
+    models: &[&str],
+) -> String {
+    let id = seed_provider(state, owner_id, base_url).await;
+    let models_json = serde_json::to_string(
+        &models
+            .iter()
+            .map(|model| json!({ "id": model, "context_output_reserve_percent": 25 }))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    sqlx::query("UPDATE llm_providers SET models_json = ? WHERE id = ?")
+        .bind(models_json)
+        .bind(&id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn model_override_reaches_the_provider_request() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "model-override@example.com").await;
+    let owner = owner_id(&state, "model-override@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider_with_models(
+        &state,
+        &owner,
+        &base_url,
+        &["test-model", "gpt-4o-mini"],
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi", "model_override": "gpt-4o-mini"}),
+    )
+    .await;
+    assert!(!kinds(&events).iter().any(|kind| kind == "error"));
+
+    let requests = captured.lock().await;
+    assert_eq!(requests[0]["model"], "gpt-4o-mini");
+}
+
+#[tokio::test]
+async fn omitting_the_model_override_keeps_the_configured_model() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "model-default@example.com").await;
+    let owner = owner_id(&state, "model-default@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider_with_models(
+        &state,
+        &owner,
+        &base_url,
+        &["test-model", "gpt-4o-mini"],
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    let requests = captured.lock().await;
+    assert_eq!(requests[0]["model"], "test-model");
+}
+
+#[tokio::test]
+async fn a_model_override_the_provider_does_not_list_is_rejected_before_the_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "model-unlisted@example.com").await;
+    let owner = owner_id(&state, "model-unlisted@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider =
+        seed_provider_with_models(&state, &owner, &base_url, &["test-model"]).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    // A normal JSON 400 rather than an in-stream failure: the client can show
+    // a form error instead of a half-rendered turn.
+    let response = app
+        .clone()
+        .oneshot(authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages/stream"),
+            &token,
+            json!({"content": "@Alpha hi", "model_override": "not-a-model"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(captured.lock().await.is_empty());
 }

@@ -21,6 +21,7 @@ import { useAssistantDockPlacement } from '@/components/assistant/useAssistantDo
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { Button } from '@/components/ui/button'
 import { useAssistant } from '@/hooks/useAssistant'
+import { useProvider } from '@/hooks/useProviders'
 import { useAuthStore } from '@/stores/authStore'
 
 export function AssistantDock() {
@@ -35,6 +36,10 @@ export function AssistantDock() {
   const restoreFocusRef = useRef(false)
 
   const assistant = useAssistant()
+  // The dock is a single-agent conversation, so a per-message model is
+  // unambiguous here too.
+  const provider = useProvider(assistant.data?.provider_id ?? undefined)
+  const models = provider.data?.models?.map((model) => ({ id: model.id })) ?? []
   const expanded = !placement.collapsed
 
   const collapse = useCallback(() => {
@@ -192,6 +197,8 @@ export function AssistantDock() {
           <ConversationChatView
             conversationId={assistant.data.chat_id}
             workspaceId={null}
+            models={models}
+            defaultModel={provider.data?.default_model}
             scope="direct-chats"
             schedulerEnabled={false}
             agents={[]}
