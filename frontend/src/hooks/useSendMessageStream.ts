@@ -18,6 +18,7 @@ import {
   parseSchedulerStreamEvent,
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import { pendingActionFromOutput } from '@/lib/appActions'
 import type {
   ConversationUpdatedPayload,
   SchedulerStreamUpdate,
@@ -104,6 +105,9 @@ const toolCallPayloadSchema = z.object({
   status: z.string().optional(),
   args_summary: z.string().optional(),
   result_summary: z.string().optional(),
+  // Raw tool output. Only read to recover a staged app action; every other
+  // tool's output is already summarized into `result_summary`.
+  output: z.string().optional(),
 })
 
 const acpAgentRunPayloadSchema = z.object({
@@ -809,6 +813,8 @@ export function useSendMessageStream(
                   status,
                   args_summary: parsed.data.args_summary,
                   result_summary: parsed.data.result_summary,
+                  pending_action:
+                    pendingActionFromOutput(parsed.data.output) ?? undefined,
                 }
                 pushToolActivity(groupId, activity)
                 upsertStreamTool(groupId, streamId, activity)

@@ -8,6 +8,7 @@ import {
   type ActivityReasoningSegment,
   type ActivityToolItem,
 } from '@/components/chat/AgentActivityBubble'
+import { AssistantApprovalCard } from '@/components/assistant/AssistantApprovalCard'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
@@ -323,17 +324,20 @@ function AgentBlockView({
         )
         const keepInputRequestVisible =
           inputRequest && visibleInputRequestKeys.has(inputRequestKey(inputRequest))
-        const details =
-          inputRequest &&
+        // A staged change and a human-input request are mutually exclusive:
+        // one tool call produces at most one of them.
+        const details = event.pending_action ? (
+          <AssistantApprovalCard action={event.pending_action} />
+        ) : inputRequest &&
           !keepInputRequestVisible &&
           shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
-            <HumanInputRequestForm
-              compact
-              request={inputRequest}
-              targetDisplayName={event.display_name}
-              onSubmitResponse={onSubmitHumanInput}
-            />
-          ) : undefined
+          <HumanInputRequestForm
+            compact
+            request={inputRequest}
+            targetDisplayName={event.display_name}
+            onSubmitResponse={onSubmitHumanInput}
+          />
+        ) : undefined
         return [
           {
             id: event.id,

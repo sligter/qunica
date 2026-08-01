@@ -11,6 +11,7 @@
 
 import { create } from 'zustand'
 
+import type { PendingAppAction } from '@/lib/appActions'
 import type { HumanInputRequest } from '@/lib/humanInput'
 import type {
   GroupTurnTraceResponse,
@@ -56,6 +57,8 @@ export interface ToolActivity {
   args_summary?: string
   result_summary?: string
   input_request?: HumanInputRequest
+  /** Set when this tool call staged a change awaiting the user's approval. */
+  pending_action?: PendingAppAction
 }
 
 export type StreamRunStatus = 'active' | 'completed' | 'error' | 'cancelled'
@@ -128,6 +131,7 @@ export interface StreamToolEvent extends StreamTimelineEventBase {
   args_summary?: string
   result_summary?: string
   input_request?: HumanInputRequest
+  pending_action?: PendingAppAction
 }
 
 export interface StreamExternalRunEvent extends StreamTimelineEventBase {
@@ -1193,6 +1197,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         args_summary: activity.args_summary ?? existing?.args_summary,
         result_summary: activity.result_summary ?? existing?.result_summary,
         input_request: activity.input_request ?? existing?.input_request,
+        pending_action: activity.pending_action ?? existing?.pending_action,
         created_at: existing?.created_at ?? timestamp,
         updated_at: timestamp,
       }
