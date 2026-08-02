@@ -44,6 +44,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
       { value: 'medium', label: 'Medium' },
       { value: 'high', label: 'High' },
       { value: 'xhigh', label: 'XHigh' },
+      { value: 'max', label: 'Max' },
     ],
     install_hint:
       'Install @agentclientprotocol/codex-acp so codex-acp is on PATH, or keep the npx fallback command.',

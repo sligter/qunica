@@ -241,7 +241,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     errors: { network: '网络错误', runtimeCapabilities: '无法加载运行时能力。请检查适配器设置后刷新。', providerModels: '无法加载服务商模型。你仍可输入自定义模型。' },
     runtime: {
       chatLabel: 'LLM 对话', chatHint: '提供商原生模型和工具', acpLabel: 'ACP', acpHint: 'Agent Client Protocol 进程', title: 'ACP 运行时', description: '为所选工作区启动 Agent Client Protocol 进程。', preset: '运行时预设', customCommand: '自定义 ACP 命令', fallbackSuffix: '（后备命令）', localDetected: '已检测到本地适配器', usesFallback: '使用后备命令', detected: '已检测到：{{names}}', noneDetected: '未检测到本地 ACP 适配器可执行文件。仍可选择预设并编辑后备命令。',
-      versionStatus: '版本状态', versionError: '无法检查运行时版本。', localVersion: '本地：{{version}}', remoteVersion: '远程：{{version}}', notInstalled: '未安装', unavailable: '不可用', customPackageVersion: '自定义软件包版本', customInstall: '自定义安装', installationFailed: '安装失败。', adapterDefault: '适配器默认值', command: '命令', arguments: '参数', environment: '环境变量', timeout: '超时秒数', permissions: '权限请求', denyRequests: '拒绝请求', autoAllow: '自动允许',
+      versionStatus: '版本状态', versionError: '无法检查运行时版本。', localVersion: '本地：{{version}}', remoteVersion: '远程：{{version}}', notInstalled: '未安装', unavailable: '不可用', customPackageVersion: '自定义软件包版本', customInstall: '自定义安装', installing: '安装中…', updating: '更新中…', installationFailed: '安装失败。', adapterDefault: '适配器默认值', command: '命令', arguments: '参数', environment: '环境变量', timeout: '超时秒数', permissions: '权限请求', denyRequests: '拒绝请求', autoAllow: '自动允许',
     },
     workspacePicker: { new: '新建工作区', newLocal: '新建本地工作区', quickCreate: '一键创建工作区', quickCreateHint: '在系统设置的工作区根目录下创建随机文件夹并立即绑定。', rootRequired: '请先在系统设置中配置群组工作区根目录。', select: '选择工作区', createFirst: '请先创建本地工作区。之后也可在此选择云沙箱工作区。', location: '位置：{{location}}', bound: '绑定到{{backend}}：{{location}}', notConfigured: '未配置', name: '工作区名称', namePlaceholder: '当前项目', localPath: '本地路径', pathPlaceholder: 'D:/absolute/path/to/project 或 /absolute/path/to/project', pickFolder: '选择文件夹', creating: '正在创建…', create: '创建工作区', absolutePath: '请输入本机上存在的绝对路径，例如 D:/file/learn/AIGC/ag-swarmer 或 /home/me/project。' },
     tools: { notice: '所选内置工具将作为可执行的服务商原生工具绑定，并受限于安全防护。若服务商或恢复协议尚未配置，部分工具可能返回“需要设置”或“需要输入”的结果；它们仍是真实的运行时工具调用，并非仅保存声明。', agentAsTool: '将 Agent 作为工具', agentAsToolDescription: '将其他自有 Agent 绑定为可调用助手。运行时委派会向所选助手派发有边界的 @提及式任务，并将助手回复作为工具结果返回。', noAgents: '没有其他可用 Agent。', policies: { read: '文件系统读取', write: '文件系统写入', execute: '执行', network: '网络', media: '媒体', planning: '规划', orchestration: '编排' }, states: { cloudRequired: '需要云沙箱', executable: '当前可执行', savedOnly: '仅保存', sandboxRequired: '需要沙箱', disabled: '已禁用' }, unavailable: '此工具不适用于所选工作区后端，或已被策略禁用。', mcp: { title: 'MCP 服务', description: '来自已配置 MCP 服务的工具。选中一个服务后，它列出的每个工具都会以 mcp__<服务>__<工具> 的形式暴露；展开可以只保留其中一部分。', none: '尚未配置任何 MCP 服务。', configure: '配置 MCP 服务', serverDisabled: '该服务已停用，重新启用前不会提供任何工具。', allTools: '全部工具', selectAll: '使用全部工具', selectedCount_one: '{{count}} 个工具', selectedCount_other: '{{count}} 个工具', narrowHint: '取消勾选即可对该 Agent 隐藏对应工具。', loading: '正在连接服务…', searchTools: '搜索工具', toolList: 'MCP 工具', toolCount_one: '共 {{total}} 个工具 · 已启用 {{selected}} 个', toolCount_other: '共 {{total}} 个工具 · 已启用 {{selected}} 个', probeFailed: '无法连接该服务以获取工具列表。', noTools: '该服务未提供任何工具。' } },
@@ -459,6 +459,11 @@ export const zhCN: TranslationShape<typeof enUS> = {
     chinese: '中文',
     english: 'English',
     languageDescription: '选择此账户的界面语言。更改会立即保存。',
+    assistant: {
+      title: '助手',
+      enabled: '启用助手',
+      enabledDescription: '在应用右下角显示助手入口。更改会立即保存。',
+    },
     workspaceRoot: {
       title: '群组工作区根目录',
       directory: '本地目录',
@@ -566,6 +571,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     errors: {
       appearance: '外观更新失败。',
       language: '语言更新失败。',
+      assistant: '助手设置更新失败。',
       network: '网络错误。',
     },
   },

@@ -921,6 +921,18 @@ async fn direct_context_reset_preserves_history_and_starts_a_new_thread() {
     assert_eq!(status, StatusCode::CREATED, "body: {first:?}");
     let first_thread_id = first["user_message"]["thread_id"].as_str().unwrap();
 
+    let (status, old_latest) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/messages"),
+            Some(&token),
+            json!({"content":"still old context"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {old_latest:?}");
+
     let (status, history_before) = send(
         &app,
         authed(
@@ -977,6 +989,18 @@ async fn direct_context_reset_preserves_history_and_starts_a_new_thread() {
         second["user_message"]["thread_id"].as_str().unwrap(),
         first_thread_id
     );
+
+    let (status, latest) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/messages?limit=1"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(latest.as_array().unwrap()[0]["content"], "start fresh");
 }
 
 #[tokio::test]

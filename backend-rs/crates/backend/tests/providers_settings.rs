@@ -1178,6 +1178,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(status, StatusCode::OK);
     assert!(defaults["owner_id"].as_str().is_some());
     assert_eq!(defaults["appearance"], "system");
+    assert_eq!(defaults["assistant_enabled"], true);
     assert_eq!(defaults["assistant_auto_approve"], false);
     assert_eq!(defaults["group_workspace_root"], Value::Null);
     assert_eq!(defaults["web_search_provider"], "tavily");
@@ -1220,6 +1221,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             &token,
             json!({
                 "appearance": "dark",
+                "assistant_enabled": false,
                 "assistant_auto_approve": true,
                 "group_workspace_root": raw_root,
                 "web_search_provider": "tavily",
@@ -1243,6 +1245,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["appearance"], "dark");
+    assert_eq!(updated["assistant_enabled"], false);
     assert_eq!(updated["assistant_auto_approve"], true);
     assert_eq!(updated["group_workspace_root"], expected_root);
     assert_eq!(updated["tavily_api_key_configured"], true);
@@ -1264,6 +1267,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     let (status, fetched) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["appearance"], "dark");
+    assert_eq!(fetched["assistant_enabled"], false);
     assert_eq!(fetched["assistant_auto_approve"], true);
     assert_eq!(fetched["tavily_api_key_configured"], true);
     assert_eq!(fetched["tavily_search_depth"], "advanced");
@@ -1279,6 +1283,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             &token,
             json!({
                 "appearance": Value::Null,
+                "assistant_enabled": Value::Null,
                 "assistant_auto_approve": Value::Null,
                 "group_workspace_root": "",
                 "tavily_api_key": Value::Null,
@@ -1301,6 +1306,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reset["appearance"], "system");
+    assert_eq!(reset["assistant_enabled"], true);
     assert_eq!(reset["assistant_auto_approve"], false);
     assert_eq!(reset["group_workspace_root"], Value::Null);
     assert_eq!(reset["tavily_api_key_configured"], false);
@@ -1557,5 +1563,12 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
             .as_array()
             .unwrap()
             .is_empty());
+        if id == "codex" {
+            assert!(preset["thinking_effort_options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option["value"] == "max"));
+        }
     }
 }

@@ -267,7 +267,7 @@ export const enUS = {
     runtime: {
       chatLabel: 'LLM chat', chatHint: 'Provider-native model and tools', acpLabel: 'ACP', acpHint: 'Agent Client Protocol process', title: 'ACP runtime', description: 'Launches an Agent Client Protocol process for the selected workspace.', preset: 'Runtime preset',
       customCommand: 'Custom ACP command', fallbackSuffix: ' (fallback command)', localDetected: 'Local adapter detected', usesFallback: 'Uses fallback command', detected: 'Detected: {{names}}', noneDetected: 'No local ACP adapter executable was detected. Presets are still selectable and will use editable fallback commands.',
-      versionStatus: 'Version status', versionError: 'Unable to check runtime versions.', localVersion: 'Local: {{version}}', remoteVersion: 'Remote: {{version}}', notInstalled: 'Not installed', unavailable: 'Unavailable', customPackageVersion: 'Custom package version', customInstall: 'Custom install', installationFailed: 'Installation failed.',
+      versionStatus: 'Version status', versionError: 'Unable to check runtime versions.', localVersion: 'Local: {{version}}', remoteVersion: 'Remote: {{version}}', notInstalled: 'Not installed', unavailable: 'Unavailable', customPackageVersion: 'Custom package version', customInstall: 'Custom install', installing: 'Installing…', updating: 'Updating…', installationFailed: 'Installation failed.',
       adapterDefault: 'Adapter default', command: 'Command', arguments: 'Arguments', environment: 'Environment', timeout: 'Timeout seconds', permissions: 'Permission requests', denyRequests: 'Deny requests', autoAllow: 'Auto allow',
     },
     workspacePicker: {
@@ -518,6 +518,11 @@ export const enUS = {
     chinese: '中文',
     english: 'English',
     languageDescription: 'Choose the interface language for this account. Saved instantly.',
+    assistant: {
+      title: 'Assistant',
+      enabled: 'Enable assistant',
+      enabledDescription: 'Show the assistant launcher in the bottom-right corner. Saved instantly.',
+    },
     workspaceRoot: {
       title: 'Group workspace root',
       directory: 'Local directory',
@@ -625,6 +630,7 @@ export const enUS = {
     errors: {
       appearance: 'Appearance update failed.',
       language: 'Language update failed.',
+      assistant: 'Assistant setting update failed.',
       network: 'Network error.',
     },
   },

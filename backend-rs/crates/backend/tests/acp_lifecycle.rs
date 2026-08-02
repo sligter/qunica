@@ -784,11 +784,11 @@ async fn assert_child_env_is_isolated_for_profile(
 }
 
 #[tokio::test]
-async fn acp_lifecycle_child_env_is_isolated_for_generic_profiles() {
+async fn acp_lifecycle_child_env_is_isolated_for_untrusted_profiles() {
     let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
     let cwd = tempfile::tempdir().unwrap();
 
-    for profile in ["custom", "pi", "opencode"] {
+    for profile in ["custom", "opencode"] {
         assert_child_env_is_isolated_for_profile(
             pool.clone(),
             &owner_id,

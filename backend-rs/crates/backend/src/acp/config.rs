@@ -178,37 +178,47 @@ pub fn normalize_acp_runtime(raw: Option<&Value>) -> Result<AcpRuntimeConfig, Ac
     })
 }
 
-/// Resolve the installed Codex ACP executable for legacy `npx` configurations.
+/// Resolve installed ACP executables for saved `npx` configurations.
 ///
-/// Older saved Codex agents launch `npx @agentclientprotocol/codex-acp`. That
-/// command is unsuitable for the isolated capability probe because package
-/// resolution can exceed the probe deadline. Prefer the already-installed
-/// executable whenever it is available on the host PATH.
-pub fn canonicalize_codex_acp_runtime(config: &mut AcpRuntimeConfig) {
-    let command = find_command_on_path("codex-acp").map(|path| path.to_string_lossy().into_owned());
-    canonicalize_codex_acp_runtime_with_command(config, command.as_deref());
+/// Package resolution can exceed the capability-probe deadline. Prefer the
+/// already-installed executable whenever it is available on the host PATH.
+pub fn canonicalize_acp_runtime(config: &mut AcpRuntimeConfig) {
+    let executable = match config.profile {
+        AcpRuntimeProfile::Codex => Some("codex-acp"),
+        AcpRuntimeProfile::Pi => Some("pi-acp"),
+        _ => None,
+    };
+    let command = executable
+        .and_then(find_command_on_path)
+        .map(|path| path.to_string_lossy().into_owned());
+    canonicalize_acp_runtime_with_command(config, command.as_deref());
 }
 
-fn canonicalize_codex_acp_runtime_with_command(
+fn canonicalize_acp_runtime_with_command(
     config: &mut AcpRuntimeConfig,
     installed_command: Option<&str>,
 ) {
-    if config.profile != AcpRuntimeProfile::Codex || !is_codex_acp_config(config) {
-        return;
-    }
-
-    if is_codex_acp_npx_config(config) {
+    let package = match config.profile {
+        AcpRuntimeProfile::Codex if is_codex_acp_config(config) => {
+            Some("@agentclientprotocol/codex-acp")
+        }
+        AcpRuntimeProfile::Pi => Some("pi-acp"),
+        _ => None,
+    };
+    if package.is_some_and(|package| is_npx_package_config(config, package)) {
         if let Some(command) = installed_command {
             config.command = command.to_string();
             config.args.clear();
         }
     }
 
-    config.mode = match config.mode.as_deref() {
-        Some("auto") => Some("agent".to_string()),
-        Some("full-access") => Some("agent-full-access".to_string()),
-        _ => config.mode.take(),
-    };
+    if package.is_some() && config.profile == AcpRuntimeProfile::Codex {
+        config.mode = match config.mode.as_deref() {
+            Some("auto") => Some("agent".to_string()),
+            Some("full-access") => Some("agent-full-access".to_string()),
+            _ => config.mode.take(),
+        };
+    }
 }
 
 fn is_codex_acp_config(config: &AcpRuntimeConfig) -> bool {
@@ -220,15 +230,15 @@ fn is_codex_acp_config(config: &AcpRuntimeConfig) -> bool {
 }
 
 fn is_codex_acp_npx_config(config: &AcpRuntimeConfig) -> bool {
+    is_npx_package_config(config, "@agentclientprotocol/codex-acp")
+}
+
+fn is_npx_package_config(config: &AcpRuntimeConfig, package: &str) -> bool {
     let command_name = Path::new(&config.command)
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(&config.command);
-    command_name.eq_ignore_ascii_case("npx")
-        && config
-            .args
-            .iter()
-            .any(|arg| arg == "@agentclientprotocol/codex-acp")
+    command_name.eq_ignore_ascii_case("npx") && config.args.iter().any(|arg| arg == package)
 }
 
 fn find_command_on_path(command: &str) -> Option<PathBuf> {
@@ -519,9 +529,7 @@ fn reject_nul(value: &str, label: &str) -> Result<(), AcpConfigError> {
 mod tests {
     use serde_json::json;
 
-    use super::{
-        canonicalize_codex_acp_runtime_with_command, normalize_acp_runtime, AcpRuntimeProfile,
-    };
+    use super::{canonicalize_acp_runtime_with_command, normalize_acp_runtime, AcpRuntimeProfile};
 
     #[test]
     fn canonicalizes_saved_npx_codex_adapter_and_legacy_modes() {
@@ -533,10 +541,7 @@ mod tests {
         })))
         .expect("saved Codex configuration normalizes");
 
-        canonicalize_codex_acp_runtime_with_command(
-            &mut config,
-            Some("C:/Users/test/npm/codex-acp.cmd"),
-        );
+        canonicalize_acp_runtime_with_command(&mut config, Some("C:/Users/test/npm/codex-acp.cmd"));
 
         assert_eq!(config.profile, AcpRuntimeProfile::Codex);
         assert_eq!(config.command, "C:/Users/test/npm/codex-acp.cmd");
@@ -554,10 +559,25 @@ mod tests {
         })))
         .expect("fallback Codex configuration normalizes");
 
-        canonicalize_codex_acp_runtime_with_command(&mut config, None);
+        canonicalize_acp_runtime_with_command(&mut config, None);
 
         assert_eq!(config.command, "npx");
         assert_eq!(config.args, vec!["-y", "@agentclientprotocol/codex-acp"]);
         assert_eq!(config.mode.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn canonicalizes_saved_npx_pi_adapter() {
+        let mut config = normalize_acp_runtime(Some(&json!({
+            "profile": "pi",
+            "command": "C:/Program Files/nodejs/npx.cmd",
+            "args": ["-y", "pi-acp"],
+        })))
+        .expect("saved Pi configuration normalizes");
+
+        canonicalize_acp_runtime_with_command(&mut config, Some("C:/Users/test/npm/pi-acp.cmd"));
+
+        assert_eq!(config.command, "C:/Users/test/npm/pi-acp.cmd");
+        assert!(config.args.is_empty());
     }
 }

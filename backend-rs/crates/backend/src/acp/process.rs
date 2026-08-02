@@ -253,8 +253,8 @@ fn now_rfc3339() -> String {
 }
 
 /// Host environment keys that carry a CLI's auth/config location. For the
-/// `codex`/`claude` profiles these are inherited so the agent can reuse the
-/// host user's existing login; for generic profiles they are instead
+/// `codex`/`claude`/`pi` profiles these are inherited so the agent can reuse the
+/// host user's existing login; for untrusted profiles they are instead
 /// redirected to an isolated temp tree (see [`acp_agent_env`]). Mirrors the
 /// Python `_host_cli_auth_env`.
 fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
@@ -366,11 +366,11 @@ pub(super) fn build_probe_child_env(
     }
     env.insert(ACP_AGENT_ENV_FLAG.to_string(), "1".to_string());
 
-    // Codex and Claude capability discovery needs the same authenticated CLI
-    // home as an actual agent run. Generic adapters remain fully isolated.
+    // Known CLI profiles need the same authenticated home as an actual agent
+    // run. Custom and OpenCode adapters remain fully isolated.
     if matches!(
         profile,
-        AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude
+        AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude | AcpRuntimeProfile::Pi
     ) {
         // If the host has no explicit CODEX_HOME/CLAUDE_* override, omit the
         // isolated value so the CLI uses its normal location below HOME.
@@ -420,8 +420,8 @@ pub(super) fn build_probe_child_env(
 /// Build the ACP-specific environment overlay for a child, mirroring the Python
 /// `_acp_agent_env`.
 ///
-/// Always sets [`ACP_AGENT_ENV_FLAG`]. For `codex`/`claude` it inherits the host
-/// CLI auth env then applies the runtime env. For generic profiles it points
+/// Always sets [`ACP_AGENT_ENV_FLAG`]. For `codex`/`claude`/`pi` it inherits the
+/// host CLI auth env then applies the runtime env. For untrusted profiles it points
 /// every home/config/data/cache key at an isolated tree rooted under `isolated_home`
 /// (created here) so the agent cannot read or poison the host user's CLI state,
 /// then applies the runtime env. The runtime env is applied last; the blocked
@@ -436,12 +436,12 @@ fn acp_agent_env(
     env.insert(ACP_AGENT_ENV_FLAG.to_string(), "1".to_string());
 
     match profile {
-        AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude => {
+        AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude | AcpRuntimeProfile::Pi => {
             for (key, value) in host_cli_auth_env(profile) {
                 env.insert(key, value);
             }
         }
-        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => {
+        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Opencode => {
             let config_dir = isolated_home.join("config");
             let data_dir = isolated_home.join("data");
             let cache_dir = isolated_home.join("cache");
@@ -597,7 +597,34 @@ fn npm_cmd_entrypoint(command: &str) -> Option<(PathBuf, PathBuf)> {
 
 #[cfg(test)]
 mod tests {
-    use super::windows_batch_launch_command;
+    use std::collections::BTreeMap;
+
+    use super::{acp_agent_env, build_probe_child_env, windows_batch_launch_command};
+    use crate::acp::AcpRuntimeProfile;
+
+    #[test]
+    fn pi_reuses_host_cli_locations_for_runs_and_probes() {
+        let isolated = tempfile::tempdir().unwrap();
+        let runtime_env = BTreeMap::new();
+        let run_env = acp_agent_env(AcpRuntimeProfile::Pi, isolated.path(), &runtime_env).unwrap();
+        let probe_env: BTreeMap<_, _> =
+            build_probe_child_env(AcpRuntimeProfile::Pi, isolated.path(), &runtime_env)
+                .unwrap()
+                .variables
+                .into_iter()
+                .collect();
+        let mut inherited = 0;
+
+        for key in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+            let Ok(host_value) = std::env::var(key) else {
+                continue;
+            };
+            inherited += 1;
+            assert_eq!(run_env.get(key), Some(&host_value));
+            assert_eq!(probe_env.get(key), Some(&host_value));
+        }
+        assert!(inherited > 0, "test host must expose a CLI home location");
+    }
 
     #[cfg(windows)]
     #[test]

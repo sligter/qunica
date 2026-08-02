@@ -1002,9 +1002,9 @@ async fn fetch_visible_message_cursor(
     pool: &sqlx::SqlitePool,
     group_id: &str,
     message_id: &str,
-) -> Result<(i64, String), ApiError> {
-    sqlx::query_as::<_, (i64, String)>(
-        "SELECT seq, id FROM messages \
+) -> Result<i64, ApiError> {
+    sqlx::query_scalar(
+        "SELECT rowid FROM messages \
          WHERE id = ? AND group_id = ? AND status IN ('visible', 'interrupted')",
     )
     .bind(message_id)
@@ -1019,10 +1019,10 @@ async fn fetch_message_page(
     pool: &sqlx::SqlitePool,
     group_id: &str,
     limit: i64,
-    before_cursor: Option<(i64, String)>,
+    before_cursor: Option<i64>,
 ) -> Result<Vec<MessageRow>, ApiError> {
     let rows = match before_cursor {
-        Some((before_seq, before_id)) => {
+        Some(before_rowid) => {
             sqlx::query_as::<_, MessageRow>(
                 "SELECT m.id, m.group_id, m.thread_id, m.seq, m.sender_type, m.sender_id, m.message_type, \
                         m.content, m.content_json, m.status, m.turn_id, m.dispatch_id, m.reply_to_message_id, \
@@ -1033,14 +1033,12 @@ async fn fetch_message_page(
                  LEFT JOIN group_turns gt ON gt.id = m.turn_id \
                  WHERE m.group_id = ? \
                    AND m.status IN ('visible', 'interrupted') \
-                   AND (m.seq < ? OR (m.seq = ? AND m.id < ?)) \
-                 ORDER BY m.seq DESC, m.id DESC \
+                   AND m.rowid < ? \
+                 ORDER BY m.rowid DESC \
                  LIMIT ?",
             )
             .bind(group_id)
-            .bind(before_seq)
-            .bind(before_seq)
-            .bind(before_id)
+            .bind(before_rowid)
             .bind(limit)
             .fetch_all(pool)
             .await
@@ -1055,7 +1053,7 @@ async fn fetch_message_page(
                  FROM messages m \
                  LEFT JOIN group_turns gt ON gt.id = m.turn_id \
                  WHERE m.group_id = ? AND m.status IN ('visible', 'interrupted') \
-                 ORDER BY m.seq DESC, m.id DESC \
+                 ORDER BY m.rowid DESC \
                  LIMIT ?",
             )
             .bind(group_id)

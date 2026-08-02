@@ -111,6 +111,9 @@ export function ExternalRuntimeFields({
   const versionStatus = selectedPreset
     ? runtimeVersions.data?.presets.find((status) => status.id === selectedPreset.id) ?? null
     : null
+  const installPendingLabel = versionStatus?.installed
+    ? t('agents:runtime.updating')
+    : t('agents:runtime.installing')
 
   const handlePresetChange = (value: string) => {
     if (value === 'custom') {
@@ -132,6 +135,7 @@ export function ExternalRuntimeFields({
         packageSpec: custom ? packageSpec.trim() : undefined,
       })
       setPackageSpec('')
+      onRefreshCapabilities()
     } catch (error) {
       setInstallError(error instanceof Error ? messageError(error.message) : translatedError('agents:runtime.installationFailed'))
     }
@@ -248,10 +252,20 @@ export function ExternalRuntimeFields({
                 ) : (
                   <Download className="h-3.5 w-3.5" />
                 )}
-                {versionStatus?.installed ? t('common:actions.update') : t('common:actions.install')}
+                {installRuntime.isPending
+                  ? installPendingLabel
+                  : versionStatus?.installed
+                    ? t('common:actions.update')
+                    : t('common:actions.install')}
               </Button>
               <span className="text-xs text-muted-foreground">{versionStatus?.package_name}</span>
             </div>
+            {installRuntime.isPending && (
+              <progress
+                aria-label={installPendingLabel}
+                className="h-1.5 w-full accent-primary"
+              />
+            )}
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input
                 aria-label={t('agents:runtime.customPackageVersion')}

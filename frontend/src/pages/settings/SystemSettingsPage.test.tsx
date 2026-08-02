@@ -16,6 +16,7 @@ const settings: SystemSettingsRead = {
   owner_id: 'user-1',
   appearance: 'system',
   language: 'en-US',
+  assistant_enabled: true,
   assistant_auto_approve: false,
   group_workspace_root: null,
   web_search_provider: 'tavily',
@@ -69,7 +70,7 @@ async function renderSettingsPage() {
   )
 }
 
-describe('SystemSettingsPage language preference', () => {
+describe('SystemSettingsPage preferences', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
@@ -109,5 +110,27 @@ describe('SystemSettingsPage language preference', () => {
       )
     })
     expect(screen.getByRole('alert')).toHaveTextContent('Language update failed.')
+  })
+
+  it('saves whether the assistant launcher is enabled', async () => {
+    useAuthStore.setState({ token: 'token' })
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(settings))
+      .mockResolvedValueOnce(jsonResponse({ ...settings, assistant_enabled: false }))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+
+    await renderSettingsPage()
+
+    const toggle = await screen.findByRole('switch', { name: 'Enable assistant' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(toggle).toBeChecked()
+    await user.click(toggle)
+
+    const [, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(patchInit.method).toBe('PATCH')
+    expect(JSON.parse(String(patchInit.body))).toEqual({ assistant_enabled: false })
+    await waitFor(() => expect(toggle).not.toBeChecked())
   })
 })

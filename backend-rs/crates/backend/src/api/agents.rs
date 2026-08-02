@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::acp::{
-    canonicalize_codex_acp_runtime, normalize_acp_runtime, probe_acp_runtime_capabilities,
+    canonicalize_acp_runtime, normalize_acp_runtime, probe_acp_runtime_capabilities,
     AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities, AcpRuntimeConfig, PermissionPolicy,
 };
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
@@ -27,7 +27,7 @@ const RUNTIME_LLM_CHAT: &str = "llm_chat";
 const RUNTIME_ACP: &str = "acp";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful AI agent.";
 const ACP_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
-const ACP_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+const ACP_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const ACP_OUTPUT_LIMIT: usize = 8 * 1024;
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, name, description, system_prompt, \
@@ -265,7 +265,7 @@ pub async fn install_acp_runtime_version(
     })?;
     let output = run_command(
         &npm,
-        &["install", "--global", &package_spec],
+        &["install", "--global", "--include=optional", &package_spec],
         ACP_INSTALL_TIMEOUT,
     )
     .await
@@ -299,7 +299,7 @@ pub async fn acp_runtime_capabilities(
             ));
         }
     };
-    canonicalize_codex_acp_runtime(&mut config);
+    canonicalize_acp_runtime(&mut config);
     let selected_model = config.model.take();
     config.permission_policy = PermissionPolicy::Deny;
 
@@ -776,7 +776,7 @@ fn canonicalized_acp_runtime_db_json(raw: Option<&Value>) -> Result<Option<Strin
         Some(raw) => {
             let mut config = normalize_acp_runtime(Some(raw))
                 .map_err(|error| ApiError::invalid_input(error.to_string()))?;
-            canonicalize_codex_acp_runtime(&mut config);
+            canonicalize_acp_runtime(&mut config);
             Ok(serde_json::to_string(&acp_runtime_config_value(config)).ok())
         }
     }
@@ -785,7 +785,7 @@ fn canonicalized_acp_runtime_db_json(raw: Option<&Value>) -> Result<Option<Strin
 fn canonicalized_acp_runtime_json(raw: Option<&str>) -> Option<Value> {
     let raw = parse_json(raw)?;
     let mut config = normalize_acp_runtime(Some(&raw)).ok()?;
-    canonicalize_codex_acp_runtime(&mut config);
+    canonicalize_acp_runtime(&mut config);
     Some(acp_runtime_config_value(config))
 }
 
@@ -1001,6 +1001,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
                 choice("medium", "Medium", None),
                 choice("high", "High", None),
                 choice("xhigh", "XHigh", None),
+                choice("max", "Max", None),
             ],
             install_hint: "Install @agentclientprotocol/codex-acp so codex-acp is on PATH, or keep the npx fallback command.",
             source: Some("fallback"),

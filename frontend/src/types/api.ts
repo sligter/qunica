@@ -610,6 +610,7 @@ export interface SystemSettingsRead {
   owner_id: string
   appearance: Appearance
   language: Language
+  assistant_enabled: boolean
   assistant_auto_approve: boolean
   group_workspace_root: string | null
   web_search_provider: WebSearchProvider
@@ -634,6 +635,7 @@ export interface SystemSettingsRead {
 export interface SystemSettingsUpdate {
   appearance?: Appearance | null
   language?: Language | null
+  assistant_enabled?: boolean | null
   assistant_auto_approve?: boolean | null
   group_workspace_root?: string | null
   web_search_provider?: WebSearchProvider | null

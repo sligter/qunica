@@ -38,6 +38,7 @@ export function SystemSettingsPage() {
   const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [appearance, setAppearance] = useState<Appearance>('system')
   const [language, setLanguage] = useState<Language>('en-US')
+  const [assistantEnabled, setAssistantEnabled] = useState(true)
   const [root, setRoot] = useState('')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [tavilySearchUrl, setTavilySearchUrl] = useState('')
@@ -50,12 +51,14 @@ export function SystemSettingsPage() {
   const [tavilyError, setTavilyError] = useState<string | null>(null)
   const [appearanceError, setAppearanceError] = useState<string | null>(null)
   const [languageError, setLanguageError] = useState<string | null>(null)
+  const [assistantError, setAssistantError] = useState<string | null>(null)
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
   const loaded = settings.data !== undefined
   const serverAppearance = settings.data?.appearance
   const serverLanguage = settings.data?.language
+  const serverAssistantEnabled = settings.data?.assistant_enabled
   const serverRoot = settings.data?.group_workspace_root ?? ''
   const serverTavilyUrl = settings.data?.tavily_search_url ?? 'https://api.tavily.com/search'
   const serverTavilyMaxResults = settings.data?.tavily_max_results ?? 5
@@ -69,6 +72,9 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (serverLanguage !== undefined) setLanguage(serverLanguage)
   }, [serverLanguage])
+  useEffect(() => {
+    if (serverAssistantEnabled !== undefined) setAssistantEnabled(serverAssistantEnabled)
+  }, [serverAssistantEnabled])
   useEffect(() => {
     if (loaded) setRoot(serverRoot)
   }, [loaded, serverRoot])
@@ -121,6 +127,19 @@ export function SystemSettingsPage() {
       await i18n.changeLanguage(previous)
       writeLanguageMirror(previous)
       setLanguageError(errorMessage(err, t('errors.language')))
+    }
+  }
+
+  const onAssistantEnabledChange = async (next: boolean) => {
+    if (next === assistantEnabled || update.isPending) return
+    const previous = assistantEnabled
+    setAssistantEnabled(next)
+    setAssistantError(null)
+    try {
+      await update.mutateAsync({ assistant_enabled: next })
+    } catch (err) {
+      setAssistantEnabled(previous)
+      setAssistantError(errorMessage(err, t('errors.assistant')))
     }
   }
 
@@ -320,6 +339,25 @@ export function SystemSettingsPage() {
           {languageError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
               {languageError}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        <SettingsSection title={t('assistant.title')}>
+          <SettingsRow
+            label={t('assistant.enabled')}
+            description={t('assistant.enabledDescription')}
+          >
+            <Switch
+              checked={assistantEnabled}
+              disabled={settings.isLoading || update.isPending}
+              onCheckedChange={(next) => void onAssistantEnabledChange(next)}
+              aria-label={t('assistant.enabled')}
+            />
+          </SettingsRow>
+          {assistantError ? (
+            <p className="py-2 text-sm text-destructive" role="alert">
+              {assistantError}
             </p>
           ) : null}
         </SettingsSection>

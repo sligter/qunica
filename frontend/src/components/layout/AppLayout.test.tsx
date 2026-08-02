@@ -12,6 +12,10 @@ import { zhCN } from '@/i18n/resources/zh-CN'
 import { useAuthStore } from '@/stores/authStore'
 import type { TerminalTransport } from '@/terminal/transport'
 
+vi.mock('@/components/assistant/AssistantDock', () => ({
+  AssistantDock: () => <div data-testid="assistant-dock" />,
+}))
+
 function createFakeTransport(): TerminalTransport {
   return {
     create: vi.fn(),
@@ -103,6 +107,15 @@ describe('AppLayout', () => {
     // The shell fills its host and clips: any surface that overflows scrolls in
     // its own container rather than turning the document into a scroller.
     expect(container.firstElementChild).toHaveClass('h-full', 'min-h-0', 'overflow-hidden')
+  })
+
+  it('does not mount the assistant dock when it is disabled', async () => {
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(['settings', 'system'], { assistant_enabled: false })
+
+    await renderAppLayout('en-US', undefined, queryClient)
+
+    expect(screen.queryByTestId('assistant-dock')).not.toBeInTheDocument()
   })
 
   it('renders English navigation labels', async () => {

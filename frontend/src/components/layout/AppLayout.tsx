@@ -5,6 +5,7 @@ import { Outlet } from 'react-router-dom'
 import { AssistantDock } from '@/components/assistant/AssistantDock'
 import { AppSidebar } from '@/components/layout/AppSidebar'
 import { RouteFallback } from '@/components/layout/RouteFallback'
+import { useSystemSettings } from '@/hooks/useSystemSettings'
 import {
   TerminalRuntimeProvider,
 } from '@/terminal/TerminalRuntimeProvider'
@@ -53,6 +54,7 @@ function replaceSelection(menu: TextMenuState, text: string, inputType: string) 
 
 export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const { t } = useTranslation('common')
+  const systemSettings = useSystemSettings()
   const [textMenu, setTextMenu] = useState<TextMenuState | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -152,7 +154,9 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
             than being clipped by the main column's overflow. Only mounted
             inside the authenticated tree: the login and register routes render
             outside AppLayout. */}
-        <AssistantDock />
+        {!systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false ? (
+          <AssistantDock />
+        ) : null}
         {textMenu ? (
           <div
             ref={menuRef}
