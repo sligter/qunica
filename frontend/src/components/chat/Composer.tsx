@@ -760,36 +760,40 @@ export function Composer({
             </div>
           ) : null}
           <div className="flex items-center gap-1.5 px-2.5 pb-2.5 pt-1">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="sr-only"
-              onChange={(event) => uploadFiles(event.target.files)}
-              disabled={isDisabled}
-              aria-label={t('composer.upload')}
-              aria-describedby="composer-drop-status"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                setUploadError(null)
-                if (!ensureWorkspaceContext()) return
-                if (scope !== 'groups') {
-                  showNotice('composer.drop.uploadUnsupported', 'error')
-                  return
-                }
-                fileInputRef.current?.click()
-              }}
-              disabled={isDisabled || uploadWorkspaceFiles.isPending}
-              aria-label={t('composer.upload')}
-              title={scope === 'groups' ? t('composer.uploadTitle') : t('composer.uploadUnsupportedTitle')}
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
+            {hasWorkspace ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="sr-only"
+                  onChange={(event) => uploadFiles(event.target.files)}
+                  disabled={isDisabled}
+                  aria-label={t('composer.upload')}
+                  aria-describedby="composer-drop-status"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setUploadError(null)
+                    if (!ensureWorkspaceContext()) return
+                    if (scope !== 'groups') {
+                      showNotice('composer.drop.uploadUnsupported', 'error')
+                      return
+                    }
+                    fileInputRef.current?.click()
+                  }}
+                  disabled={isDisabled || uploadWorkspaceFiles.isPending}
+                  aria-label={t('composer.upload')}
+                  title={scope === 'groups' ? t('composer.uploadTitle') : t('composer.uploadUnsupportedTitle')}
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+              </>
+            ) : null}
             {allowMentions && groupAgents.length > 0 ? (
               <div className="relative min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1 px-1 text-2xs text-muted-foreground">

@@ -177,11 +177,13 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let mut body = json!({
             "model": request.model,
             "messages": to_messages(&request.messages),
-            "temperature": request.temperature,
             "stream": true,
             "stream_options": { "include_usage": true },
         });
-        // Absent rather than null: a strict gateway rejects the key outright.
+        // Absent rather than null: strict gateways may reject optional keys outright.
+        if let Some(temperature) = request.temperature {
+            body["temperature"] = json!(temperature);
+        }
         if let Some(effort) = request.reasoning_effort {
             body["reasoning_effort"] = json!(effort.as_str());
         }

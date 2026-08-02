@@ -13,6 +13,8 @@ import { useAuthStore } from '@/stores/authStore'
 import type { PendingAppAction } from '@/lib/appActions'
 
 const fetchJson = vi.hoisted(() => vi.fn())
+const autoApprove = vi.hoisted(() => ({ enabled: false }))
+const savedAction = vi.hoisted(() => ({ status: 'pending' }))
 vi.mock('@/lib/api-v2/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-v2/client')>(
     '@/lib/api-v2/client',
@@ -57,7 +59,28 @@ describe('AssistantApprovalCard', () => {
   beforeEach(() => {
     useAuthStore.setState({ token: 'test-token' })
     fetchJson.mockReset()
-    fetchJson.mockResolvedValue({ id: 'action-1', status: 'applied' })
+    autoApprove.enabled = false
+    savedAction.status = 'pending'
+    fetchJson.mockImplementation((path: string) => {
+      if (path === '/settings/system') {
+        return Promise.resolve({ assistant_auto_approve: autoApprove.enabled })
+      }
+      if (path === '/app-actions' || path.startsWith('/app-actions?')) {
+        return Promise.resolve({
+          items: [
+            {
+              id: 'action-1',
+              target_kind: 'agent',
+              action: 'create',
+              summary: PENDING.summary,
+              status: savedAction.status,
+            },
+          ],
+          has_more: false,
+        })
+      }
+      return Promise.resolve({ id: 'action-1', status: 'applied' })
+    })
   })
 
   afterEach(cleanup)
@@ -81,12 +104,24 @@ describe('AssistantApprovalCard', () => {
 
     await user.click(screen.getByRole('button', { name: 'Approve' }))
 
-    await waitFor(() => expect(fetchJson).toHaveBeenCalledTimes(1))
     expect(fetchJson).toHaveBeenCalledWith(
       '/app-actions/action-1/approve',
       expect.objectContaining({ method: 'POST' }),
     )
     await waitFor(() => expect(invalidated).toContainEqual(['agents']))
+  })
+
+  it('automatically approves a pending action when the mode is enabled', async () => {
+    autoApprove.enabled = true
+    await renderCard()
+
+    await waitFor(() =>
+      expect(fetchJson).toHaveBeenCalledWith(
+        '/app-actions/action-1/approve',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    )
+    expect(await screen.findByText('Applied')).toBeVisible()
   })
 
   it('cannot be resubmitted once resolved', async () => {
@@ -100,13 +135,40 @@ describe('AssistantApprovalCard', () => {
     expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull()
   })
 
+  it('restores an already applied card from its durable status', async () => {
+    savedAction.status = 'applied'
+    await renderCard()
+
+    expect(await screen.findByText('Applied')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByText(/nothing has changed yet/i)).toBeNull()
+  })
+
+  it('polls a running message action until it is applied', async () => {
+    savedAction.status = 'approved'
+    const { invalidated } = await renderCard({
+      action_id: 'action-1',
+      target_kind: 'chat',
+      action: 'update',
+      summary: 'Send a message',
+    })
+
+    expect(await screen.findByText('Running…')).toBeVisible()
+    savedAction.status = 'applied'
+
+    await waitFor(() => expect(screen.getByText('Applied')).toBeVisible(), {
+      timeout: 2_500,
+    })
+    expect(invalidated).toContainEqual(['direct-chats'])
+  })
+
   it('surfaces the reason when the apply fails', async () => {
     const user = userEvent.setup()
     const { ApiError } = await import('@/lib/api-v2/client')
     fetchJson.mockRejectedValue(
       new ApiError(422, 'app_action_failed', 'workspace_id does not reference a workspace'),
     )
-    await renderCard()
+    const { invalidated } = await renderCard()
 
     await user.click(screen.getByRole('button', { name: 'Approve' }))
 
@@ -114,6 +176,7 @@ describe('AssistantApprovalCard', () => {
     expect(
       await screen.findByText(/workspace_id does not reference a workspace/),
     ).toBeVisible()
+    expect(invalidated).toContainEqual(['app-actions'])
   })
 
   it('rejects without applying anything', async () => {

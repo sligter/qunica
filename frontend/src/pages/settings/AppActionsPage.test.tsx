@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { MemoryRouter } from 'react-router-dom'
@@ -35,8 +36,13 @@ function action(overrides: Partial<AppActionRead>): AppActionRead {
   }
 }
 
-async function renderPage(actions: AppActionRead[]) {
-  fetchJson.mockResolvedValue(actions)
+async function renderPage(
+  actions: AppActionRead[],
+  hasMore = false,
+  response?: (path: string, options?: { method?: string }) => unknown,
+) {
+  if (response) fetchJson.mockImplementation(response)
+  else fetchJson.mockResolvedValue({ items: actions, has_more: hasMore })
   const i18n = i18next.createInstance()
   await i18n.use(initReactI18next).init({
     lng: 'en-US',
@@ -97,5 +103,80 @@ describe('AppActionsPage', () => {
   it('says so when the assistant has proposed nothing', async () => {
     await renderPage([])
     expect(await screen.findByText(/has not proposed any changes/i)).toBeVisible()
+  })
+
+  it('moves between history pages', async () => {
+    const user = userEvent.setup()
+    const first = action({ id: 'a1', status: 'applied', summary: 'Create agent "First"' })
+    const second = action({ id: 'a2', status: 'applied', summary: 'Create agent "Second"' })
+
+    await renderPage([first], true, (path: string) =>
+      path.includes('skip=50')
+        ? { items: [second], has_more: false }
+        : { items: [first], has_more: true },
+    )
+
+    expect(await screen.findByText('Create agent "First"')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(screen.getByText('Create agent "Second"')).toBeVisible())
+    expect(fetchJson).toHaveBeenCalledWith('/app-actions?limit=50&skip=50', expect.anything())
+
+    await user.click(screen.getByRole('button', { name: 'Previous' }))
+    await waitFor(() => expect(screen.getByText('Create agent "First"')).toBeVisible())
+  })
+
+  it('deletes a resolved history entry after confirmation', async () => {
+    const user = userEvent.setup()
+    const item = action({ id: 'action-1', status: 'applied' })
+    let deleted = false
+
+    await renderPage([item], false, (_path, options) => {
+      if (options?.method === 'DELETE') {
+        deleted = true
+        return undefined
+      }
+      return { items: deleted ? [] : [item], has_more: false }
+    })
+
+    expect(await screen.findByText(item.summary)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Delete history entry' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() =>
+      expect(fetchJson).toHaveBeenCalledWith(
+        '/app-actions/action-1',
+        expect.objectContaining({ method: 'DELETE' }),
+      ),
+    )
+    expect(await screen.findByText(/has not proposed any changes/i)).toBeVisible()
+  })
+
+  it('clears resolved history in one confirmed action', async () => {
+    const user = userEvent.setup()
+    const pending = action({ id: 'pending', summary: 'Pending action' })
+    const applied = action({ id: 'applied', status: 'applied', summary: 'Applied action' })
+    let cleared = false
+
+    await renderPage([applied, pending], false, (path, options) => {
+      if (path === '/app-actions' && options?.method === 'DELETE') {
+        cleared = true
+        return undefined
+      }
+      return { items: cleared ? [pending] : [applied, pending], has_more: false }
+    })
+
+    expect(await screen.findByText('Applied action')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Clear history' }))
+    const dialog = screen.getByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Clear history' }))
+
+    await waitFor(() =>
+      expect(fetchJson).toHaveBeenCalledWith(
+        '/app-actions',
+        expect.objectContaining({ method: 'DELETE' }),
+      ),
+    )
+    await waitFor(() => expect(screen.queryByText('Applied action')).not.toBeInTheDocument())
+    expect(screen.getByText('Pending action')).toBeVisible()
   })
 })

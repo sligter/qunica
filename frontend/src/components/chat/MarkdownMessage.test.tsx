@@ -1,13 +1,19 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { useFileNavStore } from '@/stores/fileNavStore'
 
 vi.mock('@/hooks/useGroupFiles', () => ({
-  useGroupWorkspaceRoot: () => ({ data: undefined }),
+  useGroupWorkspaceRoot: () => ({
+    data: { root: 'D:\\file\\learn\\AIGC\\LandPPT', separator: '\\' },
+  }),
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  useFileNavStore.setState({ request: null })
+})
 
 describe('MarkdownMessage overflow containment', () => {
   it('wraps unbroken text and confines wide markdown elements', () => {
@@ -32,5 +38,23 @@ describe('MarkdownMessage overflow containment', () => {
     expect(codeBlock).toHaveClass('max-w-full', 'overflow-x-auto')
     expect(codeBlock?.parentElement).toHaveClass('min-w-0', 'max-w-full', 'overflow-hidden')
     expect(tableWrapper).toHaveClass('min-w-0', 'max-w-full', 'overflow-x-auto')
+  })
+
+  it('opens an absolute workspace file link instead of navigating the webview', () => {
+    render(
+      <MarkdownMessage
+        groupId="group-1"
+        content="[todo_board](D:/file/learn/AIGC/LandPPT/src/landppt/web/templates/components/project/todo_board/extra_js_1.html:5425)"
+      />,
+    )
+
+    const file = screen.getByRole('button', { name: 'todo_board' })
+    fireEvent.click(file)
+
+    expect(screen.queryByRole('link', { name: 'todo_board' })).not.toBeInTheDocument()
+    expect(useFileNavStore.getState().request).toMatchObject({
+      groupId: 'group-1',
+      path: 'src/landppt/web/templates/components/project/todo_board/extra_js_1.html',
+    })
   })
 })

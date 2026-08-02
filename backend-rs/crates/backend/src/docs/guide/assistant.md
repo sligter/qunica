@@ -7,6 +7,8 @@ The assistant is the floating panel that helps you configure AG Swarmer, explain
 - Read your configuration: agents, providers, MCP servers, skills, workspaces, groups, and chats.
 - Answer questions about the app from the bundled guide.
 - Propose configuration changes for you to approve.
+- Create a group or private chat and send its first message, or message an existing conversation, after you approve the action.
+- Inspect group members and propose adding or removing an Agent or user. User accounts are selected by exact email address.
 
 ## What it cannot do
 
@@ -19,7 +21,7 @@ Some changes it cannot stage at all, and will instead hand you a prefilled form 
 - Provider API keys
 - MCP servers that launch a local process (`stdio` transport)
 - CLI runtime installs
-- Deleting anything
+- Deleting resources (removing an Agent or user from a group is supported)
 
 ## Setting it up
 

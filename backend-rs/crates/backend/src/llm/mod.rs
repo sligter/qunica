@@ -58,6 +58,9 @@ pub struct ProviderModelConfig {
     /// no value stored.
     #[serde(default)]
     pub supports_reasoning_effort: bool,
+    /// Whether prior reasoning is sent back during this model's tool loop.
+    #[serde(default)]
+    pub reasoning_passback: Option<bool>,
 }
 
 pub fn model_context_config(models_json: Option<&str>, model: &str) -> (Option<i64>, Option<f64>) {
@@ -71,6 +74,26 @@ pub fn model_context_config(models_json: Option<&str>, model: &str) -> (Option<i
             )
         })
         .unwrap_or((None, None))
+}
+
+pub fn model_reasoning_passback(
+    models_json: Option<&str>,
+    model: &str,
+    legacy_fallback: bool,
+) -> bool {
+    let Some(models) =
+        models_json.and_then(|raw| serde_json::from_str::<Vec<ProviderModelConfig>>(raw).ok())
+    else {
+        return legacy_fallback;
+    };
+    if models.iter().all(|item| item.reasoning_passback.is_none()) {
+        return legacy_fallback;
+    }
+    models
+        .into_iter()
+        .find(|item| item.id == model)
+        .and_then(|item| item.reasoning_passback)
+        .unwrap_or(false)
 }
 
 /// A streaming chat completion provider.
@@ -212,13 +235,13 @@ pub(crate) fn sse_data(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::model_context_config;
+    use super::{model_context_config, model_reasoning_passback};
 
     #[test]
     fn model_context_config_uses_the_selected_model() {
         let raw = r#"[
-            {"id":"small","context_window_tokens":32000,"context_output_reserve_ratio":0.2},
-            {"id":"large","context_window_tokens":128000,"context_output_reserve_ratio":0.3}
+            {"id":"small","context_window_tokens":32000,"context_output_reserve_ratio":0.2,"reasoning_passback":false},
+            {"id":"large","context_window_tokens":128000,"context_output_reserve_ratio":0.3,"reasoning_passback":true}
         ]"#;
 
         assert_eq!(
@@ -226,5 +249,13 @@ mod tests {
             (Some(128000), Some(0.3))
         );
         assert_eq!(model_context_config(Some(raw), "missing"), (None, None));
+        assert!(model_reasoning_passback(Some(raw), "large", false));
+        assert!(!model_reasoning_passback(Some(raw), "small", true));
+        assert!(!model_reasoning_passback(Some(raw), "missing", true));
+        assert!(model_reasoning_passback(
+            Some(r#"[{"id":"legacy"}]"#),
+            "legacy",
+            true
+        ));
     }
 }

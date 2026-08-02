@@ -310,6 +310,19 @@ async fn llm_contract_openai_serializes_tool_continuation_messages() {
 }
 
 #[tokio::test]
+async fn llm_contract_openai_omits_absent_temperature() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let mut request = request();
+    request.temperature = None;
+
+    let _ = collect(provider.stream(request).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert!(captured[0].get("temperature").is_none(), "{}", captured[0]);
+}
+
+#[tokio::test]
 async fn llm_contract_openai_serializes_image_parts_and_preserves_text_only_shape() {
     let (url, captures) = capture_server("data: [DONE]\n").await;
     let provider = OpenAiCompatibleProvider::new(url, "test-key");

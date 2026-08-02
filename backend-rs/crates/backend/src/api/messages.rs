@@ -547,12 +547,67 @@ async fn send_for_kind(
     expected: ConversationKind,
 ) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
+    send_for_owner(&state, &owner_id, &group_id, body, expected).await
+}
+
+/// Send a plain-text message through the same group runtime as the UI.
+pub(crate) async fn send_group_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    content: String,
+) -> Result<MessageSendResponse, ApiError> {
+    send_plain_inner(state, owner_id, group_id, content, ConversationKind::Group).await
+}
+
+/// Send a plain-text message through the same direct-chat runtime as the UI.
+pub(crate) async fn send_direct_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    content: String,
+) -> Result<MessageSendResponse, ApiError> {
+    send_plain_inner(state, owner_id, group_id, content, ConversationKind::Direct).await
+}
+
+async fn send_plain_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    content: String,
+    expected: ConversationKind,
+) -> Result<MessageSendResponse, ApiError> {
+    let (_, Json(response)) = send_for_owner(
+        state,
+        owner_id,
+        group_id,
+        MessageInput {
+            content,
+            attachments: Vec::new(),
+            thread_id: None,
+            client_request_id: None,
+            model_override: None,
+            effort_override: None,
+        },
+        expected,
+    )
+    .await?;
+    Ok(response)
+}
+
+async fn send_for_owner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    body: SendRequest,
+    expected: ConversationKind,
+) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
+    let group_id = validate_uuid(group_id, "group id")?;
 
     let content = body.content.trim().to_string();
-    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, owner_id, expected).await?;
     if expected == ConversationKind::Direct {
-        ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
+        ensure_direct_agent_available(state.db.pool(), &group_id, owner_id).await?;
     }
     let attachment_paths = body
         .attachments
@@ -566,7 +621,7 @@ async fn send_for_kind(
         crate::api::workspace_files::ConversationRoot::conversation(
             conversation_scope(expected),
             &group_id,
-            &owner_id,
+            owner_id,
         ),
         &attachment_paths,
     )
@@ -583,14 +638,14 @@ async fn send_for_kind(
     let model_override = validate_model_override(
         state.db.pool(),
         &group_id,
-        &owner_id,
+        owner_id,
         body.model_override.as_deref(),
     )
     .await?;
     let effort_override = parse_effort_override(body.effort_override.as_deref())?;
     let request = TurnRequest {
         group_id: group_id.clone(),
-        owner_id,
+        owner_id: owner_id.to_string(),
         thread_id: body.thread_id,
         content,
         attachments,

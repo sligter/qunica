@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { enUS } from '@/i18n/resources/en-US'
 import { zhCN } from '@/i18n/resources/zh-CN'
-import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
+import { MediaSettingsPage } from '@/pages/settings/MediaSettingsPage'
 import { useAuthStore } from '@/stores/authStore'
 import type { SystemSettingsRead } from '@/types/api'
 
@@ -37,15 +37,14 @@ const settings: SystemSettingsRead = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-function jsonResponse(body: unknown, init?: ResponseInit) {
+function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
-    ...init,
   })
 }
 
-async function renderSettingsPage() {
+async function renderPage() {
   const i18n = i18next.createInstance()
   await i18n.use(initReactI18next).init({
     lng: 'en-US',
@@ -53,61 +52,61 @@ async function renderSettingsPage() {
     resources: { 'en-US': enUS, 'zh-CN': zhCN },
     interpolation: { escapeValue: false },
   })
-
   render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider
-        client={
-          new QueryClient({
-            defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-          })
-        }
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <SystemSettingsPage />
+        <MediaSettingsPage />
       </QueryClientProvider>
     </I18nextProvider>,
   )
 }
 
-describe('SystemSettingsPage language preference', () => {
+describe('MediaSettingsPage', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
     useAuthStore.setState({ token: null, user: null, hydrated: false })
-    localStorage.clear()
   })
 
-  it('changes language optimistically and rolls back after a failed save', async () => {
+  it('saves shared credentials and independent image/video models', async () => {
     useAuthStore.setState({ token: 'token' })
-    let rejectPatch!: (reason?: unknown) => void
-    const patchResponse = new Promise<Response>((_resolve, reject) => {
-      rejectPatch = reject
-    })
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(settings))
-      .mockReturnValueOnce(patchResponse)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...settings,
+          media_api_key_configured: true,
+          image_generation_model: 'image-model',
+          video_generation_model: 'video-model',
+        }),
+      )
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
 
-    await renderSettingsPage()
+    await renderPage()
+    expect(await screen.findByRole('heading', { name: 'Media generation' })).toBeVisible()
 
-    expect(await screen.findByRole('heading', { name: 'System settings' })).toBeVisible()
-    const chinese = screen.getByRole('radio', { name: '中文' })
-    await waitFor(() => expect(chinese).toBeEnabled())
-    await user.click(chinese)
+    const apiKey = screen.getByLabelText('API key')
+    await waitFor(() => expect(apiKey).toBeEnabled())
+    await user.type(apiKey, 'secret-key')
+    await user.type(screen.getByLabelText('Default model', { selector: '#media-image-model' }), 'image-model')
+    await user.type(screen.getByLabelText('Default model', { selector: '#media-video-model' }), 'video-model')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
 
-    expect(screen.getByRole('heading', { name: '系统设置' })).toBeVisible()
-    const [, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit]
-    expect(patchInit.method).toBe('PATCH')
-    expect(JSON.parse(String(patchInit.body))).toEqual({ language: 'zh-CN' })
-    rejectPatch(new Error('offline'))
-    await waitFor(() => {
-      expect(screen.getByRole('radio', { name: 'English' })).toHaveAttribute(
-        'aria-checked',
-        'true',
-      )
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      media_api_key: 'secret-key',
+      image_generation_model: 'image-model',
+      video_generation_model: 'video-model',
+      image_generation_endpoint: '/v1/images/generations',
+      video_generation_endpoint: '/v1/videos',
+      video_status_endpoint: '/v1/videos/{id}',
+      video_content_endpoint: '/v1/videos/{id}/content',
     })
-    expect(screen.getByRole('alert')).toHaveTextContent('Language update failed.')
   })
 })

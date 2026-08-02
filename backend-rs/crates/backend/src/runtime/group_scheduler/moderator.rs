@@ -149,13 +149,18 @@ async fn resolve_provider(
     let row = row.ok_or(ModeratorFailure::ProviderUnavailable)?;
     let (model_window, model_reserve) =
         crate::llm::model_context_config(row.models_json.as_deref(), &config.model);
+    let reasoning_passback = crate::llm::model_reasoning_passback(
+        row.models_json.as_deref(),
+        &config.model,
+        row.reasoning_passback != 0,
+    );
 
     Ok(ProviderConfig {
         kind: row.kind,
         base_url: row.base_url,
         api_key: row.api_key,
         default_model: row.default_model,
-        reasoning_passback: row.reasoning_passback != 0,
+        reasoning_passback,
         context_window_tokens: model_window.or(row.context_window_tokens),
         context_output_reserve_ratio: model_reserve.or(row.context_output_reserve_ratio),
     })

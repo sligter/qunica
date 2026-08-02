@@ -19,9 +19,9 @@ use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
     app_control::{read as app_read, write as app_write, AppControlContext},
-    bash, controlled, http, web_search, FileEdit, MountedSkill, TavilySearchConfig, ToolError,
-    ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,
-    MAX_READ_LINES,
+    bash, controlled, http, media, web_search, FileEdit, MediaGenerationConfig, MountedSkill,
+    TavilySearchConfig, ToolError, ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools,
+    MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
 /// The MCP tools mounted into an executor, with the servers needed to call them.
@@ -117,6 +117,8 @@ pub struct ToolExecutor {
     mounted_skills: Vec<MountedSkill>,
     /// Tavily settings resolved for the agent owner, if configured.
     web_search: Option<TavilySearchConfig>,
+    /// OpenAI-compatible image/video settings resolved for the agent owner.
+    media_generation: Option<MediaGenerationConfig>,
     /// The MCP tools this agent may call.
     mcp_mount: McpMount,
     /// Shared connection pool, absent when no MCP tools are mounted.
@@ -134,6 +136,10 @@ impl std::fmt::Debug for ToolExecutor {
             .field("workspace", &self.workspace)
             .field("mounted_skills", &self.mounted_skills)
             .field("web_search_configured", &self.web_search.is_some())
+            .field(
+                "media_generation_configured",
+                &self.media_generation.is_some(),
+            )
             .field("mcp_mount", &self.mcp_mount)
             .field("mcp_connected", &self.mcp_manager.is_some())
             .field("app_control", &self.app_control.is_some())
@@ -173,6 +179,7 @@ impl ToolExecutor {
             workspace,
             mounted_skills,
             web_search: None,
+            media_generation: None,
             mcp_mount: McpMount::default(),
             mcp_manager: None,
             app_control: None,
@@ -190,6 +197,7 @@ impl ToolExecutor {
             workspace: None,
             mounted_skills,
             web_search: None,
+            media_generation: None,
             mcp_mount: McpMount::default(),
             mcp_manager: None,
             app_control: None,
@@ -219,6 +227,12 @@ impl ToolExecutor {
     /// Bind the web-search settings resolved for this agent invocation.
     pub(crate) fn with_web_search(mut self, config: Option<TavilySearchConfig>) -> Self {
         self.web_search = config;
+        self
+    }
+
+    /// Bind the OpenAI-compatible media settings resolved for this invocation.
+    pub(crate) fn with_media_generation(mut self, config: Option<MediaGenerationConfig>) -> Self {
+        self.media_generation = config;
         self
     }
 
@@ -293,8 +307,24 @@ impl ToolExecutor {
                     _ => app_read::state(context).await,
                 }
             }
-            "GenerateImage" => Ok(controlled::generate_image(arg_str(&args, "prompt")?)),
-            "GenerateVideo" => Ok(controlled::generate_video(arg_str(&args, "prompt")?)),
+            "GenerateImage" => {
+                media::generate_image(
+                    self.media_generation.as_ref(),
+                    self.workspace_root(),
+                    arg_str(&args, "prompt")?,
+                    arg_str_opt(&args, "model"),
+                )
+                .await
+            }
+            "GenerateVideo" => {
+                media::generate_video(
+                    self.media_generation.as_ref(),
+                    self.workspace_root(),
+                    arg_str(&args, "prompt")?,
+                    arg_str_opt(&args, "model"),
+                )
+                .await
+            }
             "SkillManager" => {
                 let action = arg_str_opt(&args, "action").unwrap_or("list");
                 let skill_name = arg_str_opt(&args, "skill_name");

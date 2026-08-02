@@ -1,18 +1,29 @@
 import { useId, useState } from 'react'
-import { Check, ChevronDown, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import {
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Trash2,
+  XCircle,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { ReasoningPassbackControl } from '@/components/providers/ReasoningPassbackControl'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Panel } from '@/components/ui/panel'
 import { cn } from '@/lib/utils'
-import type { ModelInfo } from '@/types/api'
+import type { ModelInfo, ProviderModelTestResult } from '@/types/api'
 
 export interface ProviderModelDraft {
   id: string
   context_window_tokens?: number
   context_output_reserve_percent: number
+  reasoning_passback: boolean
 }
 
 interface ProviderModelsFieldProps {
@@ -21,7 +32,9 @@ interface ProviderModelsFieldProps {
   catalog?: ModelInfo[]
   isLoadingCatalog?: boolean
   catalogError?: boolean
+  showReasoningPassback?: boolean
   onRefreshCatalog?: () => void
+  onTestModel?: (modelId: string) => Promise<ProviderModelTestResult>
   onChange: (models: ProviderModelDraft[]) => void
   onDefaultChange: (modelId: string) => void
 }
@@ -32,11 +45,19 @@ export function ProviderModelsField({
   catalog = [],
   isLoadingCatalog = false,
   catalogError = false,
+  showReasoningPassback = false,
   onRefreshCatalog,
+  onTestModel,
   onChange,
   onDefaultChange,
 }: ProviderModelsFieldProps) {
   const { t } = useTranslation('providers')
+  const [testingIndex, setTestingIndex] = useState<number | null>(null)
+  const [testState, setTestState] = useState<{
+    index: number
+    modelId: string
+    result: ProviderModelTestResult
+  } | null>(null)
 
   const update = (index: number, patch: Partial<ProviderModelDraft>) => {
     const previous = models[index]
@@ -44,6 +65,7 @@ export function ProviderModelsField({
       modelIndex === index ? { ...model, ...patch } : model,
     )
     onChange(next)
+    if (patch.id !== undefined && testState?.index === index) setTestState(null)
     if (patch.id !== undefined && previous.id === defaultModel) {
       onDefaultChange(patch.id)
     }
@@ -54,7 +76,30 @@ export function ProviderModelsField({
     const removed = models[index]
     const next = models.filter((_, modelIndex) => modelIndex !== index)
     onChange(next)
+    setTestState(null)
     if (removed.id === defaultModel) onDefaultChange(next[0]?.id ?? '')
+  }
+
+  const testModel = async (index: number, modelId: string) => {
+    if (!onTestModel) return
+    const normalizedId = modelId.trim()
+    setTestingIndex(index)
+    setTestState(null)
+    try {
+      setTestState({ index, modelId: normalizedId, result: await onTestModel(normalizedId) })
+    } catch (error) {
+      setTestState({
+        index,
+        modelId: normalizedId,
+        result: {
+          ok: false,
+          latency_ms: null,
+          error: error instanceof Error ? error.message : t('errors.network'),
+        },
+      })
+    } finally {
+      setTestingIndex(null)
+    }
   }
 
   return (
@@ -84,7 +129,12 @@ export function ProviderModelsField({
             onClick={() =>
               onChange([
                 ...models,
-                { id: '', context_window_tokens: undefined, context_output_reserve_percent: 30 },
+                {
+                  id: '',
+                  context_window_tokens: undefined,
+                  context_output_reserve_percent: 30,
+                  reasoning_passback: false,
+                },
               ])
             }
           >
@@ -105,7 +155,7 @@ export function ProviderModelsField({
       <div className="space-y-3">
         {models.map((model, index) => (
           <div key={index} className="rounded-md border border-border bg-background p-3">
-            <div className="mb-3 flex items-center gap-3">
+            <div className="mb-3 flex flex-wrap items-center gap-3">
               <label className="flex shrink-0 items-center gap-1.5 text-xs font-medium">
                 <input
                   type="radio"
@@ -122,6 +172,22 @@ export function ProviderModelsField({
                 placeholder={t('models.modelPlaceholder')}
                 onChange={(id) => update(index, { id })}
               />
+              {onTestModel ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={!model.id.trim() || testingIndex !== null}
+                  aria-label={t('models.testNamed', { model: model.id || index + 1 })}
+                  onClick={() => void testModel(index, model.id)}
+                >
+                  {testingIndex === index ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+                  ) : null}
+                  {testingIndex === index ? t('models.testing') : t('models.test')}
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="ghost"
@@ -133,6 +199,27 @@ export function ProviderModelsField({
                 <Trash2 className="h-4 w-4" />
               </Button>
             </div>
+
+            {testState?.index === index && testState.modelId === model.id.trim() ? (
+              <p
+                role={testState.result.ok ? 'status' : 'alert'}
+                className={cn(
+                  'mb-3 flex items-start gap-1.5 text-xs',
+                  testState.result.ok ? 'text-emerald-600' : 'text-destructive',
+                )}
+              >
+                {testState.result.ok ? (
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                ) : (
+                  <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                )}
+                <span className="break-words">
+                  {testState.result.ok
+                    ? t('models.testSucceeded', { latency: testState.result.latency_ms })
+                    : `${t('models.testFailed')} ${testState.result.error ?? ''}`}
+                </span>
+              </p>
+            ) : null}
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
@@ -166,6 +253,15 @@ export function ProviderModelsField({
                 />
               </div>
             </div>
+            {showReasoningPassback ? (
+              <div className="mt-3 border-t border-border pt-3">
+                <ReasoningPassbackControl
+                  value={model.reasoning_passback}
+                  onChange={(reasoning_passback) => update(index, { reasoning_passback })}
+                  ariaLabel={t('models.reasoningFor', { model: model.id || index + 1 })}
+                />
+              </div>
+            ) : null}
           </div>
         ))}
       </div>

@@ -1,8 +1,7 @@
 //! Controlled (non-executing) tools and the shared controlled-result encoder.
 //!
 //! These are tools that return a structured status instead of performing an action:
-//! unconfigured `WebSearch`, `AskUser`, the media stubs
-//! `GenerateImage`/`GenerateVideo`, `TodoWrite`, and `ExitPlanMode`. Each returns
+//! unconfigured providers, `AskUser`, `TodoWrite`, and `ExitPlanMode`. Each returns
 //! a [`ToolResult`] whose `output` is a JSON object carrying the stable `tool` /
 //! `status` / `message` shape used by the Rust runtime.
 
@@ -125,38 +124,6 @@ pub(crate) fn web_search_setup_required() -> ToolResult {
         "SETUP_REQUIRED",
         ToolStatus::SetupRequired,
         Some("No search provider is configured for this agent."),
-        Vec::new(),
-    )
-}
-
-/// `GenerateImage`: media stub that reports `SETUP_REQUIRED` without calling any
-/// external provider.
-pub fn generate_image(prompt: &str) -> ToolResult {
-    let message = format!(
-        "Image generation provider is not configured. Requested prompt: {}",
-        truncate_chars(prompt, 1000)
-    );
-    controlled_result(
-        "GenerateImage",
-        "SETUP_REQUIRED",
-        ToolStatus::SetupRequired,
-        Some(&message),
-        Vec::new(),
-    )
-}
-
-/// `GenerateVideo`: media stub that reports `SETUP_REQUIRED` without calling any
-/// external provider.
-pub fn generate_video(prompt: &str) -> ToolResult {
-    let message = format!(
-        "Video generation provider is not configured. Requested prompt: {}",
-        truncate_chars(prompt, 1000)
-    );
-    controlled_result(
-        "GenerateVideo",
-        "SETUP_REQUIRED",
-        ToolStatus::SetupRequired,
-        Some(&message),
         Vec::new(),
     )
 }

@@ -103,7 +103,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/assistant",
             get(assistant::get).patch(assistant::update),
         )
-        .route("/api/v2/app-actions", get(app_actions::list))
+        .route(
+            "/api/v2/app-actions",
+            get(app_actions::list).delete(app_actions::clear),
+        )
+        .route(
+            "/api/v2/app-actions/:action_id",
+            axum::routing::delete(app_actions::delete),
+        )
         .route(
             "/api/v2/app-actions/:action_id/approve",
             axum::routing::post(app_actions::approve),
@@ -141,6 +148,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/llm-providers/discover-models",
             axum::routing::post(llm_providers::discover),
+        )
+        .route(
+            "/api/v2/llm-providers/test-model",
+            axum::routing::post(llm_providers::test_model),
         )
         .route(
             "/api/v2/llm-providers/:provider_id",
@@ -351,6 +362,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/groups/:group_id/workspace-git/push",
             axum::routing::post(groups::push_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/force-push",
+            axum::routing::post(groups::force_push_group_workspace_git),
+        )
+        .route(
+            "/api/v2/groups/:group_id/workspace-git/rebase",
+            axum::routing::post(groups::rebase_group_workspace_git),
         )
         .route(
             "/api/v2/groups/:group_id/members/:user_id",

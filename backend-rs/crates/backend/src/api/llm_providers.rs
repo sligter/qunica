@@ -5,15 +5,20 @@ use axum::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::llm::{
-    discover_models, ModelCatalogError, ModelInfo, ProviderConfig, ProviderModelConfig,
-    MODEL_CATALOG_TIMEOUT,
+    build_provider, discover_models, ChatDelta, ChatMessage, ChatRequest, ModelCatalogError,
+    ModelInfo, ProviderConfig, ProviderModelConfig, MODEL_CATALOG_TIMEOUT,
 };
+
+const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 const PROVIDER_COLUMNS: &str = "id, owner_id, name, kind, base_url, api_key, default_model, \
      context_window_tokens, context_output_reserve_ratio, description, reasoning_passback, \
@@ -78,6 +83,25 @@ pub struct DiscoverRequest {
     api_key: String,
     #[serde(default)]
     default_model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestModelRequest {
+    #[serde(default)]
+    provider_id: Option<String>,
+    kind: String,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
+    model: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestModelResponse {
+    ok: bool,
+    latency_ms: Option<u64>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,22 +177,27 @@ pub async fn create(
     validate_context_window(body.context_window_tokens)?;
     validate_reserve_ratio(body.context_output_reserve_ratio)?;
     let description = normalize_nullable_text(body.description.as_deref());
-    let reasoning_passback = body.reasoning_passback.unwrap_or(false);
-    let models = normalize_models(
-        body.models.unwrap_or_else(|| {
-            vec![ProviderModelConfig {
-                id: default_model.clone(),
-                context_window_tokens: body.context_window_tokens,
-                context_output_reserve_ratio: body.context_output_reserve_ratio,
-                supports_reasoning_effort: false,
-            }]
-        }),
-        &default_model,
-    )?;
+    let legacy_reasoning_passback = body.reasoning_passback.unwrap_or(false);
+    let mut models = body.models.unwrap_or_else(|| {
+        vec![ProviderModelConfig {
+            id: default_model.clone(),
+            context_window_tokens: body.context_window_tokens,
+            context_output_reserve_ratio: body.context_output_reserve_ratio,
+            supports_reasoning_effort: false,
+            reasoning_passback: Some(legacy_reasoning_passback),
+        }]
+    });
+    for model in &mut models {
+        model
+            .reasoning_passback
+            .get_or_insert(legacy_reasoning_passback);
+    }
+    let models = normalize_models(models, &default_model)?;
     let default_config = models
         .iter()
         .find(|model| model.id == default_model)
         .expect("normalized models contain default");
+    let reasoning_passback = default_config.reasoning_passback.unwrap_or(false);
     let models_json = serialize_models(&models)?;
 
     let id = Uuid::new_v4().to_string();
@@ -283,7 +312,7 @@ pub async fn update(
         Some(ref provided) => normalize_nullable_text(provided.as_deref()),
         None => existing.description.clone(),
     };
-    let reasoning_passback = body
+    let legacy_reasoning_passback = body
         .reasoning_passback
         .unwrap_or(existing.reasoning_passback != 0);
     let mut models = match body.models.as_ref() {
@@ -296,7 +325,20 @@ pub async fn update(
             context_window_tokens,
             context_output_reserve_ratio,
             supports_reasoning_effort: false,
+            reasoning_passback: Some(legacy_reasoning_passback),
         });
+    }
+    if body.models.is_none() {
+        if let Some(reasoning_passback) = body.reasoning_passback {
+            for model in &mut models {
+                model.reasoning_passback = Some(reasoning_passback);
+            }
+        }
+    }
+    for model in &mut models {
+        model
+            .reasoning_passback
+            .get_or_insert(legacy_reasoning_passback);
     }
     if body.models.is_none() {
         if let Some(model) = models.iter_mut().find(|model| model.id == default_model) {
@@ -311,6 +353,7 @@ pub async fn update(
         .expect("normalized models contain default");
     let context_window_tokens = default_config.context_window_tokens;
     let context_output_reserve_ratio = default_config.context_output_reserve_ratio;
+    let reasoning_passback = default_config.reasoning_passback.unwrap_or(false);
     let models_json = serialize_models(&models)?;
 
     let now = now_rfc3339();
@@ -409,6 +452,99 @@ pub async fn discover(
         context_output_reserve_ratio: None,
     };
     Ok(Json(discover_provider_models(config).await?))
+}
+
+pub async fn test_model(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<TestModelRequest>,
+) -> Result<Json<TestModelResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let stored_key = match body.provider_id.as_deref() {
+        Some(provider_id) => {
+            let provider_id = validate_uuid(provider_id, "provider id")?;
+            Some(
+                load_active_owned(state.db.pool(), &provider_id, &owner_id)
+                    .await?
+                    .api_key,
+            )
+        }
+        None => None,
+    };
+    let api_key = match body.api_key.as_deref() {
+        Some(key) if !key.trim().is_empty() => validate_api_key(key)?,
+        _ => stored_key.ok_or_else(|| ApiError::invalid_input("api_key must not be empty"))?,
+    };
+    let config = ProviderConfig {
+        kind: validate_kind(&body.kind)?,
+        base_url: normalize_nullable_text(body.base_url.as_deref()),
+        api_key,
+        default_model: validate_default_model(&body.model)?,
+        reasoning_passback: false,
+        context_window_tokens: None,
+        context_output_reserve_ratio: None,
+    };
+    Ok(Json(probe_model(config).await))
+}
+
+async fn probe_model(config: ProviderConfig) -> TestModelResponse {
+    let started = Instant::now();
+    let model = config.default_model.clone();
+    let probe = async move {
+        let provider = build_provider(&config)?;
+        let mut deltas = provider
+            .stream(ChatRequest {
+                model,
+                messages: vec![ChatMessage::text("user", "Reply with OK only.")],
+                temperature: None,
+                reasoning_passback: false,
+                include_empty_tools: false,
+                tools: Vec::new(),
+                reasoning_effort: None,
+            })
+            .await?;
+        while let Some(delta) = deltas.recv().await {
+            match delta {
+                ChatDelta::Token(text) | ChatDelta::Reasoning(text) if !text.trim().is_empty() => {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                ChatDelta::ToolCall(_) => return Ok(()),
+                ChatDelta::Done => break,
+                ChatDelta::Token(_) | ChatDelta::Reasoning(_) | ChatDelta::Usage(_) => {}
+            }
+        }
+        anyhow::bail!("model returned no content")
+    };
+
+    match tokio::time::timeout(MODEL_TEST_TIMEOUT, probe).await {
+        Ok(Ok(())) => TestModelResponse {
+            ok: true,
+            latency_ms: Some(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)),
+            error: None,
+        },
+        Ok(Err(error)) => TestModelResponse {
+            ok: false,
+            latency_ms: None,
+            error: Some(safe_model_test_error(&error)),
+        },
+        Err(_) => TestModelResponse {
+            ok: false,
+            latency_ms: None,
+            error: Some("The model did not respond within 30 seconds.".to_string()),
+        },
+    }
+}
+
+fn safe_model_test_error(error: &anyhow::Error) -> String {
+    if let Some(error) = error.downcast_ref::<reqwest::Error>() {
+        if let Some(status) = error.status() {
+            return format!("The provider returned HTTP {status}.");
+        }
+        if error.is_timeout() {
+            return "The provider request timed out.".to_string();
+        }
+    }
+    "The provider could not be reached or returned no usable response.".to_string()
 }
 
 async fn discover_provider_models(config: ProviderConfig) -> Result<Vec<ModelInfo>, ApiError> {
@@ -547,7 +683,9 @@ fn normalize_models(
 }
 
 fn stored_models(row: &ProviderRow) -> Vec<ProviderModelConfig> {
-    row.models_json
+    let fallback = row.reasoning_passback != 0;
+    let mut models = row
+        .models_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<Vec<ProviderModelConfig>>(raw).ok())
         .filter(|models| !models.is_empty())
@@ -557,8 +695,13 @@ fn stored_models(row: &ProviderRow) -> Vec<ProviderModelConfig> {
                 context_window_tokens: row.context_window_tokens,
                 context_output_reserve_ratio: row.context_output_reserve_ratio,
                 supports_reasoning_effort: false,
+                reasoning_passback: Some(fallback),
             }]
-        })
+        });
+    for model in &mut models {
+        model.reasoning_passback.get_or_insert(fallback);
+    }
+    models
 }
 
 fn serialize_models(models: &[ProviderModelConfig]) -> Result<String, ApiError> {

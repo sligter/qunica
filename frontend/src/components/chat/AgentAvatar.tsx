@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Bot } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -136,14 +137,17 @@ export function AgentAvatar({
         ? 'bg-muted text-muted-foreground'
         : colorFor(name)
   const ratio =
-    kind === 'agent' && contextUsage?.ratio !== null && contextUsage?.ratio !== undefined
+    kind !== 'user' && contextUsage?.ratio !== null && contextUsage?.ratio !== undefined
       ? Math.max(0, Math.min(1, contextUsage.ratio))
       : null
 
   const avatar = (
-    <Avatar className={cn(ratio === null ? 'h-8 w-8' : 'h-7 w-7', 'shrink-0')}>
+    <Avatar
+      aria-label={name}
+      className={cn(ratio === null ? 'h-8 w-8' : 'h-7 w-7', 'shrink-0')}
+    >
       <AvatarFallback className={cn('text-xs font-semibold', fallbackClass)}>
-        {avatarInitials(name)}
+        {kind === 'system' ? <Bot className="h-4 w-4" aria-hidden /> : avatarInitials(name)}
       </AvatarFallback>
     </Avatar>
   )
@@ -171,8 +175,8 @@ export function AgentAvatar({
     )
   }
 
-  // Only agents with usage data get the interactive hover card.
-  if (kind !== 'agent' || !contextUsage) return visual
+  // User avatars are never context meters; agent and Assistant avatars are.
+  if (kind === 'user' || !contextUsage) return visual
 
   return (
     <Tooltip>

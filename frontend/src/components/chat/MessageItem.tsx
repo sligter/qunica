@@ -27,6 +27,7 @@ interface MessageItemProps {
   onSubmitHumanInput?: (content: string) => void
   scope?: ConversationScope
   agents?: GroupAgentRead[]
+  agentIsSystem?: boolean
 }
 
 export function MessageItem({
@@ -36,6 +37,7 @@ export function MessageItem({
   onSubmitHumanInput,
   scope = 'groups',
   agents,
+  agentIsSystem,
 }: MessageItemProps) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
@@ -96,7 +98,7 @@ export function MessageItem({
     >
       <AgentAvatar
         name={senderName}
-        kind={isUser ? 'user' : 'agent'}
+        kind={isUser ? 'user' : agentIsSystem ? 'system' : 'agent'}
         className="mt-0.5"
         contextUsage={message.context_usage ?? groupAgent?.context_usage ?? null}
       />

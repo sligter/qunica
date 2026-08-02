@@ -7,7 +7,7 @@
     "dev": "pnpm --filter @ag-swarmer/frontend dev",
     "build": "pnpm --filter @ag-swarmer/frontend build",
     "desktop:dev": "pnpm desktop:icons && pnpm --filter @ag-swarmer/frontend tauri dev",
-    "desktop:build": "pnpm desktop:icons && pnpm --filter @ag-swarmer/frontend tauri build && pnpm desktop:portable",
+    "desktop:build": "pnpm desktop:icons && node scripts/build-desktop.mjs && pnpm desktop:portable",
     "desktop:backend": "cargo build --manifest-path backend-rs/Cargo.toml --package ag-swarmer-backend --release",
     "desktop:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-desktop-icons.ps1",
     "desktop:portable": "node scripts/package-desktop-portable.mjs",

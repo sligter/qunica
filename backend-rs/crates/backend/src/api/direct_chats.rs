@@ -49,6 +49,12 @@ pub struct DirectChatResponse {
     updated_at: String,
 }
 
+impl DirectChatResponse {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct OwnedAgent {
     id: String,
@@ -63,12 +69,24 @@ pub async fn create(
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<DirectChatResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let agent_id = validate_uuid(&body.agent_id, "agent_id")?;
+    Ok((
+        StatusCode::CREATED,
+        Json(create_inner(&state, &owner_id, &body.agent_id).await?),
+    ))
+}
+
+/// The direct-chat creation path shared by the UI and approved app actions.
+pub(crate) async fn create_inner(
+    state: &AppState,
+    owner_id: &str,
+    agent_id: &str,
+) -> Result<DirectChatResponse, ApiError> {
+    let agent_id = validate_uuid(agent_id, "agent_id")?;
     let agent = sqlx::query_as::<_, OwnedAgent>(
         "SELECT id, name, workspace_id, status FROM agents WHERE id = ? AND owner_id = ?",
     )
     .bind(&agent_id)
-    .bind(&owner_id)
+    .bind(owner_id)
     .fetch_optional(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("database error"))?
@@ -78,24 +96,21 @@ pub async fn create(
     }
     let language: Option<String> =
         sqlx::query_scalar("SELECT language FROM system_settings WHERE owner_id = ? LIMIT 1")
-            .bind(&owner_id)
+            .bind(owner_id)
             .fetch_optional(state.db.pool())
             .await
             .map_err(|_| ApiError::internal("database error"))?;
     let title = direct_chat_title(language.as_deref(), &agent.name);
     let id = insert_direct_chat(
         state.db.pool(),
-        &owner_id,
+        owner_id,
         &agent.id,
         agent.workspace_id.as_deref(),
         &title,
         WorkspaceMode::default(),
     )
     .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(fetch(state.db.pool(), &id, &owner_id).await?),
-    ))
+    fetch(state.db.pool(), &id, owner_id).await
 }
 
 /// Insert the four rows a direct chat is made of, in one transaction.

@@ -237,6 +237,7 @@ export function useUnstageGroupWorkspaceGit(groupId: string | undefined) {
 
 export function useCommitGroupWorkspaceGit(groupId: string | undefined) {
   return useWorkspaceGitMutation<GroupWorkspaceGitCommitRequest>(groupId, 'commit', {
+    invalidateBranches: true,
     invalidateDiffs: true,
   })
 }
@@ -266,13 +267,29 @@ export function usePullGroupWorkspaceGit(
   return useWorkspaceGitMutation<Record<string, never>>(
     groupId,
     'pull',
-    { invalidateFiles: true },
+    { invalidateBranches: true, invalidateDiffs: true, invalidateFiles: true },
     scope,
   )
 }
 
 export function usePushGroupWorkspaceGit(groupId: string | undefined) {
   return useWorkspaceGitMutation<Record<string, never>>(groupId, 'push')
+}
+
+export function useForcePushGroupWorkspaceGit(groupId: string | undefined) {
+  return useWorkspaceGitMutation<Record<string, never>>(groupId, 'force-push')
+}
+
+export function useRebaseGroupWorkspaceGit(
+  groupId: string | undefined,
+  scope: ConversationScope = 'groups',
+) {
+  return useWorkspaceGitMutation<Record<string, never>>(
+    groupId,
+    'rebase',
+    { invalidateBranches: true, invalidateDiffs: true, invalidateFiles: true },
+    scope,
+  )
 }
 
 export function useFetchGroupWorkspaceGit(groupId: string | undefined) {

@@ -1120,21 +1120,27 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const timestamp = nowIso()
       const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
       let events = markReasoningDone(run.events, agentId)
-      const segmentIds = events
+      const segments = events
         .filter(
           (event): event is StreamResponseDraftEvent =>
-            event.type === 'response_draft' && event.agent_id === agentId,
+            event.type === 'response_draft' &&
+            event.agent_id === agentId &&
+            event.status === 'streaming',
         )
-        .map((event) => event.id)
-      if (segmentIds.length > 0) {
-        const lastSegmentId = segmentIds[segmentIds.length - 1]
+      if (segments.length > 0) {
+        const lastSegmentId = segments[segments.length - 1].id
+        const priorContent = segments.slice(0, -1).map((event) => event.content).join('')
+        const messageContent = message.content ?? ''
+        const finalContent = priorContent && messageContent.startsWith(priorContent)
+          ? messageContent.slice(priorContent.length)
+          : messageContent
         events = events.map((event) => {
           if (event.type === 'response_draft' && event.agent_id === agentId) {
             const isFinalSegment = event.id === lastSegmentId
             return {
               ...event,
               display_name: displayName ?? event.display_name,
-              content: isFinalSegment ? message.content ?? '' : event.content,
+              content: isFinalSegment ? finalContent : event.content,
               status: 'finalized',
               message_id: isFinalSegment ? message.id : event.message_id,
               context_usage: message.context_usage ?? event.context_usage,

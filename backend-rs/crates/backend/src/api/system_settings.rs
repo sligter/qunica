@@ -9,19 +9,26 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
-use crate::tools::TavilySearchConfig;
+use crate::tools::{MediaGenerationConfig, TavilySearchConfig};
 
 const DEFAULT_WEB_SEARCH_PROVIDER: &str = "tavily";
 const DEFAULT_TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
 const DEFAULT_TAVILY_MAX_RESULTS: i64 = 5;
 const DEFAULT_TAVILY_SEARCH_DEPTH: &str = "basic";
+const DEFAULT_MEDIA_BASE_URL: &str = "https://api.openai.com";
+const DEFAULT_IMAGE_GENERATION_ENDPOINT: &str = "/v1/images/generations";
+const DEFAULT_VIDEO_GENERATION_ENDPOINT: &str = "/v1/videos";
+const DEFAULT_VIDEO_STATUS_ENDPOINT: &str = "/v1/videos/{id}";
+const DEFAULT_VIDEO_CONTENT_ENDPOINT: &str = "/v1/videos/{id}/content";
 const DEFAULT_APPEARANCE: &str = "system";
 const DEFAULT_LANGUAGE: &str = "en-US";
 
 const SETTINGS_COLUMNS: &str =
-    "id, owner_id, appearance, language, group_workspace_root, web_search_provider, \
+    "id, owner_id, appearance, language, assistant_auto_approve, group_workspace_root, web_search_provider, \
      tavily_api_key, tavily_search_url, tavily_max_results, tavily_search_depth, \
-     tavily_include_answer, tavily_include_raw_content, created_at, updated_at";
+     tavily_include_answer, tavily_include_raw_content, media_base_url, media_api_key, \
+     image_generation_model, image_generation_endpoint, video_generation_model, \
+     video_generation_endpoint, video_status_endpoint, video_content_endpoint, created_at, updated_at";
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateRequest {
@@ -29,6 +36,8 @@ pub struct UpdateRequest {
     appearance: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     language: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    assistant_auto_approve: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     group_workspace_root: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -45,6 +54,22 @@ pub struct UpdateRequest {
     tavily_include_answer: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     tavily_include_raw_content: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    media_base_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    media_api_key: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    image_generation_model: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    image_generation_endpoint: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    video_generation_model: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    video_generation_endpoint: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    video_status_endpoint: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    video_content_endpoint: Option<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +78,7 @@ pub struct SettingsResponse {
     owner_id: String,
     appearance: String,
     language: String,
+    assistant_auto_approve: bool,
     group_workspace_root: Option<String>,
     web_search_provider: String,
     tavily_api_key_configured: bool,
@@ -61,6 +87,14 @@ pub struct SettingsResponse {
     tavily_search_depth: String,
     tavily_include_answer: bool,
     tavily_include_raw_content: bool,
+    media_base_url: String,
+    media_api_key_configured: bool,
+    image_generation_model: Option<String>,
+    image_generation_endpoint: String,
+    video_generation_model: Option<String>,
+    video_generation_endpoint: String,
+    video_status_endpoint: String,
+    video_content_endpoint: String,
     created_at: String,
     updated_at: String,
 }
@@ -71,6 +105,7 @@ struct SettingsRow {
     owner_id: String,
     appearance: String,
     language: String,
+    assistant_auto_approve: i64,
     group_workspace_root: Option<String>,
     web_search_provider: String,
     tavily_api_key: Option<String>,
@@ -79,6 +114,14 @@ struct SettingsRow {
     tavily_search_depth: String,
     tavily_include_answer: i64,
     tavily_include_raw_content: i64,
+    media_base_url: String,
+    media_api_key: Option<String>,
+    image_generation_model: Option<String>,
+    image_generation_endpoint: String,
+    video_generation_model: Option<String>,
+    video_generation_endpoint: String,
+    video_status_endpoint: String,
+    video_content_endpoint: String,
     created_at: String,
     updated_at: String,
 }
@@ -90,6 +133,7 @@ impl From<SettingsRow> for SettingsResponse {
             owner_id: row.owner_id,
             appearance: row.appearance,
             language: row.language,
+            assistant_auto_approve: row.assistant_auto_approve != 0,
             group_workspace_root: row.group_workspace_root,
             web_search_provider: row.web_search_provider,
             tavily_api_key_configured: row
@@ -101,6 +145,17 @@ impl From<SettingsRow> for SettingsResponse {
             tavily_search_depth: row.tavily_search_depth,
             tavily_include_answer: row.tavily_include_answer != 0,
             tavily_include_raw_content: row.tavily_include_raw_content != 0,
+            media_base_url: row.media_base_url,
+            media_api_key_configured: row
+                .media_api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty()),
+            image_generation_model: row.image_generation_model,
+            image_generation_endpoint: row.image_generation_endpoint,
+            video_generation_model: row.video_generation_model,
+            video_generation_endpoint: row.video_generation_endpoint,
+            video_status_endpoint: row.video_status_endpoint,
+            video_content_endpoint: row.video_content_endpoint,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -132,6 +187,30 @@ pub(crate) async fn tavily_search_config(
     }))
 }
 
+pub(crate) async fn media_generation_config(
+    pool: &SqlitePool,
+    owner_id: &str,
+) -> Result<Option<MediaGenerationConfig>, ApiError> {
+    let row = get_or_create(pool, owner_id).await?;
+    let Some(api_key) = row
+        .media_api_key
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(MediaGenerationConfig {
+        api_key,
+        base_url: row.media_base_url,
+        image_model: normalized_optional_text(row.image_generation_model),
+        image_endpoint: row.image_generation_endpoint,
+        video_model: normalized_optional_text(row.video_generation_model),
+        video_endpoint: row.video_generation_endpoint,
+        video_status_endpoint: row.video_status_endpoint,
+        video_content_endpoint: row.video_content_endpoint,
+    }))
+}
+
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -156,6 +235,11 @@ pub async fn update(
     let language = match body.language {
         Some(ref value) => normalize_language(value.as_deref())?,
         None => existing.language.clone(),
+    };
+    let assistant_auto_approve = match body.assistant_auto_approve {
+        Some(Some(value)) => value,
+        Some(None) => false,
+        None => existing.assistant_auto_approve != 0,
     };
     let group_workspace_root = match body.group_workspace_root {
         Some(ref value) => normalize_root(value.as_deref())?,
@@ -191,17 +275,72 @@ pub async fn update(
         Some(None) => false,
         None => existing.tavily_include_raw_content != 0,
     };
+    let media_base_url = match body.media_base_url {
+        Some(ref value) => normalize_media_base_url(value.as_deref())?,
+        None => existing.media_base_url.clone(),
+    };
+    let media_api_key = match body.media_api_key {
+        Some(ref value) => normalize_key(value.as_deref()),
+        None => existing.media_api_key.clone(),
+    };
+    let image_generation_model = match body.image_generation_model {
+        Some(value) => normalize_model(value, "image_generation_model")?,
+        None => existing.image_generation_model.clone(),
+    };
+    let image_generation_endpoint = match body.image_generation_endpoint {
+        Some(ref value) => normalize_media_endpoint(
+            value.as_deref(),
+            DEFAULT_IMAGE_GENERATION_ENDPOINT,
+            "image_generation_endpoint",
+            false,
+        )?,
+        None => existing.image_generation_endpoint.clone(),
+    };
+    let video_generation_model = match body.video_generation_model {
+        Some(value) => normalize_model(value, "video_generation_model")?,
+        None => existing.video_generation_model.clone(),
+    };
+    let video_generation_endpoint = match body.video_generation_endpoint {
+        Some(ref value) => normalize_media_endpoint(
+            value.as_deref(),
+            DEFAULT_VIDEO_GENERATION_ENDPOINT,
+            "video_generation_endpoint",
+            false,
+        )?,
+        None => existing.video_generation_endpoint.clone(),
+    };
+    let video_status_endpoint = match body.video_status_endpoint {
+        Some(ref value) => normalize_media_endpoint(
+            value.as_deref(),
+            DEFAULT_VIDEO_STATUS_ENDPOINT,
+            "video_status_endpoint",
+            true,
+        )?,
+        None => existing.video_status_endpoint.clone(),
+    };
+    let video_content_endpoint = match body.video_content_endpoint {
+        Some(ref value) => normalize_media_endpoint(
+            value.as_deref(),
+            DEFAULT_VIDEO_CONTENT_ENDPOINT,
+            "video_content_endpoint",
+            true,
+        )?,
+        None => existing.video_content_endpoint.clone(),
+    };
 
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE system_settings SET \
-         appearance = ?, language = ?, group_workspace_root = ?, web_search_provider = ?, tavily_api_key = ?, \
+         appearance = ?, language = ?, assistant_auto_approve = ?, group_workspace_root = ?, web_search_provider = ?, tavily_api_key = ?, \
          tavily_search_url = ?, tavily_max_results = ?, tavily_search_depth = ?, \
-         tavily_include_answer = ?, tavily_include_raw_content = ?, updated_at = ? \
+         tavily_include_answer = ?, tavily_include_raw_content = ?, media_base_url = ?, media_api_key = ?, \
+         image_generation_model = ?, image_generation_endpoint = ?, video_generation_model = ?, \
+         video_generation_endpoint = ?, video_status_endpoint = ?, video_content_endpoint = ?, updated_at = ? \
          WHERE owner_id = ?",
     )
     .bind(&appearance)
     .bind(&language)
+    .bind(if assistant_auto_approve { 1_i64 } else { 0_i64 })
     .bind(&group_workspace_root)
     .bind(&web_search_provider)
     .bind(&tavily_api_key)
@@ -214,6 +353,14 @@ pub async fn update(
     } else {
         0_i64
     })
+    .bind(&media_base_url)
+    .bind(&media_api_key)
+    .bind(&image_generation_model)
+    .bind(&image_generation_endpoint)
+    .bind(&video_generation_model)
+    .bind(&video_generation_endpoint)
+    .bind(&video_status_endpoint)
+    .bind(&video_content_endpoint)
     .bind(&now)
     .bind(&owner_id)
     .execute(state.db.pool())
@@ -235,10 +382,10 @@ async fn get_or_create(pool: &SqlitePool, owner_id: &str) -> Result<SettingsRow,
     let now = now_rfc3339();
     sqlx::query(
         "INSERT OR IGNORE INTO system_settings \
-         (id, owner_id, appearance, language, group_workspace_root, web_search_provider, tavily_api_key, \
+         (id, owner_id, appearance, language, assistant_auto_approve, group_workspace_root, web_search_provider, tavily_api_key, \
           tavily_search_url, tavily_max_results, tavily_search_depth, \
           tavily_include_answer, tavily_include_raw_content, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, 1, 0, ?, ?)",
+         VALUES (?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, 1, 0, ?, ?)",
     )
     .bind(&id)
     .bind(owner_id)
@@ -336,17 +483,80 @@ fn normalize_key(raw: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn normalize_model(raw: Option<String>, field: &str) -> Result<Option<String>, ApiError> {
+    let model = raw
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if model
+        .as_deref()
+        .is_some_and(|value| value.chars().count() > 200)
+    {
+        return Err(ApiError::invalid_input(format!(
+            "{field} must be at most 200 characters"
+        )));
+    }
+    Ok(model)
+}
+
+fn normalized_optional_text(raw: Option<String>) -> Option<String> {
+    raw.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn normalize_tavily_url(raw: Option<&str>) -> Result<String, ApiError> {
-    let Some(url) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(DEFAULT_TAVILY_SEARCH_URL.to_string());
-    };
+    normalize_http_url(raw, DEFAULT_TAVILY_SEARCH_URL, "tavily_search_url")
+}
+
+fn normalize_media_base_url(raw: Option<&str>) -> Result<String, ApiError> {
+    normalize_http_url(raw, DEFAULT_MEDIA_BASE_URL, "media_base_url")
+}
+
+fn normalize_http_url(raw: Option<&str>, default: &str, field: &str) -> Result<String, ApiError> {
+    let url = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .trim_end_matches('/');
     let parsed = reqwest::Url::parse(url)
-        .map_err(|_| ApiError::invalid_input("tavily_search_url must be an http or https URL"))?;
+        .map_err(|_| ApiError::invalid_input(format!("{field} must be an http or https URL")))?;
     match parsed.scheme() {
         "http" | "https" if parsed.host_str().is_some() => Ok(url.to_string()),
-        _ => Err(ApiError::invalid_input(
-            "tavily_search_url must be an http or https URL",
-        )),
+        _ => Err(ApiError::invalid_input(format!(
+            "{field} must be an http or https URL"
+        ))),
+    }
+}
+
+fn normalize_media_endpoint(
+    raw: Option<&str>,
+    default: &str,
+    field: &str,
+    requires_id: bool,
+) -> Result<String, ApiError> {
+    let endpoint = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default);
+    if endpoint.chars().count() > 2_048 {
+        return Err(ApiError::invalid_input(format!(
+            "{field} must be at most 2048 characters"
+        )));
+    }
+    if requires_id && !endpoint.contains("{id}") {
+        return Err(ApiError::invalid_input(format!(
+            "{field} must contain {{id}}"
+        )));
+    }
+    if endpoint.starts_with('/') {
+        return Ok(endpoint.to_string());
+    }
+    let parsed = reqwest::Url::parse(&endpoint.replace("{id}", "example"))
+        .map_err(|_| ApiError::invalid_input(format!("{field} must be an endpoint path or URL")))?;
+    match parsed.scheme() {
+        "http" | "https" if parsed.host_str().is_some() => Ok(endpoint.to_string()),
+        _ => Err(ApiError::invalid_input(format!(
+            "{field} must be an endpoint path or URL"
+        ))),
     }
 }
 

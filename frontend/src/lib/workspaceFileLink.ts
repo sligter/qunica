@@ -72,14 +72,50 @@ export function remarkWorkspaceFiles() {
   }
 }
 
-export function parseWorkspaceFileHref(href: string | undefined): string | null {
-  if (!href || !href.startsWith(WORKSPACE_FILE_SCHEME)) return null
-  const raw = href.slice(WORKSPACE_FILE_SCHEME.length)
+export function parseWorkspaceFileHref(
+  href: string | undefined,
+  root?: string,
+): string | null {
+  if (!href) return null
+  const encoded = href.startsWith(WORKSPACE_FILE_SCHEME)
+  let raw = encoded ? href.slice(WORKSPACE_FILE_SCHEME.length) : href
   try {
-    return decodeURIComponent(raw)
+    raw = decodeURIComponent(raw)
   } catch {
-    return raw
+    // Keep the original text when an agent emits a malformed percent escape.
   }
+  if (!encoded && /^(?:file:|https?:\/\/tauri\.localhost\/)/i.test(raw)) {
+    try {
+      raw = new URL(raw).pathname.replace(/^\/(?=[a-z]:\/)/i, '')
+    } catch {
+      return null
+    }
+  }
+  raw = raw
+    .replace(/#L\d+(?:C\d+)?$/i, '')
+    .replace(/:\d+(?::\d+)?$/, '')
+    .replace(/\\/g, '/')
+
+  const driveAbsolute = /^[a-z]:\//i.test(raw)
+  const posixAbsolute = raw.startsWith('/') && !raw.startsWith('//')
+  if (encoded && (driveAbsolute || posixAbsolute)) return null
+  if (!encoded && /^[a-z][a-z0-9+.-]*:/i.test(raw) && !driveAbsolute) return null
+  if (!encoded && !driveAbsolute && !posixAbsolute && !/[^/]\.[^/]+$/.test(raw)) return null
+
+  if (!encoded && (driveAbsolute || posixAbsolute)) {
+    if (!root) return null
+    const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
+    const foldedRoot = driveAbsolute ? normalizedRoot.toLowerCase() : normalizedRoot
+    const foldedRaw = driveAbsolute ? raw.toLowerCase() : raw
+    if (!foldedRaw.startsWith(`${foldedRoot}/`)) return null
+    raw = raw.slice(normalizedRoot.length + 1)
+  }
+
+  const rel = normalizeRel(raw).replace(/^\/+/, '')
+  if (!rel || rel.split('/').includes('..') || rel.startsWith('#') || rel.startsWith('?')) {
+    return null
+  }
+  return rel
 }
 
 export function joinWorkspaceAbsPath(

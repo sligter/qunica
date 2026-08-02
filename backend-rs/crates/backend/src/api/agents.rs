@@ -50,7 +50,7 @@ pub struct CreateRequest {
     #[serde(default)]
     acp_runtime: Option<Value>,
     workspace_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "provider_id")]
     llm_provider_id: Option<String>,
     #[serde(default)]
     skill_ids: Option<Vec<String>>,
@@ -76,7 +76,7 @@ pub struct UpdateRequest {
     acp_runtime: Option<Option<Value>>,
     #[serde(default)]
     workspace_id: Option<String>,
-    #[serde(default, deserialize_with = "double_option")]
+    #[serde(default, alias = "provider_id", deserialize_with = "double_option")]
     llm_provider_id: Option<Option<String>>,
     #[serde(default)]
     skill_ids: Option<Vec<String>>,
@@ -893,14 +893,14 @@ fn builtin_tools() -> Vec<BuiltinToolResponse> {
             "GenerateImage",
             "Generate images through a media provider.",
             "media",
-            false,
+            true,
         ),
         tool(
             "generate_video",
             "GenerateVideo",
             "Generate videos through a media provider.",
             "media",
-            false,
+            true,
         ),
         tool(
             "skill_manager",
@@ -940,7 +940,10 @@ fn tool(
         policy,
         requires_workspace,
         requires_sandbox: false,
-        runtime_status: "available",
+        runtime_status: match id {
+            "run_sub_agent" => "planned",
+            _ => "available",
+        },
     }
 }
 

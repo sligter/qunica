@@ -8,11 +8,14 @@ import {
   ProviderModelsField,
   type ProviderModelDraft,
 } from '@/components/providers/ProviderModelsField'
-import { ReasoningPassbackControl } from '@/components/providers/ReasoningPassbackControl'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { useProviderModels, useUpdateProvider } from '@/hooks/useProviders'
+import {
+  useProviderModels,
+  useTestProviderModel,
+  useUpdateProvider,
+} from '@/hooks/useProviders'
 import { ApiError } from '@/lib/api-v2/client'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
@@ -24,7 +27,6 @@ function createSchema(required: string) { return z.object({
   base_url: z.string().optional(),
   api_key: z.string().optional(),
   description: z.string().optional(),
-  reasoning_passback: z.boolean(),
 }) }
 
 type FormValues = z.infer<ReturnType<typeof createSchema>>
@@ -56,6 +58,7 @@ export function EditProviderForm({
   const { t, i18n } = useTranslation('providers')
   const update = useUpdateProvider(provider.id)
   const catalog = useProviderModels(provider.id)
+  const testProviderModel = useTestProviderModel()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [models, setModels] = useState<ProviderModelDraft[]>(
     (provider.models ?? [{
@@ -69,6 +72,7 @@ export function EditProviderForm({
         model.context_output_reserve_ratio !== null
           ? Math.round(model.context_output_reserve_ratio * 100)
           : 30,
+      reasoning_passback: model.reasoning_passback ?? provider.reasoning_passback,
     })),
   )
   const [defaultModel, setDefaultModel] = useState(provider.default_model)
@@ -83,7 +87,6 @@ export function EditProviderForm({
       base_url: provider.base_url ?? '',
       api_key: '',
       description: provider.description ?? '',
-      reasoning_passback: provider.reasoning_passback,
     },
   })
 
@@ -126,9 +129,9 @@ export function EditProviderForm({
           id: model.id,
           context_window_tokens: model.context_window_tokens ?? null,
           context_output_reserve_ratio: model.context_output_reserve_percent / 100,
+          reasoning_passback: model.reasoning_passback,
         })),
         description: values.description || null,
-        reasoning_passback: values.reasoning_passback,
       })
       onSaved?.(updated.id)
     } catch (err) {
@@ -200,17 +203,21 @@ export function EditProviderForm({
         catalog={catalog.data}
         isLoadingCatalog={catalog.isFetching}
         catalogError={catalog.isError}
+        showReasoningPassback={kind === 'openai-compatible'}
         onChange={setModels}
         onDefaultChange={setDefaultModel}
         onRefreshCatalog={() => void catalog.refetch()}
+        onTestModel={(model) => {
+          const values = form.getValues()
+          return testProviderModel.mutateAsync({
+            provider_id: provider.id,
+            kind: values.kind,
+            base_url: values.base_url || null,
+            api_key: values.api_key?.trim() || undefined,
+            model,
+          })
+        }}
       />
-
-      {kind === 'openai-compatible' && (
-        <ReasoningPassbackControl
-          value={form.watch('reasoning_passback')}
-          onChange={(value) => form.setValue('reasoning_passback', value)}
-        />
-      )}
 
       <div className="space-y-1.5">
         <Label htmlFor={`provider-desc-${provider.id}`}>{t('fields.descriptionOptional')}</Label>

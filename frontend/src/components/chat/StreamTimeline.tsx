@@ -34,6 +34,7 @@ import type { ContextUsage } from '@/types/api'
 interface StreamTimelineProps {
   run: StreamRun
   onSubmitHumanInput?: (content: string) => void
+  agentIsSystem?: boolean
 }
 
 function inputRequestKey(request: HumanInputRequest): string {
@@ -282,6 +283,7 @@ function AgentBlockView({
   runStatus,
   groupId,
   fallbackUsage,
+  agentIsSystem,
   onSubmitHumanInput,
   renderedInputRequests,
 }: {
@@ -289,6 +291,7 @@ function AgentBlockView({
   runStatus: StreamRun['status']
   groupId: string
   fallbackUsage: ContextUsage | null
+  agentIsSystem?: boolean
   onSubmitHumanInput?: (content: string) => void
   renderedInputRequests: Set<string>
 }) {
@@ -314,6 +317,11 @@ function AgentBlockView({
       return request ? [inputRequestKey(request)] : []
     }),
   )
+  const pendingActions = block.events.flatMap((event) =>
+    event.type === 'tool' && event.pending_action
+      ? [{ id: event.id, action: event.pending_action }]
+      : [],
+  )
   const tools: ActivityToolItem[] = block.events.flatMap(
     (event): ActivityToolItem[] => {
       if (event.type === 'tool') {
@@ -324,11 +332,8 @@ function AgentBlockView({
         )
         const keepInputRequestVisible =
           inputRequest && visibleInputRequestKeys.has(inputRequestKey(inputRequest))
-        // A staged change and a human-input request are mutually exclusive:
-        // one tool call produces at most one of them.
-        const details = event.pending_action ? (
-          <AssistantApprovalCard action={event.pending_action} />
-        ) : inputRequest &&
+        // Approval cards render below the reply, never inside collapsed activity.
+        const details = !event.pending_action && inputRequest &&
           !keepInputRequestVisible &&
           shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
           <HumanInputRequestForm
@@ -409,6 +414,7 @@ function AgentBlockView({
     <div className="flex min-w-0 w-full gap-2 px-3 py-1.5">
       <AgentAvatar
         name={block.displayName}
+        kind={agentIsSystem ? 'system' : 'agent'}
         className="mt-0.5"
         contextUsage={block.contextUsage ?? fallbackUsage}
       />
@@ -428,13 +434,20 @@ function AgentBlockView({
           {waiting ? <WaitingHint label={t('stream.preparing')} /> : null}
           <AgentActivityBubble reasoning={reasoning} tools={tools} active={activityActive} />
           {visibleEvents.map(renderEvent)}
+          {pendingActions.map(({ id, action }) => (
+            <AssistantApprovalCard key={id} action={action} />
+          ))}
         </div>
       </div>
     </div>
   )
 }
 
-export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps) {
+export function StreamTimeline({
+  run,
+  onSubmitHumanInput,
+  agentIsSystem,
+}: StreamTimelineProps) {
   const { t } = useTranslation('chat')
   const groupAgents = useGroupAgents(run.group_id)
   // Last-known usage per group-agent. The live `agent_start` events don't carry
@@ -452,7 +465,11 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
   if (blocks.length === 0 && run.status === 'active') {
     return (
       <div className="flex min-w-0 w-full gap-2 px-3 py-2.5">
-        <AgentAvatar name={t('stream.assistant')} className="mt-0.5" />
+        <AgentAvatar
+          name={t('stream.assistant')}
+          kind={agentIsSystem ? 'system' : 'agent'}
+          className="mt-0.5"
+        />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">{t('stream.assistant')}</span>
@@ -488,6 +505,7 @@ export function StreamTimeline({ run, onSubmitHumanInput }: StreamTimelineProps)
             runStatus={run.status}
             groupId={run.group_id}
             fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
+            agentIsSystem={agentIsSystem}
             onSubmitHumanInput={onSubmitHumanInput}
             renderedInputRequests={renderedInputRequests}
           />

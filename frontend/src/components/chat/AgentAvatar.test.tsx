@@ -12,6 +12,14 @@ afterEach(async () => {
 })
 
 describe('AgentAvatar', () => {
+  it('uses the bot icon instead of initials for the system Assistant', () => {
+    const { container } = render(<AgentAvatar name="AG Assistant" kind="system" />)
+
+    expect(screen.getByLabelText('AG Assistant')).toBeVisible()
+    expect(screen.queryByText('AA')).toBeNull()
+    expect(container.querySelector('svg')).not.toBeNull()
+  })
+
   it('frames an unknown context source while preserving its raw value after a locale switch', async () => {
     const user = userEvent.setup()
     await i18n.changeLanguage('en-US')

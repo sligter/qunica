@@ -26,7 +26,9 @@ vi.mock('@/lib/api-v2/client', async () => {
 // The chat surface pulls in the whole streaming stack; the dock's own
 // behaviour is what these tests cover.
 vi.mock('@/components/chat/ConversationChatView', () => ({
-  ConversationChatView: () => <div data-testid="assistant-chat">chat</div>,
+  ConversationChatView: ({ agentIsSystem }: { agentIsSystem?: boolean }) => (
+    <div data-testid="assistant-chat" data-agent-is-system={agentIsSystem}>chat</div>
+  ),
 }))
 
 async function renderDock(
@@ -167,7 +169,10 @@ describe('AssistantDock', () => {
     const user = userEvent.setup()
     await renderDock()
     await user.click(await screen.findByRole('button', { name: /assistant/i }))
-    expect(await screen.findByTestId('assistant-chat')).toBeVisible()
+    expect(await screen.findByTestId('assistant-chat')).toHaveAttribute(
+      'data-agent-is-system',
+      'true',
+    )
   })
 
   it('opens settings from the header and returns to the chat on cancel', async () => {

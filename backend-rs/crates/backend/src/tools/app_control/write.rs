@@ -1,9 +1,9 @@
 //! Staged configuration changes.
 //!
-//! `AppPropose` never mutates anything. It validates a payload against the same
-//! validators the UI path runs, writes a `pending` row to `app_actions`, and
-//! returns `APPROVAL_REQUIRED`. Only [`crate::api::app_actions::approve`] — a
-//! user-initiated request — applies it.
+//! `AppPropose` validates a payload against the same validators the UI path runs,
+//! writes a `pending` row to `app_actions`, and returns `APPROVAL_REQUIRED`.
+//! Only [`crate::api::app_actions::approve`] applies it; the UI may invoke that
+//! endpoint either from an approval card or from the user's auto-approval mode.
 //!
 //! Validating at propose time rather than at approve time is deliberate: a
 //! staged proposal that cannot apply is worse than a refusal, because the user
@@ -42,6 +42,8 @@ fn is_allowed(kind: TargetKind, action: Action) -> bool {
             | (TargetKind::Group, Action::Update)
             | (TargetKind::Mcp, Action::Create)
             | (TargetKind::Mcp, Action::Update)
+            | (TargetKind::Chat, Action::Create)
+            | (TargetKind::Chat, Action::Update)
     )
 }
 
@@ -103,7 +105,7 @@ pub(crate) async fn propose(
     // user's.
     crate::api::app_actions::validate_proposal(ctx, kind, action, target_id, &payload).await?;
 
-    let summary = summarize(kind, action, target_id, &payload);
+    let summary = summarize(ctx, kind, action, target_id, &payload).await?;
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO app_actions \
@@ -211,9 +213,6 @@ fn refusal_reason(kind: TargetKind, action: Action) -> String {
              the user a prefilled provider form instead."
                 .to_string()
         }
-        (TargetKind::Chat, _) => {
-            "chats are started by the user from the chat home screen.".to_string()
-        }
         _ => format!(
             "{} cannot be {}d this way. Deletions and secret-bearing changes are never staged; \
              use AppPrefill to hand the user a form, or ask them to do it directly.",
@@ -285,13 +284,113 @@ fn reject_secret_fields(fields: &Value) -> Result<(), ToolError> {
 ///
 /// The user decides from this sentence, so it names the thing rather than
 /// describing the shape of the request.
-fn summarize(kind: TargetKind, action: Action, target_id: Option<&str>, payload: &Value) -> String {
+async fn summarize(
+    ctx: &AppControlContext,
+    kind: TargetKind,
+    action: Action,
+    target_id: Option<&str>,
+    payload: &Value,
+) -> Result<String, ToolError> {
+    if kind == TargetKind::Group {
+        if let Some(membership) = payload.get("membership") {
+            return summarize_group_membership(ctx, target_id, membership).await;
+        }
+        if let Some(message) = payload.get("message").and_then(Value::as_str) {
+            let supplied_name = payload
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string);
+            let name = match (action, supplied_name) {
+                (_, Some(name)) => Some(name),
+                (Action::Update, None) => {
+                    let group_id =
+                        target_id.ok_or_else(|| ToolError::invalid("target_id is required"))?;
+                    sqlx::query_scalar(
+                        "SELECT name FROM groups WHERE id = ? AND owner_id = ? \
+                         AND status = 'active' AND conversation_kind = 'group'",
+                    )
+                    .bind(group_id)
+                    .bind(ctx.owner_id())
+                    .fetch_optional(ctx.pool())
+                    .await
+                    .map_err(|_| ToolError::invalid("could not inspect the group"))?
+                }
+                (Action::Create, None) => None,
+            }
+            .ok_or_else(|| ToolError::invalid("group not found"))?;
+            let message = message_preview(message);
+            let changes_group = payload
+                .as_object()
+                .is_some_and(|fields| fields.keys().any(|key| key != "message"));
+            return Ok(match (action, changes_group) {
+                (Action::Create, _) => {
+                    format!("Create group \"{name}\" and send: \"{message}\"")
+                }
+                (Action::Update, true) => {
+                    format!("Update group \"{name}\" and send: \"{message}\"")
+                }
+                (Action::Update, false) => format!("Send to group \"{name}\": \"{message}\""),
+            });
+        }
+    }
+
+    if kind == TargetKind::Chat {
+        let name: Option<String> = match action {
+            Action::Create => {
+                let agent_id = payload
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::invalid("agent_id is required"))?;
+                sqlx::query_scalar(
+                    "SELECT name FROM agents \
+                     WHERE id = ? AND owner_id = ? AND status = 'active' AND is_system = 0",
+                )
+                .bind(agent_id)
+                .bind(ctx.owner_id())
+                .fetch_optional(ctx.pool())
+                .await
+            }
+            Action::Update => {
+                let chat_id =
+                    target_id.ok_or_else(|| ToolError::invalid("target_id is required"))?;
+                sqlx::query_scalar(
+                    "SELECT a.name FROM groups g JOIN agents a ON a.id = g.direct_agent_id \
+                     WHERE g.id = ? AND g.owner_id = ? AND g.status = 'active' \
+                       AND g.conversation_kind = 'direct' AND a.status = 'active' \
+                       AND a.is_system = 0",
+                )
+                .bind(chat_id)
+                .bind(ctx.owner_id())
+                .fetch_optional(ctx.pool())
+                .await
+            }
+        }
+        .map_err(|_| ToolError::invalid("could not inspect the private chat recipient"))?;
+        let name = name.ok_or_else(|| ToolError::invalid("private chat recipient not found"))?;
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .map(message_preview);
+        return Ok(match (action, message) {
+            (Action::Create, Some(message)) => {
+                format!("Create a private chat with \"{name}\" and send: \"{message}\"")
+            }
+            (Action::Create, None) => format!("Create a private chat with \"{name}\""),
+            (Action::Update, Some(message)) => {
+                format!("Send to \"{name}\" in private chat: \"{message}\"")
+            }
+            (Action::Update, None) => format!("Send a message to \"{name}\" in private chat"),
+        });
+    }
+
     let name = payload
         .get("name")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    match (action, name, target_id) {
+    Ok(match (action, name, target_id) {
         (Action::Create, Some(name), _) => format!("Create {} \"{name}\"", kind.as_str()),
         (Action::Create, None, _) => format!("Create a {}", kind.as_str()),
         (Action::Update, Some(name), _) => {
@@ -315,6 +414,98 @@ fn summarize(kind: TargetKind, action: Action, target_id: Option<&str>, payload:
             }
         }
         (Action::Update, None, None) => format!("Update {}", kind.as_str()),
+    })
+}
+
+async fn summarize_group_membership(
+    ctx: &AppControlContext,
+    target_id: Option<&str>,
+    membership: &Value,
+) -> Result<String, ToolError> {
+    let group_id = target_id.ok_or_else(|| ToolError::invalid("target_id is required"))?;
+    let group_name: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM groups WHERE id = ? AND owner_id = ? \
+         AND status = 'active' AND conversation_kind = 'group'",
+    )
+    .bind(group_id)
+    .bind(ctx.owner_id())
+    .fetch_optional(ctx.pool())
+    .await
+    .map_err(|_| ToolError::invalid("could not inspect the group"))?;
+    let group_name = group_name.ok_or_else(|| ToolError::invalid("group not found"))?;
+    let operation = membership
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::invalid("membership operation is required"))?;
+
+    match operation {
+        "add_agent" | "remove_agent" => {
+            let agent_id = membership
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::invalid("agent_id is required"))?;
+            let agent_name: Option<String> = sqlx::query_scalar(
+                "SELECT name FROM agents WHERE id = ? AND owner_id = ? \
+                 AND status = 'active' AND is_system = 0",
+            )
+            .bind(agent_id)
+            .bind(ctx.owner_id())
+            .fetch_optional(ctx.pool())
+            .await
+            .map_err(|_| ToolError::invalid("could not inspect the agent"))?;
+            let agent_name = agent_name.ok_or_else(|| ToolError::invalid("agent not found"))?;
+            let verb = if operation == "add_agent" {
+                "Add"
+            } else {
+                "Remove"
+            };
+            let direction = if operation == "add_agent" {
+                "to"
+            } else {
+                "from"
+            };
+            Ok(format!(
+                "{verb} agent \"{agent_name}\" {direction} group \"{group_name}\""
+            ))
+        }
+        "add_user" | "remove_user" => {
+            let email = membership
+                .get("email")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::invalid("email is required"))?;
+            let canonical: Option<String> =
+                sqlx::query_scalar("SELECT email FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1")
+                    .bind(email.trim())
+                    .fetch_optional(ctx.pool())
+                    .await
+                    .map_err(|_| ToolError::invalid("could not inspect the user"))?;
+            let canonical = canonical.ok_or_else(|| ToolError::invalid("user not found"))?;
+            let verb = if operation == "add_user" {
+                "Add"
+            } else {
+                "Remove"
+            };
+            let direction = if operation == "add_user" {
+                "to"
+            } else {
+                "from"
+            };
+            Ok(format!(
+                "{verb} user \"{canonical}\" {direction} group \"{group_name}\""
+            ))
+        }
+        _ => Err(ToolError::invalid("unknown membership operation")),
+    }
+}
+
+fn message_preview(message: &str) -> String {
+    const LIMIT: usize = 80;
+    let mut chars = message.trim().chars();
+    let preview = chars.by_ref().take(LIMIT).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
     }
 }
 

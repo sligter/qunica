@@ -13,8 +13,10 @@ import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { useAssistant, useUpdateAssistant } from '@/hooks/useAssistant'
 import { useProviders } from '@/hooks/useProviders'
+import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
 
 interface AssistantSettingsProps {
@@ -29,6 +31,8 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
   const assistant = useAssistant()
   const providers = useProviders()
   const update = useUpdateAssistant()
+  const systemSettings = useSystemSettings()
+  const updateSystemSettings = useUpdateSystemSettings()
 
   const [draft, setDraft] = useState<{ providerId: string; model: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,6 +47,7 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
   const available = providers.data ?? []
   const selected = available.find((provider) => provider.id === providerId)
   const models = selected?.models ?? []
+  const autoApprove = systemSettings.data?.assistant_auto_approve ?? false
 
   // A model belongs to one provider. Carrying the old choice across a provider
   // change would pin the Assistant to something the new one rejects at send
@@ -61,6 +66,19 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
         model: model || null,
       })
       onClose()
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError || cause instanceof Error
+          ? cause.message
+          : String(cause),
+      )
+    }
+  }
+
+  const setAutoApprove = async (next: boolean) => {
+    setError(null)
+    try {
+      await updateSystemSettings.mutateAsync({ assistant_auto_approve: next })
     } catch (cause) {
       setError(
         cause instanceof ApiError || cause instanceof Error
@@ -116,6 +134,22 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+        <div className="min-w-0">
+          <Label htmlFor="assistant-auto-approve">{t('settings.autoApprove')}</Label>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {t('settings.autoApproveDescription')}
+          </p>
+        </div>
+        <Switch
+          id="assistant-auto-approve"
+          checked={autoApprove}
+          disabled={systemSettings.isLoading || updateSystemSettings.isPending}
+          onCheckedChange={(next) => void setAutoApprove(next)}
+          aria-label={t('settings.autoApprove')}
+        />
       </div>
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}

@@ -83,9 +83,42 @@ pub(crate) async fn get(ctx: &AppControlContext, args: &Value) -> Result<ToolRes
         )));
     };
 
+    let mut item = postprocess(kind, row);
+    if kind == TargetKind::Group {
+        let agents = fetch_rows(
+            ctx.pool(),
+            "SELECT ga.agent_id AS id, a.name, ga.topology_role, ga.speaking_order, \
+                    ga.response_mode \
+             FROM group_agents ga JOIN agents a ON a.id = ga.agent_id \
+             WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' \
+             ORDER BY ga.speaking_order, ga.joined_at, ga.agent_id",
+            &[id],
+        )
+        .await?;
+        let users = fetch_rows(
+            ctx.pool(),
+            "SELECT gm.user_id AS id, u.email, u.name, gm.role \
+             FROM group_members gm JOIN users u ON u.id = gm.user_id \
+             WHERE gm.group_id = ? AND gm.status = 'active' \
+             ORDER BY gm.joined_at, gm.user_id",
+            &[id],
+        )
+        .await?;
+        if let Some(item) = item.as_object_mut() {
+            item.insert(
+                "agents".to_string(),
+                Value::Array(agents.into_iter().map(Value::Object).collect()),
+            );
+            item.insert(
+                "users".to_string(),
+                Value::Array(users.into_iter().map(Value::Object).collect()),
+            );
+        }
+    }
+
     Ok(completed(json!({
         "kind": kind.as_str(),
-        "item": postprocess(kind, row),
+        "item": item,
     })))
 }
 
@@ -219,7 +252,8 @@ fn detail_columns(kind: TargetKind) -> &'static str {
     match kind {
         TargetKind::Agent => {
             "a.id, a.name, a.description, a.system_prompt, a.runtime_kind, a.workspace_id, \
-             a.provider_id, a.model_config_json, a.tool_config_json, a.skill_ids_json, \
+             a.provider_id AS llm_provider_id, a.model_config_json AS llm_config, \
+             a.tool_config_json AS tool_config, a.skill_ids_json AS skill_ids, \
              a.created_at"
         }
         // `api_key` is reduced to a boolean in SQL. `base_url` is configuration
@@ -292,9 +326,9 @@ fn postprocess(kind: TargetKind, mut row: Map<String, Value>) -> Value {
     // Embedded JSON columns are stored as text. Parsing them lets the model see
     // the structure instead of an escaped string it has to re-parse.
     for key in [
-        "model_config_json",
-        "tool_config_json",
-        "skill_ids_json",
+        "llm_config",
+        "tool_config",
+        "skill_ids",
         "metadata_json",
         "config_json",
         "args_json",

@@ -335,12 +335,14 @@ async fn providers_settings_provider_multi_model_context_is_persisted() {
                     {
                         "id": "model-a",
                         "context_window_tokens": 32000,
-                        "context_output_reserve_ratio": 0.2
+                        "context_output_reserve_ratio": 0.2,
+                        "reasoning_passback": false
                     },
                     {
                         "id": "model-b",
                         "context_window_tokens": 128000,
-                        "context_output_reserve_ratio": 0.3
+                        "context_output_reserve_ratio": 0.3,
+                        "reasoning_passback": true
                     }
                 ]
             }),
@@ -352,6 +354,9 @@ async fn providers_settings_provider_multi_model_context_is_persisted() {
     assert_eq!(created["models"].as_array().unwrap().len(), 2);
     assert_eq!(created["models"][1]["id"], "model-b");
     assert_eq!(created["models"][1]["context_window_tokens"], 128000);
+    assert_eq!(created["models"][0]["reasoning_passback"], false);
+    assert_eq!(created["models"][1]["reasoning_passback"], true);
+    assert_eq!(created["reasoning_passback"], true);
     assert_eq!(created["context_window_tokens"], 128000);
     assert_eq!(created["context_output_reserve_ratio"], 0.3);
 
@@ -372,6 +377,7 @@ async fn providers_settings_provider_multi_model_context_is_persisted() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["default_model"], "model-a");
     assert_eq!(updated["context_window_tokens"], 32000);
+    assert_eq!(updated["reasoning_passback"], false);
 
     let (status, duplicate) = send(
         &app,
@@ -491,6 +497,110 @@ async fn providers_settings_provider_models_require_authentication_and_ownership
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(response["error"]["code"], "permission_denied");
     assert!(captures.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn providers_settings_model_test_uses_the_selected_provider_credentials() {
+    let (base_url, captures) = catalog_server(
+        StatusCode::OK,
+        "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n",
+    )
+    .await;
+    let app = app().await;
+    let owner_token = register_and_login(&app, "provider-test-owner@example.com").await;
+    let other_token = register_and_login(&app, "provider-test-other@example.com").await;
+    let provider = create_provider_config(
+        &app,
+        &owner_token,
+        "Testable provider",
+        "openai-compatible",
+        &base_url,
+        "saved-test-secret",
+        "response-model",
+    )
+    .await;
+    let provider_id = provider["id"].as_str().unwrap();
+    let body = json!({
+        "provider_id": provider_id,
+        "kind": "openai-compatible",
+        "base_url": base_url,
+        "model": "response-model"
+    });
+
+    let (status, response) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers/test-model",
+            &other_token,
+            body.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(response["error"]["code"], "permission_denied");
+    assert!(captures.lock().await.is_empty());
+
+    let (status, response) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers/test-model",
+            &owner_token,
+            body,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["ok"], true);
+    assert!(response["latency_ms"].as_u64().is_some());
+
+    let captures = captures.lock().await;
+    assert_eq!(captures.len(), 1);
+    assert_eq!(captures[0].method, "POST");
+    assert_eq!(captures[0].uri, "/chat/completions");
+    assert_eq!(
+        captures[0]
+            .headers
+            .get(header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "Bearer saved-test-secret"
+    );
+}
+
+#[tokio::test]
+async fn providers_settings_model_test_reports_provider_failure_without_leaking_secrets() {
+    let secret = "model-test-secret-must-not-leak";
+    let (base_url, _) = catalog_server(
+        StatusCode::UNAUTHORIZED,
+        json!({ "error": secret }).to_string(),
+    )
+    .await;
+    let app = app().await;
+    let token = register_and_login(&app, "provider-test-failure@example.com").await;
+
+    let (status, response) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers/test-model",
+            &token,
+            json!({
+                "kind": "openai-compatible",
+                "base_url": base_url,
+                "api_key": secret,
+                "model": "response-model"
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["ok"], false);
+    assert!(response["error"].as_str().unwrap().contains("401"));
+    assert!(!response.to_string().contains(secret));
 }
 
 #[tokio::test]
@@ -1068,6 +1178,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(status, StatusCode::OK);
     assert!(defaults["owner_id"].as_str().is_some());
     assert_eq!(defaults["appearance"], "system");
+    assert_eq!(defaults["assistant_auto_approve"], false);
     assert_eq!(defaults["group_workspace_root"], Value::Null);
     assert_eq!(defaults["web_search_provider"], "tavily");
     assert_eq!(defaults["tavily_api_key_configured"], false);
@@ -1079,6 +1190,20 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(defaults["tavily_search_depth"], "basic");
     assert_eq!(defaults["tavily_include_answer"], true);
     assert_eq!(defaults["tavily_include_raw_content"], false);
+    assert_eq!(defaults["media_base_url"], "https://api.openai.com");
+    assert_eq!(defaults["media_api_key_configured"], false);
+    assert_eq!(defaults["image_generation_model"], Value::Null);
+    assert_eq!(
+        defaults["image_generation_endpoint"],
+        "/v1/images/generations"
+    );
+    assert_eq!(defaults["video_generation_model"], Value::Null);
+    assert_eq!(defaults["video_generation_endpoint"], "/v1/videos");
+    assert_eq!(defaults["video_status_endpoint"], "/v1/videos/{id}");
+    assert_eq!(
+        defaults["video_content_endpoint"],
+        "/v1/videos/{id}/content"
+    );
 
     let root = tempfile::tempdir().unwrap();
     let raw_root = root.path().to_str().unwrap().to_string();
@@ -1095,6 +1220,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             &token,
             json!({
                 "appearance": "dark",
+                "assistant_auto_approve": true,
                 "group_workspace_root": raw_root,
                 "web_search_provider": "tavily",
                 "tavily_api_key": "tvly-secret-value",
@@ -1102,13 +1228,22 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
                 "tavily_max_results": 12,
                 "tavily_search_depth": "advanced",
                 "tavily_include_answer": false,
-                "tavily_include_raw_content": true
+                "tavily_include_raw_content": true,
+                "media_base_url": "https://media.example.test/v1",
+                "media_api_key": "media-secret-value",
+                "image_generation_model": "image-model",
+                "image_generation_endpoint": "/v1/images/generations",
+                "video_generation_model": "video-model",
+                "video_generation_endpoint": "/v1/videos",
+                "video_status_endpoint": "/v1/videos/{id}",
+                "video_content_endpoint": "/v1/videos/{id}/content"
             }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["appearance"], "dark");
+    assert_eq!(updated["assistant_auto_approve"], true);
     assert_eq!(updated["group_workspace_root"], expected_root);
     assert_eq!(updated["tavily_api_key_configured"], true);
     assert!(!updated.to_string().contains("tvly-secret-value"));
@@ -1120,13 +1255,21 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(updated["tavily_search_depth"], "advanced");
     assert_eq!(updated["tavily_include_answer"], false);
     assert_eq!(updated["tavily_include_raw_content"], true);
+    assert_eq!(updated["media_base_url"], "https://media.example.test/v1");
+    assert_eq!(updated["media_api_key_configured"], true);
+    assert_eq!(updated["image_generation_model"], "image-model");
+    assert_eq!(updated["video_generation_model"], "video-model");
+    assert!(!updated.to_string().contains("media-secret-value"));
 
     let (status, fetched) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["appearance"], "dark");
+    assert_eq!(fetched["assistant_auto_approve"], true);
     assert_eq!(fetched["tavily_api_key_configured"], true);
     assert_eq!(fetched["tavily_search_depth"], "advanced");
     assert!(!fetched.to_string().contains("tvly-secret-value"));
+    assert_eq!(fetched["media_api_key_configured"], true);
+    assert!(!fetched.to_string().contains("media-secret-value"));
 
     let (status, reset) = send(
         &app,
@@ -1136,19 +1279,29 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             &token,
             json!({
                 "appearance": Value::Null,
+                "assistant_auto_approve": Value::Null,
                 "group_workspace_root": "",
                 "tavily_api_key": Value::Null,
                 "tavily_search_url": Value::Null,
                 "tavily_max_results": Value::Null,
                 "tavily_search_depth": Value::Null,
                 "tavily_include_answer": Value::Null,
-                "tavily_include_raw_content": Value::Null
+                "tavily_include_raw_content": Value::Null,
+                "media_base_url": Value::Null,
+                "media_api_key": Value::Null,
+                "image_generation_model": Value::Null,
+                "image_generation_endpoint": Value::Null,
+                "video_generation_model": Value::Null,
+                "video_generation_endpoint": Value::Null,
+                "video_status_endpoint": Value::Null,
+                "video_content_endpoint": Value::Null
             }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reset["appearance"], "system");
+    assert_eq!(reset["assistant_auto_approve"], false);
     assert_eq!(reset["group_workspace_root"], Value::Null);
     assert_eq!(reset["tavily_api_key_configured"], false);
     assert_eq!(reset["tavily_search_url"], "https://api.tavily.com/search");
@@ -1156,6 +1309,14 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(reset["tavily_search_depth"], "basic");
     assert_eq!(reset["tavily_include_answer"], true);
     assert_eq!(reset["tavily_include_raw_content"], false);
+    assert_eq!(reset["media_base_url"], "https://api.openai.com");
+    assert_eq!(reset["media_api_key_configured"], false);
+    assert_eq!(reset["image_generation_model"], Value::Null);
+    assert_eq!(reset["image_generation_endpoint"], "/v1/images/generations");
+    assert_eq!(reset["video_generation_model"], Value::Null);
+    assert_eq!(reset["video_generation_endpoint"], "/v1/videos");
+    assert_eq!(reset["video_status_endpoint"], "/v1/videos/{id}");
+    assert_eq!(reset["video_content_endpoint"], "/v1/videos/{id}/content");
 }
 
 #[tokio::test]
@@ -1265,6 +1426,10 @@ async fn providers_settings_system_settings_validation_rejects_invalid_values() 
         json!({"tavily_max_results": 21}),
         json!({"tavily_search_url": "ftp://example.test/search"}),
         json!({"tavily_search_url": "not-a-url"}),
+        json!({"media_base_url": "ftp://example.test"}),
+        json!({"image_generation_endpoint": "not-a-path"}),
+        json!({"video_status_endpoint": "/v1/videos/status"}),
+        json!({"video_content_endpoint": "ftp://example.test/{id}"}),
         json!({"group_workspace_root": "/this/path/does/not/exist/ag-swarmer"}),
     ];
 
@@ -1317,7 +1482,12 @@ async fn tool_catalog_includes_required_builtin_tools_with_stable_ids() {
     assert_eq!(by_id["todo_write"]["name"], "TodoWrite");
     assert_eq!(by_id["exit_plan_mode"]["name"], "ExitPlanMode");
     assert_eq!(by_id["read"]["requires_workspace"], true);
+    assert_eq!(by_id["generate_image"]["requires_workspace"], true);
+    assert_eq!(by_id["generate_video"]["requires_workspace"], true);
     assert_eq!(by_id["skill_manager"]["runtime_status"], "available");
+    assert_eq!(by_id["run_sub_agent"]["runtime_status"], "planned");
+    assert_eq!(by_id["generate_image"]["runtime_status"], "available");
+    assert_eq!(by_id["generate_video"]["runtime_status"], "available");
 
     // App-control tools belong to the built-in Assistant alone. Offering them
     // in the picker would let a user hand a workspace-bound agent with Bash the
@@ -1359,10 +1529,10 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
             .unwrap_or_else(|| panic!("missing preset {id}"));
         let installed = preset["installed"].as_bool().unwrap();
         let command = preset["command"].as_str().unwrap();
+        let is_npx = command.ends_with("npx")
+            || command.ends_with("npx.cmd")
+            || command.ends_with("npx.exe");
         if installed {
-            let is_npx = command.ends_with("npx")
-                || command.ends_with("npx.cmd")
-                || command.ends_with("npx.exe");
             let is_codex_adapter = command.ends_with("codex-acp")
                 || command.ends_with("codex-acp.cmd")
                 || command.ends_with("codex-acp.exe");
@@ -1371,7 +1541,7 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
                 "unexpected resolved command for {id}: {command}"
             );
         } else {
-            assert_eq!(command, "npx");
+            assert!(is_npx, "unexpected npx fallback for {id}: {command}");
         }
         assert_eq!(preset["source"], "fallback");
         let args = preset["args"].as_array().unwrap();

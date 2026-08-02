@@ -14,6 +14,12 @@ vi.mock('@/components/chat/MarkdownMessage', () => ({
   MarkdownMessage: ({ content }: { content: string }) => <div>{content}</div>,
 }))
 
+vi.mock('@/components/assistant/AssistantApprovalCard', () => ({
+  AssistantApprovalCard: ({ action }: { action: { summary: string } }) => (
+    <div data-testid="assistant-approval">{action.summary}</div>
+  ),
+}))
+
 function event<T extends StreamTimelineEvent>(value: T): T {
   return value
 }
@@ -285,6 +291,50 @@ describe('StreamTimeline activity rendering', () => {
       name: 'Activity: 1 reasoning, 1 tool, active',
     }) as HTMLDetailsElement
     expect(activity.open).toBe(false)
+  })
+
+  it('shows approvals after the reply instead of hiding them in activity', () => {
+    render(
+      <StreamTimeline
+        run={run([
+          event({
+            id: 'tool-1',
+            stream_id: 'stream-1',
+            type: 'tool',
+            agent_id: 'agent-1',
+            display_name: 'Assistant',
+            tool_call_id: 'call-1',
+            tool_name: 'AppPropose',
+            status: 'approval_required',
+            pending_action: {
+              action_id: 'action-1',
+              target_kind: 'workspace',
+              action: 'create',
+              summary: 'Create workspace dsv4-flash',
+            },
+            created_at: '2026-07-16T10:00:02Z',
+          }),
+          event({
+            id: 'message-1',
+            stream_id: 'stream-1',
+            type: 'agent_message',
+            message_id: 'agent-message-1',
+            agent_id: 'agent-1',
+            display_name: 'Assistant',
+            content: 'Please approve this proposal.',
+            created_at: '2026-07-16T10:00:03Z',
+          }),
+        ])}
+      />,
+    )
+
+    const activity = screen.getByRole('group', { name: 'Activity: 1 tool' })
+    const approval = screen.getByTestId('assistant-approval')
+    expect((activity as HTMLDetailsElement).open).toBe(false)
+    expect(activity).not.toContainElement(approval)
+    expect(approval).toBeVisible()
+    expect(screen.getByText('Please approve this proposal.').compareDocumentPosition(approval))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   })
 
   it('keeps a required input form visible outside the collapsed activity bubble', () => {

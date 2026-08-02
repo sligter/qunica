@@ -53,6 +53,8 @@ export interface ConversationChatViewProps {
    */
   models?: Array<{ id: string }>
   defaultModel?: string
+  /** Render non-user messages with the dedicated system Assistant identity. */
+  agentIsSystem?: boolean
 }
 
 function workspaceFilesOpenStorageKey(conversationId: string): string {
@@ -111,6 +113,7 @@ export function ConversationChatView({
   disabledComposerReason,
   models,
   defaultModel,
+  agentIsSystem,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
@@ -271,6 +274,7 @@ export function ConversationChatView({
             onViewTurnTrace={capabilities.showTurnTrace ? openTurnTrace : undefined}
             scope={scope}
             agents={agents}
+            agentIsSystem={agentIsSystem}
           />
 
           {stream.error ? (

@@ -8,6 +8,8 @@ import type {
   LLMProviderUpdate,
   ModelInfo,
   ProviderKind,
+  ProviderModelTestRequest,
+  ProviderModelTestResult,
 } from '@/types/api'
 
 export function useProviders() {
@@ -99,6 +101,18 @@ export function useDiscoverProviderModels() {
       default_model?: string | null
     }) =>
       fetchJson<ModelInfo[]>('/llm-providers/discover-models', {
+        token,
+        method: 'POST',
+        body: data,
+      }),
+  })
+}
+
+export function useTestProviderModel() {
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: (data: ProviderModelTestRequest) =>
+      fetchJson<ProviderModelTestResult>('/llm-providers/test-model', {
         token,
         method: 'POST',
         body: data,

@@ -8,12 +8,15 @@ import {
   ProviderModelsField,
   type ProviderModelDraft,
 } from '@/components/providers/ProviderModelsField'
-import { ReasoningPassbackControl } from '@/components/providers/ReasoningPassbackControl'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { useCreateProvider, useDiscoverProviderModels } from '@/hooks/useProviders'
+import {
+  useCreateProvider,
+  useDiscoverProviderModels,
+  useTestProviderModel,
+} from '@/hooks/useProviders'
 import { ApiError } from '@/lib/api-v2/client'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
@@ -25,7 +28,6 @@ function createSchema(required: string) { return z.object({
   base_url: z.string().optional(),
   api_key: z.string().min(1, required),
   description: z.string().optional(),
-  reasoning_passback: z.boolean(),
 }) }
 
 type FormValues = z.infer<ReturnType<typeof createSchema>>
@@ -49,9 +51,15 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
   const { t, i18n } = useTranslation('providers')
   const create = useCreateProvider()
   const discoverModels = useDiscoverProviderModels()
+  const testProviderModel = useTestProviderModel()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [models, setModels] = useState<ProviderModelDraft[]>([
-    { id: '', context_window_tokens: undefined, context_output_reserve_percent: 30 },
+    {
+      id: '',
+      context_window_tokens: undefined,
+      context_output_reserve_percent: 30,
+      reasoning_passback: false,
+    },
   ])
   const [defaultModel, setDefaultModel] = useState('')
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
@@ -65,7 +73,6 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
       base_url: '',
       api_key: '',
       description: '',
-      reasoning_passback: false,
     },
   })
 
@@ -104,9 +111,9 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
           id: model.id,
           context_window_tokens: model.context_window_tokens ?? null,
           context_output_reserve_ratio: model.context_output_reserve_percent / 100,
+          reasoning_passback: model.reasoning_passback,
         })),
         description: values.description || null,
-        reasoning_passback: values.reasoning_passback,
       })
       form.reset()
       onCreated?.(created.id)
@@ -188,6 +195,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         catalog={discoverModels.data}
         isLoadingCatalog={discoverModels.isPending}
         catalogError={discoverModels.isError}
+        showReasoningPassback={kind === 'openai-compatible'}
         onChange={setModels}
         onDefaultChange={setDefaultModel}
         onRefreshCatalog={() => {
@@ -203,14 +211,20 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
             default_model: defaultModel || null,
           })
         }}
+        onTestModel={async (model) => {
+          const values = form.getValues()
+          if (!values.api_key.trim()) {
+            await form.trigger('api_key')
+            throw new Error(t('models.testKeyRequired'))
+          }
+          return testProviderModel.mutateAsync({
+            kind: values.kind,
+            base_url: values.base_url || null,
+            api_key: values.api_key,
+            model,
+          })
+        }}
       />
-
-      {kind === 'openai-compatible' && (
-        <ReasoningPassbackControl
-          value={form.watch('reasoning_passback')}
-          onChange={(value) => form.setValue('reasoning_passback', value)}
-        />
-      )}
 
       <div className="space-y-1.5">
         <Label htmlFor="provider-desc">{t('fields.descriptionOptional')}</Label>

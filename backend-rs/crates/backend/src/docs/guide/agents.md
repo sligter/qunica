@@ -32,6 +32,8 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 | `Bash` | yes | Run a guarded shell command in the root |
 | `WebSearch` | no | Search the web; needs a Tavily key in Settings |
 | `Fetch` | no | Read one HTTP(S) URL, bounded |
+| `GenerateImage` | yes | Generate an image and save it under `generations/`; needs Settings → Media |
+| `GenerateVideo` | yes | Generate a video and save it under `generations/`; needs Settings → Media |
 | `AskUser` | no | Pause and ask the user a question |
 | `TodoWrite` | no | Track multi-step work within a turn |
 | `ExitPlanMode` | no | Present a plan for approval |
@@ -39,7 +41,7 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 
 An agent with no tools configured gets `Read`, `Glob`, and `Grep`.
 
-`GenerateImage`, `GenerateVideo`, and `RunSubAgent` are present but report that setup is required; no backend is wired for them yet.
+`RunSubAgent` is present as a saved-only placeholder and is not exposed to the runtime yet.
 
 ## Vision
 

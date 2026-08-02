@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -11,17 +11,23 @@ import { AppSidebar } from './AppSidebar'
 
 const mocks = vi.hoisted(() => ({
   directChats: [] as Array<Record<string, unknown>>,
+  groups: [] as Array<Record<string, unknown>>,
   deleteDirectChat: vi.fn(),
+  renameDirectChat: vi.fn(),
   closeConversation: vi.fn(),
   closeAll: vi.fn(),
 }))
 
 vi.mock('@/hooks/useGroups', () => ({
-  useGroups: () => ({ data: [], isLoading: false, error: null }),
+  useGroups: () => ({ data: mocks.groups, isLoading: false, error: null }),
 }))
 vi.mock('@/hooks/useDirectChats', () => ({
   useDirectChats: () => ({ data: mocks.directChats, isLoading: false, error: null }),
   useDeleteDirectChat: () => ({ mutateAsync: mocks.deleteDirectChat, isPending: false }),
+  useRenameDirectChat: () => ({
+    mutateAsync: mocks.renameDirectChat,
+    isPending: false,
+  }),
 }))
 vi.mock('@/components/direct-chats/DirectChatPickerDialog', () => ({
   DirectChatPickerDialog: () => null,
@@ -63,7 +69,9 @@ describe('AppSidebar terminal cleanup', () => {
       id: 'chat-1', title: 'Direct chat', agent_name: 'Solo',
       updated_at: '2026-07-22T00:00:00Z',
     }]
+    mocks.groups = []
     mocks.deleteDirectChat.mockReset().mockResolvedValue(undefined)
+    mocks.renameDirectChat.mockReset().mockResolvedValue(undefined)
     mocks.closeConversation.mockReset().mockResolvedValue(undefined)
     mocks.closeAll.mockReset().mockResolvedValue(undefined)
   })
@@ -75,7 +83,8 @@ describe('AppSidebar terminal cleanup', () => {
 
   async function confirmDelete() {
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Delete conversation Direct chat' }))
+    fireEvent.contextMenu(screen.getByText('Direct chat').closest('a')!)
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
     await user.click(
       within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }),
     )
@@ -145,5 +154,41 @@ describe('AppSidebar terminal cleanup', () => {
       screen.queryByRole('textbox', { name: 'Search conversations' }),
     ).not.toBeInTheDocument()
     expect(screen.getByText('Direct chat')).toBeInTheDocument()
+  })
+
+  it('renames a direct chat from its context menu', async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+
+    fireEvent.contextMenu(screen.getByText('Direct chat').closest('a')!)
+    await user.click(screen.getByRole('menuitem', { name: 'Rename conversation' }))
+    const input = screen.getByRole('textbox', { name: 'Rename conversation' })
+    await user.clear(input)
+    await user.type(input, 'Renamed chat')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(mocks.renameDirectChat).toHaveBeenCalledWith({ title: 'Renamed chat' }))
+  })
+
+  it('collapses both sections and mounts long lists in batches', async () => {
+    const user = userEvent.setup()
+    mocks.directChats = Array.from({ length: 25 }, (_, index) => ({
+      id: `chat-${index + 1}`,
+      title: `Chat ${String(index + 1).padStart(2, '0')}`,
+      agent_name: 'Solo',
+      updated_at: '2026-07-22T00:00:00Z',
+    }))
+    mocks.groups = [{ id: 'group-1', name: 'Group one', created_at: '2026-07-22T00:00:00Z' }]
+    renderSidebar()
+
+    expect(screen.getByText('Chat 20')).toBeInTheDocument()
+    expect(screen.queryByText('Chat 21')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(screen.getByText('Chat 25')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Chats' }))
+    expect(screen.queryByText('Chat 01')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Groups' }))
+    expect(screen.queryByText('Group one')).not.toBeInTheDocument()
   })
 })

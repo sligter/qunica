@@ -961,8 +961,6 @@ export function WorkspaceFilesTab({
             </DialogTitle>
             <DialogDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
               {previewFile?.size != null ? <span>{formatSize(previewFile.size, language)}</span> : null}
-              {previewFile?.size != null ? <span aria-hidden="true">·</span> : null}
-              <span>{t('chat:workspace.filePanel.previewDescription')}</span>
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-40 overflow-y-auto px-6 py-4">

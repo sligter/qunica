@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ScrollText, Sparkles, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, Images, ScrollText, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
@@ -35,6 +35,7 @@ export function SettingsLayout() {
           <nav className="flex gap-1 md:flex-col" aria-label={t('navigation:settings')}>
             {[
               { to: '/settings/system', label: t('settings:tabs.system'), icon: SlidersHorizontal },
+              { to: '/settings/media', label: t('settings:tabs.media'), icon: Images },
               { to: '/settings/logs', label: t('settings:tabs.logs'), icon: ScrollText },
               {
                 to: '/settings/assistant-actions',

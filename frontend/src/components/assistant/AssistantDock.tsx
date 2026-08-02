@@ -279,6 +279,7 @@ export function AssistantDock() {
             scope="direct-chats"
             schedulerEnabled={false}
             agents={[]}
+            agentIsSystem
             title={<span className="text-sm font-medium">{t('title')}</span>}
             capabilities={{
               showAnnouncement: false,

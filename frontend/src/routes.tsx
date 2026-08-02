@@ -70,6 +70,9 @@ const WorkspacesIndexPage = lazy(() =>
 const SystemSettingsPage = lazy(() =>
   import('@/pages/settings/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })),
 )
+const MediaSettingsPage = lazy(() =>
+  import('@/pages/settings/MediaSettingsPage').then((m) => ({ default: m.MediaSettingsPage })),
+)
 const AppActionsPage = lazy(() =>
   import('@/pages/settings/AppActionsPage').then((m) => ({ default: m.AppActionsPage })),
 )
@@ -174,6 +177,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <Navigate to="system" replace /> },
               { path: 'system', element: <SystemSettingsPage /> },
+              { path: 'media', element: <MediaSettingsPage /> },
               { path: 'logs', element: <SystemLogsPage /> },
               { path: 'assistant-actions', element: <AppActionsPage /> },
             ],

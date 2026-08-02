@@ -4547,6 +4547,16 @@ async fn build_invocation_context(
     } else {
         None
     };
+    let media_generation = if enabled_tools
+        .iter()
+        .any(|name| matches!(name.as_str(), "GenerateImage" | "GenerateVideo"))
+    {
+        crate::api::system_settings::media_generation_config(pool, &agent.owner_id)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to load media generation settings"))?
+    } else {
+        None
+    };
     let executor = ToolExecutor::new_with_mounts(
         workspaces.primary.clone(),
         workspaces.mounts(),
@@ -4554,6 +4564,7 @@ async fn build_invocation_context(
     )
     .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?
     .with_web_search(web_search)
+    .with_media_generation(media_generation)
     .with_mcp(services.mcp.clone(), mcp);
 
     // Only the built-in Assistant gets a context, so the app-control tools stay
@@ -5219,7 +5230,8 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
         "ask_user" => Some("AskUser"),
         "web_search" => Some("WebSearch"),
         "fetch" => Some("Fetch"),
-        "run_sub_agent" => Some("RunSubAgent"),
+        // Saved-only placeholders must not be advertised to the model.
+        "run_sub_agent" => None,
         "generate_image" => Some("GenerateImage"),
         "generate_video" => Some("GenerateVideo"),
         "skill_manager" => Some("SkillManager"),
@@ -5361,9 +5373,19 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
             "Request a bounded sub-agent delegation if infrastructure is configured.",
             object_schema(&[("task", "string")], &["task"]),
         ),
-        "GenerateImage" | "GenerateVideo" => (
-            "Request media generation if infrastructure is configured.",
-            object_schema(&[("prompt", "string")], &["prompt"]),
+        "GenerateImage" => (
+            "Generate an image through the configured OpenAI-compatible media provider and save it under generations/ in the workspace.",
+            object_schema(
+                &[("prompt", "string"), ("model", "string")],
+                &["prompt"],
+            ),
+        ),
+        "GenerateVideo" => (
+            "Generate a video through the configured OpenAI-compatible media provider and save it under generations/ in the workspace.",
+            object_schema(
+                &[("prompt", "string"), ("model", "string")],
+                &["prompt"],
+            ),
         ),
         "SkillManager" => (
             "List or inspect mounted skill metadata and instructions.",
@@ -5393,7 +5415,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "AppGet" => (
-            "Read one configured resource in full. Secrets are never returned: a provider              reports whether an API key is set, not the key itself.",
+            "Read one configured resource in full. A group also includes its current Agent              and user members. Secrets are never returned: a provider reports whether an              API key is set, not the key itself.",
             json!({
                 "type": "object",
                 "properties": {
@@ -5413,13 +5435,13 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         "AppPropose" => (
-            "Stage a configuration change for the user to approve. This does NOT apply the              change: the user sees a card and must approve it first. Never tell the user              something has changed after calling this — say you have proposed it.",
+            "Stage an app action for the user to approve. This does NOT apply the action immediately:              the user sees a card, unless auto-approval mode applies it automatically. Never tell the user              something has changed after calling this — say you have proposed it.",
             json!({
                 "type": "object",
                 "properties": {
                     "target_kind": {
                         "type": "string",
-                        "enum": ["agent", "skill", "workspace", "group", "mcp"],
+                        "enum": ["agent", "skill", "workspace", "group", "mcp", "chat"],
                         "description": "What to change. Providers, secrets and deletions                                         cannot be staged; use AppPrefill for those."
                     },
                     "action": {
@@ -5433,7 +5455,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                     },
                     "payload": {
                         "type": "object",
-                        "description": "The same fields the REST API takes for this kind.                                         Must not contain an API key, MCP headers, or env.                                         For a workspace, prefer {\"backend_type\": \"local\",                                         \"auto_create\": true} and omit local_path: that                                         creates the folder for the user rather than asking                                         them to find or type a path. Only ask for a path if                                         they want a specific existing folder."
+                        "description": "The fields for this kind. Must not contain an API key,                                         MCP headers, or env. For group/create include a                                         workspace_id and regular group fields; initial_agents                                         and message are optional. For group/update, provide                                         target_id and {\"message\": \"...\"} to message it.                                         To change membership, propose it separately with                                         {\"membership\": {\"operation\": \"add_agent\" or                                         \"remove_agent\", \"agent_id\": \"...\"}} or                                         {\"membership\": {\"operation\": \"add_user\" or                                         \"remove_user\", \"email\": \"exact address\"}}.                                         For chat/create use {\"agent_id\": \"...\",                                         \"message\": \"optional first message\"}; for                                         chat/update provide target_id and {\"message\":                                         \"...\"}. For a workspace, prefer {\"backend_type\":                                         \"local\", \"auto_create\": true} and omit                                         local_path."
                     }
                 },
                 "required": ["target_kind", "action"],
@@ -5546,6 +5568,11 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
     let model = model_from_config(&agent.model_config_json, &row.default_model);
     let (model_window, model_reserve) =
         crate::llm::model_context_config(row.models_json.as_deref(), &model);
+    let reasoning_passback = crate::llm::model_reasoning_passback(
+        row.models_json.as_deref(),
+        &model,
+        row.reasoning_passback != 0,
+    );
 
     // Agent-level overrides in model_config_json win over the provider defaults.
     let (window_override, reserve_override) =
@@ -5556,7 +5583,7 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
         base_url: row.base_url,
         api_key: row.api_key,
         default_model: row.default_model,
-        reasoning_passback: row.reasoning_passback != 0,
+        reasoning_passback,
         context_window_tokens: window_override
             .or(model_window)
             .or(row.context_window_tokens),
@@ -6029,6 +6056,20 @@ mod tests {
         // not change which built-in tools an agent keeps.
         let raw = r#"{"tools":{"read":{"enabled":true}},"mcp_servers":[{"server_id":"srv-a"}]}"#;
         assert_eq!(enabled_tool_names(Some(raw)), vec!["Read".to_string()]);
+    }
+
+    #[test]
+    fn only_planned_builtin_tools_are_hidden_from_the_runtime() {
+        let raw = r#"{"tools":{"read":{"enabled":true},"run_sub_agent":{"enabled":true},"generate_image":{"enabled":true},"generate_video":{"enabled":true}}}"#;
+
+        assert_eq!(
+            enabled_tool_names(Some(raw)),
+            vec![
+                "GenerateImage".to_string(),
+                "GenerateVideo".to_string(),
+                "Read".to_string()
+            ]
+        );
     }
 
     #[test]

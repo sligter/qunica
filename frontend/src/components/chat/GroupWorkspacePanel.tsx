@@ -72,10 +72,10 @@ export function GroupWorkspacePanel({
       style={width === undefined ? undefined : { width }}
     >
       <Tabs value={tab} onValueChange={changeTab} className="flex min-h-0 flex-1 flex-col">
-        <div className="flex h-14 shrink-0 items-center border-b border-border px-3">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="files">{t('workspace.files')}</TabsTrigger>
-            <TabsTrigger value="git">{t('workspace.git')}</TabsTrigger>
+        <div className="flex h-11 shrink-0 items-center border-b border-border px-2">
+          <TabsList className="grid h-8 w-full grid-cols-2 p-0.5">
+            <TabsTrigger value="files" className="h-7 px-2 py-0.5 text-xs">{t('workspace.files')}</TabsTrigger>
+            <TabsTrigger value="git" className="h-7 px-2 py-0.5 text-xs">{t('workspace.git')}</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="files" className="mt-0 min-h-0 flex-1">

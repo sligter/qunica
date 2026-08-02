@@ -445,6 +445,56 @@ describe('messageStore scheduler state', () => {
     ])
   })
 
+  it('does not repeat earlier response segments in the finalized reply', () => {
+    const store = useMessageStore.getState()
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.patchStreamDraft('group-1', 'stream-1', 'agent-1', 'Earlier reply.', 'Agent One')
+    store.finalizeStreamDraft('group-1', 'stream-1', {
+      ...message('earlier-agent-message'),
+      sender_type: 'agent',
+      sender_id: 'agent-1',
+      content: 'Earlier reply.',
+    })
+    store.patchStreamDraft('group-1', 'stream-1', 'agent-1', 'Checking docs.', 'Agent One')
+    store.upsertStreamTool('group-1', 'stream-1', {
+      id: 'tool-1',
+      agent_id: 'agent-1',
+      display_name: 'Agent One',
+      tool_name: 'Fetch',
+      status: 'completed',
+    })
+    store.patchStreamDraft('group-1', 'stream-1', 'agent-1', 'Writing file.', 'Agent One')
+    store.upsertStreamTool('group-1', 'stream-1', {
+      id: 'tool-2',
+      agent_id: 'agent-1',
+      display_name: 'Agent One',
+      tool_name: 'Write',
+      status: 'completed',
+    })
+    store.patchStreamDraft('group-1', 'stream-1', 'agent-1', 'Done.', 'Agent One')
+    store.finalizeStreamDraft('group-1', 'stream-1', {
+      ...message('agent-message'),
+      sender_type: 'agent',
+      sender_id: 'agent-1',
+      content: 'Checking docs.Writing file.Done.',
+    })
+
+    const drafts = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].events
+      .filter((event) => event.type === 'response_draft')
+    expect(drafts.map((event) => event.content)).toEqual([
+      'Earlier reply.',
+      'Checking docs.',
+      'Writing file.',
+      'Done.',
+    ])
+    expect(drafts.map((event) => event.message_id)).toEqual([
+      'earlier-agent-message',
+      undefined,
+      undefined,
+      'agent-message',
+    ])
+  })
+
   it('detaches only the requested active stream and keeps unrelated runs', () => {
     const store = useMessageStore.getState()
     store.setHistory('group-1', [message('canonical-message')])

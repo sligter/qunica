@@ -1,22 +1,27 @@
 //! The approval queue for changes the Assistant proposed.
 //!
 //! A staged row does nothing on its own. [`approve`] is the only code path that
-//! applies one, it is reachable only through an authenticated request the user
-//! initiated, and it applies the change by calling the very same `*_inner` core
-//! the UI route calls — so a staged change cannot bypass a validation the
+//! applies one, it is reachable only through an authenticated request authorized
+//! by the user, and it applies the change by calling the very same `*_inner`
+//! core the UI route calls — so a staged change cannot bypass a validation the
 //! normal path performs.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::tools::app_control::{write::Action, AppControlContext, TargetKind};
+
+const DEFAULT_APP_ACTION_LIMIT: usize = 50;
+const MAX_APP_ACTION_LIMIT: usize = 100;
+const MAX_APP_ACTION_SKIP: usize = 10_000;
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct AppActionResponse {
@@ -32,6 +37,24 @@ pub struct AppActionResponse {
     resolved_at: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AppActionListQuery {
+    #[serde(default = "default_app_action_limit")]
+    limit: usize,
+    #[serde(default)]
+    skip: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AppActionListResponse {
+    items: Vec<AppActionResponse>,
+    has_more: bool,
+}
+
+fn default_app_action_limit() -> usize {
+    DEFAULT_APP_ACTION_LIMIT
+}
+
 #[derive(sqlx::FromRow)]
 struct ActionRow {
     id: String,
@@ -42,21 +65,94 @@ struct ActionRow {
     status: String,
 }
 
+#[derive(Deserialize)]
+struct ChatCreatePayload {
+    agent_id: String,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatMessagePayload {
+    message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+enum GroupMembershipChange {
+    AddAgent { agent_id: String },
+    RemoveAgent { agent_id: String },
+    AddUser { email: String },
+    RemoveUser { email: String },
+}
+
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<AppActionResponse>>, ApiError> {
+    Query(query): Query<AppActionListQuery>,
+) -> Result<Json<AppActionListResponse>, ApiError> {
+    if !(1..=MAX_APP_ACTION_LIMIT).contains(&query.limit) || query.skip > MAX_APP_ACTION_SKIP {
+        return Err(ApiError::invalid_input(
+            "app action pagination is out of bounds",
+        ));
+    }
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let rows = sqlx::query_as::<_, AppActionResponse>(
+    let mut items = sqlx::query_as::<_, AppActionResponse>(
         "SELECT id, conversation_id, target_kind, action, target_id, summary, status, \
                 result_json, created_at, resolved_at \
-         FROM app_actions WHERE owner_id = ? ORDER BY created_at DESC, id DESC LIMIT 200",
+         FROM app_actions WHERE owner_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
     )
     .bind(&owner_id)
+    .bind((query.limit + 1) as i64)
+    .bind(query.skip as i64)
     .fetch_all(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("database error"))?;
-    Ok(Json(rows))
+    let has_more = items.len() > query.limit;
+    items.truncate(query.limit);
+    Ok(Json(AppActionListResponse { items, has_more }))
+}
+
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(action_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let row = load_action(&state, &action_id, &owner_id).await?;
+    if !matches!(
+        row.status.as_str(),
+        "applied" | "rejected" | "failed" | "expired"
+    ) {
+        return Err(ApiError::conflict("unfinished actions cannot be deleted"));
+    }
+
+    sqlx::query(
+        "DELETE FROM app_actions WHERE id = ? AND owner_id = ? \
+         AND status IN ('applied', 'rejected', 'failed', 'expired')",
+    )
+    .bind(&action_id)
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to delete assistant action"))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn clear(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    sqlx::query(
+        "DELETE FROM app_actions WHERE owner_id = ? \
+         AND status IN ('applied', 'rejected', 'failed', 'expired')",
+    )
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to clear assistant action history"))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn reject(
@@ -65,8 +161,20 @@ pub async fn reject(
     Path(action_id): Path<String>,
 ) -> Result<Json<AppActionResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let row = load_pending(&state, &action_id, &owner_id).await?;
-    resolve(&state, &row.id, "rejected", None).await?;
+    let row = load_action(&state, &action_id, &owner_id).await?;
+    if row.status == "rejected" {
+        return Ok(Json(fetch(&state, &action_id, &owner_id).await?));
+    }
+    if row.status != "pending" {
+        return Err(already_resolved(&row.status));
+    }
+    if !transition_pending(&state, &row.id, "rejected", None).await? {
+        let current = fetch(&state, &action_id, &owner_id).await?;
+        if current.status == "rejected" {
+            return Ok(Json(current));
+        }
+        return Err(already_resolved(&current.status));
+    }
     Ok(Json(fetch(&state, &action_id, &owner_id).await?))
 }
 
@@ -77,12 +185,13 @@ pub async fn approve(
     Path(action_id): Path<String>,
 ) -> Result<Json<AppActionResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-
-    // Re-read and re-check the status under the write lock. Two approvals
-    // racing would otherwise both see `pending` and apply the change twice.
-    let guard = state.write_lock.lock().await;
-    let row = load_pending(&state, &action_id, &owner_id).await?;
-    drop(guard);
+    let row = load_action(&state, &action_id, &owner_id).await?;
+    if matches!(row.status.as_str(), "approved" | "applied") {
+        return Ok(Json(fetch(&state, &action_id, &owner_id).await?));
+    }
+    if row.status != "pending" {
+        return Err(already_resolved(&row.status));
+    }
 
     let kind = TargetKind::parse(&row.target_kind)
         .ok_or_else(|| ApiError::internal("staged action has an unknown kind"))?;
@@ -90,27 +199,89 @@ pub async fn approve(
     let payload: Value = serde_json::from_str(&row.payload_json)
         .map_err(|_| ApiError::internal("staged action has an unreadable payload"))?;
 
-    match apply(
+    // Claim in SQLite before applying. The handler cores use the shared write
+    // lock themselves, so holding it across `apply` would deadlock; a guarded
+    // status transition gives us the same single-winner guarantee instead.
+    if !transition_pending(&state, &row.id, "approved", None).await? {
+        let current = fetch(&state, &action_id, &owner_id).await?;
+        if matches!(current.status.as_str(), "approved" | "applied") {
+            return Ok(Json(current));
+        }
+        return Err(already_resolved(&current.status));
+    }
+
+    if runs_in_background(kind, action, &payload) {
+        let task_state = state.clone();
+        let task_owner_id = owner_id.clone();
+        let task_action_id = row.id.clone();
+        let task_target_id = row.target_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = apply_approved(
+                &task_state,
+                &task_owner_id,
+                &task_action_id,
+                kind,
+                action,
+                task_target_id.as_deref(),
+                payload,
+            )
+            .await
+            {
+                tracing::warn!(
+                    action_id = %task_action_id,
+                    error = %error.message_text(),
+                    "background assistant action failed"
+                );
+            }
+        });
+        return Ok(Json(fetch(&state, &action_id, &owner_id).await?));
+    }
+
+    apply_approved(
         &state,
         &owner_id,
+        &row.id,
         kind,
         action,
         row.target_id.as_deref(),
         payload,
     )
-    .await
-    {
+    .await?;
+    Ok(Json(fetch(&state, &action_id, &owner_id).await?))
+}
+
+fn runs_in_background(kind: TargetKind, action: Action, payload: &Value) -> bool {
+    match (kind, action) {
+        (TargetKind::Chat, Action::Update) => true,
+        (TargetKind::Chat, Action::Create)
+        | (TargetKind::Group, Action::Create)
+        | (TargetKind::Group, Action::Update) => payload.get("message").is_some(),
+        _ => false,
+    }
+}
+
+async fn apply_approved(
+    state: &AppState,
+    owner_id: &str,
+    action_id: &str,
+    kind: TargetKind,
+    action: Action,
+    target_id: Option<&str>,
+    payload: Value,
+) -> Result<(), ApiError> {
+    match apply(state, owner_id, kind, action, target_id, payload).await {
         Ok(applied) => {
-            resolve(&state, &row.id, "applied", Some(&applied)).await?;
-            Ok(Json(fetch(&state, &action_id, &owner_id).await?))
+            finish_approval(state, action_id, "applied", Some(&applied)).await?;
+            Ok(())
         }
         Err(error) => {
             // The world can move between proposal and approval — a workspace
             // deleted, a name taken. Record why so the history page can say,
             // and surface the original status rather than a generic 500.
             let status = error.status_code();
-            let reason = json!({ "error": error.message_text() });
-            resolve(&state, &row.id, "failed", Some(&reason)).await?;
+            let message = error.message_text();
+            let reason = json!({ "error": message });
+            finish_approval(state, action_id, "failed", Some(&reason)).await?;
             Err(ApiError::new(
                 if status.is_server_error() {
                     status
@@ -118,7 +289,7 @@ pub async fn approve(
                     StatusCode::UNPROCESSABLE_ENTITY
                 },
                 "app_action_failed",
-                error.message_text(),
+                message,
             ))
         }
     }
@@ -175,16 +346,49 @@ async fn apply(
             Ok(serde_json::to_value(updated).unwrap_or_default())
         }
         (TargetKind::Group, Action::Create) => {
+            let (payload, message, membership) = split_group_payload(payload)?;
+            if membership.is_some() {
+                return Err(ApiError::invalid_input(
+                    "use initial_agents when creating a group",
+                ));
+            }
             let body = decode(payload)?;
             let created = crate::api::groups::create_inner(state, owner_id, body).await?;
-            Ok(serde_json::to_value(created).unwrap_or_default())
+            let Some(message) = message else {
+                return Ok(serde_json::to_value(created).unwrap_or_default());
+            };
+            let group_id = created.id().to_string();
+            let sent =
+                crate::api::messages::send_group_inner(state, owner_id, &group_id, message).await?;
+            Ok(json!({ "group": created, "message": sent }))
         }
         (TargetKind::Group, Action::Update) => {
-            let body = decode(payload)?;
-            let updated =
-                crate::api::groups::update_inner(state, owner_id, require(target_id)?, body)
-                    .await?;
-            Ok(serde_json::to_value(updated).unwrap_or_default())
+            let group_id = require(target_id)?;
+            let (payload, message, membership) = split_group_payload(payload)?;
+            if let Some(change) = membership {
+                if message.is_some() || !payload.as_object().is_some_and(|fields| fields.is_empty())
+                {
+                    return Err(ApiError::invalid_input(
+                        "propose membership changes separately from settings and messages",
+                    ));
+                }
+                return apply_group_membership(state, owner_id, group_id, change).await;
+            }
+            let Some(message) = message else {
+                let body = decode(payload)?;
+                let updated =
+                    crate::api::groups::update_inner(state, owner_id, group_id, body).await?;
+                return Ok(serde_json::to_value(updated).unwrap_or_default());
+            };
+            let updated = if payload.as_object().is_some_and(|fields| fields.is_empty()) {
+                None
+            } else {
+                let body = decode(payload)?;
+                Some(crate::api::groups::update_inner(state, owner_id, group_id, body).await?)
+            };
+            let sent =
+                crate::api::messages::send_group_inner(state, owner_id, group_id, message).await?;
+            Ok(json!({ "group": updated, "group_id": group_id, "message": sent }))
         }
         (TargetKind::Mcp, Action::Create) => {
             let body = decode(payload)?;
@@ -198,12 +402,85 @@ async fn apply(
                     .await?;
             Ok(serde_json::to_value(updated).unwrap_or_default())
         }
+        (TargetKind::Chat, Action::Create) => {
+            let body: ChatCreatePayload = decode(payload)?;
+            let created =
+                crate::api::direct_chats::create_inner(state, owner_id, &body.agent_id).await?;
+            let chat_id = created.id().to_string();
+            let sent = match body.message {
+                Some(message) => Some(
+                    crate::api::messages::send_direct_inner(state, owner_id, &chat_id, message)
+                        .await?,
+                ),
+                None => None,
+            };
+            Ok(json!({ "chat": created, "message": sent }))
+        }
+        (TargetKind::Chat, Action::Update) => {
+            let body: ChatMessagePayload = decode(payload)?;
+            let chat_id = require(target_id)?;
+            let sent =
+                crate::api::messages::send_direct_inner(state, owner_id, chat_id, body.message)
+                    .await?;
+            Ok(json!({ "chat_id": chat_id, "message": sent }))
+        }
         // Unreachable through `AppPropose`, whose allowlist refuses these. A
         // row could only carry one if the database were edited directly.
         _ => Err(ApiError::invalid_input(
             "that combination cannot be applied",
         )),
     }
+}
+
+async fn apply_group_membership(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    change: GroupMembershipChange,
+) -> Result<Value, ApiError> {
+    match change {
+        GroupMembershipChange::AddAgent { agent_id } => {
+            let member = crate::api::groups::add_group_agent_inner(
+                state,
+                owner_id,
+                group_id,
+                crate::api::groups::GroupAgentAddRequest::with_default_workspace(agent_id),
+            )
+            .await?;
+            Ok(json!({ "operation": "add_agent", "member": member }))
+        }
+        GroupMembershipChange::RemoveAgent { agent_id } => {
+            crate::api::groups::remove_group_agent_inner(state, owner_id, group_id, &agent_id)
+                .await?;
+            Ok(json!({ "operation": "remove_agent", "agent_id": agent_id }))
+        }
+        GroupMembershipChange::AddUser { email } => {
+            let (user_id, email) = find_user_by_email(state.db.pool(), &email).await?;
+            let member =
+                crate::api::groups::add_group_member_inner(state, owner_id, group_id, &user_id)
+                    .await?;
+            Ok(json!({ "operation": "add_user", "email": email, "member": member }))
+        }
+        GroupMembershipChange::RemoveUser { email } => {
+            let (user_id, email) = find_user_by_email(state.db.pool(), &email).await?;
+            crate::api::groups::remove_group_member_inner(state, owner_id, group_id, &user_id)
+                .await?;
+            Ok(json!({ "operation": "remove_user", "email": email, "user_id": user_id }))
+        }
+    }
+}
+
+async fn find_user_by_email(pool: &SqlitePool, email: &str) -> Result<(String, String), ApiError> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Err(ApiError::invalid_input("email must not be empty"));
+    }
+    sqlx::query_as("SELECT id, email FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1")
+        .bind(email)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))?
+        .ok_or_else(|| ApiError::not_found("user not found"))
 }
 
 /// Check a proposal without applying it.
@@ -244,17 +521,45 @@ pub(crate) async fn validate_proposal(
             decode::<crate::api::workspaces::UpdateRequest>(payload.clone()).map_err(invalid)?;
         }
         TargetKind::Group if action == Action::Create => {
-            decode::<crate::api::groups::CreateRequest>(payload.clone()).map_err(invalid)?;
+            let (payload, _, membership) = split_group_payload(payload.clone()).map_err(invalid)?;
+            if membership.is_some() {
+                return Err(ToolError::invalid(
+                    "use initial_agents when creating a group",
+                ));
+            }
+            decode::<crate::api::groups::CreateRequest>(payload).map_err(invalid)?;
         }
         TargetKind::Group => {
-            decode::<crate::api::groups::UpdateRequest>(payload.clone()).map_err(invalid)?;
+            let (payload, message, membership) =
+                split_group_payload(payload.clone()).map_err(invalid)?;
+            if let Some(change) = membership {
+                if message.is_some() || !payload.as_object().is_some_and(|fields| fields.is_empty())
+                {
+                    return Err(ToolError::invalid(
+                        "propose membership changes separately from settings and messages",
+                    ));
+                }
+                let group_id = target_id
+                    .ok_or_else(|| ToolError::invalid("target_id is required to update"))?;
+                validate_group_membership(ctx, group_id, &change).await?;
+            }
+            decode::<crate::api::groups::UpdateRequest>(payload).map_err(invalid)?;
         }
         TargetKind::Mcp => {
             decode::<crate::api::mcp_servers::CreateRequest>(payload.clone()).map_err(invalid)?;
         }
-        TargetKind::Provider | TargetKind::Chat => {
-            return Err(ToolError::invalid("that kind cannot be proposed"))
+        TargetKind::Chat if action == Action::Create => {
+            let body = decode::<ChatCreatePayload>(payload.clone()).map_err(invalid)?;
+            if let Some(message) = body.message.as_deref() {
+                validate_chat_message(message).map_err(invalid)?;
+            }
+            ensure_owned(ctx, TargetKind::Agent, &body.agent_id).await?;
         }
+        TargetKind::Chat => {
+            let body = decode::<ChatMessagePayload>(payload.clone()).map_err(invalid)?;
+            validate_chat_message(&body.message).map_err(invalid)?;
+        }
+        TargetKind::Provider => return Err(ToolError::invalid("that kind cannot be proposed")),
     }
 
     // Field-level rules the request types cannot express.
@@ -291,6 +596,8 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
     for (key, field) in [
         ("workspace_id", "workspace_id"),
         ("llm_provider_id", "llm_provider_id"),
+        ("provider_id", "llm_provider_id"),
+        ("agent_id", "agent_id"),
     ] {
         if let Some(raw) = object.get(key).and_then(Value::as_str) {
             uuid::Uuid::parse_str(raw.trim())
@@ -340,6 +647,111 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
     Ok(())
 }
 
+async fn validate_group_membership(
+    ctx: &AppControlContext,
+    group_id: &str,
+    change: &GroupMembershipChange,
+) -> Result<(), crate::tools::ToolError> {
+    use crate::tools::ToolError;
+
+    ensure_owned(ctx, TargetKind::Group, group_id).await?;
+    match change {
+        GroupMembershipChange::AddAgent { agent_id } => {
+            ensure_owned(ctx, TargetKind::Agent, agent_id).await?;
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM group_agents \
+                 WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+            )
+            .bind(group_id)
+            .bind(agent_id)
+            .fetch_one(ctx.pool())
+            .await
+            .map_err(|_| ToolError::invalid("could not inspect group membership"))?;
+            if exists > 0 {
+                return Err(ToolError::invalid("agent is already in the group"));
+            }
+        }
+        GroupMembershipChange::RemoveAgent { agent_id } => {
+            ensure_owned(ctx, TargetKind::Agent, agent_id).await?;
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM group_agents \
+                 WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+            )
+            .bind(group_id)
+            .bind(agent_id)
+            .fetch_one(ctx.pool())
+            .await
+            .map_err(|_| ToolError::invalid("could not inspect group membership"))?;
+            if exists == 0 {
+                return Err(ToolError::invalid("agent is not in the group"));
+            }
+        }
+        GroupMembershipChange::AddUser { email } => {
+            let (user_id, _) = find_user_by_email(ctx.pool(), email)
+                .await
+                .map_err(|error| ToolError::invalid(error.message_text()))?;
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM group_members \
+                 WHERE group_id = ? AND user_id = ? AND status = 'active'",
+            )
+            .bind(group_id)
+            .bind(user_id)
+            .fetch_one(ctx.pool())
+            .await
+            .map_err(|_| ToolError::invalid("could not inspect group membership"))?;
+            if exists > 0 {
+                return Err(ToolError::invalid("user is already in the group"));
+            }
+        }
+        GroupMembershipChange::RemoveUser { email } => {
+            let (user_id, _) = find_user_by_email(ctx.pool(), email)
+                .await
+                .map_err(|error| ToolError::invalid(error.message_text()))?;
+            let role: Option<String> = sqlx::query_scalar(
+                "SELECT role FROM group_members \
+                 WHERE group_id = ? AND user_id = ? AND status = 'active'",
+            )
+            .bind(group_id)
+            .bind(user_id)
+            .fetch_optional(ctx.pool())
+            .await
+            .map_err(|_| ToolError::invalid("could not inspect group membership"))?;
+            match role.as_deref() {
+                None => return Err(ToolError::invalid("user is not in the group")),
+                Some("owner") => return Err(ToolError::invalid("group owner cannot be removed")),
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_chat_message(message: &str) -> Result<(), ApiError> {
+    if message.trim().is_empty() {
+        Err(ApiError::invalid_input("message must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+fn split_group_payload(
+    mut payload: Value,
+) -> Result<(Value, Option<String>, Option<GroupMembershipChange>), ApiError> {
+    let fields = payload
+        .as_object_mut()
+        .ok_or_else(|| ApiError::invalid_input("payload must be an object"))?;
+    let message = match fields.remove("message") {
+        None => None,
+        Some(Value::String(message)) => {
+            validate_chat_message(&message)?;
+            Some(message)
+        }
+        Some(_) => return Err(ApiError::invalid_input("message must be a string")),
+    };
+    let membership = fields.remove("membership").map(decode).transpose()?;
+    Ok((payload, message, membership))
+}
+
 /// Confirm the caller owns the row an update names, and that it is writable.
 async fn ensure_owned(
     ctx: &AppControlContext,
@@ -354,10 +766,13 @@ async fn ensure_owned(
         TargetKind::Skill => ("skills", ""),
         TargetKind::Workspace => ("workspaces", ""),
         TargetKind::Group => ("groups", "AND conversation_kind = 'group'"),
+        TargetKind::Chat => (
+            "groups",
+            "AND conversation_kind = 'direct' AND direct_agent_id IN \
+             (SELECT id FROM agents WHERE is_system = 0 AND status = 'active')",
+        ),
         TargetKind::Mcp => ("mcp_servers", ""),
-        TargetKind::Provider | TargetKind::Chat => {
-            return Err(ToolError::invalid("that kind cannot be proposed"))
-        }
+        TargetKind::Provider => return Err(ToolError::invalid("that kind cannot be proposed")),
     };
     let sql = format!(
         "SELECT COUNT(*) FROM {table} \
@@ -397,7 +812,7 @@ fn parse_action(raw: &str) -> Result<Action, ApiError> {
     }
 }
 
-async fn load_pending(
+async fn load_action(
     state: &AppState,
     action_id: &str,
     owner_id: &str,
@@ -414,22 +829,20 @@ async fn load_pending(
     // Another owner's action is reported as missing, not forbidden.
     .ok_or_else(|| ApiError::not_found("action not found"))?;
 
-    if row.status != "pending" {
-        return Err(ApiError::conflict(format!(
-            "this action was already {}",
-            row.status
-        )));
-    }
     Ok(row)
 }
 
-async fn resolve(
+fn already_resolved(status: &str) -> ApiError {
+    ApiError::conflict(format!("this action was already {status}"))
+}
+
+async fn transition_pending(
     state: &AppState,
     action_id: &str,
     status: &str,
     result: Option<&Value>,
-) -> Result<(), ApiError> {
-    sqlx::query(
+) -> Result<bool, ApiError> {
+    let changed = sqlx::query(
         "UPDATE app_actions SET status = ?, result_json = ?, resolved_at = ? \
          WHERE id = ? AND status = 'pending'",
     )
@@ -439,7 +852,32 @@ async fn resolve(
     .bind(action_id)
     .execute(state.db.pool())
     .await
-    .map_err(|_| ApiError::internal("failed to record the action outcome"))?;
+    .map_err(|_| ApiError::internal("failed to record the action outcome"))?
+    .rows_affected();
+    Ok(changed == 1)
+}
+
+async fn finish_approval(
+    state: &AppState,
+    action_id: &str,
+    status: &str,
+    result: Option<&Value>,
+) -> Result<(), ApiError> {
+    let changed = sqlx::query(
+        "UPDATE app_actions SET status = ?, result_json = ?, resolved_at = ? \
+         WHERE id = ? AND status = 'approved'",
+    )
+    .bind(status)
+    .bind(result.map(|value| value.to_string()))
+    .bind(now_rfc3339())
+    .bind(action_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to record the action outcome"))?
+    .rows_affected();
+    if changed != 1 {
+        return Err(ApiError::internal("approval state changed while applying"));
+    }
     Ok(())
 }
 

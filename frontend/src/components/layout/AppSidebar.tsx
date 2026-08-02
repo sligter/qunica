@@ -1,14 +1,16 @@
-import { lazy, Suspense, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bot,
+  ChevronDown,
   Folder,
   LogOut,
   MessageSquarePlus,
   PanelLeft,
   PanelLeftClose,
+  Pencil,
   Plug,
   Search,
   Server,
@@ -23,18 +25,58 @@ import { formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { normalizeLanguage } from '@/i18n'
 import { useGroups } from '@/hooks/useGroups'
-import { useDeleteDirectChat, useDirectChats } from '@/hooks/useDirectChats'
+import {
+  useDeleteDirectChat,
+  useDirectChats,
+  useRenameDirectChat,
+} from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useAuthStore } from '@/stores/authStore'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 
 const COLLAPSED_KEY = 'ag-swarmer:layout:sidebar-collapsed'
+const LIST_BATCH_SIZE = 20
+
+function useLazyList(total: number, active: boolean, resetKey: string) {
+  const [limit, setLimit] = useState(LIST_BATCH_SIZE)
+  const sentinelRef = useRef<HTMLLIElement>(null)
+
+  useEffect(() => setLimit(LIST_BATCH_SIZE), [resetKey])
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!active || limit >= total || !sentinel || typeof IntersectionObserver === 'undefined') {
+      return
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        setLimit((current) => Math.min(total, current + LIST_BATCH_SIZE))
+      }
+    }, { rootMargin: '160px' })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [active, limit, total])
+
+  return {
+    hasMore: limit < total,
+    limit: Math.min(limit, total),
+    loadMore: () => setLimit((current) => Math.min(total, current + LIST_BATCH_SIZE)),
+    sentinelRef,
+  }
+}
 
 /**
  * Heading over a sidebar group. Same uppercase micro-label as the section
@@ -60,6 +102,38 @@ function SidebarGroupLabel({
   )
 }
 
+function SidebarSectionHeader({
+  action,
+  controls,
+  expanded,
+  label,
+  onToggle,
+}: {
+  action?: ReactNode
+  controls: string
+  expanded: boolean
+  label: ReactNode
+  onToggle: () => void
+}) {
+  return (
+    <div className="flex h-7 items-center justify-between px-1">
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1 rounded-sm text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        aria-controls={controls}
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <ChevronDown
+          className={cn('h-3.5 w-3.5 shrink-0 transition-transform', !expanded && '-rotate-90')}
+        />
+        <span className="truncate">{label}</span>
+      </button>
+      {action}
+    </div>
+  )
+}
+
 // The create-group form drags in react-hook-form + zod; it downloads the first
 // time the user asks for it rather than on every app boot.
 const GroupFormDialog = lazy(() =>
@@ -70,6 +144,14 @@ interface LibraryItem {
   to: string
   key: 'agents' | 'providers' | 'mcpServers' | 'skills' | 'workspaces'
   icon: typeof Bot
+}
+
+interface DirectChatMenuState {
+  id: string
+  title: string
+  x: number
+  y: number
+  trigger: HTMLElement
 }
 
 const libraryItems: LibraryItem[] = [
@@ -116,11 +198,20 @@ export function AppSidebar() {
   const [directDialogOpen, setDirectDialogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [directChatsExpanded, setDirectChatsExpanded] = useState(true)
+  const [groupsExpanded, setGroupsExpanded] = useState(true)
+  const [chatMenu, setChatMenu] = useState<DirectChatMenuState | null>(null)
+  const [pendingRenameChat, setPendingRenameChat] = useState<{ id: string; title: string } | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
   const [pendingDeleteChat, setPendingDeleteChat] = useState<{ id: string; title: string } | null>(null)
+  const chatMenuRef = useRef<HTMLDivElement>(null)
+  const chatMenuFirstItemRef = useRef<HTMLButtonElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
   const groups = useGroups()
   const directChats = useDirectChats()
+  const renameDirectChat = useRenameDirectChat(pendingRenameChat?.id ?? '')
   const deleteDirectChat = useDeleteDirectChat(pendingDeleteChat?.id ?? '')
   const { closeConversation } = useTerminalRuntime()
 
@@ -145,10 +236,47 @@ export function AppSidebar() {
       chat.title.toLowerCase().includes(q) ||
       (chat.agent_name ?? '').toLowerCase().includes(q),
   )
+  const directLazy = useLazyList(filteredDirectChats.length, directChatsExpanded, q)
+  const groupLazy = useLazyList(filteredGroups.length, groupsExpanded, q)
+  const visibleDirectChats = filteredDirectChats.slice(0, directLazy.limit)
+  const visibleGroups = filteredGroups.slice(0, groupLazy.limit)
   const closeSearch = () => {
     setQuery('')
     setSearchOpen(false)
   }
+  const openChatMenu = (
+    x: number,
+    y: number,
+    chat: { id: string; title: string },
+    trigger: HTMLElement,
+  ) => {
+    setChatMenu({
+      ...chat,
+      x: Math.max(8, Math.min(x, window.innerWidth - 184)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 88)),
+      trigger,
+    })
+  }
+
+  useEffect(() => {
+    if (!chatMenu) return
+    chatMenuFirstItemRef.current?.focus()
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && chatMenuRef.current?.contains(event.target)) return
+      setChatMenu(null)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setChatMenu(null)
+      chatMenu.trigger.focus()
+    }
+    window.addEventListener('pointerdown', dismiss)
+    window.addEventListener('keydown', escape)
+    return () => {
+      window.removeEventListener('pointerdown', dismiss)
+      window.removeEventListener('keydown', escape)
+    }
+  }, [chatMenu])
 
   return (
     <aside
@@ -163,6 +291,63 @@ export function AppSidebar() {
         </Suspense>
       ) : null}
       <DirectChatPickerDialog open={directDialogOpen} onOpenChange={setDirectDialogOpen} />
+      <Dialog
+        open={pendingRenameChat !== null}
+        onOpenChange={(open) => {
+          if (!open && !renameDirectChat.isPending) {
+            setPendingRenameChat(null)
+            setRenameError(null)
+          }
+        }}
+      >
+        <DialogContent closeLabel={t('common:actions.close')} className="sm:max-w-sm">
+          <form
+            className="space-y-4"
+            onSubmit={async (event) => {
+              event.preventDefault()
+              const title = renameValue.trim()
+              if (!title || Array.from(title).length > 120) {
+                setRenameError(t('chat:direct.titleInvalid'))
+                return
+              }
+              try {
+                setRenameError(null)
+                await renameDirectChat.mutateAsync({ title })
+                setPendingRenameChat(null)
+              } catch (error) {
+                setRenameError(error instanceof Error ? error.message : String(error))
+              }
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{t('chat:direct.rename')}</DialogTitle>
+              <DialogDescription>{t('chat:direct.renameDescription')}</DialogDescription>
+            </DialogHeader>
+            <Input
+              autoFocus
+              maxLength={120}
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              aria-label={t('chat:direct.rename')}
+              aria-invalid={renameError !== null}
+            />
+            {renameError ? <p role="alert" className="text-xs text-destructive">{renameError}</p> : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={renameDirectChat.isPending}
+                onClick={() => setPendingRenameChat(null)}
+              >
+                {t('common:actions.cancel')}
+              </Button>
+              <Button type="submit" disabled={renameDirectChat.isPending}>
+                {t('common:actions.save')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog
         open={pendingDeleteChat !== null}
         onOpenChange={(open) => { if (!open) setPendingDeleteChat(null) }}
@@ -281,11 +466,12 @@ export function AppSidebar() {
             </div>
           ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
-            <div className="flex h-7 items-center justify-between px-1">
-              <SidebarGroupLabel className="px-0 pb-0">
-                {t('navigation:directChats')}
-              </SidebarGroupLabel>
-              {!searchOpen ? (
+            <SidebarSectionHeader
+              controls="sidebar-direct-chats"
+              expanded={directChatsExpanded}
+              label={t('navigation:directChats')}
+              onToggle={() => setDirectChatsExpanded((current) => !current)}
+              action={!searchOpen ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -294,135 +480,229 @@ export function AppSidebar() {
                       size="icon"
                       className="h-6 w-6"
                       aria-label={t('navigation:searchConversations')}
-                      aria-expanded={false}
-                      onClick={() => setSearchOpen(true)}
+                      aria-expanded={searchOpen}
+                      onClick={() => {
+                        setDirectChatsExpanded(true)
+                        setGroupsExpanded(true)
+                        setSearchOpen(true)
+                      }}
                     >
                       <Search className="h-3.5 w-3.5" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>
-                    {t('navigation:searchConversations')}
-                  </TooltipContent>
+                  <TooltipContent>{t('navigation:searchConversations')}</TooltipContent>
                 </Tooltip>
+              ) : undefined}
+            />
+            <div id="sidebar-direct-chats">
+              {directChatsExpanded ? (
+                <>
+                  {directChats.isLoading ? (
+                    <p className="px-2 pb-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
+                  ) : null}
+                  {directChats.error ? (
+                    <p className="px-2 pb-2 text-xs text-destructive">{String(directChats.error)}</p>
+                  ) : null}
+                  <ul className="mb-3 space-y-0.5">
+                    {visibleDirectChats.map((chat) => (
+                      <li key={chat.id}>
+                        <NavLink
+                          to={`/chats/${chat.id}`}
+                          aria-haspopup="menu"
+                          aria-controls={chatMenu?.id === chat.id ? 'direct-chat-context-menu' : undefined}
+                          title={t('chat:direct.contextHint')}
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+                            openChatMenu(event.clientX, event.clientY, chat, event.currentTarget)
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+                            event.preventDefault()
+                            const rect = event.currentTarget.getBoundingClientRect()
+                            openChatMenu(rect.left + 12, rect.top + 12, chat, event.currentTarget)
+                          }}
+                          className={({ isActive }) =>
+                            cn(
+                              'flex min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
+                              isActive ? 'bg-primary/10' : 'hover:bg-card-hover',
+                            )
+                          }
+                        >
+                          {({ isActive }) => (
+                            <>
+                              <Avatar className="h-7 w-7 shrink-0">
+                                <AvatarFallback className={avatarColorClass(chat.id)}>
+                                  {(chat.agent_name ?? chat.title).slice(0, 1).toUpperCase()}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span
+                                className={cn(
+                                  'min-w-0 flex-1 truncate text-sm',
+                                  isActive ? 'font-semibold' : 'font-medium',
+                                )}
+                              >
+                                {chat.title}
+                              </span>
+                              <span className="shrink-0 text-[10px] text-muted-foreground">
+                                {formatRelativeTime(
+                                  chat.updated_at,
+                                  normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US',
+                                )}
+                              </span>
+                            </>
+                          )}
+                        </NavLink>
+                      </li>
+                    ))}
+                    {directLazy.hasMore ? (
+                      <li ref={directLazy.sentinelRef}>
+                        <button
+                          type="button"
+                          className="w-full rounded-md py-1.5 text-[11px] text-muted-foreground hover:bg-card-hover hover:text-foreground"
+                          onClick={directLazy.loadMore}
+                        >
+                          {t('navigation:loadMore')}
+                        </button>
+                      </li>
+                    ) : null}
+                  </ul>
+                </>
               ) : null}
             </div>
-            {directChats.isLoading ? (
-              <p className="px-2 pb-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
-            ) : null}
-            {directChats.error ? (
-              <p className="px-2 pb-2 text-xs text-destructive">{String(directChats.error)}</p>
-            ) : null}
-            <ul className="mb-3 space-y-0.5">
-              {filteredDirectChats.map((chat) => (
-                <li key={chat.id} className="group flex items-center gap-0.5">
-                  <NavLink
-                    to={`/chats/${chat.id}`}
-                    className={({ isActive }) =>
-                      cn(
-                        'flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                        isActive ? 'bg-primary/10' : 'hover:bg-card-hover',
-                      )
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Avatar className="h-7 w-7 shrink-0">
-                          <AvatarFallback className={avatarColorClass(chat.id)}>
-                            {(chat.agent_name ?? chat.title).slice(0, 1).toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span
-                          className={cn(
-                            'min-w-0 flex-1 truncate text-sm',
-                            isActive ? 'font-semibold' : 'font-medium',
-                          )}
+
+            <SidebarSectionHeader
+              controls="sidebar-groups"
+              expanded={groupsExpanded}
+              label={t('navigation:groups')}
+              onToggle={() => setGroupsExpanded((current) => !current)}
+            />
+            <div id="sidebar-groups">
+              {groupsExpanded ? (
+                <>
+                  {groups.isLoading ? (
+                    <p className="px-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
+                  ) : null}
+                  {groups.error ? (
+                    <p className="px-2 text-xs text-destructive">{t('groups:loadError')}</p>
+                  ) : null}
+                  {groups.data && groups.data.length === 0 ? (
+                    <p className="px-2 text-xs text-muted-foreground">{t('groups:empty')}</p>
+                  ) : null}
+                  {groups.data && groups.data.length > 0 && filteredGroups.length === 0 ? (
+                    <p className="px-2 text-xs text-muted-foreground">{t('common:state.noMatches')}</p>
+                  ) : null}
+                  <ul className="space-y-0.5">
+                    {visibleGroups.map((g) => (
+                      <li key={g.id}>
+                        <NavLink
+                          to={`/groups/${g.id}`}
+                          className={({ isActive }) =>
+                            cn(
+                              'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
+                              isActive ? 'bg-primary/10' : 'hover:bg-card-hover',
+                            )
+                          }
                         >
-                          {chat.title}
-                        </span>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
-                          {formatRelativeTime(
-                            chat.updated_at,
-                            normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US',
+                          {({ isActive }) => (
+                            <>
+                              <Avatar className="h-7 w-7 shrink-0">
+                                <AvatarFallback className={avatarColorClass(g.id)}>
+                                  {g.name.slice(0, 1).toUpperCase()}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span
+                                className={cn(
+                                  'min-w-0 flex-1 truncate text-sm',
+                                  isActive ? 'font-semibold' : 'font-medium',
+                                )}
+                              >
+                                {g.name}
+                              </span>
+                              <span className="shrink-0 text-[10px] text-muted-foreground">
+                                {formatRelativeTime(
+                                  g.created_at,
+                                  normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US',
+                                )}
+                              </span>
+                            </>
                           )}
-                        </span>
-                      </>
-                    )}
-                  </NavLink>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 opacity-0 transition-opacity hover:text-destructive focus:opacity-100 group-hover:opacity-100"
-                        aria-label={t('chat:direct.deleteNamed', { title: chat.title })}
-                        onClick={() => setPendingDeleteChat({ id: chat.id, title: chat.title })}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('common:actions.delete')}</TooltipContent>
-                  </Tooltip>
-                </li>
-              ))}
-            </ul>
-            <SidebarGroupLabel>{t('navigation:groups')}</SidebarGroupLabel>
-            {groups.isLoading && (
-              <p className="px-2 text-xs text-muted-foreground">{t('common:state.loading')}</p>
-            )}
-            {groups.error && (
-              <p className="px-2 text-xs text-destructive">{t('groups:loadError')}</p>
-            )}
-            {groups.data && groups.data.length === 0 && (
-              <p className="px-2 text-xs text-muted-foreground">
-                {t('groups:empty')}
-              </p>
-            )}
-            {groups.data && groups.data.length > 0 && filteredGroups.length === 0 && (
-              <p className="px-2 text-xs text-muted-foreground">{t('common:state.noMatches')}</p>
-            )}
-            <ul className="space-y-0.5">
-              {filteredGroups.map((g) => (
-                <li key={g.id}>
-                  <NavLink
-                    to={`/groups/${g.id}`}
-                    className={({ isActive }) =>
-                      cn(
-                        'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                        isActive ? 'bg-primary/10' : 'hover:bg-card-hover',
-                      )
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Avatar className="h-7 w-7 shrink-0">
-                          <AvatarFallback className={avatarColorClass(g.id)}>
-                            {g.name.slice(0, 1).toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span
-                          className={cn(
-                            'min-w-0 flex-1 truncate text-sm',
-                            isActive ? 'font-semibold' : 'font-medium',
-                          )}
+                        </NavLink>
+                      </li>
+                    ))}
+                    {groupLazy.hasMore ? (
+                      <li ref={groupLazy.sentinelRef}>
+                        <button
+                          type="button"
+                          className="w-full rounded-md py-1.5 text-[11px] text-muted-foreground hover:bg-card-hover hover:text-foreground"
+                          onClick={groupLazy.loadMore}
                         >
-                          {g.name}
-                        </span>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
-                          {formatRelativeTime(
-                            g.created_at,
-                            normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US',
-                          )}
-                        </span>
-                      </>
-                    )}
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
+                          {t('navigation:loadMore')}
+                        </button>
+                      </li>
+                    ) : null}
+                  </ul>
+                </>
+              ) : null}
+            </div>
           </div>
         </div>
       )}
+
+      {chatMenu ? (
+        <div
+          ref={chatMenuRef}
+          id="direct-chat-context-menu"
+          role="menu"
+          aria-label={t('chat:direct.contextMenu')}
+          className="fixed z-50 min-w-44 overflow-hidden rounded-md border border-border bg-background py-1 text-sm text-foreground shadow-md"
+          style={{ left: chatMenu.x, top: chatMenu.y }}
+          onKeyDown={(event) => {
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+            event.preventDefault()
+            const items = Array.from(
+              event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+            )
+            const current = items.indexOf(document.activeElement as HTMLButtonElement)
+            const next = event.key === 'Home'
+              ? 0
+              : event.key === 'End'
+                ? items.length - 1
+                : event.key === 'ArrowDown'
+                  ? (current + 1) % items.length
+                  : (current - 1 + items.length) % items.length
+            items[next]?.focus()
+          }}
+        >
+          <button
+            ref={chatMenuFirstItemRef}
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+            onClick={() => {
+              setPendingRenameChat({ id: chatMenu.id, title: chatMenu.title })
+              setRenameValue(chatMenu.title)
+              setRenameError(null)
+              setChatMenu(null)
+            }}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            {t('chat:direct.rename')}
+          </button>
+          <div className="my-1 border-t border-border" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-destructive hover:bg-muted"
+            onClick={() => {
+              setPendingDeleteChat({ id: chatMenu.id, title: chatMenu.title })
+              setChatMenu(null)
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {t('common:actions.delete')}
+          </button>
+        </div>
+      ) : null}
 
       {/* Library */}
       <nav

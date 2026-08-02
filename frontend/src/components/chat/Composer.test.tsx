@@ -594,6 +594,10 @@ describe('Composer', () => {
       />,
     )
 
+    expect(
+      screen.queryByRole('button', { name: 'Upload files to workspace uploads' }),
+    ).toBeNull()
+
     fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
       dataTransfer: workspaceDataTransfer([{ path: 'docs/guide.md', kind: 'file' }]),
     })

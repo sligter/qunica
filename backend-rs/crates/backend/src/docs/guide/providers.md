@@ -10,7 +10,7 @@ A provider holds the credentials and model list for one LLM vendor. Every agent 
 - **api_key** — the secret. Stored locally and never returned by the API; reads report only whether one is set, and the UI shows a masked form.
 - **default_model** — the model an agent uses when it does not name one itself.
 - **models** — the list offered in model pickers, each with an optional context window and output reserve.
-- **reasoning_passback** — whether to send the model's own reasoning back on the next turn. Off by default.
+- **reasoning_passback** — configured per model; whether to send that model's own reasoning back on the next turn. Off by default.
 
 ## Discovering models
 

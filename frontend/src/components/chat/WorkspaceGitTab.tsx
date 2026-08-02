@@ -1,22 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   Check,
+  ChevronDown,
   ChevronRight,
-  FileDiff,
+  ExternalLink,
+  FileCode2,
   GitBranch,
   GitCommitHorizontal,
-  History,
+  GitPullRequest,
   LoaderCircle,
-  Maximize2,
   Minus,
-  Minimize2,
+  MoreHorizontal,
   Plus,
   RefreshCw,
-  RotateCcw,
+  Search,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
@@ -39,6 +42,7 @@ import {
   useCreateGroupWorkspaceGitBranchFromCommit,
   useDiscardGroupWorkspaceGit,
   useFetchGroupWorkspaceGit,
+  useForcePushGroupWorkspaceGit,
   useGenerateGroupWorkspaceGitCommitMessage,
   useGroupWorkspaceGitCommit,
   useGroupWorkspaceGitCommitDiff,
@@ -49,6 +53,7 @@ import {
   useInitGroupWorkspaceGit,
   usePullGroupWorkspaceGit,
   usePushGroupWorkspaceGit,
+  useRebaseGroupWorkspaceGit,
   useSetGroupWorkspaceGitRemote,
   useStageGroupWorkspaceGit,
   useUnstageGroupWorkspaceGit,
@@ -56,6 +61,7 @@ import {
 import { normalizeLanguage } from '@/i18n'
 import { ApiError } from '@/lib/api-v2/client'
 import { formatNumber } from '@/lib/format'
+import { isDesktopRuntime } from '@/lib/runtime'
 import { cn } from '@/lib/utils'
 import type {
   ConversationScope,
@@ -70,7 +76,7 @@ interface WorkspaceGitTabProps {
 }
 
 type ReviewMode = 'changes' | 'history'
-type ChangeSelection = { path: string; mode: 'worktree' | 'staged' } | null
+type ChangeSelection = { path: string; mode: 'worktree' | 'staged' | 'branch' } | null
 type RemoteOperation = (() => Promise<unknown>) | null
 type RepositoryState = NonNullable<GroupWorkspaceGitStatus['state']>
 type DiffLineKind = 'addition' | 'deletion' | 'hunk' | 'meta' | 'context'
@@ -160,126 +166,352 @@ function DiffPatch({ content, highlight }: { content: string; highlight: boolean
   )
 }
 
-function ChangeSection({
+function splitPath(path: string) {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return slash === -1
+    ? { directory: '', name: path }
+    : { directory: path.slice(0, slash), name: path.slice(slash + 1) }
+}
+
+function statusTone(file: GroupWorkspaceGitFileStatus) {
+  if (file.conflicted) return 'text-red-500'
+  if (file.untracked || file.status.includes('A')) return 'text-emerald-500'
+  if (file.status.includes('D')) return 'text-red-500'
+  return 'text-amber-500'
+}
+
+function committedFiles(patch: string): GroupWorkspaceGitFileStatus[] {
+  const files: GroupWorkspaceGitFileStatus[] = []
+  let current: GroupWorkspaceGitFileStatus | undefined
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('diff --git a/')) {
+      const paths = line.slice('diff --git a/'.length)
+      const separator = paths.lastIndexOf(' b/')
+      if (separator < 0) continue
+      const oldPath = paths.slice(0, separator)
+      const path = paths.slice(separator + 3)
+      current = {
+        path,
+        old_path: oldPath === path ? null : oldPath,
+        status: oldPath === path ? 'M' : 'R',
+        staged: false,
+        unstaged: false,
+        untracked: false,
+        conflicted: false,
+      }
+      files.push(current)
+      continue
+    }
+    if (line.startsWith('new file mode ') && current) current.status = 'A'
+    if (line.startsWith('deleted file mode ') && current) current.status = 'D'
+  }
+  return files
+}
+
+function CollapsibleHeader({
+  action,
+  count,
+  expanded,
+  onToggle,
   title,
-  files,
-  selection,
+}: {
+  action?: ReactNode
+  count?: number
+  expanded: boolean
+  onToggle: () => void
+  title: string
+}) {
+  return (
+    <header className="flex h-8 items-center gap-1 px-2">
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-semibold hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', !expanded && '-rotate-90')} />
+        <span className="truncate">{title}</span>
+        {count === undefined ? null : (
+          <span className="font-mono text-[10px] text-muted-foreground">{count}</span>
+        )}
+      </button>
+      {action}
+    </header>
+  )
+}
+
+function ChangeSection({
   action,
   disabled,
-  onSelect,
+  files,
   onAction,
   onDiscard,
   onIgnore,
+  onSelect,
+  selection,
+  title,
 }: {
-  title: string
-  files: GroupWorkspaceGitFileStatus[]
-  selection: ChangeSelection
-  action: 'stage' | 'unstage'
+  action: 'stage' | 'unstage' | null
   disabled: boolean
-  onSelect: (selection: ChangeSelection) => void
-  onAction: (paths: string[]) => void
+  files: GroupWorkspaceGitFileStatus[]
+  onAction?: (paths: string[]) => void
   onDiscard?: (file: GroupWorkspaceGitFileStatus) => void
   onIgnore?: (file: GroupWorkspaceGitFileStatus) => void
+  onSelect: (selection: NonNullable<ChangeSelection>) => void
+  selection: ChangeSelection
+  title: string
 }) {
-  const { t, i18n } = useTranslation('chat')
-  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
+  const { t } = useTranslation('chat')
+  const [expanded, setExpanded] = useState(true)
   if (files.length === 0) return null
-  const diffMode = action === 'stage' ? 'worktree' : 'staged'
+  const diffMode = action === 'stage' ? 'worktree' : action === 'unstage' ? 'staged' : 'branch'
+  const allLabel = action === 'stage'
+    ? t('workspace.gitPanel.stageAll')
+    : t('workspace.gitPanel.unstageAll')
+
   return (
-    <section className="border-b border-border">
-      <header className="flex items-center justify-between px-3 py-1.5">
-        <span className="text-2xs font-medium uppercase text-muted-foreground">
-          {title} ({formatNumber(files.length, language)})
-        </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          disabled={disabled}
-          onClick={() => onAction([])}
-          aria-label={action === 'stage' ? t('workspace.gitPanel.stageAll') : t('workspace.gitPanel.unstageAll')}
-          title={action === 'stage' ? t('workspace.gitPanel.stageAll') : t('workspace.gitPanel.unstageAll')}
-        >
-          {action === 'stage' ? <Plus className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
-        </Button>
-      </header>
-      <ul>
-        {files.map((file) => {
-          const selected = selection?.path === file.path && selection.mode === diffMode
-          return (
-            <li
-              key={`${title}:${file.path}`}
-              className={cn(
-                'group flex min-w-0 items-center gap-1 px-2 py-1 hover:bg-muted/70',
-                selected && 'bg-muted',
-              )}
-            >
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                title={file.path}
-                onClick={() => onSelect({ path: file.path, mode: diffMode })}
+    <section className="border-b border-border/70">
+      <CollapsibleHeader
+        title={title}
+        count={files.length}
+        expanded={expanded}
+        onToggle={() => setExpanded((value) => !value)}
+        action={action ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            disabled={disabled}
+            onClick={() => onAction?.([])}
+            aria-label={allLabel}
+            title={allLabel}
+          >
+            {action === 'stage' ? <Plus className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
+          </Button>
+        ) : undefined}
+      />
+      {expanded ? (
+        <ul className="pb-1">
+          {files.map((file) => {
+            const path = splitPath(file.path)
+            const selected = selection?.path === file.path && selection.mode === diffMode
+            return (
+              <li
+                key={`${title}:${file.path}`}
+                className={cn('group flex min-w-0 items-center px-2 hover:bg-muted/70', selected && 'bg-muted')}
               >
-                <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground">
-                  {file.status}
-                </span>
-                <span className="truncate text-xs">{file.path}</span>
-              </button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0"
-                disabled={disabled}
-                onClick={() => onAction([file.path])}
-                aria-label={action === 'stage' ? t('workspace.gitPanel.stageNamed', { path: file.path }) : t('workspace.gitPanel.unstageNamed', { path: file.path })}
-                title={action === 'stage' ? t('workspace.stage') : t('workspace.unstage')}
-              >
-                {action === 'stage' ? <Plus className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
-              </Button>
-              {onDiscard ? (
-                <Button
+                <button
                   type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                  disabled={disabled}
-                  onClick={() => onDiscard(file)}
-                  aria-label={t('workspace.gitPanel.discardNamed', { path: file.path })}
-                  title={t('workspace.gitPanel.discardChanges')}
+                  className="flex h-7 min-w-0 flex-1 items-center gap-2 text-left"
+                  title={file.path}
+                  onClick={() => onSelect({ path: file.path, mode: diffMode })}
                 >
-                  <Trash2 className="h-3 w-3 text-destructive" />
-                </Button>
-              ) : null}
-              {onIgnore && file.untracked ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                  disabled={disabled}
-                  onClick={() => onIgnore(file)}
-                  aria-label={t('workspace.gitPanel.ignoreNamed', { path: file.path })}
-                  title={t('workspace.gitPanel.addGitignore')}
-                >
-                  <Minus className="h-3 w-3" />
-                </Button>
-              ) : null}
-            </li>
-          )
-        })}
-      </ul>
+                  <FileCode2 className={cn('h-4 w-4 shrink-0', statusTone(file))} />
+                  <span className="min-w-0 flex-1 truncate text-xs">
+                    <span className="font-medium">{path.name}</span>
+                    {path.directory ? <span className="ml-1 text-[10px] text-muted-foreground">{path.directory}</span> : null}
+                  </span>
+                  <span className={cn('shrink-0 font-mono text-[10px] font-semibold', statusTone(file))}>
+                    {file.status.trim() || 'M'}
+                  </span>
+                </button>
+                {action ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    disabled={disabled}
+                    onClick={() => onAction?.([file.path])}
+                    aria-label={action === 'stage' ? t('workspace.gitPanel.stageNamed', { path: file.path }) : t('workspace.gitPanel.unstageNamed', { path: file.path })}
+                    title={action === 'stage' ? t('workspace.stage') : t('workspace.unstage')}
+                  >
+                    {action === 'stage' ? <Plus className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
+                  </Button>
+                ) : null}
+                {onDiscard ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    disabled={disabled}
+                    onClick={() => onDiscard(file)}
+                    aria-label={t('workspace.gitPanel.discardNamed', { path: file.path })}
+                    title={t('workspace.gitPanel.discardChanges')}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                  </Button>
+                ) : null}
+                {onIgnore && file.untracked ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    disabled={disabled}
+                    onClick={() => onIgnore(file)}
+                    aria-label={t('workspace.gitPanel.ignoreNamed', { path: file.path })}
+                    title={t('workspace.gitPanel.addGitignore')}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+              </li>
+            )
+          })}
+        </ul>
+      ) : null}
     </section>
   )
+}
+
+function CommitSection({
+  action,
+  commits,
+  defaultExpanded,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  onSelect,
+  selectedCommit,
+  title,
+}: {
+  action?: ReactNode
+  commits: GroupWorkspaceGitCommitSummary[]
+  defaultExpanded: boolean
+  hasMore?: boolean
+  loadingMore?: boolean
+  onLoadMore?: () => void
+  onSelect: (sha: string) => void
+  selectedCommit: string | undefined
+  title: string
+}) {
+  const { t } = useTranslation('chat')
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  return (
+    <section className="border-b border-border/70">
+      <CollapsibleHeader
+        title={title}
+        expanded={expanded}
+        onToggle={() => setExpanded((value) => !value)}
+        action={action}
+      />
+      {expanded ? (
+        <div className="pb-1">
+          {commits.map((item) => (
+            <button
+              key={item.sha}
+              type="button"
+              className={cn(
+                'flex h-9 w-full min-w-0 items-center gap-2 px-3 text-left hover:bg-muted/70',
+                selectedCommit === item.sha && 'bg-muted',
+              )}
+              onClick={() => onSelect(item.sha)}
+            >
+              <GitCommitHorizontal className={cn('h-4 w-4 shrink-0', item.local_only ? 'text-emerald-500' : 'text-muted-foreground')} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium">{item.subject}</span>
+                <span className="block truncate font-mono text-[10px] text-muted-foreground">{item.short_sha} · {item.author_name}</span>
+              </span>
+              {item.local_only ? <ArrowUp className="h-3.5 w-3.5 shrink-0 text-emerald-500" /> : null}
+            </button>
+          ))}
+          {hasMore && onLoadMore ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mx-2 h-7 text-xs"
+              disabled={loadingMore}
+              onClick={onLoadMore}
+            >
+              {t('workspace.gitPanel.loadMore')}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function GitActionItem({
+  danger,
+  disabled,
+  hint,
+  label,
+  onClick,
+}: {
+  danger?: boolean
+  disabled?: boolean
+  hint?: string
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      className={cn(
+        'flex w-full flex-col items-start px-3 py-1 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-40',
+        danger && 'text-destructive',
+      )}
+      onClick={onClick}
+    >
+      <span className="text-xs font-medium">{label}</span>
+      {hint ? <span className="text-[10px] text-muted-foreground">{hint}</span> : null}
+    </button>
+  )
+}
+
+function pullRequestUrl(remoteUrl: string | null, branch: string | null) {
+  if (!remoteUrl || !branch) return null
+  let host = ''
+  let path = ''
+  try {
+    const parsed = new URL(remoteUrl)
+    if (!['http:', 'https:', 'ssh:'].includes(parsed.protocol)) return null
+    host = parsed.host
+    path = parsed.pathname
+  } catch {
+    const scp = remoteUrl.match(/^(?:[^@]+@)?([^:]+):(.+)$/)
+    if (!scp) return null
+    host = scp[1] ?? ''
+    path = scp[2] ?? ''
+  }
+  path = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
+  if (!host || path.split('/').length < 2) return null
+  const encodedBranch = branch.split('/').map(encodeURIComponent).join('/')
+  if (host.toLowerCase().includes('github')) {
+    return `https://${host}/${path}/pull/new/${encodedBranch}`
+  }
+  if (host.toLowerCase().includes('gitlab')) {
+    return `https://${host}/${path}/-/merge_requests/new?merge_request[source_branch]=${encodeURIComponent(branch)}`
+  }
+  if (host.toLowerCase().includes('bitbucket')) {
+    return `https://${host}/${path}/pull-requests/new?source=${encodeURIComponent(branch)}`
+  }
+  return null
+}
+
+async function openExternal(url: string) {
+  if (isDesktopRuntime()) {
+    const shell = await import('@tauri-apps/plugin-shell')
+    await shell.open(url)
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabProps) {
   const { t, i18n } = useTranslation(['chat', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const [mode, setMode] = useState<ReviewMode>('changes')
+  const [reviewMode, setReviewMode] = useState<ReviewMode>('changes')
   const [selection, setSelection] = useState<ChangeSelection>(null)
   const [selectedCommit, setSelectedCommit] = useState<string | undefined>()
+  const [reviewOpen, setReviewOpen] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
   const [gitError, setGitError] = useState<string | null>(null)
   const [branchSheetOpen, setBranchSheetOpen] = useState(false)
@@ -288,13 +520,21 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const [pendingRemoteOperation, setPendingRemoteOperation] = useState<RemoteOperation>(null)
   const [discardTarget, setDiscardTarget] = useState<GroupWorkspaceGitFileStatus | null>(null)
   const [discardAllOpen, setDiscardAllOpen] = useState(false)
+  const [forcePushOpen, setForcePushOpen] = useState(false)
   const [historySkip, setHistorySkip] = useState(0)
   const [history, setHistory] = useState<GroupWorkspaceGitCommitSummary[]>([])
   const [branchFromCommit, setBranchFromCommit] = useState('')
-  const [diffExpanded, setDiffExpanded] = useState(false)
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const actionsRef = useRef<HTMLDivElement>(null)
 
   const status = useGroupWorkspaceGitStatus(groupId)
-  const diff = useGroupWorkspaceGitDiff(groupId, selection?.mode ?? 'worktree', selection?.path)
+  const branchDiff = useGroupWorkspaceGitDiff(
+    status.data?.upstream && (status.data.ahead ?? 0) > 0 ? groupId : undefined,
+    'branch',
+  )
+  const diff = useGroupWorkspaceGitDiff(selection ? groupId : undefined, selection?.mode ?? 'worktree', selection?.path)
   const log = useGroupWorkspaceGitLog(groupId, { limit: 50, skip: historySkip })
   const commit = useGroupWorkspaceGitCommit(groupId, selectedCommit)
   const commitDiff = useGroupWorkspaceGitCommitDiff(groupId, selectedCommit)
@@ -304,6 +544,8 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const generateMessage = useGenerateGroupWorkspaceGitCommitMessage(groupId)
   const pull = usePullGroupWorkspaceGit(groupId, scope)
   const push = usePushGroupWorkspaceGit(groupId)
+  const forcePush = useForcePushGroupWorkspaceGit(groupId)
+  const rebase = useRebaseGroupWorkspaceGit(groupId, scope)
   const fetch = useFetchGroupWorkspaceGit(groupId)
   const init = useInitGroupWorkspaceGit(groupId)
   const discard = useDiscardGroupWorkspaceGit(groupId, scope)
@@ -315,15 +557,47 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const files = status.data?.files ?? []
   const staged = files.filter((file) => file.staged)
   const unstaged = files.filter((file) => file.unstaged || file.untracked)
-  const busy = stage.isPending || unstage.isPending || commitChanges.isPending || generateMessage.isPending || pull.isPending || push.isPending || fetch.isPending || init.isPending || discard.isPending || ignore.isPending || setRemote.isPending || createBranchFromCommit.isPending
+  const busy = stage.isPending
+    || unstage.isPending
+    || commitChanges.isPending
+    || generateMessage.isPending
+    || pull.isPending
+    || push.isPending
+    || forcePush.isPending
+    || rebase.isPending
+    || fetch.isPending
+    || init.isPending
+    || discard.isPending
+    || ignore.isPending
+    || setRemote.isPending
+    || createBranchFromCommit.isPending
   const canUseGit = hasGroupId && status.data?.available === true && !busy
-  const currentDiff = mode === 'history' && selectedCommit ? commitDiff : diff
+  const hasRemote = Boolean(status.data?.remote_name)
+  const hasUpstream = Boolean(status.data?.upstream)
+  const canCommit = canUseGit && staged.length > 0 && Boolean(commitMessage.trim())
+  const canCommitAndSync = canCommit && hasRemote && hasUpstream && unstaged.length === 0
+  const canRewriteRemote = canUseGit && hasRemote && hasUpstream && (status.data?.ahead ?? 0) > 0
+  const canUpdateFromRemote = canUseGit && hasRemote && hasUpstream && files.length === 0
+  const prUrl = hasUpstream
+    ? pullRequestUrl(status.data?.remote_url ?? null, status.data?.branch ?? null)
+    : null
+  const currentDiff = reviewMode === 'history' ? commitDiff : diff
+  const committed = committedFiles(branchDiff.data?.patch ?? '')
+  const q = query.trim().toLowerCase()
+  const visibleCommitted = committed.filter((file) => !q || file.path.toLowerCase().includes(q))
+  const visibleStaged = staged.filter((file) => !q || file.path.toLowerCase().includes(q))
+  const visibleUnstaged = unstaged.filter((file) => !q || file.path.toLowerCase().includes(q))
+  const visibleHistory = history.filter((item) => !q
+    || item.subject.toLowerCase().includes(q)
+    || item.author_name.toLowerCase().includes(q)
+    || item.short_sha.toLowerCase().includes(q))
 
   useEffect(() => {
     setHistorySkip(0)
     setHistory([])
     setSelectedCommit(undefined)
-    setDiffExpanded(false)
+    setSelection(null)
+    setReviewOpen(false)
   }, [groupId])
 
   useEffect(() => {
@@ -335,7 +609,27 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
     })
   }, [historySkip, log.data])
 
-  const run = (operation: () => Promise<unknown>, options?: { clearCommit?: boolean; remote?: boolean }) => {
+  useEffect(() => {
+    if (!actionsOpen) return
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && actionsRef.current?.contains(event.target)) return
+      setActionsOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionsOpen(false)
+    }
+    window.addEventListener('pointerdown', dismiss)
+    window.addEventListener('keydown', escape)
+    return () => {
+      window.removeEventListener('pointerdown', dismiss)
+      window.removeEventListener('keydown', escape)
+    }
+  }, [actionsOpen])
+
+  const run = (
+    operation: () => Promise<unknown>,
+    options?: { clearCommit?: boolean; remote?: boolean },
+  ) => {
     setGitError(null)
     void operation()
       .then(() => {
@@ -361,89 +655,560 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
     })
   }
 
+  const commitThen = async (next?: () => Promise<unknown>) => {
+    await commitChanges.mutateAsync({ message: commitMessage.trim() })
+    setCommitMessage('')
+    if (next) await next()
+  }
+
+  const syncGit = async () => {
+    await pull.mutateAsync({})
+    await push.mutateAsync({})
+  }
+
+  const closeActionsAndRun = (
+    operation: () => Promise<unknown>,
+    options?: { clearCommit?: boolean; remote?: boolean },
+  ) => {
+    setActionsOpen(false)
+    run(operation, options)
+  }
+
+  const openReview = (nextMode: ReviewMode, nextSelection?: NonNullable<ChangeSelection>, sha?: string) => {
+    setReviewMode(nextMode)
+    if (nextSelection) setSelection(nextSelection)
+    if (sha) setSelectedCommit(sha)
+    setReviewOpen(true)
+  }
+
+  const primaryAction = staged.length > 0
+    ? {
+        disabled: !canCommit,
+        icon: <GitCommitHorizontal className="h-3.5 w-3.5" />,
+        label: t('gitOrcaActions.commit'),
+        run: () => run(() => commitThen()),
+      }
+    : !hasUpstream && hasRemote
+      ? {
+          disabled: !canUseGit,
+          icon: <ArrowUp className="h-3.5 w-3.5" />,
+          label: t('gitOrcaActions.publishBranch'),
+          run: () => run(() => push.mutateAsync({}), { remote: true }),
+        }
+      : (status.data?.ahead ?? 0) > 0
+        ? {
+            disabled: !canUseGit,
+            icon: <ArrowUp className="h-3.5 w-3.5" />,
+            label: t('workspace.gitPanel.push'),
+            run: () => run(() => push.mutateAsync({}), { remote: true }),
+          }
+        : (status.data?.behind ?? 0) > 0
+          ? {
+              disabled: !canUpdateFromRemote,
+              icon: <ArrowDown className="h-3.5 w-3.5" />,
+              label: t('workspace.gitPanel.pull'),
+              run: () => run(() => pull.mutateAsync({}), { remote: true }),
+            }
+          : {
+              disabled: !canUpdateFromRemote,
+              icon: <RefreshCw className="h-3.5 w-3.5" />,
+              label: t('gitOrcaActions.sync'),
+              run: () => run(syncGit, { remote: true }),
+            }
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-2">
-        <Button type="button" variant="ghost" size="sm" className="h-7 min-w-0 gap-1 px-1.5" disabled={!hasGroupId} onClick={() => setBranchSheetOpen(true)} title={t('chat:workspace.gitPanel.manageBranches')}>
-          <GitBranch className="h-3.5 w-3.5 shrink-0" />
-          <span className="max-w-28 truncate text-xs">{status.data?.branch ?? 'Git'}</span>
-          <ChevronRight className="h-3 w-3 text-muted-foreground" />
-        </Button>
-        <span className="hidden text-[10px] text-muted-foreground sm:inline">{statusSummary(status.data, t, language)}</span>
-        <div className="ml-auto flex items-center gap-0.5">
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => fetch.mutateAsync({}), { remote: true })} aria-label={t('chat:workspace.gitPanel.fetchAria')} title={t('chat:workspace.gitPanel.fetch')}>
-            <RefreshCw className={cn('h-3.5 w-3.5', fetch.isPending && 'animate-spin')} />
+      <header className="relative z-10 shrink-0 space-y-1.5 border-b border-border p-2">
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 rounded-md bg-foreground px-2 text-xs text-background hover:bg-foreground/90 hover:text-background"
+            disabled={!prUrl || !canUseGit}
+            onClick={() => {
+              if (prUrl) void openExternal(prUrl).catch((error) => setGitError(errorMessage(error)))
+            }}
+          >
+            <GitPullRequest className="h-3.5 w-3.5" />
+            {t('gitOrcaActions.createPr')}
           </Button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => pull.mutateAsync({}), { remote: true })} aria-label={t('chat:workspace.gitPanel.pullAria')} title={t('chat:workspace.gitPanel.pull')}><ArrowDown className="h-3.5 w-3.5" /></Button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit} onClick={() => run(() => push.mutateAsync({}), { remote: true })} aria-label={t('chat:workspace.gitPanel.pushAria')} title={t('chat:workspace.gitPanel.push')}><ArrowUp className="h-3.5 w-3.5" /></Button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!canUseGit || unstaged.length === 0} onClick={() => run(() => stage.mutateAsync({ paths: [] }))} aria-label={t('chat:workspace.gitPanel.stageAll')} title={t('chat:workspace.gitPanel.stageAll')}><Plus className="h-3.5 w-3.5" /></Button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={!hasGroupId || status.isFetching} onClick={() => void status.refetch()} aria-label={t('chat:workspace.gitPanel.refreshAria')} title={t('chat:workspace.refresh')}><RotateCcw className={cn('h-3.5 w-3.5', status.isFetching && 'animate-spin')} /></Button>
+          <div className="ml-auto flex items-center gap-0.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              aria-label={t('gitOrcaActions.search')}
+              aria-expanded={searchOpen}
+              onClick={() => {
+                setSearchOpen((value) => !value)
+                if (searchOpen) setQuery('')
+              }}
+            >
+              <Search className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              disabled={!hasGroupId}
+              aria-label={t('workspace.gitPanel.manageBranches')}
+              onClick={() => setBranchSheetOpen(true)}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/60"
+          disabled={!hasGroupId}
+          onClick={() => setBranchSheetOpen(true)}
+          title={t('workspace.gitPanel.manageBranches')}
+        >
+          <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">
+            {status.data?.branch ?? 'Git'}
+          </span>
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+        </button>
+        <div className="flex min-h-4 items-center gap-1 px-1 text-[10px] text-muted-foreground">
+          <ArrowRight className="h-3 w-3 shrink-0" />
+          <span className="min-w-0 flex-1 truncate font-mono">
+            {status.data?.upstream ?? status.data?.remote_name ?? t('workspace.gitPanel.noRemote')}
+          </span>
+          {(status.data?.behind ?? 0) > 0 ? (
+            <span className="inline-flex items-center text-amber-500">
+              <ArrowDown className="h-3 w-3" />{formatNumber(status.data?.behind ?? 0, language)}
+            </span>
+          ) : null}
+          {(status.data?.ahead ?? 0) > 0 ? (
+            <span className="inline-flex items-center text-emerald-500">
+              <ArrowUp className="h-3 w-3" />{formatNumber(status.data?.ahead ?? 0, language)}
+            </span>
+          ) : null}
+          {prUrl ? (
+            <button
+              type="button"
+              className="rounded p-0.5 hover:bg-muted hover:text-foreground"
+              aria-label={t('gitOrcaActions.createPr')}
+              onClick={() => void openExternal(prUrl).catch((error) => setGitError(errorMessage(error)))}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
+        <p className="px-1 text-[10px] leading-3 text-muted-foreground">{statusSummary(status.data, t, language)}</p>
+
+        {searchOpen ? (
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setQuery('')
+                  setSearchOpen(false)
+                }
+              }}
+              placeholder={t('gitOrcaActions.searchPlaceholder')}
+              aria-label={t('gitOrcaActions.search')}
+              className="h-7 px-8 text-xs"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-0.5 top-1/2 h-6 w-6 -translate-y-1/2"
+              aria-label={t('common:actions.close')}
+              onClick={() => {
+                setQuery('')
+                setSearchOpen(false)
+              }}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : null}
+
+        <div className="relative">
+          <Textarea
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            placeholder={t('chat:workspace.commitMessage')}
+            className="min-h-11 resize-none rounded-md py-1.5 pr-8 text-xs"
+            rows={2}
+            disabled={!canUseGit}
+            aria-label={t('chat:workspace.commitMessage')}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute right-1 top-1 h-6 w-6"
+            disabled={!canUseGit || staged.length === 0}
+            onClick={() => run(() => generateMessage.mutateAsync().then((result) => setCommitMessage(result.message)))}
+            aria-label={t('chat:workspace.gitPanel.generateCommitMessage')}
+            title={t('chat:workspace.gitPanel.generateCommitMessage')}
+          >
+            <Sparkles className={cn('h-3.5 w-3.5', generateMessage.isPending && 'animate-pulse')} />
+          </Button>
+        </div>
+
+        <div ref={actionsRef} className="relative flex overflow-visible rounded-lg border border-border bg-card">
+          <button
+            type="button"
+            className="flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-lg text-xs font-semibold hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+            disabled={primaryAction.disabled}
+            onClick={primaryAction.run}
+          >
+            {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : primaryAction.icon}
+            {primaryAction.label}
+          </button>
+          <button
+            type="button"
+            className="flex h-7 w-8 items-center justify-center rounded-r-lg border-l border-border hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+            disabled={!canUseGit}
+            aria-haspopup="menu"
+            aria-expanded={actionsOpen}
+            aria-controls="workspace-git-actions"
+            aria-label={t('gitOrcaActions.moreActions')}
+            onClick={() => setActionsOpen((value) => !value)}
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+
+          {actionsOpen ? (
+            <div
+              id="workspace-git-actions"
+              role="menu"
+              aria-label={t('gitOrcaActions.actionMenu')}
+              className="absolute left-0 right-0 top-full z-30 mt-1 max-h-[min(30rem,60vh)] overflow-y-auto rounded-xl border border-border bg-popover py-1 text-popover-foreground shadow-xl"
+            >
+              <GitActionItem
+                label={t('gitOrcaActions.commit')}
+                disabled={!canCommit}
+                hint={!canCommit ? t('gitOrcaActions.commitHint') : undefined}
+                onClick={() => closeActionsAndRun(() => commitThen())}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.commitAndPush')}
+                disabled={!canCommit || !hasRemote}
+                onClick={() => closeActionsAndRun(() => commitThen(() => push.mutateAsync({})))}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.commitAndSync')}
+                disabled={!canCommitAndSync}
+                onClick={() => closeActionsAndRun(() => commitThen(syncGit))}
+              />
+              <div className="my-1 border-t border-border" role="separator" />
+              <GitActionItem
+                label={t('gitOrcaActions.pushCount', {
+                  count: formatNumber(status.data?.ahead ?? 0, language),
+                })}
+                disabled={!canUseGit || !hasRemote || !hasUpstream}
+                onClick={() => closeActionsAndRun(() => push.mutateAsync({}), { remote: true })}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.forcePushCount', {
+                  count: formatNumber(status.data?.ahead ?? 0, language),
+                })}
+                danger
+                disabled={!canRewriteRemote}
+                onClick={() => {
+                  setActionsOpen(false)
+                  setForcePushOpen(true)
+                }}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.createPr')}
+                disabled={!prUrl}
+                hint={!prUrl ? t('gitOrcaActions.prUnavailable') : undefined}
+                onClick={() => {
+                  setActionsOpen(false)
+                  if (prUrl) void openExternal(prUrl).catch((error) => setGitError(errorMessage(error)))
+                }}
+              />
+              <div className="my-1 border-t border-border" role="separator" />
+              <GitActionItem
+                label={t('workspace.gitPanel.pull')}
+                hint={t('gitOrcaActions.fastForwardHint')}
+                disabled={!canUpdateFromRemote}
+                onClick={() => closeActionsAndRun(() => pull.mutateAsync({}), { remote: true })}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.syncCounts', {
+                  behind: formatNumber(status.data?.behind ?? 0, language),
+                  ahead: formatNumber(status.data?.ahead ?? 0, language),
+                })}
+                disabled={!canUpdateFromRemote}
+                onClick={() => closeActionsAndRun(syncGit, { remote: true })}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.rebaseFrom', {
+                  upstream: status.data?.upstream ?? status.data?.remote_name ?? 'remote',
+                })}
+                disabled={!canUpdateFromRemote || !hasUpstream}
+                onClick={() => closeActionsAndRun(() => rebase.mutateAsync({}), { remote: true })}
+              />
+              <GitActionItem
+                label={t('workspace.gitPanel.fetch')}
+                disabled={!canUseGit || !hasRemote}
+                onClick={() => closeActionsAndRun(() => fetch.mutateAsync({}), { remote: true })}
+              />
+              <GitActionItem
+                label={t('gitOrcaActions.publishBranch')}
+                disabled={!canUseGit || !hasRemote || hasUpstream}
+                onClick={() => closeActionsAndRun(() => push.mutateAsync({}), { remote: true })}
+              />
+            </div>
+          ) : null}
         </div>
       </header>
 
-      {gitError || status.error ? <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{t('chat:workspace.gitPanel.errorDetail', { message: gitError ?? errorMessage(status.error) })}</p> : null}
+      {gitError || status.error ? (
+        <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">
+          {t('chat:workspace.gitPanel.errorDetail', { message: gitError ?? errorMessage(status.error) })}
+        </p>
+      ) : null}
       {!hasGroupId ? <p className="p-3 text-sm text-muted-foreground">{t('chat:workspace.gitPanel.selectGroup')}</p> : null}
-      {hasGroupId && status.isLoading ? <p className="flex items-center gap-2 p-3 text-sm text-muted-foreground"><LoaderCircle className="h-4 w-4 animate-spin" /> {t('chat:workspace.gitPanel.loading')}</p> : null}
-      {status.data?.available === false ? <div className="m-3 space-y-3 rounded-md border border-border bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{status.data.message ? t('chat:workspace.gitPanel.unavailableDetail', { message: status.data.message }) : t('chat:workspace.noRepository')}</p><Button type="button" size="sm" disabled={init.isPending} onClick={() => run(() => init.mutateAsync({}))}><GitBranch className="h-3.5 w-3.5" />{init.isPending ? t('chat:workspace.gitPanel.initializing') : t('chat:workspace.gitPanel.initialize')}</Button></div> : null}
-
-      {status.data?.available === true ? <>
-        <div className="flex shrink-0 border-b border-border px-2">
-          <button type="button" className={cn('flex h-8 items-center gap-1 border-b-2 px-2 text-xs', mode === 'changes' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground')} onClick={() => setMode('changes')}><FileDiff className="h-3.5 w-3.5" /> {t('chat:workspace.changes')}</button>
-          <button type="button" className={cn('flex h-8 items-center gap-1 border-b-2 px-2 text-xs', mode === 'history' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground')} onClick={() => setMode('history')}><History className="h-3.5 w-3.5" /> {t('chat:workspace.gitPanel.history')}</button>
-          <span className="ml-auto self-center text-[10px] text-muted-foreground">{status.data.remote_name ?? t('chat:workspace.gitPanel.noRemote')}{status.data.dirty_counts.staged ? ` / ${t('chat:gitActions.stagedCount', { count: status.data.dirty_counts.staged, formattedCount: formatNumber(status.data.dirty_counts.staged, language) })}` : ''}</span>
+      {hasGroupId && status.isLoading ? (
+        <p className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
+          <LoaderCircle className="h-4 w-4 animate-spin" /> {t('chat:workspace.gitPanel.loading')}
+        </p>
+      ) : null}
+      {status.data?.available === false ? (
+        <div className="m-3 space-y-3 rounded-md border border-border bg-muted/50 p-3">
+          <p className="text-xs text-muted-foreground">
+            {status.data.message
+              ? t('chat:workspace.gitPanel.unavailableDetail', { message: status.data.message })
+              : t('chat:workspace.noRepository')}
+          </p>
+          <Button type="button" size="sm" disabled={init.isPending} onClick={() => run(() => init.mutateAsync({}))}>
+            <GitBranch className="h-3.5 w-3.5" />
+            {init.isPending ? t('chat:workspace.gitPanel.initializing') : t('chat:workspace.gitPanel.initialize')}
+          </Button>
         </div>
-        <div className={cn(
-          'grid min-h-0 flex-1',
-          diffExpanded
-            ? 'grid-cols-1 grid-rows-1'
-            : 'grid-rows-[minmax(12rem,1fr)_minmax(12rem,1fr)] min-[500px]:grid-cols-[minmax(13rem,38%)_1fr] min-[500px]:grid-rows-1',
-        )}>
-          {!diffExpanded ? (
-            <div className="min-h-0 overflow-y-auto border-b border-border min-[500px]:border-b-0 min-[500px]:border-r">
-              {mode === 'changes' ? <>
-                <ChangeSection title={t('chat:workspace.staged')} files={staged} selection={selection} action="unstage" disabled={!canUseGit} onSelect={setSelection} onAction={(paths) => run(() => unstage.mutateAsync({ paths }))} />
-                <ChangeSection title={t('chat:workspace.changes')} files={unstaged} selection={selection} action="stage" disabled={!canUseGit} onSelect={setSelection} onAction={(paths) => run(() => stage.mutateAsync({ paths }))} onDiscard={setDiscardTarget} onIgnore={(file) => run(() => ignore.mutateAsync({ path: file.path }))} />
-                {files.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{t('chat:workspace.noChanges')}</p> : <Button type="button" variant="ghost" size="sm" className="m-2 h-7 text-xs text-destructive" disabled={!canUseGit} onClick={() => setDiscardAllOpen(true)}><Trash2 className="h-3.5 w-3.5" /> {t('chat:workspace.gitPanel.discardAllChanges')}</Button>}
-              </> : <>
-                {log.isLoading && history.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{t('chat:workspace.gitPanel.loadingHistory')}</p> : null}
-                {history.map((item) => <button key={item.sha} type="button" className={cn('flex w-full min-w-0 flex-col gap-0.5 border-b border-border px-3 py-2 text-left hover:bg-muted/70', selectedCommit === item.sha && 'bg-muted')} onClick={() => setSelectedCommit(item.sha)}><span className="truncate text-xs font-medium">{item.subject}</span><span className="truncate font-mono text-[10px] text-muted-foreground">{item.short_sha} / {item.author_name}</span></button>)}
-                {log.data?.has_more ? <Button type="button" variant="ghost" size="sm" className="m-2 h-7 text-xs" disabled={log.isFetching} onClick={() => setHistorySkip((value) => value + 50)}>{t('chat:workspace.gitPanel.loadMore')}</Button> : null}
-              </>}
+      ) : null}
+
+      {status.data?.available === true ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <ChangeSection
+            title={t('gitOrcaActions.committedChanges')}
+            files={visibleCommitted}
+            selection={selection}
+            action={null}
+            disabled={!canUseGit}
+            onSelect={(next) => openReview('changes', next)}
+          />
+          <ChangeSection
+            title={t('gitOrcaActions.stagedChanges')}
+            files={visibleStaged}
+            selection={selection}
+            action="unstage"
+            disabled={!canUseGit}
+            onSelect={(next) => openReview('changes', next)}
+            onAction={(paths) => run(() => unstage.mutateAsync({ paths }))}
+          />
+          <ChangeSection
+            title={t('gitOrcaActions.workingChanges')}
+            files={visibleUnstaged}
+            selection={selection}
+            action="stage"
+            disabled={!canUseGit}
+            onSelect={(next) => openReview('changes', next)}
+            onAction={(paths) => run(() => stage.mutateAsync({ paths }))}
+            onDiscard={setDiscardTarget}
+            onIgnore={(file) => run(() => ignore.mutateAsync({ path: file.path }))}
+          />
+          {q && visibleCommitted.length === 0 && visibleStaged.length === 0 && visibleUnstaged.length === 0 && visibleHistory.length === 0 ? (
+            <p className="p-3 text-xs text-muted-foreground">{t('gitOrcaActions.noMatches')}</p>
+          ) : null}
+          {!q && files.length === 0 && committed.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
+              <Check className="h-7 w-7 text-emerald-500" />
+              <p>{t('chat:workspace.noChanges')}</p>
             </div>
           ) : null}
-          <section className="flex min-h-0 flex-col overflow-hidden">
-            {mode === 'history' && selectedCommit && commit.data ? <div className="shrink-0 border-b border-border px-3 py-2"><div className="flex items-start gap-2"><GitCommitHorizontal className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" /><div className="min-w-0"><p className="truncate text-xs font-medium">{commit.data.subject}</p><p className="truncate text-[10px] text-muted-foreground">{commit.data.short_sha} / {commit.data.author_name} / +{formatNumber(commit.data.insertions, language)} -{formatNumber(commit.data.deletions, language)}</p></div></div><p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{commit.data.body}</p><div className="mt-2 flex gap-1"><Input value={branchFromCommit} onChange={(event) => setBranchFromCommit(event.target.value)} placeholder={t('chat:workspace.gitPanel.branchFromCommit')} className="h-7 text-xs" aria-label={t('chat:workspace.gitPanel.branchNameFromCommit')} /><Button type="button" variant="outline" size="sm" className="h-7 shrink-0 text-xs" disabled={!canUseGit || !branchFromCommit.trim()} onClick={() => run(() => createBranchFromCommit.mutateAsync({ name: branchFromCommit.trim() }).then(() => setBranchFromCommit('')))}>{t('chat:workspace.gitPanel.create')}</Button></div></div> : null}
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1">
-                <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">{mode === 'history' ? selectedCommit ? t('chat:workspace.gitPanel.commitDiff') : t('chat:workspace.gitPanel.selectCommit') : selection?.path ?? t('chat:workspace.gitPanel.selectChangedFile')}</span>
-                {currentDiff.data?.truncated ? <span className="text-[10px] text-muted-foreground">{t('chat:workspace.gitPanel.truncated')}</span> : null}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 shrink-0"
-                  onClick={() => setDiffExpanded((value) => !value)}
-                  aria-label={t(diffExpanded ? 'chat:gitActions.collapseDiff' : 'chat:gitActions.expandDiff')}
-                  aria-expanded={diffExpanded}
-                  title={t(diffExpanded ? 'chat:gitActions.collapseDiff' : 'chat:gitActions.expandDiff')}
-                >
-                  {diffExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-                </Button>
-              </div>
-              <DiffPatch
-                content={currentDiff.isLoading ? t('chat:workspace.gitPanel.loadingDiff') : currentDiff.data?.patch || t('chat:workspace.gitPanel.noDiff')}
-                highlight={!currentDiff.isLoading && Boolean(currentDiff.data?.patch)}
-              />
-            </div>
-            {mode === 'changes' ? <form className="shrink-0 border-t border-border p-2" onSubmit={(event) => { event.preventDefault(); if (commitMessage.trim()) run(() => commitChanges.mutateAsync({ message: commitMessage.trim() }), { clearCommit: true }) }}><div className="flex items-end gap-1"><Textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={t('chat:workspace.commitMessage')} className="min-h-8 resize-none py-1.5 text-xs" rows={2} disabled={!canUseGit || staged.length === 0} aria-label={t('chat:workspace.commitMessage')} /><div className="flex shrink-0 flex-col gap-1"><Button type="button" variant="outline" size="icon" className="h-7 w-7" disabled={!canUseGit || staged.length === 0} onClick={() => run(() => generateMessage.mutateAsync().then((result) => setCommitMessage(result.message)))} aria-label={t('chat:workspace.gitPanel.generateCommitMessage')} title={t('chat:workspace.gitPanel.generateCommitMessage')}><Sparkles className={cn('h-3.5 w-3.5', generateMessage.isPending && 'animate-pulse')} /></Button><Button type="submit" size="icon" className="h-7 w-7" disabled={!canUseGit || staged.length === 0 || !commitMessage.trim()} aria-label={t('chat:workspace.gitPanel.commitStaged')} title={t('chat:workspace.commit')}><Check className="h-3.5 w-3.5" /></Button></div></div></form> : null}
-          </section>
+          {files.length > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="m-2 h-7 text-xs text-destructive"
+              disabled={!canUseGit}
+              onClick={() => setDiscardAllOpen(true)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {t('chat:workspace.gitPanel.discardAllChanges')}
+            </Button>
+          ) : null}
         </div>
-      </> : null}
+      ) : null}
 
-      <WorkspaceGitBranchSheet groupId={groupId} scope={scope} open={branchSheetOpen} onOpenChange={setBranchSheetOpen} onError={setGitError} onSetRemote={() => { setRemoteUrl(status.data?.remote_url ?? ''); setRemoteDialogOpen(true) }} />
-      <Dialog open={remoteDialogOpen} onOpenChange={setRemoteDialogOpen}><DialogContent closeLabel={t('common:actions.close')} className="w-[calc(100vw-2rem)] sm:max-w-md"><DialogHeader><DialogTitle>{t('chat:workspace.gitPanel.setRemoteTitle')}</DialogTitle><DialogDescription>{t('chat:workspace.gitPanel.setRemoteDescription')}</DialogDescription></DialogHeader><Input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} placeholder={t('chat:workspace.gitPanel.remoteUrlPlaceholder')} aria-label={t('chat:workspace.gitPanel.remoteUrl')} /><DialogFooter><Button type="button" variant="outline" onClick={() => setRemoteDialogOpen(false)}>{t('common:actions.cancel')}</Button><Button type="button" disabled={!remoteUrl.trim() || setRemote.isPending} onClick={saveRemoteAndRetry}>{t('chat:workspace.gitPanel.saveRetry')}</Button></DialogFooter></DialogContent></Dialog>
-      <ConfirmDialog open={discardAllOpen} onOpenChange={setDiscardAllOpen} title={t('chat:workspace.gitPanel.discardAllTitle')} description={t('chat:workspace.gitPanel.discardAllDescription')} confirmLabel={t('chat:workspace.gitPanel.discardAll')} destructive onConfirm={async () => { try { await discard.mutateAsync({ paths: [], all: true }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) })) } }} />
-      <ConfirmDialog open={discardTarget !== null} onOpenChange={(open) => { if (!open) setDiscardTarget(null) }} title={t('chat:workspace.gitPanel.discardFileTitle')} description={discardTarget ? t('chat:workspace.gitPanel.discardFileDescription', { path: discardTarget.path }) : undefined} confirmLabel={t('chat:workspace.discard')} destructive onConfirm={async () => { try { if (discardTarget) await discard.mutateAsync({ paths: [discardTarget.path], all: false }) } catch (error: unknown) { throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) })) } }} />
+      {hasGroupId && status.data?.available === true ? (
+        <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border">
+          <CommitSection
+            title={t('gitOrcaActions.commits')}
+            commits={visibleHistory}
+            defaultExpanded={false}
+            selectedCommit={selectedCommit}
+            onSelect={(sha) => openReview('history', undefined, sha)}
+            hasMore={log.data?.has_more}
+            loadingMore={log.isFetching}
+            onLoadMore={() => setHistorySkip((value) => value + 50)}
+            action={(
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={status.isFetching}
+                onClick={() => void status.refetch()}
+                aria-label={t('chat:workspace.gitPanel.refreshAria')}
+                title={t('chat:workspace.refresh')}
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', status.isFetching && 'animate-spin')} />
+              </Button>
+            )}
+          />
+        </div>
+      ) : null}
+
+      <WorkspaceGitBranchSheet
+        groupId={groupId}
+        scope={scope}
+        open={branchSheetOpen}
+        onOpenChange={setBranchSheetOpen}
+        onError={setGitError}
+        onSetRemote={() => {
+          setRemoteUrl(status.data?.remote_url ?? '')
+          setRemoteDialogOpen(true)
+        }}
+      />
+
+      <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
+        <DialogContent closeLabel={t('common:actions.close')} className="flex h-[min(46rem,88vh)] w-[calc(100vw-2rem)] max-w-5xl flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
+            <DialogTitle className="truncate text-base">
+              {reviewMode === 'history'
+                ? commit.data?.subject ?? t('chat:workspace.gitPanel.commitDiff')
+                : selection?.path ?? t('chat:workspace.gitPanel.selectChangedFile')}
+            </DialogTitle>
+            <DialogDescription>
+              {reviewMode === 'history' && commit.data
+                ? `${commit.data.short_sha} · ${commit.data.author_name} · +${formatNumber(commit.data.insertions, language)} -${formatNumber(commit.data.deletions, language)}`
+                : currentDiff.data?.stat || t('chat:workspace.gitPanel.workspaceGit')}
+            </DialogDescription>
+          </DialogHeader>
+          {reviewMode === 'history' && selectedCommit ? (
+            <div className="flex shrink-0 gap-2 border-b border-border p-2">
+              <Input
+                value={branchFromCommit}
+                onChange={(event) => setBranchFromCommit(event.target.value)}
+                placeholder={t('chat:workspace.gitPanel.branchFromCommit')}
+                className="h-8 text-xs"
+                aria-label={t('chat:workspace.gitPanel.branchNameFromCommit')}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 text-xs"
+                disabled={!canUseGit || !branchFromCommit.trim()}
+                onClick={() => run(() => createBranchFromCommit.mutateAsync({ name: branchFromCommit.trim() }).then(() => setBranchFromCommit('')))}
+              >
+                {t('chat:workspace.gitPanel.create')}
+              </Button>
+            </div>
+          ) : null}
+          <DiffPatch
+            content={currentDiff.isLoading
+              ? t('chat:workspace.gitPanel.loadingDiff')
+              : currentDiff.data?.patch || t('chat:workspace.gitPanel.noDiff')}
+            highlight={!currentDiff.isLoading && Boolean(currentDiff.data?.patch)}
+          />
+          {currentDiff.data?.truncated ? (
+            <p className="shrink-0 border-t border-border px-3 py-1 text-[10px] text-muted-foreground">
+              {t('chat:workspace.gitPanel.truncated')}
+            </p>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={remoteDialogOpen} onOpenChange={setRemoteDialogOpen}>
+        <DialogContent closeLabel={t('common:actions.close')} className="w-[calc(100vw-2rem)] sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('chat:workspace.gitPanel.setRemoteTitle')}</DialogTitle>
+            <DialogDescription>{t('chat:workspace.gitPanel.setRemoteDescription')}</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={remoteUrl}
+            onChange={(event) => setRemoteUrl(event.target.value)}
+            placeholder={t('chat:workspace.gitPanel.remoteUrlPlaceholder')}
+            aria-label={t('chat:workspace.gitPanel.remoteUrl')}
+          />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setRemoteDialogOpen(false)}>
+              {t('common:actions.cancel')}
+            </Button>
+            <Button type="button" disabled={!remoteUrl.trim() || setRemote.isPending} onClick={saveRemoteAndRetry}>
+              {t('chat:workspace.gitPanel.saveRetry')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={forcePushOpen}
+        onOpenChange={setForcePushOpen}
+        title={t('gitOrcaActions.forcePushTitle')}
+        description={t('gitOrcaActions.forcePushDescription')}
+        confirmLabel={t('gitOrcaActions.forcePush')}
+        destructive
+        onConfirm={async () => {
+          await forcePush.mutateAsync({})
+        }}
+      />
+      <ConfirmDialog
+        open={discardAllOpen}
+        onOpenChange={setDiscardAllOpen}
+        title={t('chat:workspace.gitPanel.discardAllTitle')}
+        description={t('chat:workspace.gitPanel.discardAllDescription')}
+        confirmLabel={t('chat:workspace.gitPanel.discardAll')}
+        destructive
+        onConfirm={async () => {
+          try {
+            await discard.mutateAsync({ paths: [], all: true })
+          } catch (error: unknown) {
+            throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) }))
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={discardTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDiscardTarget(null)
+        }}
+        title={t('chat:workspace.gitPanel.discardFileTitle')}
+        description={discardTarget
+          ? t('chat:workspace.gitPanel.discardFileDescription', { path: discardTarget.path })
+          : undefined}
+        confirmLabel={t('chat:workspace.discard')}
+        destructive
+        onConfirm={async () => {
+          try {
+            if (discardTarget) await discard.mutateAsync({ paths: [discardTarget.path], all: false })
+          } catch (error: unknown) {
+            throw new Error(t('common:workspaceOperations.discardGitError', { message: errorMessage(error) }))
+          }
+        }}
+      />
     </div>
   )
 }

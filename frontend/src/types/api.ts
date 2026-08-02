@@ -300,6 +300,11 @@ export interface AppActionRead {
   resolved_at: string | null
 }
 
+export interface AppActionList {
+  items: AppActionRead[]
+  has_more: boolean
+}
+
 export interface ContextUsage {
   input_tokens: number | null
   output_tokens: number | null
@@ -349,6 +354,21 @@ export interface ProviderModelConfig {
   context_output_reserve_ratio: number | null
   /** Whether this model accepts a reasoning-effort setting. */
   supports_reasoning_effort?: boolean
+  reasoning_passback?: boolean
+}
+
+export interface ProviderModelTestRequest {
+  provider_id?: string
+  kind: ProviderKind
+  base_url?: string | null
+  api_key?: string
+  model: string
+}
+
+export interface ProviderModelTestResult {
+  ok: boolean
+  latency_ms: number | null
+  error: string | null
 }
 
 export interface LLMProviderRead {
@@ -590,6 +610,7 @@ export interface SystemSettingsRead {
   owner_id: string
   appearance: Appearance
   language: Language
+  assistant_auto_approve: boolean
   group_workspace_root: string | null
   web_search_provider: WebSearchProvider
   tavily_api_key_configured: boolean
@@ -598,6 +619,14 @@ export interface SystemSettingsRead {
   tavily_search_depth: TavilySearchDepth
   tavily_include_answer: boolean
   tavily_include_raw_content: boolean
+  media_base_url: string
+  media_api_key_configured: boolean
+  image_generation_model: string | null
+  image_generation_endpoint: string
+  video_generation_model: string | null
+  video_generation_endpoint: string
+  video_status_endpoint: string
+  video_content_endpoint: string
   created_at: string
   updated_at: string
 }
@@ -605,6 +634,7 @@ export interface SystemSettingsRead {
 export interface SystemSettingsUpdate {
   appearance?: Appearance | null
   language?: Language | null
+  assistant_auto_approve?: boolean | null
   group_workspace_root?: string | null
   web_search_provider?: WebSearchProvider | null
   tavily_api_key?: string | null
@@ -613,6 +643,14 @@ export interface SystemSettingsUpdate {
   tavily_search_depth?: TavilySearchDepth | null
   tavily_include_answer?: boolean | null
   tavily_include_raw_content?: boolean | null
+  media_base_url?: string | null
+  media_api_key?: string | null
+  image_generation_model?: string | null
+  image_generation_endpoint?: string | null
+  video_generation_model?: string | null
+  video_generation_endpoint?: string | null
+  video_status_endpoint?: string | null
+  video_content_endpoint?: string | null
 }
 
 export type SenderType = 'user' | 'agent' | 'system'

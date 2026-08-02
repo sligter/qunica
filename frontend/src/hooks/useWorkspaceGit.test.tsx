@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   useCreateGroupWorkspaceGitBranch,
+  useForcePushGroupWorkspaceGit,
   usePullGroupWorkspaceGit,
+  useRebaseGroupWorkspaceGit,
   useStageGroupWorkspaceGit,
   useSwitchGroupWorkspaceGitBranch,
   workspaceGitQueryKey,
@@ -89,6 +91,24 @@ describe('workspace Git mutations', () => {
     })
 
     expect(client.getQueryData(workspaceGitQueryKey('group-1'))).toBe(status)
+  })
+
+  it('posts the force-push and rebase operations', async () => {
+    const client = new QueryClient()
+    const mutations = renderHook(() => ({
+      forcePush: useForcePushGroupWorkspaceGit('group-1'),
+      rebase: useRebaseGroupWorkspaceGit('group-1'),
+    }), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await mutations.result.current.forcePush.mutateAsync({})
+      await mutations.result.current.rebase.mutateAsync({})
+    })
+
+    expect(mockedFetchJson.mock.calls.map(([path]) => path)).toEqual([
+      '/groups/group-1/workspace-git/force-push',
+      '/groups/group-1/workspace-git/rebase',
+    ])
   })
 
   it('does not replace Git status with a branch-list response', async () => {

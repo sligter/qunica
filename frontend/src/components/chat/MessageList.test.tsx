@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -166,6 +166,20 @@ describe('MessageList scheduler summary integration', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' })
     expect(button).not.toBeInTheDocument()
     scrollIntoView.mockRestore()
+  })
+
+  it('opens a conversation at the latest message when no scroll position is saved', async () => {
+    const { container } = render(<MessageList groupId="group-1" />)
+    const scrollRoot = container.firstElementChild as HTMLDivElement
+    Object.defineProperties(scrollRoot, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+    })
+
+    act(() => setMessageState())
+
+    await waitFor(() => expect(scrollRoot.scrollTop).toBe(500))
   })
 
   it('anchors a persisted turn summary below its trigger message', async () => {

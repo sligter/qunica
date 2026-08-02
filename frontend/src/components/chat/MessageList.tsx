@@ -21,6 +21,7 @@ interface MessageListProps {
   onViewTurnTrace?: (turnId: string, trigger: HTMLButtonElement) => void
   scope?: ConversationScope
   agents?: GroupAgentRead[]
+  agentIsSystem?: boolean
 }
 
 const EMPTY_MESSAGES: readonly Message[] = []
@@ -84,6 +85,7 @@ export function MessageList({
   onViewTurnTrace,
   scope = 'groups',
   agents,
+  agentIsSystem,
 }: MessageListProps) {
   const { t } = useTranslation('chat')
   const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
@@ -152,10 +154,11 @@ export function MessageList({
     const node = scrollRef.current
     if (!node) return
     const storedScrollTop = readStoredScrollTop(groupId)
-    if (storedScrollTop === null) return
 
     const maxRestorableScrollTop = maxScrollTop(node)
-    node.scrollTop = Math.min(storedScrollTop, maxRestorableScrollTop)
+    node.scrollTop = storedScrollTop === null
+      ? maxRestorableScrollTop
+      : Math.min(storedScrollTop, maxRestorableScrollTop)
     const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
     setShowJumpToLatest(canScroll && !isNearBottom)
@@ -163,6 +166,7 @@ export function MessageList({
   }, [getScrollState, groupId, hasActiveStreamRun, messages.length, streamRuns])
 
   useEffect(() => {
+    if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
     const { canScroll, isNearBottom } = getScrollState()
     const shouldStickToBottom = isNearBottomRef.current || isNearBottom
     if (shouldStickToBottom) {
@@ -217,6 +221,7 @@ export function MessageList({
                 groupId={groupId}
                 scope={scope}
                 agents={agents}
+                agentIsSystem={agentIsSystem}
                 onSubmitHumanInput={onSubmitHumanInput}
               />
               {turnId && schedulerStatus && onViewTurnTrace ? (
@@ -228,7 +233,11 @@ export function MessageList({
                 />
               ) : null}
               {run ? (
-                <StreamTimeline run={run} onSubmitHumanInput={onSubmitHumanInput} />
+                <StreamTimeline
+                  run={run}
+                  agentIsSystem={agentIsSystem}
+                  onSubmitHumanInput={onSubmitHumanInput}
+                />
               ) : null}
             </Fragment>
           )

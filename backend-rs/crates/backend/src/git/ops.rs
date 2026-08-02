@@ -128,8 +128,21 @@ pub async fn pull(root: &Path) -> Result<(), GitOperationError> {
 }
 
 pub async fn push(root: &Path) -> Result<(), GitOperationError> {
+    push_with_mode(root, false).await
+}
+
+pub async fn force_push(root: &Path) -> Result<(), GitOperationError> {
+    push_with_mode(root, true).await
+}
+
+pub async fn rebase(root: &Path) -> Result<(), GitOperationError> {
     ensure_remote(root).await?;
-    run_git_or_error(root, &git_args(&["push"]), "git push failed").await
+    run_git_or_error(
+        root,
+        &git_args(&["pull", "--rebase"]),
+        "git rebase from upstream failed",
+    )
+    .await
 }
 
 pub async fn init(root: &Path, branch: Option<&str>) -> Result<(), GitOperationError> {
@@ -288,19 +301,59 @@ async fn resolve_stash_count(root: &Path) -> usize {
 }
 
 async fn ensure_remote(root: &Path) -> Result<(), GitOperationError> {
+    remote_name(root).await.map(|_| ())
+}
+
+async fn remote_name(root: &Path) -> Result<String, GitOperationError> {
     let output = run_git_command(root, &git_args(&["remote"]))
         .await
         .map_err(|err| GitOperationError::new(git_command_error_message(err)))?;
-    if output.success && output.stdout.lines().any(|line| !line.trim().is_empty()) {
-        Ok(())
-    } else if output.success {
-        Err(GitOperationError::missing_remote())
-    } else {
-        Err(GitOperationError::new(format_git_failure(
+    if !output.success {
+        return Err(GitOperationError::new(format_git_failure(
             "git remote lookup failed",
             &output,
-        )))
+        )));
     }
+    let remotes = output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    remotes
+        .iter()
+        .find(|name| **name == "origin")
+        .or_else(|| remotes.first())
+        .map(|name| (*name).to_string())
+        .ok_or_else(GitOperationError::missing_remote)
+}
+
+async fn push_with_mode(root: &Path, force: bool) -> Result<(), GitOperationError> {
+    let remote = remote_name(root).await?;
+    let mut args = git_args(&["push"]);
+    if force {
+        args.push("--force-with-lease".to_string());
+    }
+    if !has_upstream(root).await? {
+        args.extend(["--set-upstream".to_string(), remote, "HEAD".to_string()]);
+    }
+    run_git_or_error(
+        root,
+        &args,
+        if force {
+            "git force push failed"
+        } else {
+            "git push failed"
+        },
+    )
+    .await
+}
+
+async fn has_upstream(root: &Path) -> Result<bool, GitOperationError> {
+    let output = run_git_command(root, &git_args(&["rev-parse", "--verify", "@{upstream}"]))
+        .await
+        .map_err(|err| GitOperationError::new(git_command_error_message(err)))?;
+    Ok(output.success)
 }
 
 async fn has_head(root: &Path) -> Result<bool, GitOperationError> {
@@ -363,5 +416,59 @@ async fn run_git_or_error(
         Ok(())
     } else {
         Err(GitOperationError::new(format_git_failure(context, &output)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::Path, process::Command};
+
+    use super::{force_push, push};
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[tokio::test]
+    async fn push_publishes_a_branch_and_force_push_uses_the_tracking_ref() {
+        let remote = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]);
+        git(local.path(), &["init", "-b", "feature/test"]);
+        git(local.path(), &["config", "user.email", "test@example.com"]);
+        git(local.path(), &["config", "user.name", "Test User"]);
+        std::fs::write(local.path().join("readme.txt"), "one\n").unwrap();
+        git(local.path(), &["add", "readme.txt"]);
+        git(local.path(), &["commit", "-m", "initial"]);
+        git(
+            local.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+
+        push(local.path()).await.unwrap();
+        assert_eq!(
+            git(local.path(), &["rev-parse", "--abbrev-ref", "@{upstream}"]).trim(),
+            "origin/feature/test",
+        );
+
+        std::fs::write(local.path().join("readme.txt"), "two\n").unwrap();
+        git(local.path(), &["add", "readme.txt"]);
+        git(local.path(), &["commit", "--amend", "--no-edit"]);
+        force_push(local.path()).await.unwrap();
+        assert_eq!(
+            git(local.path(), &["rev-parse", "HEAD"]).trim(),
+            git(remote.path(), &["rev-parse", "refs/heads/feature/test"]).trim(),
+        );
     }
 }

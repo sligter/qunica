@@ -10,7 +10,6 @@ import { Button } from '@/components/ui/button'
 import { useGroupWorkspaceRoot } from '@/hooks/useGroupFiles'
 import { cn } from '@/lib/utils'
 import {
-  WORKSPACE_FILE_SCHEME,
   joinWorkspaceAbsPath,
   parseWorkspaceFileHref,
   remarkWorkspaceFiles,
@@ -89,12 +88,14 @@ export function MarkdownMessage({ content, isUser = false, groupId }: MarkdownMe
         remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex]}
         urlTransform={(url) =>
-          url.startsWith(WORKSPACE_FILE_SCHEME) ? url : defaultUrlTransform(url)
+          groupId && parseWorkspaceFileHref(url, root?.root)
+            ? url
+            : defaultUrlTransform(url)
         }
         components={{
           p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
           a: ({ children, href }) => {
-            const rel = groupId ? parseWorkspaceFileHref(href) : null
+            const rel = groupId ? parseWorkspaceFileHref(href, root?.root) : null
             if (rel && groupId) {
               return (
                 <button

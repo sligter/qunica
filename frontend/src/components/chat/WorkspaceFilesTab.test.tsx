@@ -525,7 +525,7 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.queryByRole('menu', { name: 'File actions' })).not.toBeInTheDocument()
   })
 
-  it('localizes the Chinese preview framing without changing the raw path', async () => {
+  it('localizes the Chinese preview dialog without changing the raw path', async () => {
     await i18n.changeLanguage('zh-CN')
     renderTab()
 
@@ -533,7 +533,7 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByRole('dialog')).toBeVisible()
     expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'raw dir/README_RAW_原文.md' })).toBeVisible()
-    expect(screen.getByText('预览由服务器限制，大文件可能会被截断。')).toBeVisible()
+    expect(screen.queryByText('预览由服务器限制，大文件可能会被截断。')).not.toBeInTheDocument()
     expect(screen.getByText('preview:groups:raw dir/README_RAW_原文.md')).toBeVisible()
   })
 

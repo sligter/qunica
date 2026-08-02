@@ -213,6 +213,16 @@ pub struct GroupAgentAddRequest {
     share_group_workspace: Option<bool>,
 }
 
+impl GroupAgentAddRequest {
+    pub(crate) fn with_default_workspace(agent_id: String) -> Self {
+        Self {
+            agent_id,
+            workspace_mode: None,
+            share_group_workspace: None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GroupMemberAddRequest {
     user_id: String,
@@ -406,6 +416,12 @@ pub struct GroupResponse {
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+impl GroupResponse {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -755,6 +771,7 @@ struct CommitMessageProviderRow {
     api_key: String,
     default_model: String,
     reasoning_passback: i64,
+    models_json: Option<String>,
     model_config_json: Option<String>,
 }
 
@@ -1059,7 +1076,9 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<GroupResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(update_inner(&state, &owner_id, &group_id, body).await?))
+    Ok(Json(
+        update_inner(&state, &owner_id, &group_id, body).await?,
+    ))
 }
 
 /// The body of [`update`] without the axum extractors. See [`create_inner`].
@@ -1987,22 +2006,24 @@ pub async fn generate_group_workspace_git_commit_message(
         .ok_or_else(|| {
             ApiError::invalid_input("no active LLM provider is configured for this group")
         })?;
+    let model = model_from_config(&provider_row.model_config_json, &provider_row.default_model);
+    let reasoning_passback = crate::llm::model_reasoning_passback(
+        provider_row.models_json.as_deref(),
+        &model,
+        provider_row.reasoning_passback != 0,
+    );
     let provider_config = ProviderConfig {
         kind: provider_row.kind,
         base_url: provider_row.base_url,
         api_key: provider_row.api_key,
         default_model: provider_row.default_model,
-        reasoning_passback: provider_row.reasoning_passback != 0,
+        reasoning_passback,
         context_window_tokens: None,
         context_output_reserve_ratio: None,
     };
     let provider = build_provider(&provider_config).map_err(|err| {
         ApiError::invalid_input(format!("commit message generation failed: {err}"))
     })?;
-    let model = model_from_config(
-        &provider_row.model_config_json,
-        &provider_config.default_model,
-    );
     let request = ChatRequest {
         model,
         messages: commit_message_prompt(&diff),
@@ -2075,6 +2096,30 @@ pub async fn push_group_workspace_git(
     let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
     workspace_git::push(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+
+pub async fn force_push_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::force_push(&root)
+        .await
+        .map_err(workspace_git_error)?;
+    Ok(Json(workspace_git::status(&root).await))
+}
+
+pub async fn rebase_group_workspace_git(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<WorkspaceGitStatus>, ApiError> {
+    let root = workspace_git_root(&state, &headers, &group_id).await?;
+    workspace_git::rebase(&root)
         .await
         .map_err(workspace_git_error)?;
     Ok(Json(workspace_git::status(&root).await))
@@ -2293,9 +2338,21 @@ pub async fn add_group_member(
     Json(body): Json<GroupMemberAddRequest>,
 ) -> Result<(StatusCode, Json<GroupMemberResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
-    let user_id = validate_uuid(&body.user_id, "user_id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(add_group_member_inner(&state, &owner_id, &group_id, &body.user_id).await?),
+    ))
+}
+
+pub(crate) async fn add_group_member_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    user_id: &str,
+) -> Result<GroupMemberResponse, ApiError> {
+    let group_id = validate_uuid(group_id, "group id")?;
+    let user_id = validate_uuid(user_id, "user_id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, owner_id).await?;
     fetch_user_row(state.db.pool(), &user_id)
         .await?
         .ok_or_else(|| ApiError::not_found("user not found"))?;
@@ -2360,10 +2417,7 @@ pub async fn add_group_member(
         .ok_or_else(|| ApiError::internal("group member vanished after add"))?;
     let muted_member_ids =
         parse_json_list(group.muted_member_ids_json.as_deref()).unwrap_or_default();
-    Ok((
-        StatusCode::CREATED,
-        Json(row.into_response(&muted_member_ids)),
-    ))
+    Ok(row.into_response(&muted_member_ids))
 }
 
 pub async fn remove_group_member(
@@ -2372,9 +2426,19 @@ pub async fn remove_group_member(
     Path((group_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
-    let user_id = validate_uuid(&user_id, "user id")?;
-    load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    remove_group_member_inner(&state, &owner_id, &group_id, &user_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn remove_group_member_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    let group_id = validate_uuid(group_id, "group id")?;
+    let user_id = validate_uuid(user_id, "user id")?;
+    load_active_owned(state.db.pool(), &group_id, owner_id).await?;
     let member = load_active_group_member(state.db.pool(), &group_id, &user_id).await?;
     if member.role == "owner" {
         return Err(ApiError::permission_denied("group owner cannot be removed"));
@@ -2403,7 +2467,7 @@ pub async fn remove_group_member(
         .await
         .map_err(|_| ApiError::internal("failed to commit group member removal"))?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 pub async fn set_group_member_muted(
@@ -2466,10 +2530,22 @@ pub async fn add_group_agent(
     Json(body): Json<GroupAgentAddRequest>,
 ) -> Result<(StatusCode, Json<GroupAgentResponse>), ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
+    Ok((
+        StatusCode::CREATED,
+        Json(add_group_agent_inner(&state, &owner_id, &group_id, body).await?),
+    ))
+}
+
+pub(crate) async fn add_group_agent_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    body: GroupAgentAddRequest,
+) -> Result<GroupAgentResponse, ApiError> {
+    let group_id = validate_uuid(group_id, "group id")?;
     let agent_id = validate_uuid(&body.agent_id, "agent_id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
-    validate_owned_active_agent(state.db.pool(), &agent_id, &owner_id).await?;
+    let group = load_active_owned(state.db.pool(), &group_id, owner_id).await?;
+    validate_owned_active_agent(state.db.pool(), &agent_id, owner_id).await?;
 
     let now = now_rfc3339();
     let mut tx = state
@@ -2553,7 +2629,7 @@ pub async fn add_group_agent(
     let row = fetch_group_agent_row(state.db.pool(), &group_id, &agent_id)
         .await?
         .ok_or_else(|| ApiError::internal("group agent vanished after add"))?;
-    Ok((StatusCode::CREATED, Json(row.into())))
+    Ok(row.into())
 }
 
 pub async fn remove_group_agent(
@@ -2562,9 +2638,19 @@ pub async fn remove_group_agent(
     Path((group_id, agent_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
-    let agent_id = validate_uuid(&agent_id, "agent id")?;
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    remove_group_agent_inner(&state, &owner_id, &group_id, &agent_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn remove_group_agent_inner(
+    state: &AppState,
+    owner_id: &str,
+    group_id: &str,
+    agent_id: &str,
+) -> Result<(), ApiError> {
+    let group_id = validate_uuid(group_id, "group id")?;
+    let agent_id = validate_uuid(agent_id, "agent id")?;
+    let group = load_active_owned(state.db.pool(), &group_id, owner_id).await?;
     load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
 
     let now = now_rfc3339();
@@ -2594,7 +2680,7 @@ pub async fn remove_group_agent(
         .await
         .map_err(|_| ApiError::internal("failed to commit group agent removal"))?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 pub async fn set_group_agent_muted(
@@ -3193,7 +3279,7 @@ async fn load_group_commit_message_provider(
 ) -> Result<Option<CommitMessageProviderRow>, ApiError> {
     sqlx::query_as(
         "SELECT p.kind, p.base_url, p.api_key, p.default_model, p.reasoning_passback, \
-                a.model_config_json \
+                p.models_json, a.model_config_json \
          FROM group_agents ga \
          JOIN agents a ON a.id = ga.agent_id \
          JOIN llm_providers p ON p.id = a.provider_id \
