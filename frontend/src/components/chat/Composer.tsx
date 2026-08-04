@@ -9,8 +9,8 @@ import {
   getConversationWorkspaceFile,
   getConversationWorkspaceFileMetadata,
   type ConversationWorkspaceFileMetadata,
+  useUploadConversationWorkspaceFile,
 } from '@/hooks/useConversationWorkspaceFiles'
-import { useUploadGroupWorkspaceFiles } from '@/hooks/useGroupFiles'
 import {
   workspaceErrorMessageKey,
   type WorkspaceErrorMessageKey,
@@ -53,7 +53,6 @@ type ComposerNoticeKey =
   | 'composer.drop.fileAdded'
   | 'composer.drop.directoryInserted'
   | 'composer.drop.unsupported'
-  | 'composer.drop.uploadUnsupported'
   | 'composer.drop.noWorkspace'
   | 'composer.drop.unreadable'
   | 'composer.drop.limitReached'
@@ -223,9 +222,7 @@ export function Composer({
     ? Boolean(resolvedConversationId)
     : Boolean(workspaceId)
   const isDisabled = Boolean(disabledReason)
-  const uploadWorkspaceFiles = useUploadGroupWorkspaceFiles(
-    scope === 'groups' ? resolvedConversationId : undefined,
-  )
+  const uploadWorkspaceFile = useUploadConversationWorkspaceFile(scope, resolvedConversationId)
 
   const updateValue = useCallback((next: string) => {
     draftRevisionRef.current += 1
@@ -475,11 +472,6 @@ export function Composer({
         if (fileInputRef.current) fileInputRef.current.value = ''
         return
       }
-      if (scope !== 'groups') {
-        showNotice('composer.drop.uploadUnsupported', 'error')
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        return
-      }
       const capacity = MAX_ATTACHMENTS_PER_MESSAGE - attachmentsRef.current.length
       const acceptedFiles = files.slice(0, Math.max(0, capacity))
       if (acceptedFiles.length === 0) {
@@ -504,8 +496,7 @@ export function Composer({
       void (async () => {
         for (const attachment of pending) {
           try {
-            const [uploaded] = await uploadWorkspaceFiles.mutateAsync([attachment.file])
-            if (!uploaded) throw new Error('Workspace upload returned no file')
+            const uploaded = await uploadWorkspaceFile.mutateAsync(attachment.file)
             updateAttachments((current) => current.map((item) => (
               item.kind === 'upload' && item.localId === attachment.localId
                 ? { ...item, status: 'uploaded' as const, uploaded: { path: uploaded.path } }
@@ -524,19 +515,18 @@ export function Composer({
         if (fileInputRef.current) fileInputRef.current.value = ''
       })()
     },
-    [ensureWorkspaceContext, isDisabled, scope, showNotice, updateAttachments, uploadWorkspaceFiles],
+    [ensureWorkspaceContext, isDisabled, showNotice, updateAttachments, uploadWorkspaceFile],
   )
 
   const retryAttachment = useCallback((attachment: PendingAttachment) => {
-    if (isDisabled || attachment.kind !== 'upload' || scope !== 'groups') return
+    if (isDisabled || attachment.kind !== 'upload') return
     setUploadError(null)
     updateAttachments((current) => current.map((item) => (
       item.kind === 'upload' && item.localId === attachment.localId
         ? { ...item, status: 'uploading' as const }
         : item
     )))
-    void uploadWorkspaceFiles.mutateAsync([attachment.file]).then(([uploaded]) => {
-      if (!uploaded) throw new Error('Workspace upload returned no file')
+    void uploadWorkspaceFile.mutateAsync(attachment.file).then((uploaded) => {
       updateAttachments((current) => current.map((item) => (
         item.kind === 'upload' && item.localId === attachment.localId
           ? { ...item, status: 'uploaded' as const, uploaded: { path: uploaded.path } }
@@ -550,7 +540,7 @@ export function Composer({
           : item
       )))
     })
-  }, [isDisabled, scope, updateAttachments, uploadWorkspaceFiles])
+  }, [isDisabled, updateAttachments, uploadWorkspaceFile])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value
@@ -780,15 +770,11 @@ export function Composer({
                   onClick={() => {
                     setUploadError(null)
                     if (!ensureWorkspaceContext()) return
-                    if (scope !== 'groups') {
-                      showNotice('composer.drop.uploadUnsupported', 'error')
-                      return
-                    }
                     fileInputRef.current?.click()
                   }}
-                  disabled={isDisabled || uploadWorkspaceFiles.isPending}
+                  disabled={isDisabled || uploadWorkspaceFile.isPending}
                   aria-label={t('composer.upload')}
-                  title={scope === 'groups' ? t('composer.uploadTitle') : t('composer.uploadUnsupportedTitle')}
+                  title={t('composer.uploadTitle')}
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>

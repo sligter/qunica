@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ag-swarmer-logo.png" alt="AG Swarmer Logo" width="160">
+</p>
+
 # AG Swarmer
 
 AG Swarmer 是一个以“群组”为核心交互容器的多 Agent 协作工作台。它把多个 AI Agent 放进同一个项目空间里，让用户像管理一个团队一样，创建角色、分配任务、查看上下文、观察执行过程，并让 Agent 围绕同一份群聊历史、文件和工作区协同完成复杂任务。
@@ -52,11 +56,13 @@ AG Swarmer 是一个以“群组”为核心交互容器的多 Agent 协作工�
 
 在资源库的 **MCP 服务** 中登记 Model Context Protocol 服务后，Agent 就可以像调用内置工具一样调用它提供的工具。支持三种标准传输协议：
 
-| 协议 | 说明 |
-| --- | --- |
-| `stdio` | 启动本地进程，通过其 stdin/stdout 收发按行分隔的 JSON-RPC 2.0 消息。 |
+
+| 协议                | 说明                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| `stdio`           | 启动本地进程，通过其 stdin/stdout 收发按行分隔的 JSON-RPC 2.0 消息。                                                  |
 | `Streamable HTTP` | 单个 HTTP 端点，POST JSON-RPC，服务端返回 `application/json` 或 `text/event-stream`；会话通过 `Mcp-Session-Id` 保持。 |
-| `SSE`（旧版） | GET 打开事件流，服务端用 `endpoint` 事件告知消息端点，之后 POST 请求、响应从事件流返回。 |
+| `SSE`（旧版）         | GET 打开事件流，服务端用 `endpoint` 事件告知消息端点，之后 POST 请求、响应从事件流返回。                                           |
+
 
 工具命名与生效方式：
 
@@ -149,7 +155,7 @@ frontend/src-tauri/target/release/bundle/portable/AG Swarmer_0.1.0_x64-portable.
 
 ### 本地终端
 
-仅 Tauri 桌面应用可在已绑定的本地工作区中打开多标签交互终端。使用 Ctrl/Cmd + \` 展开或折叠终端面板。
+仅 Tauri 桌面应用可在已绑定的本地工作区中打开多标签交互终端。使用 Ctrl/Cmd +  展开或折叠终端面板。
 
 终端运行完整的宿主 Shell，并非工作区沙箱；它可访问当前账户权限允许的工作区外文件和进程。切换聊天或将应用隐藏到系统托盘不会停止终端；真正退出应用会结束 PTY 及其后代进程。重启应用只恢复标签元数据和启动目录，不恢复旧进程、命令输入或输出。用户终端与 Agent 工具执行彼此独立。
 
@@ -233,10 +239,9 @@ cargo clippy --manifest-path backend-rs/Cargo.toml --workspace --all-targets -- 
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
 
-
 ## 当前限制
 
 - 首个打包目标是 Windows。
 - 桌面版使用 SQLite，本地数据不会自动从 legacy 的 Docker/Postgres 环境迁移。
-- Pi Agent 暂未实现，外部 runtime adapter 已预留扩展位置。
 - 外部 CLI Agent 默认具备 full-auto 执行能力，应只绑定到用户确认过的 workspace。
+

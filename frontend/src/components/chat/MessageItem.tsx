@@ -170,7 +170,7 @@ export function MessageItem({
           ) : (
             <MarkdownMessage content={message.content || ' '} isUser={isUser} groupId={groupId} />
           )}
-          {!inputRequest && message.attachments.length > 0 ? <MessageAttachments groupId={groupId} attachments={message.attachments} /> : null}
+          {!inputRequest && message.attachments.length > 0 ? <MessageAttachments groupId={groupId} attachments={message.attachments} scope={scope} /> : null}
         </div>
         {(isInterrupted || isResuming) && message.thread_id && (
           <InterruptedMessageActions

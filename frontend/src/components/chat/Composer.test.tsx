@@ -16,19 +16,19 @@ const mocks = vi.hoisted(() => ({
   getFile: vi.fn(),
   getMetadata: vi.fn(),
   upload: vi.fn(),
+  uploadHook: vi.fn(),
 }))
 
 vi.mock('@/hooks/useConversationWorkspaceFiles', () => ({
   getConversationWorkspaceFile: mocks.getFile,
   getConversationWorkspaceFileMetadata: mocks.getMetadata,
-}))
-
-vi.mock('@/hooks/useGroupFiles', () => ({
-  WorkspaceUploadManyError: class WorkspaceUploadManyError extends Error {},
-  useUploadGroupWorkspaceFiles: () => ({
-    isPending: false,
-    mutateAsync: mocks.upload,
-  }),
+  useUploadConversationWorkspaceFile: (...args: unknown[]) => {
+    mocks.uploadHook(...args)
+    return {
+      isPending: false,
+      mutateAsync: mocks.upload,
+    }
+  },
 }))
 
 const groupAgents: GroupAgentRead[] = [
@@ -117,6 +117,7 @@ describe('Composer', () => {
     mocks.getFile.mockReset()
     mocks.getMetadata.mockReset()
     mocks.upload.mockReset()
+    mocks.uploadHook.mockReset()
   })
 
   afterEach(async () => {
@@ -488,7 +489,7 @@ describe('Composer', () => {
   it('uploads an image and sends an attachment-only message with its workspace path', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/photo.png' }])
+    mocks.upload.mockResolvedValueOnce({ path: 'uploads/photo.png' })
     render(<Composer groupId="group-1" onSend={onSend} />)
 
     await user.upload(
@@ -504,7 +505,7 @@ describe('Composer', () => {
 
   it('opens a preview when a pasted image attachment thumbnail is clicked', async () => {
     const user = userEvent.setup()
-    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/paste.png' }])
+    mocks.upload.mockResolvedValueOnce({ path: 'uploads/paste.png' })
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:paste'), revokeObjectURL: vi.fn() })
     render(<Composer groupId="group-1" onSend={vi.fn()} />)
 
@@ -521,39 +522,43 @@ describe('Composer', () => {
 
   it('uploads files dropped from the operating system', async () => {
     const onSend = vi.fn()
-    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/drop.png' }])
+    mocks.upload.mockResolvedValueOnce({ path: 'uploads/drop.png' })
     render(<Composer groupId="group-1" onSend={onSend} />)
     const file = new File(['png'], 'drop.png', { type: 'image/png' })
     const textarea = screen.getByRole('textbox', { name: 'Message' })
 
     fireEvent.drop(textarea, { dataTransfer: operatingSystemDataTransfer([file]) })
 
-    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith([file]))
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith(file))
   })
 
-  it('rejects direct-chat external file drops and selections without calling the group upload hook', async () => {
+  it('uploads and sends files in direct chats', async () => {
     const user = userEvent.setup()
+    const onSend = vi.fn()
+    mocks.upload.mockResolvedValueOnce({ path: 'uploads/notes.txt' })
     render(
       <Composer
         conversationId="chat-1"
         workspaceId="workspace-1"
         scope="direct-chats"
-        onSend={vi.fn()}
+        onSend={onSend}
       />,
     )
     const file = new File(['text'], 'notes.txt', { type: 'text/plain' })
-
-    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
-      dataTransfer: operatingSystemDataTransfer([file]),
-    })
-    expect(await screen.findByText('External file uploads are not supported in direct chats.')).toBeVisible()
-    expect(mocks.upload).not.toHaveBeenCalled()
 
     await user.upload(
       screen.getByLabelText('Upload files to workspace uploads', { selector: 'input' }),
       file,
     )
-    expect(mocks.upload).not.toHaveBeenCalled()
+    await screen.findByText('notes.txt')
+    expect(mocks.uploadHook).toHaveBeenCalledWith('direct-chats', 'chat-1')
+    expect(mocks.upload).toHaveBeenCalledWith(file)
+
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(onSend).toHaveBeenCalledWith({
+      content: '',
+      attachments: [{ path: 'uploads/notes.txt' }],
+    })
   })
 
   it('rejects drops while disabled without reading metadata or uploading files', () => {
@@ -682,7 +687,7 @@ describe('Composer', () => {
 
   it('uploads clipboard image files without preventing ordinary text paste', async () => {
     const onSend = vi.fn()
-    mocks.upload.mockResolvedValueOnce([{ path: 'uploads/paste.webp' }])
+    mocks.upload.mockResolvedValueOnce({ path: 'uploads/paste.webp' })
     render(<Composer groupId="group-1" onSend={onSend} />)
     const file = new File(['webp'], 'paste.webp', { type: 'image/webp' })
     const textarea = screen.getByRole('textbox', { name: 'Message' })
@@ -690,7 +695,7 @@ describe('Composer', () => {
     const imagePaste = fireEvent.paste(textarea, {
       clipboardData: { items: [{ kind: 'file', getAsFile: () => file }] },
     })
-    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith([file]))
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith(file))
     expect(imagePaste).toBe(false)
 
     const textPaste = fireEvent.paste(textarea, {
@@ -702,7 +707,7 @@ describe('Composer', () => {
   it('keeps failed uploads removable and retryable without sending them', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    mocks.upload.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([{ path: 'uploads/retry.pdf' }])
+    mocks.upload.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ path: 'uploads/retry.pdf' })
     render(<Composer groupId="group-1" onSend={onSend} />)
 
     await user.upload(

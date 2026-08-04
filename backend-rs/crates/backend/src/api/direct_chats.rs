@@ -214,8 +214,7 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Read-only workspace file APIs for direct chats.  Upload, rename and delete
-/// remain group-only operations; text saves are the sole direct-chat mutation.
+/// Direct chats expose the same workspace file operations as groups.
 pub async fn get_workspace_root(
     State(state): State<AppState>,
     headers: HeaderMap,
