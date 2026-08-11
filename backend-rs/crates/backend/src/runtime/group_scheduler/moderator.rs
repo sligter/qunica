@@ -212,7 +212,8 @@ async fn collect_response(
                 total_tokens = total_tokens.saturating_add(u64::try_from(tokens).unwrap_or(0));
             }
             ChatDelta::Done => break,
-            ChatDelta::Reasoning(_) | ChatDelta::ToolCall(_) => {
+            ChatDelta::Reasoning(_) => {}
+            ChatDelta::ToolCall(_) => {
                 return Err((ModeratorFailure::UnexpectedDelta, total_tokens));
             }
         }
@@ -425,6 +426,29 @@ mod tests {
             )
             .await,
             Err((ModeratorFailure::Provider, 0))
+        );
+    }
+
+    #[tokio::test]
+    async fn moderator_stream_ignores_private_reasoning() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(3);
+        sender
+            .send(ChatDelta::Reasoning("thinking".to_owned()))
+            .await
+            .unwrap();
+        sender
+            .send(ChatDelta::Token(r#"{"agent_id":"a"}"#.to_owned()))
+            .await
+            .unwrap();
+        sender.send(ChatDelta::Done).await.unwrap();
+
+        assert_eq!(
+            collect_response(
+                &mut receiver,
+                tokio::time::Instant::now() + Duration::from_secs(1),
+            )
+            .await,
+            Ok((r#"{"agent_id":"a"}"#.to_owned(), 0))
         );
     }
 }
