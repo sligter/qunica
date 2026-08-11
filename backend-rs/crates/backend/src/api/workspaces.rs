@@ -314,21 +314,39 @@ pub async fn delete(
     .await
     .map_err(|_| ApiError::internal("failed to delete workspace"))?;
 
-    // Unbind same-owner active agents/groups so they no longer point at a
-    // workspace that no longer exists from their perspective.
-    for table in ["agents", "groups"] {
-        let sql = format!(
-            "UPDATE {table} SET workspace_id = NULL, updated_at = ? \
-             WHERE workspace_id = ? AND owner_id = ? AND status = 'active'"
-        );
-        sqlx::query(&sql)
-            .bind(&now)
-            .bind(&workspace_id)
-            .bind(&owner_id)
-            .execute(state.db.pool())
-            .await
-            .map_err(|_| ApiError::internal("failed to unbind workspace references"))?;
-    }
+    // Promote the first remaining attachment when an agent's primary is
+    // removed; otherwise preserve the old nullable-primary behaviour.
+    sqlx::query(
+        "UPDATE agents SET workspace_id = (\
+           SELECT aw.workspace_id FROM agent_workspaces aw \
+           JOIN workspaces w ON w.id = aw.workspace_id \
+           WHERE aw.agent_id = agents.id AND aw.workspace_id != ? AND w.status = 'active' \
+           ORDER BY aw.created_at ASC, aw.workspace_id ASC LIMIT 1\
+         ), updated_at = ? \
+         WHERE workspace_id = ? AND owner_id = ? AND status = 'active'",
+    )
+    .bind(&workspace_id)
+    .bind(&now)
+    .bind(&workspace_id)
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to promote agent workspace"))?;
+    sqlx::query("DELETE FROM agent_workspaces WHERE workspace_id = ?")
+        .bind(&workspace_id)
+        .execute(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("failed to remove agent workspace binding"))?;
+    sqlx::query(
+        "UPDATE groups SET workspace_id = NULL, updated_at = ? \
+         WHERE workspace_id = ? AND owner_id = ? AND status = 'active'",
+    )
+    .bind(&now)
+    .bind(&workspace_id)
+    .bind(&owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to unbind conversation workspace"))?;
 
     Ok(StatusCode::NO_CONTENT)
 }

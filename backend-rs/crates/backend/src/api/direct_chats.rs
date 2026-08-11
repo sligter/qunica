@@ -5,6 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
@@ -20,7 +21,7 @@ use crate::runtime::workspace_scope::WorkspaceMode;
 
 const SELECT_DIRECT_CHAT: &str = "SELECT g.id, g.name AS title, g.title_source, \
     g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, \
-    a.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at \
+    g.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at \
     FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id \
     WHERE g.id = ? AND g.owner_id = ? AND g.status = 'active' \
     AND g.conversation_kind = 'direct'";
@@ -59,7 +60,8 @@ impl DirectChatResponse {
 struct OwnedAgent {
     id: String,
     name: String,
-    workspace_id: Option<String>,
+    workspace_backend_type: Option<String>,
+    workspace_local_path: Option<String>,
     status: String,
 }
 
@@ -83,7 +85,10 @@ pub(crate) async fn create_inner(
 ) -> Result<DirectChatResponse, ApiError> {
     let agent_id = validate_uuid(agent_id, "agent_id")?;
     let agent = sqlx::query_as::<_, OwnedAgent>(
-        "SELECT id, name, workspace_id, status FROM agents WHERE id = ? AND owner_id = ?",
+        "SELECT a.id, a.name, a.status, \
+                w.backend_type AS workspace_backend_type, w.local_path AS workspace_local_path \
+         FROM agents a LEFT JOIN workspaces w ON w.id = a.workspace_id AND w.status = 'active' \
+         WHERE a.id = ? AND a.owner_id = ?",
     )
     .bind(&agent_id)
     .bind(owner_id)
@@ -101,16 +106,78 @@ pub(crate) async fn create_inner(
             .await
             .map_err(|_| ApiError::internal("database error"))?;
     let title = direct_chat_title(language.as_deref(), &agent.name);
+    let workspace_id = create_direct_chat_workspace(state.db.pool(), owner_id, &agent, &title).await?;
     let id = insert_direct_chat(
         state.db.pool(),
         owner_id,
         &agent.id,
-        agent.workspace_id.as_deref(),
+        workspace_id.as_deref(),
         &title,
         WorkspaceMode::default(),
     )
     .await?;
     fetch(state.db.pool(), &id, owner_id).await
+}
+
+async fn create_direct_chat_workspace(
+    pool: &SqlitePool,
+    owner_id: &str,
+    agent: &OwnedAgent,
+    title: &str,
+) -> Result<Option<String>, ApiError> {
+    let Some(backend_type) = agent.workspace_backend_type.as_deref() else {
+        return Ok(None);
+    };
+    let workspace_id = Uuid::new_v4().to_string();
+    let local_path = if backend_type == "local" {
+        let agent_root = agent
+            .workspace_local_path
+            .as_deref()
+            .ok_or_else(|| ApiError::invalid_input("agent workspace has no local_path"))?;
+        let configured_root = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT group_workspace_root FROM system_settings WHERE owner_id = ?",
+        )
+        .bind(owner_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))?
+        .flatten()
+        .filter(|root| !root.trim().is_empty());
+        let base = configured_root.map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(agent_root)
+                .join(".ag-swarmer")
+                .join("direct-chats")
+        });
+        let short_id: String = workspace_id.chars().filter(|ch| *ch != '-').take(8).collect();
+        let path = base.join(format!("direct-{short_id}"));
+        std::fs::create_dir_all(&path)
+            .map_err(|_| ApiError::internal("failed to create direct chat workspace"))?;
+        Some(
+            std::fs::canonicalize(path)
+                .map_err(|_| ApiError::internal("failed to resolve direct chat workspace"))?
+                .to_string_lossy()
+                .into_owned(),
+        )
+    } else {
+        None
+    };
+    let now = now_rfc3339();
+    sqlx::query(
+        "INSERT INTO workspaces \
+         (id, owner_id, name, backend_type, local_path, config_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, NULL, 'active', ?, ?)",
+    )
+    .bind(&workspace_id)
+    .bind(owner_id)
+    .bind(title)
+    .bind(backend_type)
+    .bind(&local_path)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .map_err(|_| ApiError::internal("failed to create direct chat workspace"))?;
+    Ok(Some(workspace_id))
 }
 
 /// Insert the four rows a direct chat is made of, in one transaction.
@@ -163,7 +230,7 @@ pub async fn list(
     // The Assistant's chat is reached through the floating dock, never the chat
     // list; showing it there would put a conversation the user cannot delete
     // alongside ones they can.
-    let rows = sqlx::query_as::<_, DirectChatResponse>("SELECT g.id, g.name AS title, g.title_source, g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, a.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id WHERE g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' AND COALESCE(a.is_system, 0) = 0 ORDER BY g.updated_at DESC, g.id DESC")
+    let rows = sqlx::query_as::<_, DirectChatResponse>("SELECT g.id, g.name AS title, g.title_source, g.direct_agent_id AS agent_id, a.name AS agent_name, a.status AS agent_status, g.workspace_id AS workspace_id, g.status, g.created_at, g.updated_at FROM groups g LEFT JOIN agents a ON a.id = g.direct_agent_id WHERE g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' AND COALESCE(a.is_system, 0) = 0 ORDER BY g.updated_at DESC, g.id DESC")
         .bind(&owner_id).fetch_all(state.db.pool()).await.map_err(|_| ApiError::internal("database error"))?;
     Ok(Json(rows))
 }

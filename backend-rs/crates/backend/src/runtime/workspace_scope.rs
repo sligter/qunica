@@ -1,9 +1,8 @@
 //! Which workspace roots a group agent may address during a turn.
 //!
-//! An agent has two candidate roots: the conversation's workspace and its own.
-//! [`WorkspaceMode`] chooses which of them is *primary* — the address space of
-//! every plain relative path, and the root conversation attachments resolve
-//! against — and whether the other is reachable as the `~self/` mount.
+//! An agent has two candidate root sets: the conversation workspace and its
+//! own primary plus attached workspaces. [`WorkspaceMode`] chooses which is
+//! primary and whether the agent-owned set is mounted alongside it.
 //!
 //! The mode is stored in the free-form `group_agents.context_scope_json` column
 //! so no schema migration is needed. Rows written before the mode existed only
@@ -25,10 +24,10 @@ pub enum WorkspaceMode {
     /// Conversation workspace only. The shared room, and nothing else.
     #[default]
     Group,
-    /// Conversation workspace as primary, with the agent's own workspace
-    /// mounted at `~self/`. The shared room plus the agent's own desk.
+    /// Conversation workspace as primary, with the agent's primary workspace
+    /// mounted at `~self/` and attached workspaces mounted by id.
     GroupAndSelf,
-    /// The agent's own workspace only; the conversation workspace — including
+    /// The agent's own workspaces only; the conversation workspace — including
     /// its attachments — is out of reach.
     SelfOnly,
 }
@@ -58,12 +57,6 @@ impl WorkspaceMode {
     /// the legacy `share_group_workspace` boolean, preserved for older clients.
     pub const fn uses_group_workspace(self) -> bool {
         matches!(self, Self::Group | Self::GroupAndSelf)
-    }
-
-    /// Whether the agent's own workspace is mounted alongside a primary
-    /// conversation workspace.
-    pub const fn mounts_own_workspace(self) -> bool {
-        matches!(self, Self::GroupAndSelf)
     }
 
     /// Read the mode out of a `context_scope_json` payload.

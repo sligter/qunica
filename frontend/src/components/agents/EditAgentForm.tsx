@@ -73,6 +73,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   model: z.string().optional(),
   vision: z.boolean(),
   workspace_id: z.string().min(1, workspaceRequired),
+  workspace_ids: z.array(z.string()),
   temperature: z
     .number()
     .min(0)
@@ -153,6 +154,7 @@ export function EditAgentForm({
       model: typeof agent.llm_config?.model === 'string' ? agent.llm_config.model : '',
       vision: agent.llm_config?.vision !== false,
       workspace_id: agent.workspace_id ?? '',
+      workspace_ids: (agent.workspace_ids ?? []).filter((id) => id !== agent.workspace_id),
       temperature: (agent.llm_config?.temperature as number) ?? DEFAULT_AGENT_TEMPERATURE,
       top_p: (agent.llm_config?.top_p as number) ?? 1,
       reasoning_effort: isThinkingLevel(savedThinkingLevel)
@@ -294,6 +296,7 @@ export function EditAgentForm({
             : null,
         tool_config: values.runtime_kind === 'llm_chat' ? currentToolConfig : null,
         workspace_id: values.workspace_id,
+        workspace_ids: [values.workspace_id, ...values.workspace_ids],
         llm_provider_id:
           values.runtime_kind === 'llm_chat' ? values.llm_provider_id || null : null,
         skill_ids: selectedSkillIds,
@@ -380,10 +383,13 @@ export function EditAgentForm({
       >
         <WorkspaceField
           value={form.watch('workspace_id')}
+          additionalValues={form.watch('workspace_ids')}
+          onAdditionalChange={(workspaceIds) => form.setValue('workspace_ids', workspaceIds)}
           allowQuickCreate
-          onChange={(workspaceId) =>
+          onChange={(workspaceId) => {
             form.setValue('workspace_id', workspaceId, { shouldValidate: true })
-          }
+            form.setValue('workspace_ids', form.getValues('workspace_ids').filter((id) => id !== workspaceId))
+          }}
           error={form.formState.errors.workspace_id?.message}
         />
         {!agent.workspace_id && (

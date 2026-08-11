@@ -361,6 +361,60 @@ async fn agent_create_requires_active_owned_workspace() {
     assert_eq!(body["error"]["code"], "permission_denied");
 }
 
+#[tokio::test]
+async fn agent_create_and_patch_round_trip_multiple_workspaces() {
+    let app = app().await;
+    let token = register_and_login(&app, "agent-multi-workspace@example.com").await;
+    let primary = create_workspace(&app, &token).await;
+    let attached = create_workspace(&app, &token).await;
+
+    let (status, agent) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token,
+            json!({
+                "name": "Multi",
+                "workspace_id": primary,
+                "workspace_ids": [primary, attached]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {agent:?}");
+    assert_eq!(agent["workspace_id"], primary);
+    assert_eq!(agent["workspace_ids"], json!([primary, attached]));
+
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            &token,
+            json!({"workspace_ids": [primary]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {updated:?}");
+    assert_eq!(updated["workspace_ids"], json!([primary]));
+
+    let other_token = register_and_login(&app, "agent-multi-workspace-other@example.com").await;
+    let foreign = create_workspace(&app, &other_token).await;
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            &token,
+            json!({"workspace_ids": [primary, foreign]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
+}
+
 #[test]
 fn agent_acp_capability_fake_child_entrypoint() {
     let Ok(mode) = std::env::var("ACP_API_FAKE_MODE") else {

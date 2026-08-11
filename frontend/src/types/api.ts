@@ -258,6 +258,7 @@ export interface AgentRead {
   runtime_kind: AgentRuntimeKind
   acp_runtime: AcpRuntimeConfig | null
   workspace_id: string | null
+  workspace_ids?: string[]
   llm_provider_id: string | null
   skill_ids: string[]
   visibility: string
@@ -325,6 +326,7 @@ export interface AgentCreate {
   runtime_kind?: AgentRuntimeKind
   acp_runtime?: AcpRuntimeConfig | null
   workspace_id: string
+  workspace_ids?: string[]
   llm_provider_id?: string | null
   skill_ids?: string[]
 }
@@ -338,6 +340,7 @@ export interface AgentUpdate {
   runtime_kind?: AgentRuntimeKind
   acp_runtime?: AcpRuntimeConfig | null
   workspace_id?: string | null
+  workspace_ids?: string[]
   llm_provider_id?: string | null
   skill_ids?: string[]
 }
@@ -473,6 +476,7 @@ export type GroupTopologyRole = 'hub' | 'leader' | 'worker'
 export interface GroupRead extends GroupSchedulerConfig {
   id: string
   workspace_id: string | null
+  auto_share_workspace_with_new_agents?: boolean
   name: string
   description: string | null
   announcement: string | null
@@ -517,6 +521,7 @@ export interface DirectChatUpdate {
 export interface GroupCreate extends Partial<GroupSchedulerConfig> {
   name: string
   workspace_id?: string | null
+  auto_share_workspace_with_new_agents?: boolean
   description?: string | null
   announcement?: string | null
   communication_mode?: GroupCommunicationMode
@@ -526,6 +531,7 @@ export interface GroupCreate extends Partial<GroupSchedulerConfig> {
 export interface GroupUpdate extends Partial<GroupSchedulerConfig> {
   name?: string
   workspace_id?: string | null
+  auto_share_workspace_with_new_agents?: boolean
   description?: string | null
   announcement?: string | null
   free_speech?: boolean
@@ -560,8 +566,8 @@ export interface GroupMuteUpdate {
  * Which workspace roots a group agent may address during a turn.
  *
  * - `group`: the group workspace only.
- * - `group_and_self`: the group workspace, plus its own mounted at `~self/`.
- * - `self`: its own workspace only; group files and attachments are out of reach.
+ * - `group_and_self`: the group workspace plus the agent's bound workspaces.
+ * - `self`: the agent's bound workspaces only; group files and attachments are out of reach.
  */
 export type GroupWorkspaceMode = 'group' | 'group_and_self' | 'self'
 

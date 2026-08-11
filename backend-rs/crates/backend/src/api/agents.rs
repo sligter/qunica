@@ -30,7 +30,9 @@ const ACP_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const ACP_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const ACP_OUTPUT_LIMIT: usize = 8 * 1024;
 
-const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, name, description, system_prompt, \
+const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, \
+     COALESCE((SELECT json_group_array(workspace_id) FROM agent_workspaces WHERE agent_id = agents.id), '[]') AS workspace_ids_json, \
+     name, description, system_prompt, \
      runtime_kind, provider_id, model_config_json, tool_config_json, external_runtime_json, \
      skill_ids_json, status, is_system, created_at, updated_at";
 
@@ -50,6 +52,8 @@ pub struct CreateRequest {
     #[serde(default)]
     acp_runtime: Option<Value>,
     workspace_id: String,
+    #[serde(default)]
+    workspace_ids: Option<Vec<String>>,
     #[serde(default, alias = "provider_id")]
     llm_provider_id: Option<String>,
     #[serde(default)]
@@ -76,6 +80,8 @@ pub struct UpdateRequest {
     acp_runtime: Option<Option<Value>>,
     #[serde(default)]
     workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_ids: Option<Vec<String>>,
     #[serde(default, alias = "provider_id", deserialize_with = "double_option")]
     llm_provider_id: Option<Option<String>>,
     #[serde(default)]
@@ -93,6 +99,7 @@ pub struct AgentResponse {
     runtime_kind: String,
     acp_runtime: Option<Value>,
     workspace_id: Option<String>,
+    workspace_ids: Vec<String>,
     llm_provider_id: Option<String>,
     skill_ids: Vec<String>,
     status: String,
@@ -182,6 +189,7 @@ struct AgentRow {
     id: String,
     owner_id: String,
     workspace_id: Option<String>,
+    workspace_ids_json: String,
     name: String,
     description: Option<String>,
     system_prompt: String,
@@ -203,6 +211,16 @@ impl From<AgentRow> for AgentResponse {
     fn from(row: AgentRow) -> Self {
         let skill_ids =
             serde_json::from_str::<Vec<String>>(&row.skill_ids_json).unwrap_or_default();
+        let mut workspace_ids = row
+            .workspace_id
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in serde_json::from_str::<Vec<String>>(&row.workspace_ids_json).unwrap_or_default() {
+            if !workspace_ids.contains(&id) {
+                workspace_ids.push(id);
+            }
+        }
         Self {
             id: row.id,
             name: row.name,
@@ -213,6 +231,7 @@ impl From<AgentRow> for AgentResponse {
             runtime_kind: row.runtime_kind,
             acp_runtime: canonicalized_acp_runtime_json(row.external_runtime_json.as_deref()),
             workspace_id: row.workspace_id,
+            workspace_ids,
             llm_provider_id: row.provider_id,
             skill_ids,
             status: row.status,
@@ -363,6 +382,13 @@ pub(crate) async fn create_inner(
     };
     let runtime_kind = normalize_runtime_kind(body.runtime_kind.as_deref())?;
     let workspace_id = validate_workspace(state.db.pool(), &body.workspace_id, &owner_id).await?;
+    let workspace_ids = validate_workspace_ids(
+        state.db.pool(),
+        body.workspace_ids.as_deref(),
+        &workspace_id,
+        &owner_id,
+    )
+    .await?;
     let description = normalize_description(body.description.as_deref());
     let skill_ids_json = validate_skill_ids(body.skill_ids.as_deref())?;
     let model_config_json = json_to_db_string(body.llm_config.as_ref());
@@ -385,6 +411,12 @@ pub(crate) async fn create_inner(
 
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start agent create transaction"))?;
 
     sqlx::query(
         "INSERT INTO agents \
@@ -407,9 +439,24 @@ pub(crate) async fn create_inner(
     .bind(&skill_ids_json)
     .bind(&now)
     .bind(&now)
-    .execute(state.db.pool())
+    .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("failed to create agent"))?;
+
+    for extra_workspace_id in workspace_ids {
+        sqlx::query(
+            "INSERT INTO agent_workspaces (agent_id, workspace_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(extra_workspace_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to bind agent workspace"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit agent create"))?;
 
     let row = fetch_row(state.db.pool(), &id)
         .await?
@@ -494,6 +541,17 @@ pub(crate) async fn update_inner(
         Some(raw) => Some(validate_workspace(state.db.pool(), raw, &owner_id).await?),
         None => existing.workspace_id.clone(),
     };
+    let workspace_ids = match (body.workspace_ids.as_deref(), workspace_id.as_deref()) {
+        (Some(raw), Some(primary)) => Some(
+            validate_workspace_ids(state.db.pool(), Some(raw), primary, &owner_id).await?,
+        ),
+        (Some(_), None) => {
+            return Err(ApiError::invalid_input(
+                "workspace_ids require a primary workspace_id",
+            ));
+        }
+        (None, _) => None,
+    };
     let model_config_json = match body.llm_config {
         Some(ref value) => json_to_db_string(value.as_ref()),
         None => existing.model_config_json.clone(),
@@ -529,6 +587,12 @@ pub(crate) async fn update_inner(
     };
 
     let now = now_rfc3339();
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start agent update transaction"))?;
     sqlx::query(
         "UPDATE agents SET \
          name = ?, description = ?, system_prompt = ?, runtime_kind = ?, workspace_id = ?, \
@@ -549,25 +613,31 @@ pub(crate) async fn update_inner(
     .bind(&now)
     .bind(&agent_id)
     .bind(&owner_id)
-    .execute(state.db.pool())
+    .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("failed to update agent"))?;
 
-    // A direct chat has no workspace of its own; it follows the agent it is
-    // with. Without this, rebinding an agent strands every existing direct chat
-    // on the folder it was created against, silently and with no way back.
-    sqlx::query(
-        "UPDATE groups SET workspace_id = ?, updated_at = ? \
-         WHERE conversation_kind = 'direct' AND direct_agent_id = ? \
-           AND owner_id = ? AND status = 'active'",
-    )
-    .bind(&workspace_id)
-    .bind(&now)
-    .bind(&agent_id)
-    .bind(&owner_id)
-    .execute(state.db.pool())
-    .await
-    .map_err(|_| ApiError::internal("failed to move direct chats to the new workspace"))?;
+    if let Some(workspace_ids) = workspace_ids {
+        sqlx::query("DELETE FROM agent_workspaces WHERE agent_id = ?")
+            .bind(&agent_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to replace agent workspaces"))?;
+        for extra_workspace_id in workspace_ids {
+            sqlx::query(
+                "INSERT INTO agent_workspaces (agent_id, workspace_id, created_at) VALUES (?, ?, ?)",
+            )
+            .bind(&agent_id)
+            .bind(extra_workspace_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal("failed to bind agent workspace"))?;
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit agent update"))?;
 
     let row = fetch_row(state.db.pool(), &agent_id)
         .await?
@@ -678,6 +748,22 @@ async fn validate_workspace(
         }
         Some(_) => Ok(id),
     }
+}
+
+async fn validate_workspace_ids(
+    pool: &SqlitePool,
+    raw_ids: Option<&[String]>,
+    primary_id: &str,
+    owner_id: &str,
+) -> Result<Vec<String>, ApiError> {
+    let mut ids = Vec::new();
+    for raw_id in raw_ids.unwrap_or_default() {
+        let id = validate_workspace(pool, raw_id, owner_id).await?;
+        if id != primary_id && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 /// Resolve a provider reference to its canonical id, requiring it to be an

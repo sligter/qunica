@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -235,18 +235,19 @@ fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
 async fn direct_workspace_files_list_stream_and_text_save_round_trip() {
     let (app, _state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-files@example.com").await;
-    let (root, workspace_id) = create_local_workspace(&app, &token, "Direct Workspace").await;
-    std::fs::create_dir(root.path().join("docs")).unwrap();
-    std::fs::write(root.path().join(".hidden"), b"hidden").unwrap();
-    std::fs::write(root.path().join("photo.png"), b"\x89PNG\r\n").unwrap();
-    std::fs::write(root.path().join("manual.pdf"), b"%PDF-1.4\n").unwrap();
-    std::fs::write(root.path().join("page.html"), b"<html>preview</html>").unwrap();
-    let note_path = root.path().join("note.txt");
-    let original = "direct UTF-8 文本 👋\n";
-    std::fs::write(&note_path, original).unwrap();
+    let (_root, workspace_id) = create_local_workspace(&app, &token, "Direct Workspace").await;
     let agent_id = create_agent(&app, &token, &workspace_id, "Local Agent").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap();
+    let chat_root = direct_workspace_root(&app, &token, chat_id).await;
+    std::fs::create_dir(chat_root.join("docs")).unwrap();
+    std::fs::write(chat_root.join(".hidden"), b"hidden").unwrap();
+    std::fs::write(chat_root.join("photo.png"), b"\x89PNG\r\n").unwrap();
+    std::fs::write(chat_root.join("manual.pdf"), b"%PDF-1.4\n").unwrap();
+    std::fs::write(chat_root.join("page.html"), b"<html>preview</html>").unwrap();
+    let note_path = chat_root.join("note.txt");
+    let original = "direct UTF-8 文本 👋\n";
+    std::fs::write(&note_path, original).unwrap();
 
     let (status, workspace_root) = send(
         &app,
@@ -260,11 +261,7 @@ async fn direct_workspace_files_list_stream_and_text_save_round_trip() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         workspace_root["root"],
-        root.path()
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        chat_root.to_string_lossy().to_string()
     );
 
     let (status, list) = send(
@@ -355,12 +352,14 @@ async fn direct_workspace_files_list_stream_and_text_save_round_trip() {
 async fn direct_attachment_message_persists_local_workspace_metadata() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-attachment-message@example.com").await;
-    let (root, workspace_id) = create_local_workspace(&app, &token, "Direct Attachments").await;
-    let attachment_path = root.path().join("diagram.png");
-    std::fs::write(&attachment_path, b"PNG!").unwrap();
+    let (_root, workspace_id) = create_local_workspace(&app, &token, "Direct Attachments").await;
     let agent_id = create_agent(&app, &token, &workspace_id, "Attachment Agent").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap();
+    let attachment_path = direct_workspace_root(&app, &token, chat_id)
+        .await
+        .join("diagram.png");
+    std::fs::write(&attachment_path, b"PNG!").unwrap();
 
     let (status, body) = send(
         &app,
@@ -413,7 +412,7 @@ async fn direct_attachment_message_persists_local_workspace_metadata() {
 }
 
 #[tokio::test]
-async fn direct_workspace_files_reject_cloud_and_ignore_stale_conversation_workspace() {
+async fn direct_workspace_files_reject_cloud_and_never_fall_back_to_the_agent_workspace() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-errors@example.com").await;
 
@@ -430,9 +429,8 @@ async fn direct_workspace_files_reject_cloud_and_ignore_stale_conversation_works
     )
     .await;
 
-    let (root, local_workspace_id) =
+    let (_root, local_workspace_id) =
         create_local_workspace(&app, &token, "Unbound Direct Workspace").await;
-    std::fs::write(root.path().join("agent.txt"), b"agent").unwrap();
     let local_agent_id = create_agent(&app, &token, &local_workspace_id, "Unbound Agent").await;
     let local_chat = create_chat(&app, &token, &local_agent_id).await;
     let local_chat_id = local_chat["id"].as_str().unwrap();
@@ -452,7 +450,7 @@ async fn direct_workspace_files_reject_cloud_and_ignore_stale_conversation_works
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {chat:?}");
-    assert_eq!(chat["workspace_id"], local_workspace_id);
+    assert_eq!(chat["workspace_id"], Value::Null);
 
     let (status, files) = send(
         &app,
@@ -463,8 +461,8 @@ async fn direct_workspace_files_reject_cloud_and_ignore_stale_conversation_works
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "body: {files:?}");
-    assert_eq!(files[0]["name"], "agent.txt");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {files:?}");
+    assert_eq!(files["error"]["code"], "invalid_input");
 
     let (status, roots) = send(
         &app,
@@ -476,8 +474,21 @@ async fn direct_workspace_files_reject_cloud_and_ignore_stale_conversation_works
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {roots:?}");
-    assert_eq!(roots[0]["workspace_id"], local_workspace_id);
-    assert_eq!(roots[0]["display_name"], "Unbound Agent");
+    assert!(roots.as_array().unwrap().is_empty());
+}
+
+async fn direct_workspace_root(app: &Router, token: &str, chat_id: &str) -> PathBuf {
+    let (status, body) = send(
+        app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/root"),
+            token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body:?}");
+    PathBuf::from(body["root"].as_str().unwrap())
 }
 
 #[tokio::test]
@@ -615,7 +626,8 @@ async fn direct_chat_lifecycle_creates_independent_sessions_and_graph() {
     assert_ne!(first["id"], second["id"]);
     assert_eq!(first["title"], "New chat with Atlas");
     assert_eq!(first["title_source"], "automatic");
-    assert_eq!(first["workspace_id"], workspace_id);
+    assert_ne!(first["workspace_id"], workspace_id);
+    assert_ne!(first["workspace_id"], second["workspace_id"]);
 
     let first_id = first["id"].as_str().unwrap();
     let graph: (i64, i64, i64) = sqlx::query_as(
@@ -1154,13 +1166,14 @@ async fn direct_stream_generates_first_title_and_replays_conversation_update() {
 async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes() {
     let (app, _state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-mutations@example.com").await;
-    let (root, workspace_id) =
+    let (_root, workspace_id) =
         create_local_workspace(&app, &token, "Direct Mutations Workspace").await;
-    std::fs::write(root.path().join("before.txt"), b"before").unwrap();
-    std::fs::create_dir(root.path().join("empty")).unwrap();
     let agent_id = create_agent(&app, &token, &workspace_id, "Local Agent").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap();
+    let chat_root = direct_workspace_root(&app, &token, chat_id).await;
+    std::fs::write(chat_root.join("before.txt"), b"before").unwrap();
+    std::fs::create_dir(chat_root.join("empty")).unwrap();
     let foreign_token = register(&app, "direct-workspace-foreign@example.com").await;
 
     let (status, body) = send(
@@ -1174,7 +1187,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
-    assert!(root.path().join("before.txt").is_file());
+    assert!(chat_root.join("before.txt").is_file());
 
     let (status, body) = send(
         &app,
@@ -1186,7 +1199,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
-    assert!(root.path().join("empty").is_dir());
+    assert!(chat_root.join("empty").is_dir());
 
     let (status, renamed) = send(
         &app,
@@ -1200,7 +1213,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     .await;
     assert_eq!(status, StatusCode::OK, "body: {renamed:?}");
     assert_eq!(renamed["path"], "after.txt");
-    assert!(root.path().join("after.txt").is_file());
+    assert!(chat_root.join("after.txt").is_file());
 
     let (status, body) = send(
         &app,
@@ -1212,10 +1225,10 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
-    assert!(!root.path().join("empty").exists());
+    assert!(!chat_root.join("empty").exists());
 
-    std::fs::create_dir(root.path().join("nested")).unwrap();
-    std::fs::write(root.path().join("nested").join("child.txt"), b"child").unwrap();
+    std::fs::create_dir(chat_root.join("nested")).unwrap();
+    std::fs::write(chat_root.join("nested").join("child.txt"), b"child").unwrap();
     let (status, body) = send(
         &app,
         request(
@@ -1227,7 +1240,7 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
-    assert!(!root.path().join("nested").exists());
+    assert!(!chat_root.join("nested").exists());
 
     let (status, initialized) = send(
         &app,
@@ -1255,21 +1268,22 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     assert_eq!(body["error"]["code"], "permission_denied");
 }
 
-/// A direct chat has no workspace of its own: it follows the agent it is with.
-/// Rebinding the agent must move the chat, not strand it on the old folder.
+/// Direct chats keep their own workspace when the agent is rebound.
 #[tokio::test]
-async fn direct_chat_workspace_follows_the_agent_when_it_is_rebound() {
+async fn direct_chat_workspace_is_isolated_from_agent_rebinding() {
     let (app, _state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-follows@example.com").await;
     let (first_root, first_workspace) = create_local_workspace(&app, &token, "First").await;
-    std::fs::write(first_root.path().join("old.txt"), b"old").unwrap();
     let agent_id = create_agent(&app, &token, &first_workspace, "Mover").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    assert_eq!(chat["workspace_id"], first_workspace);
+    let chat_workspace = chat["workspace_id"].as_str().unwrap().to_string();
+    assert_ne!(chat_workspace, first_workspace);
+    let chat_root = direct_workspace_root(&app, &token, &chat_id).await;
+    std::fs::write(chat_root.join("chat.txt"), b"chat").unwrap();
 
     let (second_root, second_workspace) = create_local_workspace(&app, &token, "Second").await;
-    std::fs::write(second_root.path().join("new.txt"), b"new").unwrap();
+    std::fs::write(second_root.path().join("agent.txt"), b"agent").unwrap();
     let (status, updated) = send(
         &app,
         request(
@@ -1288,9 +1302,9 @@ async fn direct_chat_workspace_follows_the_agent_when_it_is_rebound() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {chat:?}");
-    assert_eq!(chat["workspace_id"], second_workspace);
+    assert_eq!(chat["workspace_id"], chat_workspace);
 
-    // The panel follows too: the new folder's file is listed, the old one is not.
+    // The private conversation still sees only its own directory.
     let (status, files) = send(
         &app,
         authed(
@@ -1307,8 +1321,8 @@ async fn direct_chat_workspace_follows_the_agent_when_it_is_rebound() {
         .iter()
         .map(|file| file["name"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    assert!(names.contains(&"new.txt".to_string()), "got: {names:?}");
-    assert!(!names.contains(&"old.txt".to_string()), "got: {names:?}");
+    assert_eq!(names, vec!["chat.txt"]);
+    assert!(!first_root.path().join("chat.txt").is_file());
 }
 
 /// A direct chat can upload just like a group chat; a one-on-one is where a
@@ -1317,10 +1331,11 @@ async fn direct_chat_workspace_follows_the_agent_when_it_is_rebound() {
 async fn direct_workspace_upload_writes_into_the_conversation_workspace() {
     let (app, _state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-upload@example.com").await;
-    let (root, workspace_id) = create_local_workspace(&app, &token, "Uploads").await;
+    let (_root, workspace_id) = create_local_workspace(&app, &token, "Uploads").await;
     let agent_id = create_agent(&app, &token, &workspace_id, "Uploader").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap();
+    let chat_root = direct_workspace_root(&app, &token, chat_id).await;
 
     let boundary = "boundary123";
     let body = format!(
@@ -1345,5 +1360,5 @@ async fn direct_workspace_upload_writes_into_the_conversation_workspace() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    assert!(root.path().join("uploads/notes.txt").is_file());
+    assert!(chat_root.join("uploads/notes.txt").is_file());
 }

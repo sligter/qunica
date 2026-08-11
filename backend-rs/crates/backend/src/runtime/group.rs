@@ -4988,12 +4988,14 @@ fn render_workspace_section(
             mount.root.to_string_lossy()
         ));
     }
-    lines.push(
-        "Address a mounted file by keeping its prefix, e.g. `Read` with path \
-         `~self/notes.md`. Glob and Grep return mounted matches with the same prefix. \
-         Bash runs in the primary root only and cannot reach mounts."
-            .to_string(),
-    );
+    if let Some(example) = mounts.first() {
+        lines.push(format!(
+            "Address a mounted file by keeping its prefix, e.g. `Read` with path \
+             `{}/notes.md`. Glob and Grep return mounted matches with the same prefix. \
+             Bash runs in the primary root only and cannot reach mounts.",
+            example.name
+        ));
+    }
     lines.join("\n")
 }
 
@@ -5043,18 +5045,14 @@ async fn load_group_roster(
 struct ResolvedWorkspaces {
     /// Root every plain relative path resolves against, when one is configured.
     primary: Option<PathBuf>,
-    /// The agent's own root, exposed as the `~self/` mount. Only ever set
-    /// alongside a primary root that is the conversation workspace.
-    self_mount: Option<PathBuf>,
+    /// Explicitly granted secondary roots.
+    mounts: Vec<WorkspaceMount>,
 }
 
 impl ResolvedWorkspaces {
     /// The mounts to hand the tool executor.
     fn mounts(&self) -> Vec<WorkspaceMount> {
-        self.self_mount
-            .iter()
-            .filter_map(|root| WorkspaceMount::new(SELF_MOUNT_NAME, root).ok())
-            .collect()
+        self.mounts.clone()
     }
 }
 
@@ -5068,28 +5066,81 @@ async fn resolve_workspaces(
     agent: &Candidate,
     group: &GroupRuntimeConfig,
 ) -> anyhow::Result<ResolvedWorkspaces> {
-    if !agent.workspace_mode.uses_group_workspace() {
-        return Ok(ResolvedWorkspaces {
-            primary: load_local_workspace_root(
-                pool,
-                agent.workspace_id.as_deref(),
-                &agent.owner_id,
-            )
-            .await?,
-            self_mount: None,
-        });
-    }
-    let primary =
-        load_local_workspace_root(pool, group.workspace_id.as_deref(), &agent.owner_id).await?;
-    let self_mount = if agent.workspace_mode.mounts_own_workspace() && primary.is_some() {
-        load_local_workspace_root(pool, agent.workspace_id.as_deref(), &agent.owner_id).await?
+    let group_root = if agent.workspace_mode.uses_group_workspace() {
+        load_local_workspace_root(pool, group.workspace_id.as_deref(), &agent.owner_id).await?
     } else {
         None
     };
+    if agent.workspace_mode == WorkspaceMode::Group {
+        return Ok(ResolvedWorkspaces {
+            primary: group_root,
+            mounts: Vec::new(),
+        });
+    }
+
+    let own_roots = load_agent_workspace_roots(pool, agent).await?;
+    if agent.workspace_mode == WorkspaceMode::SelfOnly {
+        let primary = own_roots.first().map(|(_, root)| root.clone());
+        let mounts = own_roots
+            .into_iter()
+            .skip(1)
+            .filter_map(|(id, root)| WorkspaceMount::new(format!("~ws-{id}"), root).ok())
+            .collect();
+        return Ok(ResolvedWorkspaces { primary, mounts });
+    }
+
+    let mounts = if group_root.is_some() {
+        own_roots
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, (id, root))| {
+                let name = if index == 0 && agent.workspace_id.as_deref() == Some(id.as_str()) {
+                    SELF_MOUNT_NAME.to_string()
+                } else {
+                    format!("~ws-{id}")
+                };
+                WorkspaceMount::new(name, root).ok()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(ResolvedWorkspaces {
-        primary,
-        self_mount,
+        primary: group_root,
+        mounts,
     })
+}
+
+async fn load_agent_workspace_roots(
+    pool: &SqlitePool,
+    agent: &Candidate,
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let mut roots = Vec::new();
+    if let Some(id) = agent.workspace_id.as_deref() {
+        if let Some(root) = load_local_workspace_root(pool, Some(id), &agent.owner_id).await? {
+            roots.push((id.to_string(), root));
+        }
+    }
+    let extras = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT aw.workspace_id, w.local_path FROM agent_workspaces aw \
+         JOIN workspaces w ON w.id = aw.workspace_id \
+         WHERE aw.agent_id = ? AND w.owner_id = ? AND w.status = 'active' \
+           AND w.backend_type = 'local' \
+         ORDER BY aw.created_at ASC, aw.workspace_id ASC",
+    )
+    .bind(&agent.agent_id)
+    .bind(&agent.owner_id)
+    .fetch_all(pool)
+    .await?;
+    for (id, path) in extras {
+        if roots.iter().any(|(existing, _)| existing == &id) {
+            continue;
+        }
+        if let Some(path) = path {
+            roots.push((id, PathBuf::from(path)));
+        }
+    }
+    Ok(roots)
 }
 
 /// Load the local path of an active, owner-held workspace.

@@ -22,6 +22,8 @@ import { localizedErrorText, messageError, translatedError, type LocalizedError 
 interface WorkspaceFieldProps {
   value: string
   onChange: (workspaceId: string) => void
+  additionalValues?: string[]
+  onAdditionalChange?: (workspaceIds: string[]) => void
   error?: string
   variant?: 'default' | 'compact'
   allowQuickCreate?: boolean
@@ -59,6 +61,8 @@ function localPathLooksAbsolute(path: string) {
 export function WorkspaceField({
   value,
   onChange,
+  additionalValues = [],
+  onAdditionalChange,
   error,
   variant = 'default',
   allowQuickCreate = false,
@@ -223,6 +227,37 @@ export function WorkspaceField({
             </option>
           ))}
         </select>
+        {onAdditionalChange ? (
+          <fieldset className="space-y-1.5 rounded-md border border-border p-2.5">
+            <legend className="px-1 text-xs font-medium">
+              {t('agents:workspacePicker.additional')}
+            </legend>
+            <p className="text-2xs text-muted-foreground">
+              {t('agents:workspacePicker.additionalDescription')}
+            </p>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {(workspaces.data ?? [])
+                .filter((workspace) => workspace.id !== value)
+                .map((workspace) => (
+                  <label key={workspace.id} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={additionalValues.includes(workspace.id)}
+                      onChange={(event) =>
+                        onAdditionalChange(
+                          event.target.checked
+                            ? [...additionalValues, workspace.id]
+                            : additionalValues.filter((id) => id !== workspace.id),
+                        )
+                      }
+                    />
+                    <span className="sr-only">{t('agents:workspacePicker.additional')}: </span>
+                    <span className="truncate">{workspace.name}</span>
+                  </label>
+                ))}
+            </div>
+          </fieldset>
+        ) : null}
         {error && <p className="text-xs text-destructive">{error}</p>}
         {workspaces.data && workspaces.data.length === 0 && !showCreate && (
           <p className="text-2xs text-muted-foreground">

@@ -32,7 +32,7 @@ use crate::llm::{
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{resolve_workspace_path, ToolError};
 
-const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, name, description, announcement, \
+const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, \
      free_speech, proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
      scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
@@ -106,6 +106,8 @@ pub struct CreateRequest {
     #[serde(default)]
     workspace_id: Option<String>,
     #[serde(default)]
+    auto_share_workspace_with_new_agents: Option<bool>,
+    #[serde(default)]
     free_speech: Option<bool>,
     #[serde(default)]
     proactive_mode: Option<bool>,
@@ -161,6 +163,8 @@ pub struct UpdateRequest {
     announcement: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     workspace_id: Option<Option<String>>,
+    #[serde(default)]
+    auto_share_workspace_with_new_agents: Option<bool>,
     #[serde(default)]
     free_speech: Option<bool>,
     #[serde(default)]
@@ -387,6 +391,7 @@ pub struct GroupWorkspaceGitCommitMessageResponse {
 pub struct GroupResponse {
     id: String,
     workspace_id: Option<String>,
+    auto_share_workspace_with_new_agents: bool,
     name: String,
     description: Option<String>,
     announcement: Option<String>,
@@ -515,6 +520,7 @@ struct GroupRow {
     id: String,
     owner_id: String,
     workspace_id: Option<String>,
+    auto_share_workspace_with_new_agents: i64,
     name: String,
     description: Option<String>,
     announcement: Option<String>,
@@ -780,6 +786,7 @@ impl From<GroupRow> for GroupResponse {
         Self {
             id: row.id,
             workspace_id: row.workspace_id,
+            auto_share_workspace_with_new_agents: row.auto_share_workspace_with_new_agents != 0,
             name: row.name,
             description: row.description,
             announcement: row.announcement,
@@ -923,6 +930,9 @@ pub(crate) async fn create_inner(
     let name = validate_name(&body.name)?;
     let description = normalize_description(body.description.as_deref());
     let announcement = normalize_description(body.announcement.as_deref());
+    let auto_share_workspace_with_new_agents = body
+        .auto_share_workspace_with_new_agents
+        .unwrap_or(true);
     let free_speech = body.free_speech.unwrap_or(false);
     let proactive_mode = body.proactive_mode.unwrap_or(false);
     let proactive_max_rounds = validate_proactive_max_rounds(body.proactive_max_rounds)?;
@@ -951,7 +961,7 @@ pub(crate) async fn create_inner(
 
     sqlx::query(
         "INSERT INTO groups \
-         (id, owner_id, workspace_id, name, description, announcement, free_speech, \
+         (id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, free_speech, \
           proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
           allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
           scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
@@ -959,12 +969,13 @@ pub(crate) async fn create_inner(
           max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
           moderator_provider_id, moderator_model, \
           status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
                  ?, ?, ?, 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
     .bind(&workspace_id)
+    .bind(auto_share_workspace_with_new_agents as i64)
     .bind(&name)
     .bind(&description)
     .bind(&announcement)
@@ -1005,7 +1016,12 @@ pub(crate) async fn create_inner(
     .await
     .map_err(|_| ApiError::internal("failed to create owner membership"))?;
 
-    let default_context_scope = context_scope_with_workspace_mode(None, WorkspaceMode::default())?;
+    let default_mode = if auto_share_workspace_with_new_agents {
+        WorkspaceMode::Group
+    } else {
+        WorkspaceMode::SelfOnly
+    };
+    let default_context_scope = context_scope_with_workspace_mode(None, default_mode)?;
     for (position, agent_id) in initial_agents.iter().enumerate() {
         let (topology_role, speaking_order) = initial_agent_topology(&communication_mode, position);
         let joined_at = now_plus_rfc3339(position as i64);
@@ -1116,6 +1132,10 @@ pub(crate) async fn update_inner(
         },
         None => existing.workspace_id.clone(),
     };
+    let auto_share_workspace_with_new_agents = body
+        .auto_share_workspace_with_new_agents
+        .map(i64::from)
+        .unwrap_or(existing.auto_share_workspace_with_new_agents);
     let free_speech = body
         .free_speech
         .map(|b| b as i64)
@@ -1154,7 +1174,7 @@ pub(crate) async fn update_inner(
         .map_err(|_| ApiError::internal("failed to start group update transaction"))?;
     sqlx::query(
         "UPDATE groups SET \
-         name = ?, description = ?, announcement = ?, workspace_id = ?, free_speech = ?, \
+         name = ?, description = ?, announcement = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
          proactive_mode = ?, proactive_max_rounds = ?, proactive_reply_multiplier = ?, \
          allow_agent_free_mention = ?, agent_free_mention_max_dispatches = ?, \
          communication_mode = ?, scheduler_enabled = ?, agent_mention_policy = ?, \
@@ -1168,6 +1188,7 @@ pub(crate) async fn update_inner(
     .bind(&description)
     .bind(&announcement)
     .bind(&workspace_id)
+    .bind(auto_share_workspace_with_new_agents)
     .bind(free_speech)
     .bind(proactive_mode)
     .bind(proactive_max_rounds)
@@ -2576,7 +2597,11 @@ pub(crate) async fn add_group_agent_inner(
         requested_workspace_mode(
             body.workspace_mode.as_deref(),
             body.share_group_workspace,
-            WorkspaceMode::default(),
+            if group.auto_share_workspace_with_new_agents != 0 {
+                WorkspaceMode::Group
+            } else {
+                WorkspaceMode::SelfOnly
+            },
         )?,
     )?;
 

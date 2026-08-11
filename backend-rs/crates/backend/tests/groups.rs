@@ -4507,6 +4507,73 @@ async fn group_agents_add_and_list_return_group_agent_read() {
 }
 
 #[tokio::test]
+async fn group_auto_share_workspace_setting_applies_only_to_new_members() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-auto-share-workspace@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let first = create_agent(&app, &token, &workspace, "First").await;
+    let second = create_agent(&app, &token, &workspace, "Second").await;
+    let (status, group) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({
+                "name": "Private by default",
+                "workspace_id": workspace,
+                "auto_share_workspace_with_new_agents": false,
+                "initial_agents": [first]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {group:?}");
+    assert_eq!(group["auto_share_workspace_with_new_agents"], false);
+    let group_id = group["id"].as_str().unwrap();
+
+    let (status, initial) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(initial[0]["workspace_mode"], "self");
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({"auto_share_workspace_with_new_agents": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, added) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/agents"),
+            &token,
+            json!({"agent_id": second}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(added["workspace_mode"], "group");
+
+    let (status, members) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(members[0]["workspace_mode"], "self");
+}
+
+#[tokio::test]
 async fn group_agents_return_last_context_usage() {
     let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "group-agent-usage@example.com").await;

@@ -90,10 +90,10 @@ function AddUser({ user, groupId }: { user: UserRead; groupId: string }) {
   return <li className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{user.name}</p><p className="truncate text-xs text-muted-foreground">{user.email}</p></div><Button size="sm" onClick={() => add.mutate({ groupId, userId: user.id })} disabled={add.isPending}>{add.isPending ? t('members.adding') : t('members.add')}</Button></li>
 }
 
-function AddAgent({ agent, groupId }: { agent: AgentRead; groupId: string }) {
+function AddAgent({ agent, groupId, defaultWorkspaceMode }: { agent: AgentRead; groupId: string; defaultWorkspaceMode: GroupWorkspaceMode }) {
   const { t } = useTranslation('groups')
   const add = useAddAgentToGroup()
-  const [workspaceMode, setWorkspaceMode] = useState<GroupWorkspaceMode>('group')
+  const [workspaceMode, setWorkspaceMode] = useState<GroupWorkspaceMode>(defaultWorkspaceMode)
   return <li className="flex items-start justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{agent.name}</p><p className="truncate text-xs text-muted-foreground">{agent.description || t('members.noDescription')}</p><label className="mt-1.5 block space-y-1 text-xs text-muted-foreground"><span>{t('members.allowWorkspace')}</span><select aria-label={t('members.workspaceAccess')} className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs" value={workspaceMode} onChange={(event) => { if (isWorkspaceMode(event.target.value)) setWorkspaceMode(event.target.value) }}>{workspaceModes.map((value) => <option key={value} value={value}>{t(workspaceModeKeys[value])}</option>)}</select></label></div><Button size="sm" onClick={() => add.mutate({ groupId, agentId: agent.id, workspaceMode })} disabled={add.isPending}>{add.isPending ? t('members.adding') : t('members.add')}</Button></li>
 }
 
@@ -264,6 +264,8 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
     [group.data?.muted_agent_ids],
   )
   const mode = group.data?.communication_mode ?? 'mesh'
+  const defaultWorkspaceMode: GroupWorkspaceMode =
+    group.data?.auto_share_workspace_with_new_agents === false ? 'self' : 'group'
   const entries = useMemo<Entry[]>(
     () => [
       ...(humans.data ?? []).map((member) => ({ kind: 'human' as const, member })),
@@ -347,7 +349,7 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
               <ul className="mt-2 max-h-48 overflow-y-auto">{(userCandidates.data ?? []).filter((user) => !(humans.data ?? []).some((member) => member.user_id === user.id)).map((user) => <AddUser key={user.id} user={user} groupId={groupId} />)}</ul>
             </Panel>
             <Panel title={t('members.addAgent')}>
-              <ul className="max-h-56 overflow-y-auto">{availableAgents.map((agent) => <AddAgent key={agent.id} agent={agent} groupId={groupId} />)}{availableAgents.length === 0 ? <li className="py-2 text-xs text-muted-foreground">{t('members.noAgents')}</li> : null}</ul>
+              <ul className="max-h-56 overflow-y-auto">{availableAgents.map((agent) => <AddAgent key={`${agent.id}:${defaultWorkspaceMode}`} agent={agent} groupId={groupId} defaultWorkspaceMode={defaultWorkspaceMode} />)}{availableAgents.length === 0 ? <li className="py-2 text-xs text-muted-foreground">{t('members.noAgents')}</li> : null}</ul>
             </Panel>
           </>
         )}

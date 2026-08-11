@@ -64,6 +64,9 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   const [freeSpeech, setFreeSpeech] = useState(group.free_speech)
   const [proactiveMode, setProactiveMode] = useState(group.proactive_mode)
   const [allowFreeMention, setAllowFreeMention] = useState(group.allow_agent_free_mention)
+  const [autoShareWorkspace, setAutoShareWorkspace] = useState(
+    group.auto_share_workspace_with_new_agents ?? true,
+  )
   const [communicationMode, setCommunicationMode] = useState<GroupCommunicationMode>(
     group.communication_mode,
   )
@@ -100,6 +103,9 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   useEffect(() => {
     setAllowFreeMention(group.allow_agent_free_mention)
   }, [group.allow_agent_free_mention])
+  useEffect(() => {
+    setAutoShareWorkspace(group.auto_share_workspace_with_new_agents ?? true)
+  }, [group.auto_share_workspace_with_new_agents])
   useEffect(() => {
     setFreeMentionMaxDispatches(group.agent_free_mention_max_dispatches)
   }, [group.agent_free_mention_max_dispatches])
@@ -139,6 +145,14 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     setAllowFreeMention(next)
     void saveInstant({ allow_agent_free_mention: next }, () =>
       setAllowFreeMention(previous),
+    )
+  }
+
+  const onAutoShareWorkspaceChange = (next: boolean) => {
+    const previous = autoShareWorkspace
+    setAutoShareWorkspace(next)
+    void saveInstant({ auto_share_workspace_with_new_agents: next }, () =>
+      setAutoShareWorkspace(previous),
     )
   }
 
@@ -316,6 +330,18 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             onCheckedChange={onFreeSpeechChange}
             disabled={update.isPending}
             aria-label={t('settings.freeSpeech')}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label={t('settings.autoShareWorkspace')}
+          description={t('settings.autoShareWorkspaceDescription')}
+        >
+          <Switch
+            checked={autoShareWorkspace}
+            onCheckedChange={onAutoShareWorkspaceChange}
+            disabled={update.isPending}
+            aria-label={t('settings.autoShareWorkspace')}
           />
         </SettingsRow>
 

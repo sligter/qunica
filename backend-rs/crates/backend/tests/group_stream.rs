@@ -7152,6 +7152,17 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
         .execute(state.db.pool())
         .await
         .unwrap();
+    let (extra_root, extra_workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(extra_root.path().join("reference.md"), "attached reference\n").unwrap();
+    sqlx::query(
+        "INSERT INTO agent_workspaces (agent_id, workspace_id, created_at) \
+         VALUES (?, ?, '2024-01-01T00:00:01Z')",
+    )
+    .bind(&agent)
+    .bind(&extra_workspace)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
     sqlx::query(
         "UPDATE group_agents SET context_scope_json = '{\"workspace_mode\":\"group_and_self\"}' \
          WHERE group_id = ? AND agent_id = ?",
@@ -7207,6 +7218,15 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
         system_prompt.contains(&format!(
             "- mount ~self/ (your own workspace): {}",
             std::fs::canonicalize(own_root.path())
+                .unwrap()
+                .to_string_lossy()
+        )),
+        "got: {system_prompt}"
+    );
+    assert!(
+        system_prompt.contains(&format!(
+            "- mount ~ws-{extra_workspace}/: {}",
+            std::fs::canonicalize(extra_root.path())
                 .unwrap()
                 .to_string_lossy()
         )),

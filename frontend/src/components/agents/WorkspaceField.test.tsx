@@ -82,6 +82,30 @@ describe('WorkspaceField', () => {
     })
   })
 
+  it('selects additional workspaces without duplicating the primary', () => {
+    mocks.workspaces = [
+      mocks.workspaces[0],
+      { ...mocks.workspaces[0], id: 'workspace-2', name: 'Reference workspace' },
+    ]
+    const onAdditionalChange = vi.fn()
+    render(
+      <WorkspaceField
+        value="workspace-1"
+        onChange={vi.fn()}
+        additionalValues={[]}
+        onAdditionalChange={onAdditionalChange}
+      />,
+    )
+
+    expect(
+      screen.queryByRole('checkbox', { name: 'Additional workspaces:Project workspace' }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'Additional workspaces:Reference workspace' }),
+    )
+    expect(onAdditionalChange).toHaveBeenCalledWith(['workspace-2'])
+  })
+
   it('translates the workspace label, picker action, and selected location', async () => {
     await i18n.changeLanguage('zh-CN')
 
