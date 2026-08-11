@@ -7707,17 +7707,16 @@ async fn ask_user_pauses_a_turn_without_the_scheduler() {
     let owner = owner_id(&state, "unscheduled-tool-wait@example.com").await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": false})).await;
-    let provider = seed_provider(
-        &state,
-        &owner,
-        &fake_provider_sequence(vec![tool_body(vec![(
+    let (provider_url, requests) = recording_fake_provider_sequence(vec![
+        tool_body(vec![(
             "ask",
             "AskUser",
             json!({"question": "Proceed?", "required": true}),
-        )])])
-        .await,
-    )
+        )]),
+        text_body("continued with context"),
+    ])
     .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
     seed_agent_with_tool_config(
         &state,
         &owner,
@@ -7748,6 +7747,43 @@ async fn ask_user_pauses_a_turn_without_the_scheduler() {
         !kinds(&events).iter().any(|kind| kind == "error"),
         "events: {events:?}"
     );
+    let checkpoint: (String, String) = sqlx::query_as(
+        "SELECT status, content_json FROM messages \
+         WHERE group_id = ? AND sender_type = 'agent'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(checkpoint.0, "visible");
+    let checkpoint: Value = serde_json::from_str(&checkpoint.1).unwrap();
+    assert_eq!(checkpoint["tool_calls"][0]["tool_call_id"], "ask");
+    assert!(checkpoint["tool_calls"][0]["result"]
+        .as_str()
+        .is_some_and(|result| result.contains("Proceed?")));
+
+    let continued = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Waiter continue"}),
+    )
+    .await;
+    assert!(payloads_of_kind(&continued, StreamEventKind::AgentMessage)
+        .iter()
+        .any(|message| message["content"] == "continued with context"));
+    let requests = requests.lock().await;
+    let continued_messages = requests[1]["messages"].as_array().unwrap();
+    assert!(continued_messages.iter().any(|message| {
+        message["role"] == "assistant" && message["tool_calls"][0]["id"] == "ask"
+    }));
+    assert!(continued_messages.iter().any(|message| {
+        message["role"] == "tool"
+            && message["tool_call_id"] == "ask"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("Proceed?"))
+    }));
     // No scheduler means no dispatch rows to terminalize.
     let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
         .fetch_one(state.db.pool())

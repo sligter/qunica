@@ -126,6 +126,66 @@ async fn concurrent_turn_creation_keeps_one_active_turn_per_thread() {
     assert_eq!(active_turns, 1);
 }
 
+#[tokio::test]
+async fn finishing_a_dispatch_retries_a_transient_sqlite_write_lock() {
+    let (fixture, _directory) = Fixture::new_file().await;
+    fixture.create_running_turn("turn-locked").await;
+    fixture
+        .queue_and_start("dispatch-locked", "turn-locked")
+        .await;
+
+    // busy_timeout is connection-local. Configure every pooled connection so
+    // the first attempt fails promptly instead of waiting out the blocker.
+    let mut connections = Vec::new();
+    for _ in 0..8 {
+        connections.push(fixture.pool.acquire().await.unwrap());
+    }
+    for connection in &mut connections {
+        sqlx::query("PRAGMA busy_timeout = 1")
+            .execute(&mut **connection)
+            .await
+            .unwrap();
+    }
+    drop(connections);
+
+    let mut blocker = fixture.pool.begin().await.unwrap();
+    sqlx::query("UPDATE groups SET updated_at = 'blocked' WHERE id = ?")
+        .bind(&fixture.group_id)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    let store = fixture.store.clone();
+    let output = fixture.output("message-after-lock");
+    let ready = Arc::new(Barrier::new(2));
+    let finish_ready = ready.clone();
+    let finish = tokio::spawn(async move {
+        finish_ready.wait().await;
+        store
+            .finish_dispatch(FinishDispatch {
+                dispatch_id: "dispatch-locked".to_owned(),
+                next: DispatchStatus::Completed,
+                artifact: None,
+                total_tokens: 7,
+                failure_code: None,
+                output: Some(output),
+            })
+            .await
+    });
+    ready.wait().await;
+    let started = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    blocker.rollback().await.unwrap();
+
+    let finished = finish.await.unwrap().unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+    assert_eq!(finished.status, DispatchStatus::Completed);
+    assert_eq!(
+        finished.output_message_id.as_deref(),
+        Some("message-after-lock")
+    );
+}
+
 struct Fixture {
     pool: sqlx::SqlitePool,
     store: SchedulerStore,
@@ -138,7 +198,27 @@ impl Fixture {
     async fn new() -> Self {
         let db = Db::connect("sqlite::memory:").await.unwrap();
         db.migrate().await.unwrap();
-        let pool = db.pool().clone();
+        Self::from_pool(db.pool().clone()).await
+    }
+
+    async fn new_file() -> (Self, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut path = directory
+            .path()
+            .join("scheduler-lock.sqlite3")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !path.starts_with('/') && !path.starts_with("//") {
+            path = format!("/{path}");
+        }
+        let db = Db::connect(&format!("sqlite://{path}?mode=rwc"))
+            .await
+            .unwrap();
+        db.migrate().await.unwrap();
+        (Self::from_pool(db.pool().clone()).await, directory)
+    }
+
+    async fn from_pool(pool: sqlx::SqlitePool) -> Self {
         sqlx::query(
             "INSERT INTO users (id, email, password_hash, name, created_at, updated_at) \
              VALUES ('user-1', 'owner@example.test', 'hash', 'Owner', ?, ?)",

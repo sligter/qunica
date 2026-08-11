@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use serde_json::Value;
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
@@ -20,6 +20,9 @@ use super::{
         SchedulerStateError, TurnStatus,
     },
 };
+
+const SQLITE_WRITE_ATTEMPTS: usize = 3;
+const SQLITE_WRITE_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Clone)]
 pub struct SchedulerStore {
@@ -227,6 +230,47 @@ impl SchedulerStore {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+
+        for attempt in 1..=SQLITE_WRITE_ATTEMPTS {
+            match self
+                .finish_dispatch_once(&input, artifact_json.as_deref())
+                .await
+            {
+                Err(error)
+                    if attempt < SQLITE_WRITE_ATTEMPTS && is_transient_sqlite_lock(&error) =>
+                {
+                    tracing::warn!(
+                        dispatch_id = %input.dispatch_id,
+                        attempt,
+                        error = %error,
+                        "retrying scheduler dispatch persistence after SQLite lock"
+                    );
+                    tokio::time::sleep(SQLITE_WRITE_RETRY_DELAY).await;
+                }
+                Err(error) => {
+                    if matches!(
+                        error,
+                        SchedulerStoreError::Database(_) | SchedulerStoreError::Persistence(_)
+                    ) {
+                        tracing::error!(
+                            dispatch_id = %input.dispatch_id,
+                            error = %error,
+                            "failed to persist finished scheduler dispatch"
+                        );
+                    }
+                    return Err(error);
+                }
+                Ok(snapshot) => return Ok(snapshot),
+            }
+        }
+        unreachable!("scheduler dispatch retry loop always returns")
+    }
+
+    async fn finish_dispatch_once(
+        &self,
+        input: &FinishDispatch,
+        artifact_json: Option<&str>,
+    ) -> Result<DispatchSnapshot, SchedulerStoreError> {
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
         let mut tx = self.pool.begin().await?;
@@ -257,7 +301,7 @@ impl SchedulerStore {
             .await?);
         }
 
-        if let Some(output) = input.output {
+        if let Some(output) = input.output.as_ref() {
             let (turn_id, thread_id, group_id, turn_status): (String, String, String, String) =
                 sqlx::query_as(
                     "SELECT d.turn_id, t.thread_id, t.group_id, t.status \
@@ -608,6 +652,19 @@ pub enum SchedulerStoreError {
     },
     #[error("invalid scheduler input: {0}")]
     InvalidInput(String),
+}
+
+fn is_transient_sqlite_lock(error: &SchedulerStoreError) -> bool {
+    let error = match error {
+        SchedulerStoreError::Database(error) => Some(error),
+        SchedulerStoreError::Persistence(error) => error.downcast_ref::<sqlx::Error>(),
+        _ => None,
+    };
+    error
+        .and_then(sqlx::Error::as_database_error)
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| matches!(code & 0xff, 5 | 6))
 }
 
 /// Insert one `pending` turn and link its trigger message.

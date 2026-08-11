@@ -2809,24 +2809,37 @@ async fn run_agent_turn(
                     outcome: AgentExecutionOutcome::WaitingForUser,
                 }));
             }
-            // The legacy fan-out path — which every direct chat takes, since
-            // `direct_chats::create` writes `scheduler_enabled = 0` and
-            // `groups::update` refuses `conversation_kind = 'direct'` — runs
-            // with no dispatch row. There is nothing to terminalize there; the
-            // pause is carried entirely by the stream event and the result.
-            if let Some(dispatch) = ctx.scheduled_dispatch.clone() {
-                dispatch
-                    .store
-                    .finish_dispatch(FinishDispatch {
-                        dispatch_id: dispatch.id,
-                        next: DispatchStatus::WaitingForUser,
-                        artifact: None,
-                        total_tokens: token_count_i64(ctx.scheduled_total_tokens),
-                        failure_code: None,
-                        output: None,
-                    })
-                    .await
-                    .map_err(|_| StepErr::SchedulerPersistence)?;
+            let visible = interrupted_visible_content(&content)
+                .unwrap_or_else(|| "Waiting for your input".to_string());
+            let agent_message = NewMessage {
+                id: Uuid::new_v4().to_string(),
+                sender_type: "agent".to_string(),
+                sender_id: Some(agent.agent_id.clone()),
+                message_type: "text".to_string(),
+                content: visible.clone(),
+                content_json: turn.to_content_json(),
+            };
+            let message_payload = json!({
+                "message_id": agent_message.id,
+                "agent_id": agent.agent_id,
+                "sender_id": agent.agent_id,
+                "display_name": agent.display_name,
+                "content": visible,
+            });
+            if ctx.scheduled_dispatch.is_some() {
+                ctx.emit_scheduled_agent_message(
+                    message_payload,
+                    agent_message,
+                    DispatchStatus::WaitingForUser,
+                )
+                .await?;
+            } else {
+                ctx.emit_message(
+                    StreamEventKind::AgentMessage,
+                    message_payload,
+                    &agent_message,
+                )
+                .await?;
             }
             ctx.emit_durable_event(
                 StreamEventKind::WaitingForUser,
