@@ -317,6 +317,46 @@ export interface ContextUsage {
   updated_at?: string | null
 }
 
+export interface TokenUsageTotals {
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  calls: number
+}
+
+export interface TokenUsageSummary extends TokenUsageTotals {
+  active_agents: number
+}
+
+export interface TokenUsageTimelinePoint extends TokenUsageTotals {
+  date: string
+}
+
+export interface TokenUsageBreakdown extends TokenUsageTotals {
+  id: string
+  name: string
+}
+
+export interface TokenUsageFilterOption {
+  id: string
+  name: string
+}
+
+export interface TokenUsageRead {
+  summary: TokenUsageSummary
+  timeline: TokenUsageTimelinePoint[]
+  by_group: TokenUsageBreakdown[]
+  by_provider: TokenUsageBreakdown[]
+  by_model: TokenUsageBreakdown[]
+  by_agent: TokenUsageBreakdown[]
+  filters: {
+    groups: TokenUsageFilterOption[]
+    providers: TokenUsageFilterOption[]
+    models: TokenUsageFilterOption[]
+    agents: TokenUsageFilterOption[]
+  }
+}
+
 export interface AgentCreate {
   name: string
   description?: string

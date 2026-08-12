@@ -998,6 +998,48 @@ async fn run_scheduled_turn(
                         }
                     };
                     if attempt.provider_called {
+                        let provider_name = match sqlx::query_scalar::<_, String>(
+                            "SELECT name FROM llm_providers WHERE id = ? AND owner_id = ?",
+                        )
+                        .bind(provider_id)
+                        .bind(&group.owner_id)
+                        .fetch_optional(&services.pool)
+                        .await
+                        {
+                            Ok(Some(name)) => name,
+                            Ok(None) => "Unknown provider".to_string(),
+                            Err(_) => {
+                                return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                            }
+                        };
+                        let usage_thread_id = ctx.thread_id.clone();
+                        let dimensions = TokenUsageDimensions {
+                            owner_id: &group.owner_id,
+                            group_id: &group.id,
+                            group_name: &group.name,
+                            conversation_kind: &group.conversation_kind,
+                            thread_id: &usage_thread_id,
+                            agent_id: None,
+                            agent_name: "Scheduler moderator",
+                            provider_id: Some(provider_id),
+                            provider_name: &provider_name,
+                            model,
+                        };
+                        let usage = ag_swarmer_domain::runtime::ContextUsage {
+                            total_tokens: Some(attempt.total_tokens.min(i64::MAX as u64) as i64),
+                            ..Default::default()
+                        };
+                        if persist_token_usage(
+                            &services.pool,
+                            &Uuid::new_v4().to_string(),
+                            &dimensions,
+                            &usage,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                        }
                         let budget_rejected = scheduler_runtime
                             .budget
                             .record_moderator_usage(attempt.total_tokens)
@@ -2534,6 +2576,62 @@ fn context_usage_to_json(usage: &ag_swarmer_domain::runtime::ContextUsage) -> Va
     })
 }
 
+struct TokenUsageDimensions<'a> {
+    owner_id: &'a str,
+    group_id: &'a str,
+    group_name: &'a str,
+    conversation_kind: &'a str,
+    thread_id: &'a str,
+    agent_id: Option<&'a str>,
+    agent_name: &'a str,
+    provider_id: Option<&'a str>,
+    provider_name: &'a str,
+    model: &'a str,
+}
+
+async fn persist_token_usage(
+    pool: &SqlitePool,
+    id: &str,
+    dimensions: &TokenUsageDimensions<'_>,
+    usage: &ag_swarmer_domain::runtime::ContextUsage,
+) -> anyhow::Result<()> {
+    let input_tokens = usage.input_tokens.unwrap_or(0).max(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0).max(0);
+    let total_tokens = usage
+        .total_tokens
+        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens))
+        .max(input_tokens.saturating_add(output_tokens));
+    let now = now_rfc3339();
+    sqlx::query(
+        "INSERT INTO token_usage_records (id, owner_id, group_id, group_name, conversation_kind, \
+            thread_id, agent_id, agent_name, provider_id, provider_name, model, input_tokens, \
+            output_tokens, total_tokens, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET input_tokens = excluded.input_tokens, \
+            output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, \
+            updated_at = excluded.updated_at",
+    )
+    .bind(id)
+    .bind(dimensions.owner_id)
+    .bind(dimensions.group_id)
+    .bind(dimensions.group_name)
+    .bind(dimensions.conversation_kind)
+    .bind(dimensions.thread_id)
+    .bind(dimensions.agent_id)
+    .bind(dimensions.agent_name)
+    .bind(dimensions.provider_id)
+    .bind(dimensions.provider_name)
+    .bind(dimensions.model)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(total_tokens)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn run_agent_turn(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
@@ -2553,7 +2651,7 @@ async fn run_agent_turn(
         return run_acp_agent_turn(services, ctx, agent, group, delegated_input).await;
     }
 
-    let provider_cfg = resolve_provider(&services.pool, agent)
+    let (provider_cfg, provider_name) = resolve_provider(&services.pool, agent)
         .await
         .map_err(StepErr::Db)?;
     let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
@@ -2603,7 +2701,22 @@ async fn run_agent_turn(
         .map(|resume| resume.turn.clone())
         .unwrap_or_default();
 
+    let usage_thread_id = ctx.thread_id.clone();
+    let usage_dimensions = TokenUsageDimensions {
+        owner_id: &agent.owner_id,
+        group_id: &group.id,
+        group_name: &group.name,
+        conversation_kind: &group.conversation_kind,
+        thread_id: &usage_thread_id,
+        agent_id: Some(&agent.agent_id),
+        agent_name: &agent.display_name,
+        provider_id: agent.provider_id.as_deref(),
+        provider_name: &provider_name,
+        model: &model,
+    };
+
     loop {
+        let usage_record_id = Uuid::new_v4().to_string();
         let request = ChatRequest {
             model: model.clone(),
             messages: messages.clone(),
@@ -2710,6 +2823,14 @@ async fn run_agent_turn(
                 ChatDelta::Usage(usage) => {
                     last_was_reasoning = false;
                     let usage = augment_context_usage(usage, &provider_cfg);
+                    persist_token_usage(
+                        &services.pool,
+                        &usage_record_id,
+                        &usage_dimensions,
+                        &usage,
+                    )
+                    .await
+                    .map_err(StepErr::Db)?;
                     let usage_json = context_usage_to_json(&usage);
                     turn.set_context_usage(usage_json.clone());
                     ctx.record_scheduled_usage(&usage_json);
@@ -2885,6 +3006,10 @@ async fn run_acp_agent_turn(
         .and_then(|value| serde_json::from_str::<Value>(value).ok());
     let mut config = normalize_acp_runtime(raw.as_ref()).map_err(|err| StepErr::Db(err.into()))?;
     canonicalize_acp_runtime(&mut config);
+    let usage_model = config
+        .model
+        .clone()
+        .unwrap_or_else(|| "ACP runtime".to_string());
     let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
@@ -2952,6 +3077,20 @@ async fn run_acp_agent_turn(
 
     let mut content = String::new();
     let mut turn = TurnData::default();
+    let usage_record_id = Uuid::new_v4().to_string();
+    let usage_thread_id = ctx.thread_id.clone();
+    let usage_dimensions = TokenUsageDimensions {
+        owner_id: &agent.owner_id,
+        group_id: &group.id,
+        group_name: &group.name,
+        conversation_kind: &group.conversation_kind,
+        thread_id: &usage_thread_id,
+        agent_id: Some(&agent.agent_id),
+        agent_name: &agent.display_name,
+        provider_id: None,
+        provider_name: "ACP",
+        model: &usage_model,
+    };
     let mut last_was_reasoning = false;
     while let Some(event) = match await_with_cancellation(ctx, run.next_event()).await {
         Ok(event) => event,
@@ -3018,6 +3157,9 @@ async fn run_acp_agent_turn(
             AcpEventKind::Usage => {
                 last_was_reasoning = false;
                 let usage = acp_context_usage(&event.data);
+                persist_token_usage(&services.pool, &usage_record_id, &usage_dimensions, &usage)
+                    .await
+                    .map_err(StepErr::Db)?;
                 let usage_json = context_usage_to_json(&usage);
                 turn.set_context_usage(usage_json.clone());
                 ctx.record_scheduled_usage(&usage_json);
@@ -5604,6 +5746,7 @@ fn object_schema(fields: &[(&str, &str)], required: &[&str]) -> Value {
 
 #[derive(sqlx::FromRow)]
 struct ProviderRow {
+    name: String,
     kind: String,
     base_url: Option<String>,
     api_key: String,
@@ -5614,13 +5757,16 @@ struct ProviderRow {
     models_json: Option<String>,
 }
 
-async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Result<ProviderConfig> {
+async fn resolve_provider(
+    pool: &SqlitePool,
+    agent: &Candidate,
+) -> anyhow::Result<(ProviderConfig, String)> {
     let provider_id = agent
         .provider_id
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("agent has no llm provider configured"))?;
     let row: Option<ProviderRow> = sqlx::query_as(
-        "SELECT kind, base_url, api_key, default_model, reasoning_passback, \
+        "SELECT name, kind, base_url, api_key, default_model, reasoning_passback, \
                 context_window_tokens, context_output_reserve_ratio, models_json \
          FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
@@ -5642,19 +5788,23 @@ async fn resolve_provider(pool: &SqlitePool, agent: &Candidate) -> anyhow::Resul
     let (window_override, reserve_override) =
         context_window_override(agent.model_config_json.as_deref());
 
-    Ok(ProviderConfig {
-        kind: row.kind,
-        base_url: row.base_url,
-        api_key: row.api_key,
-        default_model: row.default_model,
-        reasoning_passback,
-        context_window_tokens: window_override
-            .or(model_window)
-            .or(row.context_window_tokens),
-        context_output_reserve_ratio: reserve_override
-            .or(model_reserve)
-            .or(row.context_output_reserve_ratio),
-    })
+    let name = row.name;
+    Ok((
+        ProviderConfig {
+            kind: row.kind,
+            base_url: row.base_url,
+            api_key: row.api_key,
+            default_model: row.default_model,
+            reasoning_passback,
+            context_window_tokens: window_override
+                .or(model_window)
+                .or(row.context_window_tokens),
+            context_output_reserve_ratio: reserve_override
+                .or(model_reserve)
+                .or(row.context_output_reserve_ratio),
+        },
+        name,
+    ))
 }
 
 /// Read an agent's context-window override from its `model_config_json`.

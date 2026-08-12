@@ -147,6 +147,7 @@ fn anthropic_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
 #[derive(Default)]
 struct State {
     tools: BTreeMap<i64, ToolAccum>,
+    input_tokens: Option<i64>,
 }
 
 /// Map a single Anthropic stream event to zero or more [`ChatDelta`]s.
@@ -163,6 +164,7 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
     match value["type"].as_str().unwrap_or_default() {
         "message_start" => {
             if let Some(input) = value["message"]["usage"]["input_tokens"].as_i64() {
+                state.input_tokens = Some(input);
                 out.push(ChatDelta::Usage(ContextUsage {
                     input_tokens: Some(input),
                     output_tokens: None,
@@ -210,10 +212,11 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
         }
         "message_delta" => {
             if let Some(output) = value["usage"]["output_tokens"].as_i64() {
+                let total = state.input_tokens.map(|input| input.saturating_add(output));
                 out.push(ChatDelta::Usage(ContextUsage {
-                    input_tokens: None,
+                    input_tokens: state.input_tokens,
                     output_tokens: Some(output),
-                    total_tokens: None,
+                    total_tokens: total,
                     ..ContextUsage::default()
                 }));
             }
@@ -280,5 +283,30 @@ impl LlmProvider for AnthropicProvider {
             pump(resp, tx, move |line| parse(line, &mut state)).await;
         });
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, ChatDelta, State};
+
+    #[test]
+    fn final_usage_keeps_anthropic_input_tokens() {
+        let mut state = State::default();
+        parse(
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":40}}}"#,
+            &mut state,
+        );
+        let deltas = parse(
+            r#"data: {"type":"message_delta","usage":{"output_tokens":2}}"#,
+            &mut state,
+        );
+
+        let ChatDelta::Usage(usage) = &deltas[0] else {
+            panic!("expected usage delta");
+        };
+        assert_eq!(usage.input_tokens, Some(40));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.total_tokens, Some(42));
     }
 }

@@ -79,6 +79,9 @@ const AppActionsPage = lazy(() =>
 const SystemLogsPage = lazy(() =>
   import('@/pages/settings/SystemLogsPage').then((m) => ({ default: m.SystemLogsPage })),
 )
+const TokenUsagePage = lazy(() =>
+  import('@/pages/usage/TokenUsagePage').then((m) => ({ default: m.TokenUsagePage })),
+)
 const GroupManagePage = lazy(() =>
   import('@/pages/group/GroupManagePage').then((m) => ({ default: m.GroupManagePage })),
 )
@@ -99,6 +102,7 @@ export const router = createBrowserRouter([
           { path: '/groups/:groupId/manage', element: <GroupManagePage /> },
           { path: '/groups/:groupId', element: <GroupChatPage /> },
           { path: '/chats/:chatId', element: <DirectChatPage /> },
+          { path: '/usage', element: <TokenUsagePage /> },
           // Top-level entity areas: the sidebar Library is their only entry.
           {
             path: '/agents',

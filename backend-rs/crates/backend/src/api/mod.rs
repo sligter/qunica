@@ -15,6 +15,7 @@ pub mod skills;
 mod sse_replay;
 pub mod system_settings;
 pub mod threads;
+pub mod token_usage;
 pub mod workspace_files;
 pub mod workspaces;
 
@@ -84,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v2/auth/register", axum::routing::post(auth::register))
         .route("/api/v2/auth/login", axum::routing::post(auth::login))
         .route("/api/v2/auth/me", get(auth::me))
+        .route("/api/v2/token-usage", get(token_usage::get))
         .route(
             "/api/v2/workspaces",
             axum::routing::post(workspaces::create).get(workspaces::list),

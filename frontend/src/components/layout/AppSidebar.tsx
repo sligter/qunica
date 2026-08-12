@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
+  BarChart3,
   Bot,
   ChevronDown,
   Folder,
@@ -142,7 +143,7 @@ const GroupFormDialog = lazy(() =>
 
 interface LibraryItem {
   to: string
-  key: 'agents' | 'providers' | 'mcpServers' | 'skills' | 'workspaces'
+  key: 'usage' | 'agents' | 'providers' | 'mcpServers' | 'skills' | 'workspaces'
   icon: typeof Bot
 }
 
@@ -155,6 +156,7 @@ interface DirectChatMenuState {
 }
 
 const libraryItems: LibraryItem[] = [
+  { to: '/usage', key: 'usage', icon: BarChart3 },
   { to: '/agents', key: 'agents', icon: Bot },
   { to: '/providers', key: 'providers', icon: Plug },
   { to: '/mcp-servers', key: 'mcpServers', icon: Server },
