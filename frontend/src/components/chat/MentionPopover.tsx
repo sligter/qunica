@@ -36,6 +36,7 @@ export function MentionPopover({
     if (!visible) return
 
     const handler = (e: KeyboardEvent) => {
+      if (!(e.target instanceof Node) || !listRef.current?.parentElement?.contains(e.target)) return
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setActiveIndex((i) => (i + 1) % Math.max(filtered.length, 1))

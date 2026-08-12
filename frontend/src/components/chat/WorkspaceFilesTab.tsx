@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import {
+  AppWindow,
   ChevronLeft,
   ChevronRight,
   ClipboardPaste,
@@ -11,6 +12,7 @@ import {
   FolderInput,
   FolderOpen,
   Pencil,
+  PanelsTopLeft,
   RefreshCw,
   Scissors,
   Trash2,
@@ -63,6 +65,24 @@ interface WorkspaceFilesTabProps {
   workspaceId: string | null
 }
 
+type WorkspacePreviewMode = 'dialog' | 'editor'
+
+const WORKSPACE_PREVIEW_MODE_KEY_PREFIX = 'ag-swarmer:conversations:workspace-preview-mode:'
+
+function previewModeStorageKey(scope: ConversationScope, conversationId: string): string {
+  return `${WORKSPACE_PREVIEW_MODE_KEY_PREFIX}${scope}:${conversationId}`
+}
+
+function readPreviewMode(
+  scope: ConversationScope,
+  conversationId: string | undefined,
+): WorkspacePreviewMode {
+  if (!conversationId) return 'dialog'
+  return localStorage.getItem(previewModeStorageKey(scope, conversationId)) === 'editor'
+    ? 'editor'
+    : 'dialog'
+}
+
 function parentPath(path: string): string {
   const parts = path.split('/').filter(Boolean)
   parts.pop()
@@ -104,6 +124,10 @@ export function WorkspaceFilesTab({
     () => new Set(),
   )
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
+  const [previewMode, setPreviewMode] = useState<WorkspacePreviewMode>(
+    () => readPreviewMode(scope, conversationId),
+  )
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
   const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead[] | null>(null)
   const [pendingClear, setPendingClear] = useState(false)
@@ -155,6 +179,9 @@ export function WorkspaceFilesTab({
   const actions = useWorkspaceFileActions(activeConversationId, scope, activeAgentId)
   const navRequest = useFileNavStore((state) => state.request)
   const clearNav = useFileNavStore((state) => state.clear)
+  const openEditor = useFileNavStore((state) => state.openEditor)
+  const renameEditorPath = useFileNavStore((state) => state.renameEditorPath)
+  const closeEditorPaths = useFileNavStore((state) => state.closeEditorPaths)
 
   const title = currentPath
     || activeRoot?.display_name
@@ -163,6 +190,13 @@ export function WorkspaceFilesTab({
   const sortedFiles = files.data ?? []
   const selectedCount = selectedWorkspacePaths.size
   const selectedFiles = sortedFiles.filter((file) => selectedWorkspacePaths.has(file.path))
+
+  const changePreviewMode = (mode: WorkspacePreviewMode) => {
+    setPreviewMode(mode)
+    if (conversationId) {
+      localStorage.setItem(previewModeStorageKey(scope, conversationId), mode)
+    }
+  }
 
   const selectOnlyPath = (path: string) => {
     selectionAnchorRef.current = path
@@ -202,14 +236,35 @@ export function WorkspaceFilesTab({
     return selected.length > 0 ? selected : [file]
   }
 
-  const openEntry = (file: ConversationWorkspaceFileRead) => {
+  const openFile = (
+    file: ConversationWorkspaceFileRead,
+    mode: WorkspacePreviewMode = previewMode,
+  ) => {
     selectOnlyPath(file.path)
-    if (file.is_dir) {
-      setCurrentPath(file.path)
-      return
+    if (mode === 'editor' && activeConversationId) {
+      openEditor(activeConversationId, file, activeAgentId)
+    } else {
+      setPreviewFile(file)
+      setIsPreviewOpen(true)
     }
-    setPreviewFile(file)
-    setIsPreviewOpen(true)
+  }
+
+  const openEntry = (file: ConversationWorkspaceFileRead) => {
+    if (file.is_dir) {
+      selectOnlyPath(file.path)
+      setCurrentPath(file.path)
+    } else {
+      openFile(file)
+    }
+  }
+
+  const refreshFiles = async () => {
+    setIsRefreshing(true)
+    try {
+      await files.refetch()
+    } finally {
+      setIsRefreshing(false)
+    }
   }
 
   const handleFileClick = (
@@ -319,10 +374,16 @@ export function WorkspaceFilesTab({
       modified_at: null,
     }
     setCurrentPath(parentPath(requestedFile.path))
-    setPreviewFile(requestedFile)
-    setIsPreviewOpen(true)
+    selectionAnchorRef.current = requestedFile.path
+    setSelectedWorkspacePaths(new Set([requestedFile.path]))
+    if (previewMode === 'editor') {
+      openEditor(conversationId, requestedFile, activeAgentId)
+    } else {
+      setPreviewFile(requestedFile)
+      setIsPreviewOpen(true)
+    }
     clearNav()
-  }, [activeAgentId, clearNav, conversationId, files.data, navRequest, workspaceId])
+  }, [activeAgentId, clearNav, conversationId, files.data, navRequest, openEditor, previewMode, workspaceId])
 
   useEffect(() => {
     setSelectedWorkspacePaths(new Set())
@@ -392,6 +453,7 @@ export function WorkspaceFilesTab({
       .mutateAsync({ path: oldPath, newPath: renameValue.trim() })
       .then((next) => {
         setRenaming(null)
+        renameEditorPath(activeConversationId, activeAgentId, oldPath, next.path)
         setPreviewFile((selected) => {
           if (!selected) return selected
           if (selected.path === oldPath) return next
@@ -522,6 +584,7 @@ export function WorkspaceFilesTab({
       setPreviewFile(null)
       setIsPreviewOpen(false)
     }
+    if (activeConversationId) closeEditorPaths(activeConversationId, activeAgentId, actionFiles)
     setSelectedWorkspacePaths((current) => {
       const next = new Set<string>()
       for (const path of current) {
@@ -545,6 +608,7 @@ export function WorkspaceFilesTab({
     setClipboard(null)
     setPreviewFile(null)
     setIsPreviewOpen(false)
+    if (activeConversationId) closeEditorPaths(activeConversationId, activeAgentId)
   }
 
   const menuFile = menu?.file ?? null
@@ -595,6 +659,32 @@ export function WorkspaceFilesTab({
           {title}
         </p>
         <div className="flex shrink-0 items-center gap-1">
+          <div className="flex items-center rounded-md border border-border bg-muted/40 p-0.5">
+            <Button
+              type="button"
+              variant={previewMode === 'dialog' ? 'secondary' : 'ghost'}
+              size="icon"
+              className="h-6 w-6"
+              aria-label={t('chat:workspace.filePanel.popupMode')}
+              title={t('chat:workspace.filePanel.popupMode')}
+              aria-pressed={previewMode === 'dialog'}
+              onClick={() => changePreviewMode('dialog')}
+            >
+              <AppWindow className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant={previewMode === 'editor' ? 'secondary' : 'ghost'}
+              size="icon"
+              className="h-6 w-6"
+              aria-label={t('chat:workspace.filePanel.editorMode')}
+              title={t('chat:workspace.filePanel.editorMode')}
+              aria-pressed={previewMode === 'editor'}
+              onClick={() => changePreviewMode('editor')}
+            >
+              <PanelsTopLeft className="h-3.5 w-3.5" />
+            </Button>
+          </div>
           {canUpload ? (
             <>
               <input
@@ -632,11 +722,11 @@ export function WorkspaceFilesTab({
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
-            onClick={() => void files.refetch()}
-            disabled={files.isFetching || !hasConversation}
+            onClick={() => void refreshFiles()}
+            disabled={isRefreshing || !hasConversation}
             aria-label={t('chat:workspace.filePanel.refresh')}
           >
-            <RefreshCw className={cn('h-4 w-4', files.isFetching && 'animate-spin')} />
+            <RefreshCw className={cn('h-4 w-4', isRefreshing && 'animate-spin')} />
           </Button>
         </div>
       </div>
@@ -1022,7 +1112,8 @@ export function WorkspaceFilesTab({
               role="menuitem"
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
               onClick={() => {
-                openEntry(menuFile)
+                if (menuFile.is_dir) openEntry(menuFile)
+                else openFile(menuFile, 'dialog')
                 setMenu(null)
               }}
             >
@@ -1033,7 +1124,21 @@ export function WorkspaceFilesTab({
               )}
               {menuFile.is_dir
                 ? t('chat:workspace.filePanel.openFolder')
-                : t('chat:workspace.filePanel.openPreview')}
+                : t('chat:workspace.filePanel.openPopup')}
+            </button>
+          ) : null}
+          {menuFile && isSingleMenuAction && !menuFile.is_dir ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+              onClick={() => {
+                openFile(menuFile, 'editor')
+                setMenu(null)
+              }}
+            >
+              <PanelsTopLeft className="h-3.5 w-3.5" />
+              {t('chat:workspace.filePanel.openEditor')}
             </button>
           ) : null}
           {menuFile && isSingleMenuAction && !menuFile.is_dir ? (
@@ -1190,7 +1295,7 @@ export function WorkspaceFilesTab({
                 role="menuitem"
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
                 onClick={() => {
-                  void files.refetch()
+                  void refreshFiles()
                   setMenu(null)
                 }}
               >

@@ -62,6 +62,9 @@ vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
   },
 }))
 vi.mock('@/components/chat/MessageList', () => ({ MessageList: () => <div>message list</div> }))
+vi.mock('@/components/chat/WorkspaceEditorStage', () => ({
+  WorkspaceEditorStage: ({ children }: { children: React.ReactNode }) => children,
+}))
 vi.mock('@/components/chat/TurnTraceDrawer', () => ({ TurnTraceDrawer: () => <div>turn trace</div> }))
 vi.mock('@/components/layout/VerticalResizeHandle', () => ({ VerticalResizeHandle: () => <div /> }))
 vi.mock('@/hooks/useGroupMessages', () => ({

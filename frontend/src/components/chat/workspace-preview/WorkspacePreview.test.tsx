@@ -56,6 +56,7 @@ function renderRouter(
   text: ConversationWorkspaceFileTextResponse,
   blob?: Blob,
   agentId: string | null = null,
+  presentation: 'dialog' | 'editor' = 'dialog',
 ) {
   client.setQueryData(
     conversationWorkspaceFileTextQueryKey('groups', 'group-1', file.path, agentId),
@@ -74,6 +75,7 @@ function renderRouter(
         conversationId="group-1"
         file={file}
         agentId={agentId}
+        presentation={presentation}
       />
     </QueryClientProvider>,
   )
@@ -195,20 +197,28 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
     )
   })
 
-  it('renders Markdown files instead of opening the raw text editor', () => {
+  it('previews Markdown in dialogs and edits its source in editor tabs', () => {
     const client = testClient()
     const markdownFile = { ...baseFile, path: 'README.md', name: 'README.md' }
-    renderRouter(client, markdownFile, textResponse({
+    const markdown = textResponse({
       path: markdownFile.path,
       name: markdownFile.name,
       mime_type: 'text/markdown',
       content: '# Preview title\n\n- rendered item',
-    }))
+    })
+    const dialog = renderRouter(client, markdownFile, markdown)
 
     expect(screen.getByRole('heading', { name: 'Preview title' })).toBeVisible()
     expect(screen.getByText('rendered item')).toBeVisible()
     expect(document.querySelector('[data-preview-kind="markdown"]')).not.toBeNull()
     expect(screen.queryByRole('textbox')).toBeNull()
+
+    dialog.unmount()
+    renderRouter(client, markdownFile, markdown, undefined, null, 'editor')
+    expect(screen.getByRole('textbox', { name: 'Edit README.md' })).toHaveValue(
+      '# Preview title\n\n- rendered item',
+    )
+    expect(document.querySelector('[data-preview-kind="text"]')).not.toBeNull()
   })
 
   it('routes images to a bounded lightbox preview and falls back on load failure', async () => {
@@ -363,6 +373,64 @@ describe('WorkspaceTextEditor', () => {
     })
     expect(await screen.findByText('Saved')).toBeVisible()
     expect(editor).toHaveValue('edited')
+  })
+
+  it('accepts IME input and leaves native editing shortcuts untouched', () => {
+    renderEditor(textResponse())
+    const editor = screen.getByRole('textbox', { name: 'Edit note.txt' }) as HTMLTextAreaElement
+
+    fireEvent.compositionStart(editor)
+    fireEvent.change(editor, { target: { value: '中文 AbC' } })
+    fireEvent.compositionEnd(editor, { data: '中文' })
+
+    expect(editor).toHaveValue('中文 AbC')
+    for (const key of ['a', 'c', 'v', 'x', 'z', 'y']) {
+      expect(fireEvent.keyDown(editor, { key, ctrlKey: true })).toBe(true)
+    }
+    expect(fireEvent.keyDown(editor, { key: 'CapsLock' })).toBe(true)
+  })
+
+  it('finds, replaces and saves with editor shortcuts', async () => {
+    const user = userEvent.setup()
+    const saved = textResponse({ content: 'updated updated world', version: 'version-2' })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(saved), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderEditor(textResponse({ content: 'hello HELLO world' }))
+    const editor = screen.getByRole('textbox', { name: 'Edit note.txt' })
+
+    fireEvent.keyDown(editor, { key: 'h', ctrlKey: true })
+    const find = await screen.findByRole('searchbox', { name: 'Find' })
+    await user.type(find, 'hello')
+    await user.type(screen.getByRole('textbox', { name: 'Replace' }), 'updated')
+    await user.click(screen.getByRole('button', { name: 'Replace all matches' }))
+    expect(editor).toHaveValue('updated updated world')
+
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({
+      content: 'updated updated world',
+      version: 'version-1',
+    })
+  })
+
+  it('scrolls the editor to the selected search result', async () => {
+    const user = userEvent.setup()
+    const content = `${Array.from({ length: 80 }, () => 'zzzz').join('\n')}\nneedle`
+    renderEditor(textResponse({ content }))
+    const editor = screen.getByRole('textbox', { name: 'Edit note.txt' }) as HTMLTextAreaElement
+    Object.defineProperties(editor, {
+      clientHeight: { configurable: true, value: 100 },
+      clientWidth: { configurable: true, value: 400 },
+    })
+
+    fireEvent.keyDown(editor, { key: 'f', ctrlKey: true })
+    await user.type(await screen.findByRole('searchbox', { name: 'Find' }), 'needle')
+
+    await waitFor(() => expect(editor.scrollTop).toBeGreaterThan(0))
+    expect(editor.selectionStart).toBe(content.indexOf('needle'))
   })
 
   it('keeps a newer local edit when a save response arrives late', async () => {

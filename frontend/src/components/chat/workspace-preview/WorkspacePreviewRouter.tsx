@@ -92,6 +92,8 @@ interface WorkspacePreviewRouterProps {
   conversationId: string
   file: ConversationWorkspaceFileRead
   agentId?: WorkspaceAgentScope
+  presentation?: 'dialog' | 'editor'
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 export function WorkspacePreviewRouter({
@@ -99,6 +101,8 @@ export function WorkspacePreviewRouter({
   conversationId,
   file,
   agentId = null,
+  presentation = 'dialog',
+  onDirtyChange,
 }: WorkspacePreviewRouterProps) {
   const { t } = useTranslation('chat')
   const queryClient = useQueryClient()
@@ -178,13 +182,15 @@ export function WorkspacePreviewRouter({
     size: text.data.size,
   }
 
-  if (kind === 'text') {
+  if (kind === 'text' || (presentation === 'editor' && text.data.is_text)) {
     return (
       <WorkspaceTextEditor
         scope={scope}
         conversationId={conversationId}
         agentId={agentId}
         file={text.data}
+        presentation={presentation}
+        onDirtyChange={onDirtyChange}
         onRefresh={async () => {
           const result = await text.refetch()
           if (result.error) throw result.error
@@ -198,7 +204,9 @@ export function WorkspacePreviewRouter({
   if (kind === 'markdown') {
     return (
       <div
-        className="max-h-[60vh] overflow-auto rounded-md border border-border bg-background p-5"
+        className={presentation === 'editor'
+          ? 'h-full overflow-auto bg-background p-5'
+          : 'max-h-[60vh] overflow-auto rounded-md border border-border bg-background p-5'}
         data-preview-kind="markdown"
       >
         <MarkdownMessage

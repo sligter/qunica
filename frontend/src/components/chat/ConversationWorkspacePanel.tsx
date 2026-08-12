@@ -25,6 +25,7 @@ export function ConversationWorkspacePanel({
   const { t } = useTranslation('chat')
   const files = (
     <WorkspaceFilesTab
+      key={`${scope}:${conversationId ?? ''}`}
       scope={scope}
       conversationId={conversationId}
       workspaceId={workspaceId}

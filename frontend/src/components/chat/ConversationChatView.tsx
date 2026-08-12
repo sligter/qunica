@@ -7,6 +7,7 @@ import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHea
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
+import { WorkspaceEditorStage } from '@/components/chat/WorkspaceEditorStage'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
 import { PageState } from '@/components/ui/page-state'
@@ -265,41 +266,45 @@ export function ConversationChatView({
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <MessageList
-            groupId={conversationId}
-            hasOlderMessages={messagesQuery.hasNextPage}
-            isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
-            onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
-            onSubmitHumanInput={submitHumanInput}
-            onViewTurnTrace={capabilities.showTurnTrace ? openTurnTrace : undefined}
-            scope={scope}
-            agents={agents}
-            agentIsSystem={agentIsSystem}
-          />
+          <WorkspaceEditorStage scope={scope} conversationId={conversationId}>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <MessageList
+                groupId={conversationId}
+                hasOlderMessages={messagesQuery.hasNextPage}
+                isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
+                onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
+                onSubmitHumanInput={submitHumanInput}
+                onViewTurnTrace={capabilities.showTurnTrace ? openTurnTrace : undefined}
+                scope={scope}
+                agents={agents}
+                agentIsSystem={agentIsSystem}
+              />
 
-          {stream.error ? (
-            <div className="shrink-0 px-4">
-              <div className="mx-auto w-full max-w-6xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {t('stream.error', { message: stream.error })}
-              </div>
+              {stream.error ? (
+                <div className="shrink-0 px-4">
+                  <div className="mx-auto w-full max-w-6xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {t('stream.error', { message: stream.error })}
+                  </div>
+                </div>
+              ) : null}
+
+              <Composer
+                models={models}
+                defaultModel={defaultModel}
+                key={`${scope}:${conversationId}:${workspaceId ?? 'no-workspace'}`}
+                conversationId={conversationId}
+                workspaceId={workspaceId}
+                scope={scope}
+                isStreaming={isConversationStreaming}
+                onSend={sendMessage}
+                onCancel={cancelConversationStream}
+                hint={hint}
+                groupAgents={agents}
+                allowMentions={capabilities.allowMentions}
+                disabledReason={disabledComposerReason}
+              />
             </div>
-          ) : null}
-
-          <Composer
-            models={models}
-            defaultModel={defaultModel}
-            key={`${scope}:${conversationId}:${workspaceId ?? 'no-workspace'}`}
-            conversationId={conversationId}
-            workspaceId={workspaceId}
-            scope={scope}
-            isStreaming={isConversationStreaming}
-            onSend={sendMessage}
-            onCancel={cancelConversationStream}
-            hint={hint}
-            groupAgents={agents}
-            allowMentions={capabilities.allowMentions}
-            disabledReason={disabledComposerReason}
-          />
+          </WorkspaceEditorStage>
         </div>
         {capabilities.showWorkspace && workspaceFilesOpen ? (
           <>

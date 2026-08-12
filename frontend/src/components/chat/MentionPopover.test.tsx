@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
@@ -41,5 +41,21 @@ describe('MentionPopover i18n', () => {
     render(<MentionPopover agents={[agent]} query="" visible onSelect={vi.fn()} onClose={vi.fn()} />)
     expect(screen.getByRole('listbox', { name: '提及 Agent' })).toBeVisible()
     expect(screen.getByRole('option', { name: 'Agent_RAW_原文' })).toBeVisible()
+  })
+  it('does not capture IME keys from another editor', () => {
+    const onSelect = vi.fn()
+    render(
+      <div>
+        <div>
+          <MentionPopover agents={[agent]} query="" visible onSelect={onSelect} onClose={vi.fn()} />
+        </div>
+        <textarea aria-label="File editor" />
+      </div>,
+    )
+    const editor = screen.getByRole('textbox', { name: 'File editor' })
+
+    expect(fireEvent.keyDown(editor, { key: ' ' })).toBe(true)
+    expect(fireEvent.keyDown(editor, { key: 'Enter' })).toBe(true)
+    expect(onSelect).not.toHaveBeenCalled()
   })
 })

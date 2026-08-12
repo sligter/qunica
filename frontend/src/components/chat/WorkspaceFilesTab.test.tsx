@@ -114,7 +114,8 @@ describe('WorkspaceFilesTab', () => {
     desktopMocks.isDesktopRuntime.mockReset().mockReturnValue(false)
     desktopMocks.revealInFileManager.mockReset().mockResolvedValue(undefined)
     useAuthStore.setState({ token: null })
-    useFileNavStore.setState({ request: null })
+    useFileNavStore.setState({ request: null, editorStages: {} })
+    localStorage.clear()
     await i18n.changeLanguage('en-US')
   })
 
@@ -122,7 +123,8 @@ describe('WorkspaceFilesTab', () => {
     cleanup()
     vi.unstubAllGlobals()
     useAuthStore.setState({ token: null })
-    useFileNavStore.setState({ request: null })
+    useFileNavStore.setState({ request: null, editorStages: {} })
+    localStorage.clear()
   })
 
   it('offers an agent root only when there is one, and browses it when picked', async () => {
@@ -204,9 +206,50 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByLabelText('Refresh workspace files')).toBeVisible()
     expect(screen.getByText('README_RAW_原文.md')).toBeVisible()
     fireEvent.contextMenu(screen.getByText(rawFile.name).closest('li')!)
+    expect(screen.getByRole('menuitem', { name: 'Open in dialog' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Open in editor' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Download' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
+  })
+
+  it('opens multiple files as editor tabs when editor mode is selected', async () => {
+    const user = userEvent.setup()
+    const firstGroup = renderTab({ files: [rawFile, notesFile] })
+
+    await user.click(screen.getByRole('button', { name: 'Open files as editor tabs' }))
+    await user.click(screen.getByText(rawFile.name))
+    await user.click(screen.getByText(notesFile.name))
+
+    const stage = useFileNavStore.getState().editorStages['group-1']
+    expect(stage?.tabs.map((tab) => tab.file.path)).toEqual([rawFile.path, notesFile.path])
+    expect(stage?.activeTabId).toBe(stage?.tabs[1]?.id)
+    expect(screen.queryByText(`preview:groups:${notesFile.path}`)).toBeNull()
+
+    firstGroup.unmount()
+    const secondGroup = renderTab({ conversationId: 'group-2' })
+    expect(screen.getByRole('button', { name: 'Preview files in a dialog' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    secondGroup.unmount()
+    renderTab()
+    expect(screen.getByRole('button', { name: 'Open files as editor tabs' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('does not animate the refresh icon during background synchronization', async () => {
+    useAuthStore.setState({ token: 'token' })
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab()
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    const refresh = screen.getByRole('button', { name: 'Refresh workspace files' })
+    expect(refresh).toBeEnabled()
+    expect(refresh.querySelector('svg')).not.toHaveClass('animate-spin')
   })
 
   it('opens on single click and preserves modifier multi-selection', async () => {
@@ -288,7 +331,7 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByRole('menu', { name: 'File actions' })).toBeVisible()
     expect(folderButton).toHaveAttribute('aria-pressed', 'true')
     expect(fileButton).toHaveAttribute('aria-pressed', 'false')
-    expect(screen.getByRole('menuitem', { name: 'Open preview' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Open in dialog' })).toBeVisible()
   })
 
   it('resolves a bare message file link against the folder currently being viewed', async () => {
@@ -500,10 +543,10 @@ describe('WorkspaceFilesTab', () => {
     await user.keyboard('{Escape}')
     fireEvent.keyDown(fileButton, { key: 'F10', shiftKey: true })
     expect(screen.getByRole('menu', { name: 'File actions' })).toBeVisible()
-    expect(screen.getByRole('menuitem', { name: 'Open preview' })).toHaveFocus()
+    expect(screen.getByRole('menuitem', { name: 'Open in dialog' })).toHaveFocus()
 
     await user.keyboard('{ArrowDown}')
-    expect(screen.getByRole('menuitem', { name: 'Download' })).toHaveFocus()
+    expect(screen.getByRole('menuitem', { name: 'Open in editor' })).toHaveFocus()
 
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('menu', { name: 'File actions' })).not.toBeInTheDocument()
