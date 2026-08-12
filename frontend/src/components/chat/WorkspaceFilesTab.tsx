@@ -7,6 +7,8 @@ import {
   Copy,
   Download,
   Eraser,
+  Eye,
+  EyeOff,
   File,
   Folder,
   FolderInput,
@@ -68,6 +70,7 @@ interface WorkspaceFilesTabProps {
 type WorkspacePreviewMode = 'dialog' | 'editor'
 
 const WORKSPACE_PREVIEW_MODE_KEY_PREFIX = 'ag-swarmer:conversations:workspace-preview-mode:'
+const WORKSPACE_SHOW_HIDDEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-show-hidden:'
 
 function previewModeStorageKey(scope: ConversationScope, conversationId: string): string {
   return `${WORKSPACE_PREVIEW_MODE_KEY_PREFIX}${scope}:${conversationId}`
@@ -81,6 +84,17 @@ function readPreviewMode(
   return localStorage.getItem(previewModeStorageKey(scope, conversationId)) === 'editor'
     ? 'editor'
     : 'dialog'
+}
+
+function showHiddenStorageKey(scope: ConversationScope, conversationId: string): string {
+  return `${WORKSPACE_SHOW_HIDDEN_KEY_PREFIX}${scope}:${conversationId}`
+}
+
+function readShowHidden(scope: ConversationScope, conversationId: string | undefined): boolean {
+  return Boolean(
+    conversationId
+    && localStorage.getItem(showHiddenStorageKey(scope, conversationId)) === 'true',
+  )
 }
 
 function parentPath(path: string): string {
@@ -128,6 +142,9 @@ export function WorkspaceFilesTab({
     () => readPreviewMode(scope, conversationId),
   )
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [showHidden, setShowHidden] = useState(
+    () => readShowHidden(scope, conversationId),
+  )
   const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
   const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead[] | null>(null)
   const [pendingClear, setPendingClear] = useState(false)
@@ -171,6 +188,7 @@ export function WorkspaceFilesTab({
     activeConversationId,
     currentPath,
     activeAgentId,
+    showHidden,
   )
   const upload = useUploadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
   const download = useDownloadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
@@ -195,6 +213,18 @@ export function WorkspaceFilesTab({
     setPreviewMode(mode)
     if (conversationId) {
       localStorage.setItem(previewModeStorageKey(scope, conversationId), mode)
+    }
+  }
+
+  const toggleShowHidden = () => {
+    const next = !showHidden
+    setShowHidden(next)
+    setSelectedWorkspacePaths(new Set())
+    if (!next && currentPath.split('/').some((part) => part.startsWith('.'))) {
+      setCurrentPath('')
+    }
+    if (conversationId) {
+      localStorage.setItem(showHiddenStorageKey(scope, conversationId), String(next))
     }
   }
 
@@ -718,6 +748,25 @@ export function WorkspaceFilesTab({
               </Button>
             </>
           ) : null}
+          <Button
+            type="button"
+            variant={showHidden ? 'secondary' : 'ghost'}
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={toggleShowHidden}
+            disabled={!hasConversation}
+            aria-label={showHidden
+              ? t('chat:workspace.filePanel.hideHidden')
+              : t('chat:workspace.filePanel.showHidden')}
+            title={showHidden
+              ? t('chat:workspace.filePanel.hideHidden')
+              : t('chat:workspace.filePanel.showHidden')}
+            aria-pressed={showHidden}
+          >
+            {showHidden
+              ? <EyeOff className="h-4 w-4" />
+              : <Eye className="h-4 w-4" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon"

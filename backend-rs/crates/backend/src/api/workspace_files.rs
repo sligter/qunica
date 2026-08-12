@@ -139,6 +139,8 @@ pub struct WorkspaceFilePathQuery {
     /// Address this member agent's own workspace instead of the conversation's.
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[serde(default)]
+    pub show_hidden: bool,
 }
 
 impl WorkspaceFilePathQuery {
@@ -496,6 +498,7 @@ pub async fn list_workspace_files(
     pool: &SqlitePool,
     target: ConversationRoot<'_>,
     relative: &str,
+    show_hidden: bool,
 ) -> Result<Vec<WorkspaceFileResponse>, ApiError> {
     let workspace = load_owned_local_workspace(pool, target).await?;
     let directory = resolve_workspace_directory(&workspace.root, relative)?;
@@ -509,7 +512,7 @@ pub async fn list_workspace_files(
         let name = entry_name
             .to_str()
             .ok_or_else(|| ApiError::invalid_input("workspace path is not valid UTF-8"))?;
-        if name.starts_with('.') {
+        if !show_hidden && is_hidden_entry(&entry, name) {
             continue;
         }
         rows.push(workspace_file_response(&entry_path, &workspace.root)?);
@@ -519,6 +522,22 @@ pub async fn list_workspace_files(
             .cmp(&(if right.is_dir { 0 } else { 1 }, right.name.to_lowercase()))
     });
     Ok(rows)
+}
+
+fn is_hidden_entry(entry: &fs::DirEntry, name: &str) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        return entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0);
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 /// Compatibility preview response used by both conversation scopes.

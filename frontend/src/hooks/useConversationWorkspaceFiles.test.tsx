@@ -110,6 +110,12 @@ describe('conversation workspace file client', () => {
     )
     await waitFor(() => expect(direct.result.current.isSuccess).toBe(true))
 
+    const hidden = renderHook(
+      () => useConversationWorkspaceFiles('groups', 'group-1', 'docs', null, true),
+      { wrapper: wrapper(client) },
+    )
+    await waitFor(() => expect(hidden.result.current.isSuccess).toBe(true))
+
     expect(conversationWorkspaceFilesApiPath('groups', 'group-1')).toBe(
       '/groups/group-1/workspace-files',
     )
@@ -128,6 +134,10 @@ describe('conversation workspace file client', () => {
     )
     expect(mockedFetchJson).toHaveBeenCalledWith(
       '/direct-chats/chat-1/workspace-files?path=nested%20dir',
+      { token: 'owner-token' },
+    )
+    expect(mockedFetchJson).toHaveBeenCalledWith(
+      '/groups/group-1/workspace-files?path=docs&show_hidden=true',
       { token: 'owner-token' },
     )
   })

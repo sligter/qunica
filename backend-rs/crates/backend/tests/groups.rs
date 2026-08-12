@@ -2034,6 +2034,7 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
 
     std::fs::create_dir(root.path().join("Zoo")).unwrap();
     std::fs::create_dir(root.path().join("alpha")).unwrap();
+    std::fs::create_dir(root.path().join(".secret")).unwrap();
     std::fs::write(root.path().join("aardvark.txt"), b"first").unwrap();
     std::fs::write(root.path().join("Beta.txt"), b"second").unwrap();
     std::fs::write(root.path().join(".hidden"), b"hidden").unwrap();
@@ -2076,6 +2077,7 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
         .collect();
     assert_eq!(names, vec!["alpha", "Zoo", "aardvark.txt", "Beta.txt"]);
     assert!(!rows.iter().any(|row| row["name"] == ".hidden"));
+    assert!(!rows.iter().any(|row| row["name"] == ".secret"));
     assert!(!rows.iter().any(|row| row["path"] == "alpha/nested.txt"));
     assert_eq!(rows[0]["path"], "alpha");
     assert_eq!(rows[0]["is_dir"], true);
@@ -2090,6 +2092,26 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
     assert_eq!(rows[2]["path"], "aardvark.txt");
     assert_eq!(rows[2]["is_dir"], false);
     assert_eq!(rows[2]["size"], 5);
+
+    let (status, hidden_list) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files?show_hidden=true"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let hidden_rows = hidden_list.as_array().unwrap();
+    assert_eq!(
+        hidden_rows
+            .iter()
+            .find(|row| row["name"] == ".secret")
+            .unwrap()["is_dir"],
+        true
+    );
+    assert!(hidden_rows.iter().any(|row| row["name"] == ".hidden"));
 
     let (status, body) = send(
         &app,

@@ -287,6 +287,22 @@ async fn direct_workspace_files_list_stream_and_text_save_round_trip() {
         true
     );
 
+    let (status, hidden_list) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files?show_hidden=true"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {hidden_list:?}");
+    assert!(hidden_list
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["name"] == ".hidden"));
+
     let streamed: [(&str, &str, &[u8]); 3] = [
         ("photo.png", "image/png", b"\x89PNG\r\n"),
         ("manual.pdf", "application/pdf", b"%PDF-1.4\n"),

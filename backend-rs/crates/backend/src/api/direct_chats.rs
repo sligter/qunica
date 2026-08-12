@@ -320,6 +320,7 @@ pub async fn list_workspace_files(
                 query.agent_id(),
             ),
             &query.path,
+            query.show_hidden,
         )
         .await?,
     ))

@@ -66,11 +66,28 @@ const notesFile: ConversationWorkspaceFileRead = {
   abs_path: 'D:\\raw dir\\notes.txt',
 }
 
+const hiddenFile: ConversationWorkspaceFileRead = {
+  path: '.env',
+  name: '.env',
+  is_dir: false,
+  size: 32,
+  modified_at: null,
+}
+
+const hiddenFolder: ConversationWorkspaceFileRead = {
+  path: '.git',
+  name: '.git',
+  is_dir: true,
+  size: null,
+  modified_at: null,
+}
+
 interface RenderTabOptions {
   scope?: ConversationScope
   conversationId?: string
   workspaceId?: string | null
   files?: ConversationWorkspaceFileRead[]
+  hiddenFiles?: ConversationWorkspaceFileRead[]
   roots?: ConversationWorkspaceRootEntry[]
   agentFiles?: Record<string, ConversationWorkspaceFileRead[]>
 }
@@ -80,6 +97,7 @@ function renderTab({
   conversationId = 'group-1',
   workspaceId = 'workspace-1',
   files = [rawFile],
+  hiddenFiles,
   roots,
   agentFiles = {},
 }: RenderTabOptions = {}) {
@@ -88,6 +106,12 @@ function renderTab({
     conversationWorkspaceFileListQueryKey(scope, conversationId, ''),
     files,
   )
+  if (hiddenFiles) {
+    queryClient.setQueryData(
+      conversationWorkspaceFileListQueryKey(scope, conversationId, '', null, true),
+      [...hiddenFiles, ...files],
+    )
+  }
   if (roots) {
     queryClient.setQueryData(conversationWorkspaceRootsQueryKey(scope, conversationId), roots)
   }
@@ -250,6 +274,31 @@ describe('WorkspaceFilesTab', () => {
     const refresh = screen.getByRole('button', { name: 'Refresh workspace files' })
     expect(refresh).toBeEnabled()
     expect(refresh.querySelector('svg')).not.toHaveClass('animate-spin')
+  })
+
+  it('shows hidden files and folders on demand and remembers it per group', async () => {
+    const user = userEvent.setup()
+    const firstGroup = renderTab({ hiddenFiles: [hiddenFolder, hiddenFile] })
+
+    expect(screen.queryByText('.env')).toBeNull()
+    expect(screen.queryByText('.git')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Show hidden files and folders' }))
+    expect(await screen.findByText('.env')).toBeVisible()
+    expect(screen.getByText('.git')).toBeVisible()
+
+    firstGroup.unmount()
+    const secondGroup = renderTab({ conversationId: 'group-2', hiddenFiles: [hiddenFile] })
+    expect(screen.getByRole('button', { name: 'Show hidden files and folders' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+    secondGroup.unmount()
+    renderTab({ hiddenFiles: [hiddenFolder, hiddenFile] })
+    expect(screen.getByRole('button', { name: 'Hide hidden files and folders' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByText('.env')).toBeVisible()
   })
 
   it('opens on single click and preserves modifier multi-selection', async () => {

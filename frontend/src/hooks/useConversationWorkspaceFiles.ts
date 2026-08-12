@@ -69,10 +69,15 @@ function requireWorkspaceFilePath(path: string): string {
 
 // Built by hand rather than with URLSearchParams: that encodes a space as `+`,
 // and these paths have always been percent-encoded.
-function workspaceQuery(path: string | undefined, agentId: WorkspaceAgentScope): string {
+function workspaceQuery(
+  path: string | undefined,
+  agentId: WorkspaceAgentScope,
+  showHidden = false,
+): string {
   const parts: string[] = []
   if (path !== undefined) parts.push(`path=${encodeURIComponent(path)}`)
   if (agentId) parts.push(`agent_id=${encodeURIComponent(agentId)}`)
+  if (showHidden) parts.push('show_hidden=true')
   return parts.length > 0 ? `?${parts.join('&')}` : ''
 }
 
@@ -90,9 +95,10 @@ function conversationWorkspaceFileEndpoint(
   endpoint: '' | 'root' | 'preview' | 'download' | 'text' | 'text/save' | 'upload',
   path?: string,
   agentId?: WorkspaceAgentScope,
+  showHidden?: boolean,
 ): string {
   const suffix = endpoint ? `/${endpoint}` : ''
-  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId)}`
+  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId, showHidden)}`
 }
 
 export function conversationWorkspaceRootsApiPath(
@@ -115,12 +121,14 @@ export function conversationWorkspaceFileListQueryKey(
   conversationId: string | undefined,
   path = '',
   agentId: WorkspaceAgentScope = null,
+  showHidden = false,
 ) {
   return [
     ...conversationWorkspaceFilesQueryKey(scope, conversationId),
     'list',
     agentId ?? null,
     path,
+    showHidden,
   ] as const
 }
 
@@ -190,10 +198,17 @@ export function useConversationWorkspaceFiles(
   conversationId: string | undefined,
   path = '',
   agentId: WorkspaceAgentScope = null,
+  showHidden = false,
 ) {
   const token = useAuthStore((state) => state.token)
   return useQuery({
-    queryKey: conversationWorkspaceFileListQueryKey(scope, conversationId, path, agentId),
+    queryKey: conversationWorkspaceFileListQueryKey(
+      scope,
+      conversationId,
+      path,
+      agentId,
+      showHidden,
+    ),
     queryFn: () =>
       fetchJson<ConversationWorkspaceFileRead[]>(
         conversationWorkspaceFileEndpoint(
@@ -202,6 +217,7 @@ export function useConversationWorkspaceFiles(
           '',
           path,
           agentId,
+          showHidden,
         ),
         { token },
       ),

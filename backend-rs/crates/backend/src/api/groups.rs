@@ -1380,6 +1380,7 @@ pub async fn list_group_workspace_files(
             query.agent_id(),
         ),
         &query.path,
+        query.show_hidden,
     )
     .await?
     .into_iter()
