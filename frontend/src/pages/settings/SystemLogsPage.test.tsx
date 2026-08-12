@@ -75,4 +75,13 @@ describe('SystemLogsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
     await waitFor(() => expect(desktop.clearSystemLogs).toHaveBeenCalledOnce())
   })
+
+  it('keeps background log loading from flashing the refresh button', async () => {
+    desktop.getSystemLogs.mockReturnValue(new Promise(() => undefined))
+    await renderPage()
+
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    expect(refresh).toBeEnabled()
+    expect(refresh.querySelector('svg')).not.toHaveClass('animate-spin')
+  })
 })

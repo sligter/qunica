@@ -113,6 +113,7 @@ export function SystemLogsPage() {
   const { t, i18n } = useTranslation('settings')
   const desktop = isDesktopRuntime()
   const [paused, setPaused] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [query, setQuery] = useState('')
   const [entryLevel, setEntryLevel] = useState<EntryLevelFilter>('all')
   const [filterConfig, setFilterConfig] = useState<LogFilterConfig>({
@@ -180,6 +181,15 @@ export function SystemLogsPage() {
       await clearLogs.mutateAsync()
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const refreshLogs = async () => {
+    setIsRefreshing(true)
+    try {
+      await logs.refetch()
+    } finally {
+      setIsRefreshing(false)
     }
   }
 
@@ -347,10 +357,10 @@ export function SystemLogsPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={!desktop || logs.isFetching}
-                onClick={() => void logs.refetch()}
+                disabled={!desktop || isRefreshing}
+                onClick={() => void refreshLogs()}
               >
-                <RefreshCw className={cn('h-4 w-4', logs.isFetching && 'animate-spin')} />
+                <RefreshCw className={cn('h-4 w-4', isRefreshing && 'animate-spin')} />
                 {t('logs.actions.refresh')}
               </Button>
               <Button
