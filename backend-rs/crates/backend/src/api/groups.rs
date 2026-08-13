@@ -33,9 +33,9 @@ use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{resolve_workspace_path, ToolError};
 
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, \
-     free_speech, proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
+     free_speech, proactive_mode, \
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
-     scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
+     agent_mention_policy, max_agent_steps, max_steps_per_agent, \
      max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
      max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
      moderator_provider_id, moderator_model, \
@@ -112,17 +112,11 @@ pub struct CreateRequest {
     #[serde(default)]
     proactive_mode: Option<bool>,
     #[serde(default)]
-    proactive_max_rounds: Option<i64>,
-    #[serde(default)]
-    proactive_reply_multiplier: Option<i64>,
-    #[serde(default)]
     allow_agent_free_mention: Option<bool>,
     #[serde(default)]
     agent_free_mention_max_dispatches: Option<i64>,
     #[serde(default)]
     communication_mode: Option<String>,
-    #[serde(default)]
-    scheduler_enabled: Option<bool>,
     #[serde(default)]
     agent_mention_policy: Option<String>,
     #[serde(default)]
@@ -170,17 +164,11 @@ pub struct UpdateRequest {
     #[serde(default)]
     proactive_mode: Option<bool>,
     #[serde(default)]
-    proactive_max_rounds: Option<i64>,
-    #[serde(default)]
-    proactive_reply_multiplier: Option<i64>,
-    #[serde(default)]
     allow_agent_free_mention: Option<bool>,
     #[serde(default)]
     agent_free_mention_max_dispatches: Option<i64>,
     #[serde(default)]
     communication_mode: Option<String>,
-    #[serde(default)]
-    scheduler_enabled: Option<bool>,
     #[serde(default)]
     agent_mention_policy: Option<String>,
     #[serde(default, deserialize_with = "double_option")]
@@ -397,12 +385,9 @@ pub struct GroupResponse {
     announcement: Option<String>,
     free_speech: bool,
     proactive_mode: bool,
-    proactive_max_rounds: i64,
-    proactive_reply_multiplier: i64,
     allow_agent_free_mention: bool,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
-    scheduler_enabled: bool,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -527,12 +512,9 @@ struct GroupRow {
     // SQLite stores booleans as integers; these are exposed as booleans below.
     free_speech: i64,
     proactive_mode: i64,
-    proactive_max_rounds: i64,
-    proactive_reply_multiplier: i64,
     allow_agent_free_mention: i64,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
-    scheduler_enabled: i64,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -555,7 +537,6 @@ struct GroupRow {
 
 #[derive(Debug)]
 struct SchedulerConfigFields {
-    scheduler_enabled: i64,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -577,7 +558,6 @@ impl SchedulerConfigFields {
         body: &CreateRequest,
     ) -> Result<Self, ApiError> {
         Self {
-            scheduler_enabled: body.scheduler_enabled.unwrap_or(false) as i64,
             agent_mention_policy: body
                 .agent_mention_policy
                 .as_deref()
@@ -606,10 +586,6 @@ impl SchedulerConfigFields {
         existing: &GroupRow,
     ) -> Result<Self, ApiError> {
         Self {
-            scheduler_enabled: body
-                .scheduler_enabled
-                .map(i64::from)
-                .unwrap_or(existing.scheduler_enabled),
             agent_mention_policy: body
                 .agent_mention_policy
                 .clone()
@@ -792,12 +768,9 @@ impl From<GroupRow> for GroupResponse {
             announcement: row.announcement,
             free_speech: row.free_speech != 0,
             proactive_mode: row.proactive_mode != 0,
-            proactive_max_rounds: row.proactive_max_rounds,
-            proactive_reply_multiplier: row.proactive_reply_multiplier,
             allow_agent_free_mention: row.allow_agent_free_mention != 0,
             agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches,
             communication_mode: row.communication_mode,
-            scheduler_enabled: row.scheduler_enabled != 0,
             agent_mention_policy: row.agent_mention_policy,
             max_agent_steps: row.max_agent_steps,
             max_steps_per_agent: row.max_steps_per_agent,
@@ -935,8 +908,6 @@ pub(crate) async fn create_inner(
         .unwrap_or(true);
     let free_speech = body.free_speech.unwrap_or(false);
     let proactive_mode = body.proactive_mode.unwrap_or(false);
-    let proactive_max_rounds = validate_proactive_max_rounds(body.proactive_max_rounds)?;
-    let multiplier = validate_multiplier(body.proactive_reply_multiplier)?;
     let allow_agent_free_mention = body.allow_agent_free_mention.unwrap_or(true);
     let agent_free_mention_max_dispatches =
         validate_agent_free_mention_max_dispatches(body.agent_free_mention_max_dispatches)?;
@@ -962,15 +933,15 @@ pub(crate) async fn create_inner(
     sqlx::query(
         "INSERT INTO groups \
          (id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, free_speech, \
-          proactive_mode, proactive_max_rounds, proactive_reply_multiplier, \
+          proactive_mode, \
           allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
           scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
           max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
           max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
           moderator_provider_id, moderator_model, \
           status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
-                 ?, ?, ?, 'active', ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
@@ -981,12 +952,9 @@ pub(crate) async fn create_inner(
     .bind(&announcement)
     .bind(free_speech as i64)
     .bind(proactive_mode as i64)
-    .bind(proactive_max_rounds)
-    .bind(multiplier)
     .bind(allow_agent_free_mention as i64)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
-    .bind(scheduler.scheduler_enabled)
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
     .bind(scheduler.max_steps_per_agent)
@@ -1144,14 +1112,6 @@ pub(crate) async fn update_inner(
         .proactive_mode
         .map(|b| b as i64)
         .unwrap_or(existing.proactive_mode);
-    let proactive_max_rounds = match body.proactive_max_rounds {
-        Some(value) => validate_proactive_max_rounds(Some(value))?,
-        None => existing.proactive_max_rounds,
-    };
-    let multiplier = match body.proactive_reply_multiplier {
-        Some(value) => validate_multiplier(Some(value))?,
-        None => existing.proactive_reply_multiplier,
-    };
     let allow_agent_free_mention = body
         .allow_agent_free_mention
         .map(|b| b as i64)
@@ -1175,9 +1135,9 @@ pub(crate) async fn update_inner(
     sqlx::query(
         "UPDATE groups SET \
          name = ?, description = ?, announcement = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
-         proactive_mode = ?, proactive_max_rounds = ?, proactive_reply_multiplier = ?, \
+         proactive_mode = ?, \
          allow_agent_free_mention = ?, agent_free_mention_max_dispatches = ?, \
-         communication_mode = ?, scheduler_enabled = ?, agent_mention_policy = ?, \
+         communication_mode = ?, agent_mention_policy = ?, \
          max_agent_steps = ?, max_steps_per_agent = ?, max_scheduler_hops = ?, \
          max_moderator_calls = ?, max_consecutive_failures = ?, max_total_failures = ?, \
          max_total_tokens = ?, turn_timeout_seconds = ?, moderator_enabled = ?, \
@@ -1191,12 +1151,9 @@ pub(crate) async fn update_inner(
     .bind(auto_share_workspace_with_new_agents)
     .bind(free_speech)
     .bind(proactive_mode)
-    .bind(proactive_max_rounds)
-    .bind(multiplier)
     .bind(allow_agent_free_mention)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
-    .bind(scheduler.scheduler_enabled)
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
     .bind(scheduler.max_steps_per_agent)
@@ -4805,26 +4762,6 @@ async fn validate_moderator_provider(
         )),
         Some(_) => Ok(id),
     }
-}
-
-fn validate_proactive_max_rounds(raw: Option<i64>) -> Result<i64, ApiError> {
-    let value = raw.unwrap_or(1);
-    if !(1..=5).contains(&value) {
-        return Err(ApiError::invalid_input(
-            "proactive_max_rounds must be between 1 and 5",
-        ));
-    }
-    Ok(value)
-}
-
-fn validate_multiplier(raw: Option<i64>) -> Result<i64, ApiError> {
-    let value = raw.unwrap_or(1);
-    if value < 1 {
-        return Err(ApiError::invalid_input(
-            "proactive_reply_multiplier must be >= 1",
-        ));
-    }
-    Ok(value)
 }
 
 fn validate_agent_free_mention_max_dispatches(raw: Option<i64>) -> Result<i64, ApiError> {

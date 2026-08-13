@@ -41,7 +41,6 @@ function isAgentMentionPolicy(value: string): value is AgentMentionPolicy {
 
 const schedulerFormSchema = z
   .object({
-    scheduler_enabled: z.boolean(),
     agent_mention_policy: z.string(),
     max_agent_steps_mode: z.enum(['auto', 'custom']),
     max_agent_steps_custom: z.number().int().min(1, 'minOne'),
@@ -87,7 +86,6 @@ interface GroupSchedulerSettingsSectionProps {
 
 function groupToFormValues(group: GroupSchedulerConfig): SchedulerFormValues {
   return {
-    scheduler_enabled: group.scheduler_enabled,
     agent_mention_policy: group.agent_mention_policy,
     max_agent_steps_mode: group.max_agent_steps === null ? 'auto' : 'custom',
     max_agent_steps_custom: group.max_agent_steps ?? AUTO_MAX_AGENT_STEPS,
@@ -145,7 +143,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const [submitError, setSubmitError] = useState<string | null | undefined>(undefined)
   const [topologyError, setTopologyError] = useState(false)
 
-  const schedulerEnabled = form.watch('scheduler_enabled')
   const moderatorEnabled = form.watch('moderator_enabled')
   const selectedProviderId = form.watch('moderator_provider_id')
   const selectedModel = form.watch('moderator_model')
@@ -215,8 +212,8 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
     }
   }, [form, group])
 
-  const schedulerControlsDisabled = !schedulerEnabled || update.isPending
-  const moderatorControlsDisabled = schedulerControlsDisabled || !moderatorEnabled
+  const schedulerControlsDisabled = update.isPending
+  const moderatorControlsDisabled = update.isPending || !moderatorEnabled
 
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(undefined)
@@ -230,7 +227,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
     }
 
     const payload: GroupUpdate = {
-      scheduler_enabled: values.scheduler_enabled,
       agent_mention_policy:
         values.agent_mention_policy as GroupUpdate['agent_mention_policy'],
       max_agent_steps:
@@ -289,18 +285,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
         noValidate
         className="divide-y divide-border"
       >
-        <SettingsRow
-          label={t('scheduler.enable')}
-          description={t('scheduler.enableDescription')}
-        >
-          <Switch
-            checked={schedulerEnabled}
-            onCheckedChange={(value) => updateValue('scheduler_enabled', value)}
-            disabled={update.isPending}
-            aria-label={t('scheduler.enable')}
-          />
-        </SettingsRow>
-
         <SettingsRow
           label={t('scheduler.mentionPolicy')}
           description={t('scheduler.mentionPolicyDescription')}

@@ -14,10 +14,24 @@ pub struct BudgetLimits {
 }
 
 impl BudgetLimits {
+    pub fn resolve_agent_steps(
+        candidate_count: usize,
+        max_agent_steps: Option<u32>,
+        max_steps_per_agent: u32,
+        max_hops: u32,
+    ) -> u32 {
+        max_agent_steps.unwrap_or_else(|| {
+            if max_steps_per_agent == 1 && max_hops == 0 {
+                candidate_count.min(u32::MAX as usize) as u32
+            } else {
+                (candidate_count as u32).saturating_mul(3).clamp(8, 24)
+            }
+        })
+    }
+
     pub fn with_auto_steps(active_agents: usize, max_agent_steps: Option<u32>) -> Self {
         Self {
-            max_agent_steps: max_agent_steps
-                .unwrap_or_else(|| (active_agents as u32).saturating_mul(3).clamp(8, 24)),
+            max_agent_steps: Self::resolve_agent_steps(active_agents, max_agent_steps, 3, 5),
             max_steps_per_agent: 3,
             max_hops: 5,
             max_moderator_calls: 4,
@@ -170,6 +184,12 @@ mod tests {
         assert_eq!(BudgetLimits::with_auto_steps(1, None).max_agent_steps, 8);
         assert_eq!(BudgetLimits::with_auto_steps(4, None).max_agent_steps, 12);
         assert_eq!(BudgetLimits::with_auto_steps(20, None).max_agent_steps, 24);
+    }
+
+    #[test]
+    fn one_pass_auto_limit_matches_the_candidate_count() {
+        assert_eq!(BudgetLimits::resolve_agent_steps(30, None, 1, 0), 30);
+        assert_eq!(BudgetLimits::resolve_agent_steps(30, Some(7), 1, 0), 7);
     }
 
     #[test]

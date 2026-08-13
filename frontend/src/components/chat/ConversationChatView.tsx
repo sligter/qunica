@@ -32,7 +32,6 @@ export interface ConversationChatViewProps {
   conversationId: string
   workspaceId: string | null
   scope: ConversationScope
-  schedulerEnabled: boolean
   agents: GroupAgentRead[]
   title: React.ReactNode
   subtitle?: React.ReactNode
@@ -103,7 +102,6 @@ export function ConversationChatView({
   conversationId,
   workspaceId,
   scope,
-  schedulerEnabled,
   agents,
   title,
   subtitle,
@@ -120,7 +118,7 @@ export function ConversationChatView({
   const { isDockOpen, toggleDock } = useTerminalRuntime()
   useTerminalConversationRegistration(conversationId, workspaceId)
   const messagesQuery = useConversationMessages(scope, conversationId)
-  const stream = useSendMessageStream(conversationId, schedulerEnabled, {
+  const stream = useSendMessageStream(conversationId, {
     scope,
     onConversationUpdated,
   })

@@ -129,7 +129,6 @@ function conversationElement({
         conversationId={conversationId}
         workspaceId={workspaceId}
         scope={scope}
-        schedulerEnabled={false}
         agents={[]}
         title="Direct chat"
         subtitle="Solo"

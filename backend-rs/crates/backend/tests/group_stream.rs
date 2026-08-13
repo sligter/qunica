@@ -2174,7 +2174,7 @@ async fn message_send_waiting_for_user_returns_reply_and_stops_fanout() {
 }
 
 #[tokio::test]
-async fn message_send_agent_as_tool_splits_dispatch_and_helper_reply() {
+async fn message_send_agent_as_tool_returns_the_scheduled_helper_reply() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "send-aat@example.com").await;
     let owner = owner_id(&state, "send-aat@example.com").await;
@@ -2200,7 +2200,7 @@ async fn message_send_agent_as_tool_splits_dispatch_and_helper_reply() {
         "2024-01-02T00:00:00Z",
     )
     .await;
-    let caller = seed_agent_with_tool_config(
+    let _caller = seed_agent_with_tool_config(
         &state,
         &owner,
         &group,
@@ -2224,14 +2224,19 @@ async fn message_send_agent_as_tool_splits_dispatch_and_helper_reply() {
 
     assert_eq!(status, StatusCode::CREATED);
     let dispatches = body["dispatch_messages"].as_array().unwrap();
-    assert_eq!(dispatches.len(), 1);
-    assert_eq!(dispatches[0]["sender_id"].as_str().unwrap(), caller);
-    assert_eq!(dispatches[0]["content"], "@Helper draft summary");
+    assert!(dispatches.is_empty());
     let replies = body["agent_replies"].as_array().unwrap();
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["sender_id"].as_str().unwrap(), helper);
     assert_eq!(replies[0]["content"], "Helper finished");
     assert!(body["warnings"].as_array().unwrap().is_empty());
+    let scheduled_dispatches: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches WHERE turn_id IN (SELECT id FROM group_turns WHERE group_id = ?)")
+            .bind(&group)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(scheduled_dispatches, 2);
 }
 
 #[tokio::test]
@@ -2565,7 +2570,9 @@ async fn messages_clear_prevents_next_stream_from_reusing_cleared_thread() {
         kinds(&events),
         vec![
             "user_message".to_string(),
+            "turn_started".to_string(),
             "silence".to_string(),
+            "turn_completed".to_string(),
             "done".to_string()
         ]
     );
@@ -2594,7 +2601,7 @@ async fn messages_clear_prevents_next_stream_from_reusing_cleared_thread() {
 }
 
 #[tokio::test]
-async fn messages_clear_cancels_legacy_turn_before_late_reply() {
+async fn messages_clear_cancels_active_turn_before_late_reply() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "messages-clear-running@example.com").await;
     let owner = owner_id(&state, "messages-clear-running@example.com").await;
@@ -2665,7 +2672,7 @@ async fn messages_clear_cancels_legacy_turn_before_late_reply() {
 }
 
 #[tokio::test]
-async fn cancel_thread_stops_legacy_turn_before_late_reply() {
+async fn cancel_thread_stops_active_turn_before_late_reply() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "thread-cancel-running@example.com").await;
     let owner = owner_id(&state, "thread-cancel-running@example.com").await;
@@ -3067,7 +3074,9 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
         json!({"content": "please inspect note.txt"}),
     )
     .await;
-    assert!(events.iter().any(|event| event["kind"] == "error"));
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "dispatch_failed"));
 
     let (thread_id, interrupted_id, content_json): (String, String, String) = sqlx::query_as(
         "SELECT thread_id, id, content_json FROM messages \
@@ -3286,10 +3295,10 @@ fn assert_invalid_params_agent_error(events: &[Value], agent_id: &str) {
 }
 
 #[tokio::test]
-async fn acp_invalid_params_is_agent_error_without_legacy_silence() {
+async fn acp_invalid_params_fails_dispatch_without_silence() {
     let (app, state) = router_with_state_for_tests().await;
-    let token = register_and_login(&app, "acp-invalid-legacy@example.com").await;
-    let owner = owner_id(&state, "acp-invalid-legacy@example.com").await;
+    let token = register_and_login(&app, "acp-invalid@example.com").await;
+    let owner = owner_id(&state, "acp-invalid@example.com").await;
     let (root, workspace) = create_local_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
     let (command, args) = write_failing_fake_acp_agent(root.path());
@@ -3332,51 +3341,6 @@ async fn acp_invalid_params_is_agent_error_without_legacy_silence() {
             .unwrap();
     assert_eq!(audit.0, "failed");
     assert!(audit.1.unwrap_or_default().contains("[REDACTED]"));
-}
-
-#[tokio::test]
-async fn scheduler_acp_invalid_params_fails_dispatch_without_silence() {
-    let (app, state) = router_with_state_for_tests().await;
-    let token = register_and_login(&app, "acp-invalid-scheduler@example.com").await;
-    let owner = owner_id(&state, "acp-invalid-scheduler@example.com").await;
-    let (root, workspace) = create_local_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({"free_speech": true, "scheduler_enabled": true}),
-    )
-    .await;
-    let (command, args) = write_failing_fake_acp_agent(root.path());
-    let agent_id = seed_acp_agent(
-        &state,
-        &owner,
-        &workspace,
-        &group,
-        "Codex",
-        json!({
-            "command": command,
-            "args": args,
-            "env": {
-                "A_SHORT_SECRET": "TOP_SECRET",
-                "Z_LONG_SECRET": "TOP_SECRET_VALUE",
-                "WHITESPACE_SECRET": "LINE1\nLINE2",
-            },
-            "model": "gpt-5",
-            "timeout_seconds": 10,
-        }),
-    )
-    .await;
-
-    let events = stream_events(
-        &app,
-        &format!("/api/v2/groups/{group}/messages/stream"),
-        &token,
-        json!({"content": "@Codex reply"}),
-    )
-    .await;
-
-    assert_invalid_params_agent_error(&events, &agent_id);
     let dispatch: (String, Option<String>) = sqlx::query_as(
         "SELECT status, failure_code FROM agent_dispatches WHERE target_agent_id = ?",
     )
@@ -3515,9 +3479,12 @@ async fn stream_replay_after_user_message_returns_durable_tail_without_duplicate
     assert_eq!(
         kinds(&replay_events),
         vec![
+            "turn_started".to_string(),
+            "speaker_selected".to_string(),
             "agent_start".to_string(),
             "token".to_string(),
             "agent_message".to_string(),
+            "turn_completed".to_string(),
             "done".to_string()
         ]
     );
@@ -3546,7 +3513,16 @@ async fn stream_client_request_id_replays_without_starting_a_duplicate_turn() {
     let first = stream_events(&app, &uri, &token, body.clone()).await;
     let replay = stream_events(&app, &uri, &token, body).await;
 
-    assert_eq!(kinds(&first), vec!["user_message", "silence", "done"]);
+    assert_eq!(
+        kinds(&first),
+        vec![
+            "user_message",
+            "turn_started",
+            "silence",
+            "turn_completed",
+            "done"
+        ]
+    );
     assert_eq!(replay, first);
     assert_eq!(message_count(&state, &group).await, 1);
 }
@@ -3741,10 +3717,10 @@ async fn group_stream_supports_gemini_provider_kind_without_network() {
 }
 
 #[tokio::test]
-async fn scheduler_disabled_preserves_legacy_fanout() {
+async fn default_group_fanout_uses_the_scheduler() {
     let (app, state) = router_with_state_for_tests().await;
-    let token = register_and_login(&app, "scheduler-legacy@example.com").await;
-    let owner = owner_id(&state, "scheduler-legacy@example.com").await;
+    let token = register_and_login(&app, "scheduler-default@example.com").await;
+    let owner = owner_id(&state, "scheduler-default@example.com").await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
     let provider = seed_provider(
@@ -3793,7 +3769,7 @@ async fn scheduler_disabled_preserves_legacy_fanout() {
         .await
         .unwrap();
     assert_eq!(agent_messages, 2);
-    assert_eq!(turns, 0);
+    assert_eq!(turns, 1);
 }
 
 #[tokio::test]
@@ -4577,7 +4553,7 @@ async fn moderator_call_budget_uses_revalidated_fallback_without_a_second_reques
 }
 
 #[tokio::test]
-async fn scheduler_enabled_persists_turn_and_dispatch_lifecycle() {
+async fn scheduler_persists_turn_and_dispatch_lifecycle() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "scheduler-enabled@example.com").await;
     let owner = owner_id(&state, "scheduler-enabled@example.com").await;
@@ -4586,7 +4562,7 @@ async fn scheduler_enabled_persists_turn_and_dispatch_lifecycle() {
         &app,
         &token,
         &workspace,
-        json!({"free_speech": true, "scheduler_enabled": true, "max_agent_steps": 8}),
+        json!({"free_speech": true, "max_agent_steps": 8}),
     )
     .await;
     let provider = seed_provider(
@@ -4866,7 +4842,7 @@ async fn bounded_mentions_routes_visible_agent_prose_with_child_dispatch_metadat
 }
 
 #[tokio::test]
-async fn bounded_mentions_display_only_ignores_agent_output_even_with_legacy_flag() {
+async fn bounded_mentions_display_only_ignores_agent_output_when_free_mentions_are_enabled() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-display-only@example.com").await;
     let owner = owner_id(&state, "bounded-display-only@example.com").await;
@@ -4876,7 +4852,6 @@ async fn bounded_mentions_display_only_ignores_agent_output_even_with_legacy_fla
         &token,
         &workspace,
         json!({
-            "scheduler_enabled": true,
             "agent_mention_policy": "display_only",
             "allow_agent_free_mention": true,
         }),
@@ -5183,6 +5158,14 @@ async fn bounded_handoff_failed_helper_leaves_no_running_dispatch_or_turn() {
             StatusCode::INTERNAL_SERVER_ERROR,
             "provider failed".to_string(),
         ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider failed".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider failed".to_string(),
+        ),
     ])
     .await;
     let provider = seed_provider(&state, &owner, &format!("{provider_url}/{SENTINEL}")).await;
@@ -5333,6 +5316,8 @@ async fn bounded_public_nested_handoff_failure_preserves_failure_budget() {
                 json!({"assistant": "Leaf", "task": "finish"}),
             )]),
         ),
+        (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
+        (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
         (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
     ])
     .await;
@@ -5634,6 +5619,8 @@ async fn bounded_nested_call_handoff_failure_stays_private_and_leaves_no_active_
                 json!({"assistant": "Leaf", "task": "finish research"}),
             )]),
         ),
+        (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
+        (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
         (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
         (StatusCode::OK, text_body("caller handled failure")),
     ])
@@ -6496,10 +6483,14 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
     let first = rx.recv().await.unwrap();
     assert_eq!(first.kind, StreamEventKind::UserMessage);
     let second = rx.recv().await.unwrap();
-    assert_eq!(second.kind, StreamEventKind::AgentStart);
+    assert_eq!(second.kind, StreamEventKind::TurnStarted);
     let third = rx.recv().await.unwrap();
-    assert_eq!(third.kind, StreamEventKind::Token);
-    assert_eq!(third.payload["delta"], "a");
+    assert_eq!(third.kind, StreamEventKind::SpeakerSelected);
+    let fourth = rx.recv().await.unwrap();
+    assert_eq!(fourth.kind, StreamEventKind::AgentStart);
+    let fifth = rx.recv().await.unwrap();
+    assert_eq!(fifth.kind, StreamEventKind::Token);
+    assert_eq!(fifth.payload["delta"], "a");
     drop(rx);
 
     let outcome = handle.await.unwrap();
@@ -6591,11 +6582,15 @@ async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_group_turn(services, request, tx));
 
-    // Receive the first two events (user_message, agent_start), then disconnect.
+    // Receive through agent_start, then disconnect before the first token.
     let first = rx.recv().await.unwrap();
     assert_eq!(first.kind, StreamEventKind::UserMessage);
     let second = rx.recv().await.unwrap();
-    assert_eq!(second.kind, StreamEventKind::AgentStart);
+    assert_eq!(second.kind, StreamEventKind::TurnStarted);
+    let third = rx.recv().await.unwrap();
+    assert_eq!(third.kind, StreamEventKind::SpeakerSelected);
+    let fourth = rx.recv().await.unwrap();
+    assert_eq!(fourth.kind, StreamEventKind::AgentStart);
     drop(rx);
 
     let outcome = handle.await.unwrap();
@@ -7694,19 +7689,14 @@ async fn agent_mention_follow_ups_stop_when_free_mention_is_disabled() {
     assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
 }
 
-/// `AskUser` must pause the turn on the legacy fan-out path too.
-///
-/// Direct chats are inserted with `scheduler_enabled = 0` and `groups::update`
-/// refuses `conversation_kind = 'direct'`, so they can never reach the bounded
-/// scheduler. That path leaves `ctx.scheduled_dispatch` unset, and the wait
-/// branch used to require it, turning every `AskUser` call into a failed turn.
+/// `AskUser` pauses and resumes through the same scheduled path as every chat.
 #[tokio::test]
-async fn ask_user_pauses_a_turn_without_the_scheduler() {
+async fn ask_user_pauses_and_resumes_a_scheduled_turn() {
     let (app, state) = router_with_state_for_tests().await;
-    let token = register_and_login(&app, "unscheduled-tool-wait@example.com").await;
-    let owner = owner_id(&state, "unscheduled-tool-wait@example.com").await;
+    let token = register_and_login(&app, "scheduled-tool-wait@example.com").await;
+    let owner = owner_id(&state, "scheduled-tool-wait@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": false})).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
     let (provider_url, requests) = recording_fake_provider_sequence(vec![
         tool_body(vec![(
             "ask",
@@ -7784,12 +7774,11 @@ async fn ask_user_pauses_a_turn_without_the_scheduler() {
                 .as_str()
                 .is_some_and(|content| content.contains("Proceed?"))
     }));
-    // No scheduler means no dispatch rows to terminalize.
     let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(dispatches, 0);
+    assert_eq!(dispatches, 2);
 }
 
 /// Seed a provider whose `models_json` lists more than the default model, so

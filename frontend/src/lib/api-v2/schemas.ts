@@ -34,7 +34,6 @@ export function parseConversationUpdatedEvent(
 }
 
 export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.object({
-  scheduler_enabled: z.boolean(),
   agent_mention_policy: z.enum(['display_only', 'bounded_schedule']),
   max_agent_steps: z.number().int().min(1).nullable(),
   max_steps_per_agent: z.number().int().min(1),

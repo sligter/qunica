@@ -409,6 +409,72 @@ mod tests {
         assert!(!scheduler_schema_matches_target(&pool).await.unwrap());
     }
 
+    #[tokio::test]
+    async fn unified_scheduler_migration_converts_only_disabled_rows() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.migrate().await.unwrap();
+        let pool = db.pool();
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, name, created_at, updated_at) \
+             VALUES ('owner', 'owner@example.com', 'hash', 'Owner', 'now', 'now')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO groups (id, owner_id, name, scheduler_enabled, agent_mention_policy, \
+                max_steps_per_agent, max_scheduler_hops, max_moderator_calls, \
+                max_consecutive_failures, max_total_failures, moderator_enabled, \
+                allow_agent_free_mention, agent_free_mention_max_dispatches, created_at, updated_at) \
+             VALUES ('legacy', 'owner', 'Legacy', 0, 'bounded_schedule', 3, 5, 4, 3, 6, 1, 1, 8, 'now', 'now'), \
+                    ('bounded', 'owner', 'Bounded', 1, 'bounded_schedule', 4, 7, 2, 4, 8, 1, 1, 9, 'now', 'now')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(include_str!("migrations/0014_unified_group_scheduler.sql"))
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let legacy: (
+            i64,
+            String,
+            Option<i64>,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT scheduler_enabled, agent_mention_policy, max_agent_steps, \
+                        max_steps_per_agent, max_scheduler_hops, max_moderator_calls, \
+                        max_consecutive_failures, max_total_failures, moderator_enabled, \
+                        allow_agent_free_mention, agent_free_mention_max_dispatches \
+                 FROM groups WHERE id = 'legacy'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            legacy,
+            (1, "display_only".to_owned(), None, 1, 0, 0, 1, 1, 0, 0, 0)
+        );
+
+        let bounded: (i64, String, i64, i64) = sqlx::query_as(
+            "SELECT scheduler_enabled, agent_mention_policy, max_steps_per_agent, max_scheduler_hops \
+             FROM groups WHERE id = 'bounded'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(bounded, (1, "bounded_schedule".to_owned(), 4, 7));
+    }
+
     async fn legacy_migration_pool(with_appearance_column: bool) -> SqlitePool {
         legacy_migration_pool_with_description(
             with_appearance_column,

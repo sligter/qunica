@@ -242,7 +242,7 @@ fn list_columns(kind: TargetKind) -> &'static str {
         TargetKind::Mcp => "m.id, m.name, m.description, m.transport, m.status",
         TargetKind::Skill => "s.id, s.name, s.description, s.source",
         TargetKind::Workspace => "w.id, w.name, w.backend_type, w.local_path",
-        TargetKind::Group => "g.id, g.name, g.description, g.scheduler_enabled, g.workspace_id",
+        TargetKind::Group => "g.id, g.name, g.description, g.workspace_id",
         TargetKind::Chat => "g.id, g.name, g.direct_agent_id, g.updated_at",
     }
 }
@@ -278,7 +278,7 @@ fn detail_columns(kind: TargetKind) -> &'static str {
         }
         TargetKind::Group => {
             "g.id, g.name, g.description, g.announcement, g.workspace_id, g.free_speech, \
-             g.proactive_mode, g.communication_mode, g.scheduler_enabled, g.agent_mention_policy, \
+             g.proactive_mode, g.communication_mode, g.agent_mention_policy, \
              g.max_total_tokens, g.turn_timeout_seconds, g.created_at"
         }
         TargetKind::Chat => "g.id, g.name, g.direct_agent_id, g.created_at, g.updated_at",
@@ -312,7 +312,6 @@ fn postprocess(kind: TargetKind, mut row: Map<String, Value>) -> Value {
     // model an integer for a flag invites it to report "free_speech: 1".
     for key in [
         "api_key_configured",
-        "scheduler_enabled",
         "free_speech",
         "proactive_mode",
         "reasoning_passback",

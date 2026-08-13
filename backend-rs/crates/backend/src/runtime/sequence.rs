@@ -74,11 +74,31 @@ impl SequenceAllocator {
         thread_id: &str,
         group_id: &str,
         message: &NewMessage,
-    ) -> anyhow::Result<i64> {
+        active_dispatch_id: Option<&str>,
+    ) -> anyhow::Result<Option<i64>> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         ensure_thread_writable(&mut tx, thread_id).await?;
+
+        if let Some(dispatch_id) = active_dispatch_id {
+            let active: bool = sqlx::query_scalar(
+                "SELECT EXISTS(\
+                    SELECT 1 FROM agent_dispatches d \
+                    JOIN group_turns t ON t.id = d.turn_id \
+                    WHERE d.id = ? AND d.status = 'running' AND t.status = 'running' \
+                      AND t.thread_id = ? AND t.group_id = ?\
+                 )",
+            )
+            .bind(dispatch_id)
+            .bind(thread_id)
+            .bind(group_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !active {
+                return Ok(None);
+            }
+        }
 
         let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
             .bind(thread_id)
@@ -114,7 +134,7 @@ impl SequenceAllocator {
         .await?;
 
         tx.commit().await?;
-        Ok(next_seq)
+        Ok(Some(next_seq))
     }
 
     /// Replace an interrupted checkpoint in place and pause its thread.

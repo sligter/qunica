@@ -186,7 +186,7 @@ describe('useSendMessageStream scheduler events', () => {
   it('sends its stable local request id to the backend', () => {
     const queryClient = new QueryClient()
     const hook = renderHook(
-      () => useSendMessageStream('group-1', false),
+      () => useSendMessageStream('group-1'),
       { wrapper: wrapper(queryClient) },
     )
 
@@ -201,7 +201,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('resolves send on the persisted user-message acknowledgement before agents finish', async () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     let sendPromise!: Promise<void>
@@ -238,7 +238,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('rejects send when the stream reports an error before acknowledgement', async () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     let sendPromise!: Promise<void>
@@ -261,7 +261,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('keeps send resolved when an agent error arrives after acknowledgement', async () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     let sendPromise!: Promise<void>
@@ -292,7 +292,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('rejects unacknowledged sends on transport error, close, and startup failure', async () => {
     const queryClient = new QueryClient()
-    const first = renderHook(() => useSendMessageStream('group-1', true), {
+    const first = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     let transportPromise!: Promise<void>
@@ -304,7 +304,7 @@ describe('useSendMessageStream scheduler events', () => {
     await transportRejection
     first.unmount()
 
-    const second = renderHook(() => useSendMessageStream('group-1', true), {
+    const second = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     let closePromise!: Promise<void>
@@ -319,7 +319,7 @@ describe('useSendMessageStream scheduler events', () => {
     second.unmount()
 
     mocks.streamStartError = new Error('startup failed')
-    const third = renderHook(() => useSendMessageStream('group-1', true), {
+    const third = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     let startupPromise!: Promise<void>
@@ -339,7 +339,7 @@ describe('useSendMessageStream scheduler events', () => {
       }),
     )
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
 
@@ -414,7 +414,7 @@ describe('useSendMessageStream scheduler events', () => {
   it('promotes scheduler waiting_for_user before done and invalidates its trace', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => ignoreSend(hook.result.current.send('hello')))
@@ -464,7 +464,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('keeps the question and choices from a waiting_for_user event', () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', false), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => ignoreSend(hook.result.current.send('hello')))
@@ -498,40 +498,10 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
-  it('cancels the legacy server thread and removes its replaced live timeline', async () => {
-    const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', false), {
-      wrapper: wrapper(queryClient),
-    })
-    act(() => ignoreSend(hook.result.current.send('hello')))
-    const stream = mocks.streams[0]
-    emit(stream.handlers, {
-      stream_id: 'stream-1',
-      seq: 1,
-      event_id: 'event-1',
-      kind: 'user_message',
-      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
-    })
-    let cancelPromise!: Promise<void>
-    act(() => {
-      cancelPromise = hook.result.current.cancel()
-    })
-    await act(async () => cancelPromise)
-
-    expect(mocks.fetchJson).toHaveBeenCalledWith('/threads/thread-1/cancel', {
-      method: 'POST',
-      token: 'token-1',
-    })
-    expect(stream.abort).toHaveBeenCalledTimes(1)
-    expect(
-      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'],
-    ).toBeUndefined()
-  })
-
   it('reconciles an idempotent completed cancel response before aborting', async () => {
     mocks.fetchJson.mockResolvedValueOnce(traceResponse('completed', null))
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => ignoreSend(hook.result.current.send('hello')))
@@ -566,7 +536,7 @@ describe('useSendMessageStream scheduler events', () => {
   it('detaches two abandoned local streams on unmount without server cancellation', () => {
     useMessageStore.getState().setHistory('group-1', [persistedMessage('persisted')])
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => {
@@ -615,7 +585,7 @@ describe('useSendMessageStream scheduler events', () => {
     })
     const queryClient = new QueryClient()
     const hook = renderHook(
-      ({ groupId }) => useSendMessageStream(groupId, true),
+      ({ groupId }) => useSendMessageStream(groupId),
       {
         initialProps: { groupId: 'group-1' },
         wrapper: wrapper(queryClient),
@@ -649,7 +619,7 @@ describe('useSendMessageStream scheduler events', () => {
   it('rejects late bubbles and messages after supersede and invalidates the terminal trace', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => ignoreSend(hook.result.current.send('hello')))
@@ -714,7 +684,7 @@ describe('useSendMessageStream scheduler events', () => {
 
   it('normalizes live call and budget events without storing dispatch details', () => {
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1', true), {
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => ignoreSend(hook.result.current.send('hello')))
@@ -782,7 +752,7 @@ describe('useSendMessageStream direct conversations', () => {
     const onConversationUpdated = vi.fn()
     const { result } = renderHook(
       () =>
-        useSendMessageStream('chat-1', false, {
+        useSendMessageStream('chat-1', {
           scope: 'direct-chats',
           onConversationUpdated,
         }),
@@ -817,7 +787,7 @@ describe('useSendMessageStream direct conversations', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const { result } = renderHook(
-      () => useSendMessageStream('chat-1', false, { scope: 'direct-chats' }),
+      () => useSendMessageStream('chat-1', { scope: 'direct-chats' }),
       { wrapper: wrapper(queryClient) },
     )
 

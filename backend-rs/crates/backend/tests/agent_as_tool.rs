@@ -394,28 +394,15 @@ async fn message_rows(state: &AppState) -> Vec<(String, Option<String>, Option<S
     .unwrap()
 }
 
-async fn enable_scheduler(state: &AppState, group_id: &str) {
-    sqlx::query(
-        "UPDATE groups SET scheduler_enabled = 1, agent_mention_policy = 'bounded_schedule' \
-         WHERE id = ?",
-    )
-    .bind(group_id)
-    .execute(state.db.pool())
-    .await
-    .unwrap();
-}
-
 #[tokio::test]
 #[allow(clippy::type_complexity)]
-async fn bounded_agent_as_tool_call_is_private_and_returns_to_caller() {
+async fn agent_as_tool_call_is_private_and_returns_to_caller() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "aat-bounded-call@example.com";
     let token = register_and_login(&app, email).await;
     let owner = owner_id(&state, email).await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace).await;
-    enable_scheduler(&state, &group).await;
-
     let helper_id = uuid::Uuid::new_v4().to_string();
     let provider_url = fake_provider_sequence(vec![
         tool_body(vec![(
@@ -491,15 +478,13 @@ async fn bounded_agent_as_tool_call_is_private_and_returns_to_caller() {
 
 #[tokio::test]
 #[allow(clippy::type_complexity)]
-async fn bounded_agent_as_tool_omitted_mode_handoffs_without_caller_message() {
+async fn agent_as_tool_omitted_mode_handoffs_without_caller_message() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "aat-bounded-handoff@example.com";
     let token = register_and_login(&app, email).await;
     let owner = owner_id(&state, email).await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace).await;
-    enable_scheduler(&state, &group).await;
-
     let helper_id = uuid::Uuid::new_v4().to_string();
     let provider_url = fake_provider_sequence(vec![
         tool_body(vec![(
@@ -695,12 +680,13 @@ async fn agent_as_tool_terminal_handoff_skips_sibling_tools() {
     );
 
     let rows = message_rows(&state).await;
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0, "user");
-    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
-    assert_eq!(rows[1].2.as_deref(), Some("@Helper draft summary"));
-    assert_eq!(rows[2].1.as_deref(), Some(helper.as_str()));
-    assert_eq!(rows[2].2.as_deref(), Some("Helper finished"));
+    assert_eq!(rows[1].1.as_deref(), Some(helper.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("Helper finished"));
+    assert!(rows
+        .iter()
+        .all(|row| row.1.as_deref() != Some(caller.as_str())));
 }
 
 #[tokio::test]
@@ -749,10 +735,9 @@ async fn agent_as_tool_resolves_group_display_name() {
 
     assert_eq!(outcome, TurnOutcome::Completed);
     let rows = message_rows(&state).await;
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[1].2.as_deref(), Some("@Research Lead check facts"));
-    assert_eq!(rows[2].1.as_deref(), Some(helper.as_str()));
-    assert_eq!(rows[2].2.as_deref(), Some("Facts checked"));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(helper.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("Facts checked"));
 }
 
 #[tokio::test]
@@ -883,9 +868,9 @@ async fn agent_as_tool_runs_acp_helper_with_full_group_context() {
         .iter()
         .any(|payload| payload["status"] == "completed"));
     let rows = message_rows(&state).await;
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[2].1.as_deref(), Some(helper.as_str()));
-    assert_eq!(rows[2].2.as_deref(), Some("ACP helper done"));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(helper.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("ACP helper done"));
 }
 
 #[tokio::test]

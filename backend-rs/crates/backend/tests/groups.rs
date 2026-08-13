@@ -546,10 +546,12 @@ async fn group_create_requires_active_owned_workspace() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(group["workspace_id"], workspace_a);
     assert_eq!(group["status"], "active");
-    // Defaults are exposed as booleans/numbers.
+    // Active settings are exposed as booleans/numbers; retired knobs are absent.
     assert_eq!(group["free_speech"], false);
     assert_eq!(group["proactive_mode"], false);
-    assert_eq!(group["proactive_reply_multiplier"], 1);
+    assert!(group.get("proactive_reply_multiplier").is_none());
+    assert!(group.get("proactive_max_rounds").is_none());
+    assert!(group.get("scheduler_enabled").is_none());
     assert_eq!(group["allow_agent_free_mention"], true);
 
     // A workspace owned by another user cannot be referenced.
@@ -590,8 +592,6 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
                 "announcement": "Stand by",
                 "free_speech": true,
                 "proactive_mode": true,
-                "proactive_max_rounds": 4,
-                "proactive_reply_multiplier": 2,
                 "allow_agent_free_mention": false,
                 "agent_free_mention_max_dispatches": 12,
                 "communication_mode": "star"
@@ -606,8 +606,6 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
     assert_eq!(group["announcement"], "Stand by");
     assert_eq!(group["free_speech"], true);
     assert_eq!(group["proactive_mode"], true);
-    assert_eq!(group["proactive_max_rounds"], 4);
-    assert_eq!(group["proactive_reply_multiplier"], 2);
     assert_eq!(group["allow_agent_free_mention"], false);
     assert_eq!(group["agent_free_mention_max_dispatches"], 12);
     assert_eq!(group["communication_mode"], "star");
@@ -5498,7 +5496,7 @@ async fn direct_container_is_isolated_from_group_endpoints() {
 }
 
 #[tokio::test]
-async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
+async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     let app = app().await;
     let token = register_and_login(&app, "scheduler-config@example.com").await;
     let workspace = create_workspace(&app, &token).await;
@@ -5510,12 +5508,12 @@ async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
             "POST",
             "/api/v2/groups",
             &token,
-            json!({"name": "Legacy defaults", "workspace_id": workspace}),
+            json!({"name": "Scheduler defaults", "workspace_id": workspace}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(group["scheduler_enabled"], false);
+    assert!(group.get("scheduler_enabled").is_none());
     assert_eq!(group["agent_mention_policy"], "display_only");
     assert_eq!(group["max_agent_steps"], Value::Null);
     assert_eq!(group["max_steps_per_agent"], 3);
@@ -5540,7 +5538,6 @@ async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
             &format!("/api/v2/groups/{group_id}"),
             &token,
             json!({
-                "scheduler_enabled": true,
                 "agent_mention_policy": "bounded_schedule",
                 "max_agent_steps": 18,
                 "max_steps_per_agent": 4,
@@ -5558,7 +5555,7 @@ async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {updated:?}");
-    assert_eq!(updated["scheduler_enabled"], true);
+    assert!(updated.get("scheduler_enabled").is_none());
     assert_eq!(updated["agent_mention_policy"], "bounded_schedule");
     assert_eq!(updated["max_agent_steps"], 18);
     assert_eq!(updated["max_steps_per_agent"], 4);
@@ -5589,7 +5586,6 @@ async fn group_scheduler_config_round_trips_and_defaults_legacy_off() {
             &format!("/api/v2/groups/{group_id}"),
             &token,
             json!({
-                "scheduler_enabled": false,
                 "agent_mention_policy": "display_only",
                 "max_agent_steps": Value::Null,
                 "moderator_enabled": false,
@@ -5739,7 +5735,6 @@ async fn group_patch_updates_name_description_workspace_and_settings() {
                 "workspace_id": workspace_b,
                 "free_speech": true,
                 "proactive_mode": true,
-                "proactive_reply_multiplier": 3,
                 "allow_agent_free_mention": false,
             }),
         ),
@@ -5751,7 +5746,6 @@ async fn group_patch_updates_name_description_workspace_and_settings() {
     assert_eq!(updated["workspace_id"], workspace_b);
     assert_eq!(updated["free_speech"], true);
     assert_eq!(updated["proactive_mode"], true);
-    assert_eq!(updated["proactive_reply_multiplier"], 3);
     assert_eq!(updated["allow_agent_free_mention"], false);
 
     // Values round-trip through a fresh GET.
@@ -5766,7 +5760,6 @@ async fn group_patch_updates_name_description_workspace_and_settings() {
     assert_eq!(fetched["workspace_id"], workspace_b);
     assert_eq!(fetched["free_speech"], true);
     assert_eq!(fetched["proactive_mode"], true);
-    assert_eq!(fetched["proactive_reply_multiplier"], 3);
     assert_eq!(fetched["allow_agent_free_mention"], false);
 
     // Explicit null clears the workspace binding.
@@ -5785,51 +5778,44 @@ async fn group_patch_updates_name_description_workspace_and_settings() {
 }
 
 #[tokio::test]
-async fn group_rejects_invalid_reply_multiplier() {
+async fn group_ignores_retired_proactive_fields_for_legacy_clients() {
     let app = app().await;
     let token = register_and_login(&app, "multiplier@example.com").await;
     let workspace = create_workspace(&app, &token).await;
 
-    // Create with multiplier 0 is rejected.
-    let (status, body) = send(
-        &app,
-        authed_json(
-            "POST",
-            "/api/v2/groups",
-            &token,
-            json!({"name": "Bad", "workspace_id": workspace, "proactive_reply_multiplier": 0}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_input");
-
-    // A valid group can still be created, then PATCH with 0 is rejected.
     let (status, group) = send(
         &app,
         authed_json(
             "POST",
             "/api/v2/groups",
             &token,
-            json!({"name": "Good", "workspace_id": workspace}),
+            json!({
+                "name": "Compatible",
+                "workspace_id": workspace,
+                "proactive_max_rounds": 0,
+                "proactive_reply_multiplier": 0
+            }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+    assert!(group.get("proactive_max_rounds").is_none());
+    assert!(group.get("proactive_reply_multiplier").is_none());
     let group_id = group["id"].as_str().unwrap().to_string();
 
-    let (status, body) = send(
+    let (status, updated) = send(
         &app,
         authed_json(
             "PATCH",
             &format!("/api/v2/groups/{group_id}"),
             &token,
-            json!({"proactive_reply_multiplier": 0}),
+            json!({"proactive_max_rounds": 9, "proactive_reply_multiplier": -1}),
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(status, StatusCode::OK);
+    assert!(updated.get("proactive_max_rounds").is_none());
+    assert!(updated.get("proactive_reply_multiplier").is_none());
 }
 
 #[tokio::test]

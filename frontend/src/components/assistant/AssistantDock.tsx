@@ -277,7 +277,6 @@ export function AssistantDock() {
             models={models}
             defaultModel={provider.data?.default_model}
             scope="direct-chats"
-            schedulerEnabled={false}
             agents={[]}
             agentIsSystem
             title={<span className="text-sm font-medium">{t('title')}</span>}

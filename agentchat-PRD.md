@@ -1,5 +1,7 @@
-
 # 产品需求文档 PRD  
+
+> **历史文档（已废弃）**：本文描述早期产品设想，不代表当前技术实现。当前 Rust/SQLite 单引擎群聊行为见 [群组指南](backend-rs/crates/backend/src/docs/guide/groups.md) 与 [调度器设计](GROUP_SCHEDULER.md)。
+
 ## 产品名称：AgentChat 群协作工作台
 
 版本：V1.0  

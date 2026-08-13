@@ -41,6 +41,23 @@ pub fn next_decision(
     hop: u32,
     moderator_enabled: bool,
 ) -> SchedulerDecision {
+    if user_mentions.is_empty() && agent_mentions.is_empty() && deterministic_candidates.is_empty()
+    {
+        return match budget.check_dispatch("terminal", 0) {
+            Err(BudgetRejection::Failures) => SchedulerDecision::Finish {
+                status: TurnStatus::FailureBudgetExhausted,
+                reason: TurnReason::FailureBudgetExhausted,
+            },
+            Err(BudgetRejection::Tokens) => SchedulerDecision::Finish {
+                status: TurnStatus::BudgetExhausted,
+                reason: TurnReason::BudgetExhausted,
+            },
+            _ => SchedulerDecision::Finish {
+                status: TurnStatus::Silence,
+                reason: TurnReason::Silence,
+            },
+        };
+    }
     if let Some(target) = first_eligible(budget, previous_speaker, user_mentions, hop) {
         return SchedulerDecision::Dispatch(SchedulerDispatch {
             target_agent_id: target,
@@ -235,6 +252,50 @@ mod tests {
         assert!(matches!(
             next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, false),
             SchedulerDecision::Finish { .. }
+        ));
+    }
+
+    #[test]
+    fn exhausting_the_candidate_list_is_a_natural_finish() {
+        let mut budget = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 1,
+            max_steps_per_agent: 1,
+            max_hops: 0,
+            max_moderator_calls: 0,
+            max_consecutive_failures: 1,
+            max_total_failures: 1,
+            max_total_tokens: 120_000,
+        });
+        budget.record_dispatch("a");
+
+        assert!(matches!(
+            next_decision(&budget, Some("a"), &[], &[], &[], 0, false),
+            SchedulerDecision::Finish {
+                status: super::TurnStatus::Silence,
+                reason: super::TurnReason::Silence,
+            }
+        ));
+    }
+
+    #[test]
+    fn empty_candidates_do_not_hide_a_failure_terminal() {
+        let mut budget = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 1,
+            max_steps_per_agent: 1,
+            max_hops: 0,
+            max_moderator_calls: 0,
+            max_consecutive_failures: 1,
+            max_total_failures: 1,
+            max_total_tokens: 120_000,
+        });
+        budget.record_failure();
+
+        assert!(matches!(
+            next_decision(&budget, None, &[], &[], &[], 0, false),
+            SchedulerDecision::Finish {
+                status: super::TurnStatus::FailureBudgetExhausted,
+                reason: super::TurnReason::FailureBudgetExhausted,
+            }
         ));
     }
 

@@ -12,7 +12,6 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 
 pub const AGENT_AS_TOOL_NAME: &str = "AgentAsTool";
-pub const MAX_HANDOFF_DEPTH: usize = 1;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentAsToolCall {
@@ -143,16 +142,8 @@ pub(crate) async fn resolve_dispatch(
     group_id: &str,
     caller: &CallerAgent,
     call: &AgentAsToolCall,
-    handoff_depth: usize,
-    scheduler_enabled: bool,
     muted_agent_ids: &HashSet<String>,
 ) -> Result<AgentAsToolDispatch, AgentAsToolFailure> {
-    if !scheduler_enabled && handoff_depth >= MAX_HANDOFF_DEPTH {
-        return Err(AgentAsToolFailure::unavailable(
-            "nested AgentAsTool dispatch is unavailable for this turn",
-        ));
-    }
-
     let bound_ids = enabled_assistant_ids(caller)?;
     if bound_ids.is_empty() {
         return Err(AgentAsToolFailure::unavailable(

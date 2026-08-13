@@ -269,8 +269,6 @@ function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
   }
 }
 
-type StreamProtocol = 'scheduler' | 'legacy'
-
 interface PendingCancellation {
   requestIds: Set<string>
   completing: boolean
@@ -307,7 +305,6 @@ interface SendMessageStreamOptions {
 
 export function useSendMessageStream(
   groupId: string | undefined,
-  schedulerEnabled: boolean,
   options: SendMessageStreamOptions = {},
 ) {
   const scope = options.scope ?? 'groups'
@@ -349,10 +346,8 @@ export function useSendMessageStream(
   const [error, setError] = useState<string | null>(null)
   const streamsRef = useRef<Map<string, AbortController>>(new Map())
   const streamIdsRef = useRef<Map<string, string>>(new Map())
-  const threadIdsRef = useRef<Map<string, string>>(new Map())
   const erroredStreamIdsRef = useRef<Set<string>>(new Set())
   const agentNamesRef = useRef<Map<string, string>>(new Map())
-  const streamProtocolByRequestRef = useRef<Map<string, StreamProtocol>>(new Map())
   const schedulerTurnByRequestRef = useRef<Map<string, string>>(new Map())
   const pendingSendAcknowledgementsRef = useRef<Map<string, PendingSendAcknowledgement>>(
     new Map(),
@@ -384,10 +379,8 @@ export function useSendMessageStream(
     const abandonedGroupId = groupId
     const streams = streamsRef.current
     const streamIds = streamIdsRef.current
-    const threadIds = threadIdsRef.current
     const erroredStreamIds = erroredStreamIdsRef.current
     const agentNames = agentNamesRef.current
-    const streamProtocols = streamProtocolByRequestRef.current
     const schedulerTurns = schedulerTurnByRequestRef.current
     const pendingSendAcknowledgements = pendingSendAcknowledgementsRef.current
     return () => {
@@ -416,10 +409,8 @@ export function useSendMessageStream(
       }
       streams.clear()
       streamIds.clear()
-      threadIds.clear()
       erroredStreamIds.clear()
       agentNames.clear()
-      streamProtocols.clear()
       schedulerTurns.clear()
       for (const acknowledgement of pendingSendAcknowledgements.values()) {
         acknowledgement.reject(new Error(
@@ -453,29 +444,17 @@ export function useSendMessageStream(
       streamsRef.current.has(id),
     )
     for (const id of activeRequestIds) {
-      const protocol = streamProtocolByRequestRef.current.get(id)
-      if (!protocol) return
-      if (protocol === 'scheduler' && !schedulerTurnByRequestRef.current.has(id)) return
-      if (protocol === 'legacy' && !threadIdsRef.current.has(id)) return
+      if (!schedulerTurnByRequestRef.current.has(id)) return
     }
 
     pending.completing = true
-    const schedulerRequestIds = activeRequestIds.filter(
-      (id) => streamProtocolByRequestRef.current.get(id) === 'scheduler',
-    )
     const turnIds = new Set(
-      schedulerRequestIds
+      activeRequestIds
         .map((id) => schedulerTurnByRequestRef.current.get(id))
         .filter((turnId): turnId is string => Boolean(turnId)),
     )
-    const threadIds = new Set(
-      activeRequestIds
-        .filter((id) => streamProtocolByRequestRef.current.get(id) === 'legacy')
-        .map((id) => threadIdsRef.current.get(id))
-        .filter((threadId): threadId is string => Boolean(threadId)),
-    )
 
-    if ((turnIds.size > 0 || threadIds.size > 0) && !token) {
+    if (turnIds.size > 0 && !token) {
       setError('Authentication is required to cancel this turn')
       pendingCancellationRef.current = null
       pending.resolve()
@@ -483,16 +462,6 @@ export function useSendMessageStream(
     }
 
     try {
-      if (token && threadIds.size > 0) {
-        await Promise.all(
-          Array.from(threadIds, (threadId) =>
-            fetchJson<void>(`/threads/${threadId}/cancel`, {
-              method: 'POST',
-              token,
-            }),
-          ),
-        )
-      }
       if (groupId && token) {
         const traces = await Promise.all(
           Array.from(turnIds, (turnId) =>
@@ -517,10 +486,6 @@ export function useSendMessageStream(
     const streamIds = activeRequestIds
       .map((id) => streamIdsRef.current.get(id))
       .filter((streamId): streamId is string => Boolean(streamId))
-    const legacyStreamIds = activeRequestIds
-      .filter((id) => streamProtocolByRequestRef.current.get(id) === 'legacy')
-      .map((id) => streamIdsRef.current.get(id))
-      .filter((streamId): streamId is string => Boolean(streamId))
     for (const id of activeRequestIds) {
       rejectSendBeforeAcknowledgement(
         id,
@@ -529,8 +494,6 @@ export function useSendMessageStream(
       streamsRef.current.get(id)?.abort()
       streamsRef.current.delete(id)
       streamIdsRef.current.delete(id)
-      threadIdsRef.current.delete(id)
-      streamProtocolByRequestRef.current.delete(id)
       schedulerTurnByRequestRef.current.delete(id)
     }
     erroredStreamIdsRef.current.clear()
@@ -538,11 +501,6 @@ export function useSendMessageStream(
     refreshActiveCount()
 
     if (groupId) {
-      if (legacyStreamIds.length > 0) {
-        for (const streamId of legacyStreamIds) {
-          detachStreamRun(groupId, streamId)
-        }
-      }
       if (streamIds.length > 0) {
         for (const streamId of streamIds) {
           clearStreamInFlight(groupId, streamId)
@@ -560,7 +518,6 @@ export function useSendMessageStream(
     clearActiveAgent,
     clearInFlight,
     clearStreamInFlight,
-    detachStreamRun,
     groupId,
     invalidate,
     reconcileSchedulerTurn,
@@ -581,8 +538,6 @@ export function useSendMessageStream(
         clearActiveAgent(groupId, undefined, resolvedStreamId)
       }
       streamIdsRef.current.delete(id)
-      threadIdsRef.current.delete(id)
-      streamProtocolByRequestRef.current.delete(id)
       schedulerTurnByRequestRef.current.delete(id)
       if (resolvedStreamId) {
         erroredStreamIdsRef.current.delete(resolvedStreamId)
@@ -631,10 +586,6 @@ export function useSendMessageStream(
       }
       const acknowledgement = createPendingSendAcknowledgement()
       pendingSendAcknowledgementsRef.current.set(id, acknowledgement)
-      streamProtocolByRequestRef.current.set(
-        id,
-        schedulerEnabled ? 'scheduler' : 'legacy',
-      )
       setError(null)
       clearWarnings(groupId)
       clearToolActivity(groupId)
@@ -654,7 +605,6 @@ export function useSendMessageStream(
             streamIdsRef.current.set(id, streamId)
             const schedulerUpdate = parseSchedulerStreamEvent(event)
             if (schedulerUpdate) {
-              streamProtocolByRequestRef.current.set(id, 'scheduler')
               schedulerTurnByRequestRef.current.set(id, schedulerUpdate.payload.turn_id)
               void completePendingCancellation()
               if (!applySchedulerEvent(groupId, streamId, schedulerUpdate)) return
@@ -674,10 +624,6 @@ export function useSendMessageStream(
               const parsed = userMessagePayloadSchema.safeParse(event.payload)
               if (parsed.success) {
                 acknowledgeSend(id)
-                if (parsed.data.thread_id) {
-                  threadIdsRef.current.set(id, parsed.data.thread_id)
-                  void completePendingCancellation()
-                }
               }
             }
             if (event.kind === 'error') {
@@ -935,7 +881,6 @@ export function useSendMessageStream(
       } catch (error) {
         const startupError = asError(error, 'Unable to start the message stream')
         setError(startupError.message)
-        streamProtocolByRequestRef.current.delete(id)
         schedulerTurnByRequestRef.current.delete(id)
         rejectSendBeforeAcknowledgement(id, startupError)
       }
@@ -973,13 +918,12 @@ export function useSendMessageStream(
       qc,
       refreshActiveCount,
       rejectSendBeforeAcknowledgement,
-    schedulerEnabled,
-    scope,
+      scope,
       setActiveAgent,
       setStreamAgentContextUsage,
       startStreamRun,
-    token,
-    onConversationUpdated,
+      token,
+      onConversationUpdated,
       upsertStreamExternalRun,
       upsertStreamTool,
     ],

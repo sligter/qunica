@@ -8,8 +8,8 @@ Pick an agent from the chat picker. The chat's title is generated from the first
 
 ## How it differs from a group
 
-- Exactly one agent, so there is nothing to `@mention` and no scheduler.
-- No announcement, no member management, no turn trace.
+- Exactly one agent, so there is nothing to `@mention`. It uses the same scheduler as groups with a one-candidate, one-step profile.
+- No announcement or member management. Turns are still persisted and cancellable, although the direct-chat UI does not show the trace panel.
 - The workspace is the agent's own. It is not a separate binding: rebinding the agent's workspace moves its direct chats with it.
 
 ## Context

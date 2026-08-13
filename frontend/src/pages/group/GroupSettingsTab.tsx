@@ -53,9 +53,6 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   const [name, setName] = useState(group.name)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(group.workspace_id ?? '')
   const [announcement, setAnnouncement] = useState(group.announcement ?? '')
-  const [proactiveReplyMultiplier, setProactiveReplyMultiplier] = useState(
-    group.proactive_reply_multiplier,
-  )
   const [freeMentionMaxDispatches, setFreeMentionMaxDispatches] = useState(
     group.agent_free_mention_max_dispatches,
   )
@@ -97,9 +94,6 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   useEffect(() => {
     setProactiveMode(group.proactive_mode)
   }, [group.proactive_mode])
-  useEffect(() => {
-    setProactiveReplyMultiplier(group.proactive_reply_multiplier)
-  }, [group.proactive_reply_multiplier])
   useEffect(() => {
     setAllowFreeMention(group.allow_agent_free_mention)
   }, [group.allow_agent_free_mention])
@@ -190,25 +184,17 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     }
   }
 
-  const limitsDirty =
-    proactiveReplyMultiplier !== group.proactive_reply_multiplier ||
-    freeMentionMaxDispatches !== group.agent_free_mention_max_dispatches
+  const limitsDirty = freeMentionMaxDispatches !== group.agent_free_mention_max_dispatches
 
   const onSaveLimits = async () => {
     setCommError(undefined)
     try {
       await update.mutateAsync({
-        proactive_reply_multiplier: proactiveReplyMultiplier,
         agent_free_mention_max_dispatches: freeMentionMaxDispatches,
       })
     } catch (err) {
       setCommError(errorMessage(err))
     }
-  }
-
-  const setMinimumProactiveReplyMultiplier = (value: string) => {
-    const next = Number.parseInt(value, 10)
-    setProactiveReplyMultiplier(Number.isNaN(next) ? 1 : Math.max(1, next))
   }
 
   const setMinimumFreeMentionMaxDispatches = (value: string) => {
@@ -354,26 +340,6 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
             onCheckedChange={onProactiveModeChange}
             disabled={update.isPending}
             aria-label={t('settings.proactive')}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label={t('settings.replyMultiplier')}
-          description={t('settings.replyMultiplierDescription', {
-            count: proactiveReplyMultiplier,
-            formattedCount: formatNumber(proactiveReplyMultiplier, language),
-          })}
-          htmlFor="gs-proactive-reply-multiplier"
-        >
-          <Input
-            id="gs-proactive-reply-multiplier"
-            type="number"
-            min={1}
-            step={1}
-            value={proactiveReplyMultiplier}
-            onChange={(e) => setMinimumProactiveReplyMultiplier(e.target.value)}
-            disabled={!proactiveMode}
-            className="w-24"
           />
         </SettingsRow>
 

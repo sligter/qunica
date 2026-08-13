@@ -63,7 +63,7 @@ use crate::runtime::conversation_context::{
 };
 use crate::runtime::group_scheduler::{
     allows_agent_edge,
-    budget::{BudgetLimits, TurnBudget},
+    budget::{BudgetLimits, BudgetRejection, TurnBudget},
     mentions::{scan_visible_mentions, MentionTarget},
     next_decision, select_with_moderator, validate_topology, ActionKind, ActiveTurn,
     ActiveTurnRegistry, DispatchOutput, DispatchStatus, FinishDispatch, ModeratorAttempt,
@@ -664,83 +664,7 @@ async fn run_inner(
         );
     }
 
-    if group.scheduler_enabled {
-        return run_scheduled_turn(services, req, ctx, &group, &user_message.id).await;
-    }
-
-    // 2. Route the message to responders.
-    let candidates = match load_candidates(&services.pool, &req.group_id, &group).await {
-        Ok(candidates) => candidates,
-        Err(err) => return ctx.fail(&err.to_string()).await,
-    };
-    let selected = select_agents(candidates, &req.content, &group);
-
-    if selected.is_empty() {
-        step!(
-            ctx,
-            ctx.emit_durable_event(StreamEventKind::Silence, json!({}))
-                .await
-        );
-        step!(ctx, ctx.emit_done().await);
-        return Ok(TurnOutcome::Silence);
-    }
-
-    // 3. Fan out to each selected agent, sequentially.
-    let mut had_visible = false;
-    let mut waiting = false;
-
-    for agent in &selected {
-        match step!(
-            ctx,
-            run_agent_turn(services, ctx, agent, &group, 0, None, None).await
-        ) {
-            AgentRunResult::NoVisible => {}
-            AgentRunResult::Visible { .. } => had_visible = true,
-            AgentRunResult::Private(_) => {}
-            AgentRunResult::BoundedHandoff { .. } => {
-                unreachable!("bounded handoff returned in a legacy turn")
-            }
-            AgentRunResult::WaitingForUser => {
-                had_visible = true;
-                waiting = true;
-                break;
-            }
-            AgentRunResult::Handoff { helper } => {
-                had_visible = true;
-                match step!(
-                    ctx,
-                    run_agent_turn(services, ctx, &helper, &group, 1, None, None).await
-                ) {
-                    AgentRunResult::WaitingForUser => waiting = true,
-                    AgentRunResult::Visible { .. }
-                    | AgentRunResult::NoVisible
-                    | AgentRunResult::Handoff { .. }
-                    | AgentRunResult::Private(_) => {}
-                    AgentRunResult::BoundedHandoff { .. } => {
-                        unreachable!("bounded handoff returned in a legacy turn")
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    // 4. Terminal event.
-    if waiting {
-        step!(ctx, ctx.emit_done().await);
-        return Ok(TurnOutcome::WaitingForUser);
-    }
-    if !had_visible {
-        step!(
-            ctx,
-            ctx.emit_durable_event(StreamEventKind::Silence, json!({}))
-                .await
-        );
-        step!(ctx, ctx.emit_done().await);
-        return Ok(TurnOutcome::Silence);
-    }
-    step!(ctx, ctx.emit_done().await);
-    Ok(TurnOutcome::Completed)
+    run_scheduled_turn(services, req, ctx, &group, &user_message.id).await
 }
 
 async fn run_scheduled_turn(
@@ -769,11 +693,21 @@ async fn run_scheduled_turn(
         .map(|candidate| (candidate.agent_id.clone(), candidate.display_name.clone()))
         .collect::<Vec<_>>();
     let selected = select_agents(candidates, &req.content, group);
+    let automatic_step_candidates = if group.max_steps_per_agent == 1
+        && group.max_scheduler_hops == 0
+    {
+        selected.len()
+    } else {
+        active_agent_count
+    };
     let store = SchedulerStore::new(services.pool.clone(), services.write_lock.clone());
     let limits = BudgetLimits {
-        max_agent_steps: group
-            .max_agent_steps
-            .unwrap_or_else(|| (active_agent_count as u32).saturating_mul(3).clamp(8, 24)),
+        max_agent_steps: BudgetLimits::resolve_agent_steps(
+            automatic_step_candidates,
+            group.max_agent_steps,
+            group.max_steps_per_agent,
+            group.max_scheduler_hops,
+        ),
         max_steps_per_agent: group.max_steps_per_agent,
         max_hops: group.max_scheduler_hops,
         max_moderator_calls: group.max_moderator_calls,
@@ -891,17 +825,22 @@ async fn run_scheduled_turn(
     // Agent-to-agent `@mention` follow-ups this turn has already run, capped by
     // the group's `agent_free_mention_max_dispatches`.
     let mut agent_mention_dispatches: i64 = 0;
+    let mut blocked_mention_budget = None;
     loop {
         if agent_mention_dispatches >= group.agent_free_mention_max_dispatches {
             pending_mentions.clear();
         }
-        while pending_mentions.first().is_some_and(|pending| {
-            scheduler_runtime
+        while let Some(pending) = pending_mentions.first() {
+            match scheduler_runtime
                 .budget
                 .check_dispatch(&pending.target_agent_id, pending.hop)
-                .is_err()
-        }) {
-            pending_mentions.remove(0);
+            {
+                Ok(()) => break,
+                Err(rejection) => {
+                    blocked_mention_budget = Some(rejection);
+                    pending_mentions.remove(0);
+                }
+            }
         }
         let scheduler_candidates = remaining
             .iter()
@@ -923,15 +862,33 @@ async fn run_scheduled_turn(
             .filter(|agent_id| scheduler_candidates.contains(agent_id))
             .cloned()
             .collect::<Vec<_>>();
-        let decision = next_decision(
-            &scheduler_runtime.budget,
-            previous_speaker.as_deref(),
-            &remaining_user_mentions,
-            &agent_mentions,
-            &scheduler_candidates,
-            decision_hop,
-            group.moderator_enabled,
-        );
+        let decision = if scheduler_candidates.is_empty()
+            && remaining_user_mentions.is_empty()
+            && agent_mentions.is_empty()
+            && blocked_mention_budget.is_some()
+        {
+            match blocked_mention_budget {
+                Some(BudgetRejection::Failures) => SchedulerDecision::Finish {
+                    status: TurnStatus::FailureBudgetExhausted,
+                    reason: TurnReason::FailureBudgetExhausted,
+                },
+                Some(_) => SchedulerDecision::Finish {
+                    status: TurnStatus::BudgetExhausted,
+                    reason: TurnReason::BudgetExhausted,
+                },
+                None => unreachable!("blocked mention budget was checked above"),
+            }
+        } else {
+            next_decision(
+                &scheduler_runtime.budget,
+                previous_speaker.as_deref(),
+                &remaining_user_mentions,
+                &agent_mentions,
+                &scheduler_candidates,
+                decision_hop,
+                group.moderator_enabled,
+            )
+        };
         let mut preselected_agent = None;
         let mut moderator_consumes_pending = false;
         // Why the moderator could not pick, when a fallback is reported.
@@ -1519,9 +1476,7 @@ async fn run_scheduled_turn(
         } else {
             match result {
                 AgentRunResult::NoVisible => Some(DispatchStatus::Silent),
-                AgentRunResult::WaitingForUser
-                | AgentRunResult::Visible { .. }
-                | AgentRunResult::Handoff { .. } => None,
+                AgentRunResult::WaitingForUser | AgentRunResult::Visible { .. } => None,
                 AgentRunResult::Private(_) => Some(DispatchStatus::Failed),
                 AgentRunResult::BoundedHandoff { .. } => {
                     unreachable!("bounded handoff was flattened")
@@ -1633,7 +1588,6 @@ async fn run_scheduled_turn(
                     }
                 }
             }
-            AgentRunResult::Handoff { .. } => had_visible = true,
             AgentRunResult::NoVisible | AgentRunResult::Private(_) => {}
             AgentRunResult::BoundedHandoff { .. } => {
                 unreachable!("bounded handoff was flattened")
@@ -1914,8 +1868,7 @@ async fn wait_for_cancellation(cancellation: Arc<AtomicBool>) {
 }
 
 /// Await provider and tool work while allowing an explicit scheduler stop to
-/// preempt the in-flight future. The legacy flag path remains for direct
-/// runtime tests; production scheduler turns use `TurnCancellation::cancelled`.
+/// preempt the in-flight future.
 async fn await_with_cancellation<T>(
     ctx: &StreamCtx,
     future: impl Future<Output = T>,
@@ -1942,9 +1895,7 @@ async fn start_provider_stream(
         match await_with_cancellation(ctx, provider.stream(request.clone())).await? {
             Ok(stream) => return Ok(stream),
             Err(error)
-                if ctx.scheduled_dispatch.is_none()
-                    && retry < PROVIDER_RETRY_DELAYS.len()
-                    && is_transient_provider_error(&error) =>
+                if retry < PROVIDER_RETRY_DELAYS.len() && is_transient_provider_error(&error) =>
             {
                 let delay = PROVIDER_RETRY_DELAYS[retry];
                 retry += 1;
@@ -2310,13 +2261,11 @@ struct GroupRuntimeConfig {
     workspace_id: Option<String>,
     free_speech: bool,
     proactive_mode: bool,
-    proactive_reply_multiplier: i64,
     allow_agent_free_mention: bool,
     /// How many agent-to-agent `@mention` follow-up dispatches one turn may run.
     /// `0` disables them.
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
-    scheduler_enabled: bool,
     agent_mention_policy: String,
     max_agent_steps: Option<u32>,
     max_steps_per_agent: u32,
@@ -2348,9 +2297,6 @@ enum AgentRunResult {
         dispatch_hop: u32,
     },
     WaitingForUser,
-    Handoff {
-        helper: Box<Candidate>,
-    },
     BoundedHandoff {
         helper_result: Box<AgentRunResult>,
     },
@@ -2983,11 +2929,9 @@ async fn maybe_persist_interrupted_agent(
     turn: &TurnData,
     checkpoint_interrupted: bool,
 ) -> Result<(), StepErr> {
-    // Scheduler dispatch output must pass through `SchedulerStore::finish_dispatch`,
-    // which rechecks that its parent turn is still running. Writing an
-    // interrupted row directly here would let a cancelled/superseded turn
-    // append visible content after its persistent terminal transition.
-    if checkpoint_interrupted && ctx.scheduled_dispatch.is_none() {
+    // The allocator rechecks a scheduler dispatch and its turn under the shared
+    // write lock, so cancellation or supersede cannot create a late checkpoint.
+    if checkpoint_interrupted && !cancellation_requested(ctx) {
         persist_interrupted_agent(ctx, agent, content, turn).await?;
     }
     Ok(())
@@ -3372,7 +3316,14 @@ async fn persist_interrupted_agent(
         content_json: turn.to_content_json(),
     };
     ctx.allocator
-        .persist_interrupted_message(&ctx.thread_id, &ctx.group_id, &message)
+        .persist_interrupted_message(
+            &ctx.thread_id,
+            &ctx.group_id,
+            &message,
+            ctx.scheduled_dispatch
+                .as_ref()
+                .map(|dispatch| dispatch.id.as_str()),
+        )
         .await
         .map_err(StepErr::Db)?;
     Ok(())
@@ -3448,15 +3399,13 @@ async fn handle_agent_as_tool(
         &ctx.group_id,
         &caller,
         &parsed,
-        handoff_depth,
-        group.scheduler_enabled,
         &group.muted_agent_ids,
     )
     .await
     {
         Ok(dispatch) => dispatch,
         Err(failure) => {
-            if group.scheduler_enabled && parsed.mode == AgentAsToolMode::Call {
+            if parsed.mode == AgentAsToolMode::Call {
                 return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
             }
             turn.record_tool_result(
@@ -3494,7 +3443,7 @@ async fn handle_agent_as_tool(
                     AgentAsToolFailure::failed("helper lookup failed")
                 }
             };
-            if group.scheduler_enabled && parsed.mode == AgentAsToolMode::Call {
+            if parsed.mode == AgentAsToolMode::Call {
                 return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
             }
             turn.record_tool_result(
@@ -3517,99 +3466,25 @@ async fn handle_agent_as_tool(
         }
     };
 
-    if group.scheduler_enabled {
-        let scheduler = scheduler.ok_or_else(|| {
-            StepErr::Db(anyhow::anyhow!(
-                "bounded AgentAsTool dispatch is missing scheduler state"
-            ))
-        })?;
-        return handle_bounded_agent_as_tool(
-            services,
-            ctx,
-            agent,
-            group,
-            handoff_depth,
-            parsed,
-            dispatch,
-            helper_candidate,
-            turn,
-            scheduler,
-        )
-        .await;
-    }
-
-    if parsed.mode == AgentAsToolMode::Call {
+    let Some(scheduler) = scheduler else {
         let failure = AgentAsToolFailure::unavailable(
-            "private AgentAsTool calls require the bounded group scheduler",
+            "AgentAsTool dispatch is unavailable while resuming an interrupted message",
         );
-        turn.record_tool_result(
-            Some(parsed.tool_call_id.clone()),
-            Some(AGENT_AS_TOOL_NAME.to_string()),
-            Some(failure.status.to_string()),
-            Some(failure.message.clone()),
-        );
-        emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
-        return finish_agent_content(ctx, agent, false, content.to_string(), turn, true)
-            .await
-            .map(AgentAsToolOutcome::Terminal);
-    }
-
-    turn.record_tool_result(
-        Some(parsed.tool_call_id.clone()),
-        Some(AGENT_AS_TOOL_NAME.to_string()),
-        Some("completed".to_string()),
-        Some(format!(
-            "Dispatched to @{} through normal group routing.",
-            dispatch.helper.display_name
-        )),
-    );
-    let agent_message = NewMessage {
-        id: Uuid::new_v4().to_string(),
-        sender_type: "agent".to_string(),
-        sender_id: Some(agent.agent_id.clone()),
-        message_type: "text".to_string(),
-        content: dispatch.content.clone(),
-        content_json: turn.to_content_json(),
+        return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
     };
-    let message_payload = json!({
-        "message_id": agent_message.id,
-        "agent_id": agent.agent_id,
-        "sender_id": agent.agent_id,
-        "display_name": agent.display_name,
-        "content": dispatch.content,
-        "dispatch": true,
-    });
-    if ctx.scheduled_dispatch.is_some() {
-        ctx.emit_scheduled_agent_message(message_payload, agent_message, DispatchStatus::Completed)
-            .await?;
-    } else {
-        ctx.emit_message(
-            StreamEventKind::AgentMessage,
-            message_payload,
-            &agent_message,
-        )
-        .await?;
-    }
-
-    ctx.emit(
-        StreamEventKind::ToolCallResult,
-        json!({
-            "agent_id": agent.agent_id,
-            "display_name": agent.display_name,
-            "tool_call_id": parsed.tool_call_id,
-            "tool_name": AGENT_AS_TOOL_NAME,
-            "status": "completed",
-            "result_summary": format!(
-                "Dispatched to @{} through normal group routing.",
-                dispatch.helper.display_name
-            ),
-        }),
+    handle_bounded_agent_as_tool(
+        services,
+        ctx,
+        agent,
+        group,
+        handoff_depth,
+        parsed,
+        dispatch,
+        helper_candidate,
+        turn,
+        scheduler,
     )
-    .await?;
-
-    Ok(AgentAsToolOutcome::Terminal(AgentRunResult::Handoff {
-        helper: Box::new(helper_candidate),
-    }))
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4280,11 +4155,9 @@ struct GroupRuntimeRow {
     workspace_id: Option<String>,
     free_speech: i64,
     proactive_mode: i64,
-    proactive_reply_multiplier: i64,
     allow_agent_free_mention: i64,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
-    scheduler_enabled: i64,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -4306,9 +4179,9 @@ async fn load_group_runtime_config(
 ) -> anyhow::Result<GroupRuntimeConfig> {
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, conversation_kind, description, announcement, workspace_id, free_speech, \
-                proactive_mode, proactive_reply_multiplier, allow_agent_free_mention, \
+                proactive_mode, allow_agent_free_mention, \
                 agent_free_mention_max_dispatches, \
-                communication_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
+                communication_mode, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
          FROM groups WHERE id = ? AND status = 'active'",
     )
     .bind(group_id)
@@ -4325,11 +4198,9 @@ async fn load_group_runtime_config(
         workspace_id: row.workspace_id,
         free_speech: row.free_speech != 0,
         proactive_mode: row.proactive_mode != 0,
-        proactive_reply_multiplier: row.proactive_reply_multiplier,
         allow_agent_free_mention: row.allow_agent_free_mention != 0,
         agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches.max(0),
         communication_mode: row.communication_mode,
-        scheduler_enabled: row.scheduler_enabled != 0,
         agent_mention_policy: row.agent_mention_policy,
         max_agent_steps: row.max_agent_steps.map(|value| value as u32),
         max_steps_per_agent: row.max_steps_per_agent as u32,
@@ -5007,14 +4878,13 @@ async fn build_agent_system_prompt(
         agent.system_prompt.clone(),
         render_runtime_environment(executor),
         format!(
-            "{conversation_heading}\n- id: {}\n- owner_id: {}\n- name: {}\n- description: {}\n- announcement: {}\n- communication_mode: {}\n- proactive_reply_multiplier: {}\n- allow_agent_free_mention: {}\n- self_display_name: {}\n- self_response_mode: {}\n- self_topology_role: {}\n- self_speaking_order: {}",
+            "{conversation_heading}\n- id: {}\n- owner_id: {}\n- name: {}\n- description: {}\n- announcement: {}\n- communication_mode: {}\n- allow_agent_free_mention: {}\n- self_display_name: {}\n- self_response_mode: {}\n- self_topology_role: {}\n- self_speaking_order: {}",
             group.id,
             group.owner_id,
             group.name,
             group.description.as_deref().unwrap_or("none"),
             group.announcement.as_deref().unwrap_or("none"),
             group.communication_mode,
-            group.proactive_reply_multiplier,
             group.allow_agent_free_mention,
             agent.display_name,
             agent.response_mode,

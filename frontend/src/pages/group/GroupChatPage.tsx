@@ -48,7 +48,6 @@ export function GroupChatPage() {
       conversationId={groupId}
       workspaceId={group.data.workspace_id}
       scope="groups"
-      schedulerEnabled={group.data.scheduler_enabled}
       agents={agents}
       title={group.data.name}
       subtitle={t('header.agent', {

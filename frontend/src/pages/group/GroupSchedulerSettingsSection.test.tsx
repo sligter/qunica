@@ -93,8 +93,6 @@ const group: GroupRead = {
   announcement: null,
   free_speech: false,
   proactive_mode: false,
-  proactive_max_rounds: 1,
-  proactive_reply_multiplier: 1,
   allow_agent_free_mention: false,
   agent_free_mention_max_dispatches: 0,
   communication_mode: 'mesh',
@@ -104,7 +102,6 @@ const group: GroupRead = {
   status: 'active',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
-  scheduler_enabled: false,
   agent_mention_policy: 'display_only',
   max_agent_steps: null,
   max_steps_per_agent: 3,
@@ -148,14 +145,13 @@ describe('GroupSchedulerSettingsSection', () => {
     await i18n.changeLanguage('en-US')
     renderSection()
     expect(screen.getByText('Bounded scheduler')).toBeVisible()
-    expect(screen.getByRole('switch', { name: 'Enable bounded scheduler' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Agent mention policy' })).toBeVisible()
     expect(screen.getAllByText('No provider')[0]).toBeVisible()
 
     cleanup()
     await i18n.changeLanguage('zh-CN')
     renderSection()
     expect(screen.getByText('有界调度器')).toBeVisible()
-    expect(screen.getByRole('switch', { name: '启用有界调度器' })).toBeVisible()
     expect(screen.getAllByText('无提供商')[0]).toBeVisible()
   })
 
@@ -164,10 +160,11 @@ describe('GroupSchedulerSettingsSection', () => {
     renderSection()
 
     expect(screen.getByRole('combobox', { name: 'Maximum agent steps mode' })).toHaveTextContent(
-      'Auto (3× agents, min 8, max 24)',
+      'Auto',
     )
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByRole('spinbutton', { name: 'Steps per agent' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'Steps per agent' }), '4')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
@@ -181,17 +178,17 @@ describe('GroupSchedulerSettingsSection', () => {
     const user = userEvent.setup()
     renderSection()
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByRole('spinbutton', { name: 'Steps per agent' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'Steps per agent' }), '4')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(mocks.mutateAsync).toHaveBeenCalledTimes(1)
     })
     expect(mocks.mutateAsync).toHaveBeenCalledWith({
-      scheduler_enabled: true,
       agent_mention_policy: 'display_only',
       max_agent_steps: null,
-      max_steps_per_agent: 3,
+      max_steps_per_agent: 4,
       max_scheduler_hops: 5,
       max_moderator_calls: 4,
       max_consecutive_failures: 3,
@@ -215,13 +212,13 @@ describe('GroupSchedulerSettingsSection', () => {
     expect(
       screen.getByRole('combobox', { name: 'Agent mention policy' }),
     ).toHaveTextContent('Unknown mention policy: future_policy')
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByRole('spinbutton', { name: 'Steps per agent' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'Steps per agent' }), '4')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(mocks.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          scheduler_enabled: true,
           agent_mention_policy: unknownPolicy,
         }),
       )
@@ -232,7 +229,6 @@ describe('GroupSchedulerSettingsSection', () => {
     const user = userEvent.setup()
     renderSection()
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
     await user.click(screen.getByRole('switch', { name: 'Enable moderator' }))
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -245,7 +241,6 @@ describe('GroupSchedulerSettingsSection', () => {
     const user = userEvent.setup()
     renderSection({
       ...group,
-      scheduler_enabled: true,
       moderator_enabled: true,
       moderator_provider_id: 'provider-1',
       moderator_model: 'gpt-test',
@@ -285,7 +280,6 @@ describe('GroupSchedulerSettingsSection', () => {
     const user = userEvent.setup()
     renderSection()
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
     await user.clear(screen.getByLabelText('Steps per agent'))
     await user.type(screen.getByLabelText('Steps per agent'), '0')
     await user.click(screen.getByRole('button', { name: 'Save' }))
@@ -301,7 +295,8 @@ describe('GroupSchedulerSettingsSection', () => {
     )
     renderSection()
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByLabelText('Steps per agent'))
+    await user.type(screen.getByLabelText('Steps per agent'), '4')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     const link = await screen.findByRole('link', { name: 'Review group members' })
@@ -313,7 +308,8 @@ describe('GroupSchedulerSettingsSection', () => {
     mocks.mutateAsync.mockRejectedValueOnce(new Error('offline'))
     renderSection()
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByLabelText('Steps per agent'))
+    await user.type(screen.getByLabelText('Steps per agent'), '4')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -327,7 +323,8 @@ describe('GroupSchedulerSettingsSection', () => {
     const save = screen.getByRole('button', { name: 'Save' })
 
     expect(save).toBeDisabled()
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByLabelText('Steps per agent'))
+    await user.type(screen.getByLabelText('Steps per agent'), '4')
     expect(save).toBeEnabled()
 
     mocks.updateState.isPending = true
@@ -344,14 +341,14 @@ describe('GroupSchedulerSettingsSection', () => {
     const user = userEvent.setup()
     const view = renderSection()
 
-    await user.click(screen.getByRole('switch', { name: 'Enable bounded scheduler' }))
+    await user.clear(screen.getByLabelText('Total tokens'))
+    await user.type(screen.getByLabelText('Total tokens'), '120001')
     view.rerender(
       <MemoryRouter>
         <GroupSchedulerSettingsSection group={{ ...group, max_total_tokens: 999 }} />
       </MemoryRouter>,
     )
 
-    expect(screen.getByRole('switch', { name: 'Enable bounded scheduler' })).toBeChecked()
-    expect(screen.getByLabelText('Total tokens')).toHaveValue(120000)
+    expect(screen.getByLabelText('Total tokens')).toHaveValue(120001)
   })
 })

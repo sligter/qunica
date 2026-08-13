@@ -57,7 +57,6 @@ export interface ApiErrorEnvelope {
 export type AgentMentionPolicy = 'display_only' | 'bounded_schedule'
 
 export interface GroupSchedulerConfig {
-  scheduler_enabled: boolean
   agent_mention_policy: AgentMentionPolicy
   max_agent_steps: number | null
   max_steps_per_agent: number

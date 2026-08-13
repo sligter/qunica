@@ -199,7 +199,7 @@ pub(crate) async fn insert_direct_chat(
         .begin()
         .await
         .map_err(|_| ApiError::internal("failed to start direct chat transaction"))?;
-    sqlx::query("INSERT INTO groups (id, owner_id, workspace_id, name, free_speech, proactive_mode, scheduler_enabled, conversation_kind, direct_agent_id, title_source, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, 0, 'direct', ?, 'automatic', 'active', ?, ?)")
+    sqlx::query("INSERT INTO groups (id, owner_id, workspace_id, name, free_speech, proactive_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, moderator_enabled, allow_agent_free_mention, agent_free_mention_max_dispatches, conversation_kind, direct_agent_id, title_source, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, 1, 'display_only', 1, 1, 0, 0, 1, 1, 0, 0, 0, 'direct', ?, 'automatic', 'active', ?, ?)")
         .bind(&id).bind(owner_id).bind(workspace_id).bind(title).bind(agent_id).bind(&now).bind(&now).execute(&mut *tx).await
         .map_err(|_| ApiError::internal("failed to create direct chat"))?;
     sqlx::query("INSERT INTO group_members (group_id, user_id, role, status, joined_at) VALUES (?, ?, 'owner', 'active', ?)")

@@ -18,7 +18,6 @@ export function useCreateGroup() {
           announcement: input.announcement,
           communication_mode: input.communication_mode,
           initial_agents: input.initial_agents,
-          scheduler_enabled: input.scheduler_enabled,
           agent_mention_policy: input.agent_mention_policy,
           max_agent_steps: input.max_agent_steps,
           max_steps_per_agent: input.max_steps_per_agent,

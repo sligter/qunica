@@ -1,5 +1,7 @@
 # AgentChat V1.0 开发文档与技术栈选型
 
+> **历史文档（已废弃）**：本文的 Python/LangGraph/PostgreSQL/Celery 方案未被采用。当前实现是 Rust + tokio + SQLite，群聊与私聊统一使用有界调度器；见 [群组指南](backend-rs/crates/backend/src/docs/guide/groups.md) 与 [调度器设计](GROUP_SCHEDULER.md)。
+
 ## 0. 文档说明
 
 本文档配套 [agentchat-PRD.md](agentchat-PRD.md)，确定 AgentChat（ag-swarmer）从零到 MVP 的技术栈、系统架构、模块划分与开发节奏。

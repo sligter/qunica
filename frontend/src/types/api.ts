@@ -522,8 +522,6 @@ export interface GroupRead extends GroupSchedulerConfig {
   announcement: string | null
   free_speech: boolean
   proactive_mode: boolean
-  proactive_max_rounds: number
-  proactive_reply_multiplier: number
   allow_agent_free_mention: boolean
   agent_free_mention_max_dispatches: number
   communication_mode: GroupCommunicationMode
@@ -576,8 +574,6 @@ export interface GroupUpdate extends Partial<GroupSchedulerConfig> {
   announcement?: string | null
   free_speech?: boolean
   proactive_mode?: boolean
-  proactive_max_rounds?: number
-  proactive_reply_multiplier?: number
   allow_agent_free_mention?: boolean
   agent_free_mention_max_dispatches?: number
   communication_mode?: GroupCommunicationMode
