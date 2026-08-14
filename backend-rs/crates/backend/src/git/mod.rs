@@ -6,8 +6,8 @@ mod runner;
 mod status;
 
 pub use branches::{
-    branches, create_branch, delete_branch, rename_branch, switch_branch, WorkspaceGitBranch,
-    WorkspaceGitBranches,
+    branches, create_branch, create_task_worktree, delete_branch, remove_task_worktree,
+    rename_branch, switch_branch, TaskWorktree, WorkspaceGitBranch, WorkspaceGitBranches,
 };
 pub use diff::{diff, DiffMode, WorkspaceGitDiff};
 pub use log::{

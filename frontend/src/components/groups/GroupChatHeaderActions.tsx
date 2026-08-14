@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useArchiveGroupThread, useCreateGroupThread } from '@/hooks/useGroupThreads'
+import { useGroupWorkspaceGitBranches } from '@/hooks/useWorkspaceGit'
 import type { GroupThread } from '@/types/api'
 
 interface GroupChatHeaderActionsProps {
@@ -52,9 +53,20 @@ export function GroupChatHeaderActions({
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [title, setTitle] = useState('')
+  const [gitBranch, setGitBranch] = useState('')
+  const gitBranches = useGroupWorkspaceGitBranches(createOpen ? groupId : undefined)
   const activeThreads = threads.filter((thread) => thread.status !== 'archived')
   const archivedThreads = threads.filter((thread) => thread.status === 'archived')
   const displayTitle = (thread: GroupThread) => thread.title || t('tasks.untitled')
+  const displayLabel = (thread: GroupThread, archived = false) => [
+    displayTitle(thread),
+    thread.git_branch,
+    archived ? t('tasks.archived') : null,
+  ].filter(Boolean).join(' · ')
+  const boundBranches = new Set(threads.map((thread) => thread.git_branch).filter(Boolean))
+  const availableBranches = (gitBranches.data?.branches ?? []).filter(
+    (branch) => branch.kind === 'local' && !branch.current && !boundBranches.has(branch.name),
+  )
   const mutating = createThread.isPending || archiveThread.isPending
 
   const create = async (event: FormEvent) => {
@@ -62,9 +74,13 @@ export function GroupChatHeaderActions({
     const nextTitle = title.trim()
     if (!nextTitle) return
     try {
-      const created = await createThread.mutateAsync(nextTitle)
+      const created = await createThread.mutateAsync({
+        title: nextTitle,
+        git_branch: gitBranch.trim() || null,
+      })
       onSelect(created.id)
       setTitle('')
+      setGitBranch('')
       setCreateOpen(false)
     } catch {
       // The mutation error is rendered below the field.
@@ -85,7 +101,7 @@ export function GroupChatHeaderActions({
         <SelectTrigger
           className="h-8 w-32 border-0 bg-transparent px-2 text-left font-medium shadow-none transition-colors hover:bg-muted/60 data-[state=open]:bg-muted/60 sm:w-48 lg:w-60"
           aria-label={t('tasks.switcher')}
-          title={selectedThread ? displayTitle(selectedThread) : undefined}
+          title={selectedThread ? displayLabel(selectedThread) : undefined}
         >
           <span className="!flex min-w-0 flex-1 items-center overflow-hidden">
             <SelectValue className="truncate" placeholder={t('tasks.none')} />
@@ -99,14 +115,14 @@ export function GroupChatHeaderActions({
                 <SelectItem
                   key={thread.id}
                   value={thread.id}
-                  textValue={displayTitle(thread)}
+                  textValue={displayLabel(thread)}
                   className="min-w-0 whitespace-nowrap"
                 >
                   <span
                     className="block max-w-[calc(100vw-6rem)] truncate sm:max-w-64"
-                    title={displayTitle(thread)}
+                    title={displayLabel(thread)}
                   >
-                    {displayTitle(thread)}
+                    {displayLabel(thread)}
                   </span>
                 </SelectItem>
               ))}
@@ -120,14 +136,14 @@ export function GroupChatHeaderActions({
                 <SelectItem
                   key={thread.id}
                   value={thread.id}
-                  textValue={`${displayTitle(thread)} · ${t('tasks.archived')}`}
+                  textValue={displayLabel(thread, true)}
                   className="min-w-0 whitespace-nowrap"
                 >
                   <span
                     className="block max-w-[calc(100vw-6rem)] truncate sm:max-w-64"
-                    title={`${displayTitle(thread)} · ${t('tasks.archived')}`}
+                    title={displayLabel(thread, true)}
                   >
-                    {displayTitle(thread)} · {t('tasks.archived')}
+                    {displayLabel(thread, true)}
                   </span>
                 </SelectItem>
               ))}
@@ -138,7 +154,10 @@ export function GroupChatHeaderActions({
 
       <Dialog open={createOpen} onOpenChange={(open) => {
         setCreateOpen(open)
-        if (open) createThread.reset()
+        if (open) {
+          createThread.reset()
+          setGitBranch('')
+        }
       }}>
         <DialogTrigger asChild>
           <Button
@@ -169,12 +188,37 @@ export function GroupChatHeaderActions({
                 autoFocus
                 required
               />
-              {createThread.error ? (
-                <p role="alert" className="text-xs text-destructive">
-                  {t('tasks.createError', { message: String(createThread.error) })}
-                </p>
-              ) : null}
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="group-task-git-branch">{t('tasks.gitBranch')}</Label>
+              <Input
+                id="group-task-git-branch"
+                list="group-task-git-branches"
+                value={gitBranch}
+                onChange={(event) => setGitBranch(event.target.value)}
+                maxLength={255}
+                autoComplete="off"
+                placeholder={t('tasks.gitBranchPlaceholder')}
+                aria-describedby="group-task-git-branch-hint"
+              />
+              <datalist id="group-task-git-branches">
+                {availableBranches.map((branch) => (
+                  <option key={branch.full_name} value={branch.name} />
+                ))}
+              </datalist>
+              <p id="group-task-git-branch-hint" className="text-xs text-muted-foreground">
+                {gitBranches.isLoading
+                  ? t('tasks.gitBranchesLoading')
+                  : gitBranches.error
+                    ? t('tasks.gitBranchesUnavailable')
+                    : t('tasks.gitBranchHint')}
+              </p>
+            </div>
+            {createThread.error ? (
+              <p role="alert" className="text-xs text-destructive">
+                {t('tasks.createError', { message: String(createThread.error) })}
+              </p>
+            ) : null}
             <DialogFooter>
               <DialogClose asChild>
                 <Button type="button" variant="outline">{t('common:actions.cancel')}</Button>

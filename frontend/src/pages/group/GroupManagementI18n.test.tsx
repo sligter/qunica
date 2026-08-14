@@ -14,6 +14,12 @@ const mocks = vi.hoisted(() => ({
   agents: [] as { id: string; workspace_id: string | null }[],
   workspaces: [] as { id: string; local_path: string | null }[],
   groupThreads: [] as GroupThread[],
+  gitBranches: {
+    branches: [
+      { name: 'main', full_name: 'refs/heads/main', kind: 'local', current: true, upstream: null, ahead: 0, behind: 0 },
+      { name: 'feature/existing', full_name: 'refs/heads/feature/existing', kind: 'local', current: false, upstream: null, ahead: 0, behind: 0 },
+    ],
+  },
   setWorkspaceMode: vi.fn(),
   mutateAsync: vi.fn(),
   createTaskMutateAsync: vi.fn(),
@@ -98,6 +104,13 @@ vi.mock('@/hooks/useGroupThreads', () => ({
   useArchiveGroupThread: () => ({
     isPending: false,
     mutateAsync: mocks.archiveTaskMutateAsync,
+  }),
+}))
+vi.mock('@/hooks/useWorkspaceGit', () => ({
+  useGroupWorkspaceGitBranches: () => ({
+    data: mocks.gitBranches,
+    error: null,
+    isLoading: false,
   }),
 }))
 vi.mock('@/hooks/useSendMessageStream', () => ({
@@ -221,6 +234,7 @@ const taskThread: GroupThread = {
   created_by: null,
   thread_type: 'task_thread',
   title: 'Existing task',
+  git_branch: null,
   goal: null,
   status: 'active',
   priority: 0,
@@ -244,8 +258,15 @@ describe('group management i18n', () => {
     mocks.groupThreads = [taskThread]
     mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
-    mocks.createTaskMutateAsync.mockReset().mockImplementation(async (title: string) => {
-      const created = { ...taskThread, id: 'thread-2', title }
+    mocks.createTaskMutateAsync.mockReset().mockImplementation(async (
+      body: { title: string; git_branch?: string | null },
+    ) => {
+      const created = {
+        ...taskThread,
+        id: 'thread-2',
+        title: body.title,
+        git_branch: body.git_branch ?? null,
+      }
       mocks.groupThreads = [created, ...mocks.groupThreads]
       return created
     })
@@ -331,9 +352,13 @@ describe('group management i18n', () => {
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByRole('heading', { name: 'Start a new task' })).toBeVisible()
     await user.type(within(dialog).getByLabelText('Task title'), 'Release checklist')
+    await user.type(within(dialog).getByLabelText('Git branch (optional)'), 'release/checklist')
     await user.click(within(dialog).getByRole('button', { name: 'Start new task' }))
     await waitFor(() => {
-      expect(mocks.createTaskMutateAsync).toHaveBeenCalledWith('Release checklist')
+      expect(mocks.createTaskMutateAsync).toHaveBeenCalledWith({
+        title: 'Release checklist',
+        git_branch: 'release/checklist',
+      })
       expect(window.localStorage.getItem('ag-swarmer:groups:selected-thread:group-1'))
         .toBe('thread-2')
     })

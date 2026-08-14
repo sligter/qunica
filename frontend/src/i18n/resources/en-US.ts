@@ -304,6 +304,7 @@ export const enUS = {
     tasks: {
       switcher: 'Current task', none: 'No task yet', active: 'Active', archived: 'Archived', untitled: 'Untitled task', loading: 'Loading tasks…',
       title: 'Task title', createTitle: 'Start a new task', createDescription: 'Give this task its own title and context.', creating: 'Creating…', createError: 'Failed to create task: {{message}}',
+      gitBranch: 'Git branch (optional)', gitBranchPlaceholder: 'Existing or new branch', gitBranchHint: 'Choose an available local branch or enter a new name. New branches start at the shared workspace HEAD.', gitBranchesLoading: 'Loading available branches…', gitBranchesUnavailable: 'Git branches are unavailable. Leave this blank to use the shared workspace.',
       archive: 'Archive task', archiveTitle: 'Archive “{{title}}”?', archiveDescription: 'Its messages stay available, but the task becomes read-only.', archivedReadOnly: 'This task is archived. Choose an active task or start a new one.',
     },
     pageTitle: 'AG Swarmer',

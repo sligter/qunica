@@ -253,6 +253,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     tasks: {
       switcher: '当前任务', none: '尚无任务', active: '进行中', archived: '已归档', untitled: '未命名任务', loading: '正在加载任务…',
       title: '任务标题', createTitle: '开始新任务', createDescription: '为此任务设置独立的标题和上下文。', creating: '正在创建…', createError: '创建任务失败：{{message}}',
+      gitBranch: 'Git 分支（可选）', gitBranchPlaceholder: '选择已有分支或输入新分支', gitBranchHint: '选择可用的本地分支，或输入新名称；新分支从共享工作区当前 HEAD 创建。', gitBranchesLoading: '正在加载可用分支…', gitBranchesUnavailable: 'Git 分支不可用。留空将继续使用共享工作区。',
       archive: '归档任务', archiveTitle: '归档“{{title}}”？', archiveDescription: '消息会保留，但此任务将变为只读。', archivedReadOnly: '此任务已归档。请选择进行中的任务或开始新任务。',
     },
     pageTitle: 'AG Swarmer',

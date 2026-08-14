@@ -7,6 +7,12 @@ use super::{
     runner::{format_git_failure, git_command_error_message, run_git_command},
 };
 
+#[derive(Debug)]
+pub struct TaskWorktree {
+    pub branch: String,
+    pub created_branch: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct WorkspaceGitBranch {
     pub name: String,
@@ -51,6 +57,85 @@ pub async fn create_branch(
         args.push(resolve_start_point(root, start_point).await?);
     }
     run_git(root, args, "git create branch failed").await?;
+    Ok(())
+}
+
+pub async fn create_task_worktree(
+    root: &Path,
+    path: &Path,
+    requested_branch: &str,
+) -> Result<TaskWorktree, GitOperationError> {
+    if path.exists() {
+        return Err(GitOperationError::new("task worktree path already exists"));
+    }
+    let path = path
+        .to_str()
+        .ok_or_else(|| GitOperationError::new("task worktree path is not valid UTF-8"))?;
+    if let Some(parent) = Path::new(path).parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| GitOperationError::new("failed to create task worktree directory"))?;
+    }
+
+    let listed = branches(root).await?.branches;
+    let local = listed.iter().find(|branch| {
+        branch.kind == "local"
+            && (branch.name == requested_branch || branch.full_name == requested_branch)
+    });
+    let (branch, created_branch, args) = if let Some(local) = local {
+        if local.current {
+            return Err(GitOperationError::new(
+                "branch is checked out in the shared workspace; choose another branch or enter a new name",
+            ));
+        }
+        (
+            local.name.clone(),
+            false,
+            vec![
+                "worktree".to_string(),
+                "add".to_string(),
+                path.to_string(),
+                local.name.clone(),
+            ],
+        )
+    } else {
+        validate_branch_name(root, requested_branch).await?;
+        (
+            requested_branch.to_string(),
+            true,
+            vec![
+                "worktree".to_string(),
+                "add".to_string(),
+                "-b".to_string(),
+                requested_branch.to_string(),
+                path.to_string(),
+                "HEAD".to_string(),
+            ],
+        )
+    };
+
+    run_git(root, args, "git task worktree creation failed").await?;
+    Ok(TaskWorktree {
+        branch,
+        created_branch,
+    })
+}
+
+pub async fn remove_task_worktree(root: &Path, path: &Path) -> Result<(), GitOperationError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| GitOperationError::new("task worktree path is not valid UTF-8"))?;
+    run_git(
+        root,
+        vec![
+            "worktree".to_string(),
+            "remove".to_string(),
+            "--force".to_string(),
+            path.to_string(),
+        ],
+        "git task worktree cleanup failed",
+    )
+    .await?;
     Ok(())
 }
 

@@ -4638,7 +4638,7 @@ async fn build_invocation_context(
     let pool = &services.pool;
     let enabled_tools = enabled_tool_names(agent.tool_config_json.as_deref());
     let mounted_skills = load_mounted_skills(pool, agent).await?;
-    let workspaces = resolve_workspaces(pool, agent, group).await?;
+    let workspaces = resolve_workspaces(pool, agent, group, &ctx.thread_id).await?;
     let mcp = resolve_mcp_tools(services, agent).await;
     let web_search = if enabled_tools.iter().any(|name| name == "WebSearch") {
         crate::api::system_settings::tavily_search_config(pool, &agent.owner_id)
@@ -5164,9 +5164,16 @@ async fn resolve_workspaces(
     pool: &SqlitePool,
     agent: &Candidate,
     group: &GroupRuntimeConfig,
+    thread_id: &str,
 ) -> anyhow::Result<ResolvedWorkspaces> {
     let group_root = if agent.workspace_mode.uses_group_workspace() {
-        load_local_workspace_root(pool, group.workspace_id.as_deref(), &agent.owner_id).await?
+        match load_task_worktree_root(pool, &group.id, thread_id).await? {
+            Some(root) => Some(root),
+            None => {
+                load_local_workspace_root(pool, group.workspace_id.as_deref(), &agent.owner_id)
+                    .await?
+            }
+        }
     } else {
         None
     };
@@ -5208,6 +5215,41 @@ async fn resolve_workspaces(
         primary: group_root,
         mounts,
     })
+}
+
+async fn load_task_worktree_root(
+    pool: &SqlitePool,
+    group_id: &str,
+    thread_id: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT git_branch, worktree_path FROM threads \
+         WHERE id = ? AND group_id = ? AND agent_id IS NULL",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await?;
+
+    match row {
+        Some((Some(branch), Some(path))) => {
+            let root = PathBuf::from(path);
+            if tokio::fs::metadata(&root)
+                .await
+                .is_ok_and(|metadata| metadata.is_dir())
+            {
+                Ok(Some(root))
+            } else {
+                Err(anyhow::anyhow!(
+                    "task worktree for branch {branch} is unavailable"
+                ))
+            }
+        }
+        Some((Some(branch), None)) => Err(anyhow::anyhow!(
+            "task worktree for branch {branch} is unavailable"
+        )),
+        _ => Ok(None),
+    }
 }
 
 async fn load_agent_workspace_roots(
@@ -6148,6 +6190,34 @@ mod tests {
         assert_eq!(default_task_title("  Ship release\nignore this"), "Ship release");
         assert_eq!(default_task_title("   "), "Task");
         assert_eq!(default_task_title(&"x".repeat(81)).chars().count(), 80);
+    }
+
+    #[tokio::test]
+    async fn bound_task_resolves_its_worktree() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE threads (id TEXT, group_id TEXT, agent_id TEXT, \
+             git_branch TEXT, worktree_path TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let worktree = tempfile::tempdir().unwrap();
+        sqlx::query(
+            "INSERT INTO threads (id, group_id, git_branch, worktree_path) \
+             VALUES ('thread-1', 'group-1', 'feature/task', ?)",
+        )
+        .bind(worktree.path().to_string_lossy().into_owned())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            load_task_worktree_root(&pool, "group-1", "thread-1")
+                .await
+                .unwrap(),
+            Some(worktree.path().to_path_buf())
+        );
     }
 
     #[test]

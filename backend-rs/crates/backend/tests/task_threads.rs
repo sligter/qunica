@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
+use std::{path::Path, process::Command};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -159,6 +160,125 @@ async fn task_threads_create_list_filter_and_archive() {
     assert_eq!(stored, "first only");
 }
 
+#[tokio::test]
+async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
+    if !git_available() {
+        return;
+    }
+
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "task-branches@example.test";
+    let token = register_and_login(&app, email).await;
+    let owner_id: String = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let repository = tempfile::tempdir().unwrap();
+    init_git_repo(repository.path());
+    run_git(repository.path(), &["branch", "feature/existing"]);
+
+    let workspace_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO workspaces \
+         (id, owner_id, name, backend_type, local_path, status, created_at, updated_at) \
+         VALUES (?, ?, 'Task repository', 'local', ?, 'active', ?, ?)",
+    )
+    .bind(&workspace_id)
+    .bind(&owner_id)
+    .bind(repository.path().to_string_lossy().into_owned())
+    .bind(NOW)
+    .bind(NOW)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    let group_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO groups (id, owner_id, workspace_id, name, created_at, updated_at) \
+         VALUES (?, ?, ?, 'Branched tasks', ?, ?)",
+    )
+    .bind(&group_id)
+    .bind(&owner_id)
+    .bind(&workspace_id)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let (status, existing) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "Existing branch", "git_branch": "feature/existing"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(existing["git_branch"], "feature/existing");
+    let existing_path: String =
+        sqlx::query_scalar("SELECT worktree_path FROM threads WHERE id = ?")
+            .bind(existing["id"].as_str().unwrap())
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        git_stdout(Path::new(&existing_path), &["branch", "--show-current"]),
+        "feature/existing"
+    );
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "New branch", "git_branch": "task/new"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["git_branch"], "task/new");
+    let created_path: String = sqlx::query_scalar("SELECT worktree_path FROM threads WHERE id = ?")
+        .bind(created["id"].as_str().unwrap())
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        git_stdout(Path::new(&created_path), &["branch", "--show-current"]),
+        "task/new"
+    );
+
+    let current = git_stdout(repository.path(), &["branch", "--show-current"]);
+    let (status, error) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "Unsafe branch", "git_branch": current}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("shared workspace"));
+
+    run_git(
+        repository.path(),
+        &["worktree", "remove", "--force", &existing_path],
+    );
+    run_git(
+        repository.path(),
+        &["worktree", "remove", "--force", &created_path],
+    );
+    let _ = std::fs::remove_dir_all(&state.task_worktree_root);
+}
+
 async fn seed_message(
     state: &ag_swarmer_backend::api::AppState,
     group_id: &str,
@@ -180,6 +300,47 @@ async fn seed_message(
     .await
     .unwrap();
     id
+}
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn init_git_repo(root: &Path) {
+    run_git(root, &["init"]);
+    run_git(root, &["config", "user.email", "tests@example.com"]);
+    run_git(root, &["config", "user.name", "Tests"]);
+    std::fs::write(root.join("tracked.txt"), "initial").unwrap();
+    run_git(root, &["add", "tracked.txt"]);
+    run_git(root, &["commit", "-m", "initial"]);
+}
+
+fn run_git(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn git_stdout(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 async fn register_and_login(app: &Router, email: &str) -> String {

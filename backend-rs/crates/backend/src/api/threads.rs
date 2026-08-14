@@ -4,7 +4,7 @@
 //! and non-paused threads return normal JSON errors rather than in-stream
 //! failures.
 
-use std::convert::Infallible;
+use std::{convert::Infallible, path::Path as FsPath};
 
 use ag_swarmer_domain::events::StreamEvent;
 use axum::{
@@ -26,8 +26,10 @@ use crate::{
         conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
         sse_replay::{fetch_replay_events_for_thread, last_event_id, parse_replay_cursor},
+        workspace_files::{self, ConversationRoot, ConversationScope},
         AppState,
     },
+    git::{self as workspace_git, TaskWorktree},
     runtime::{
         group::{run_thread_resume, ResumeRequest},
         RuntimeServices,
@@ -44,6 +46,7 @@ pub struct ThreadResponse {
     created_by: Option<String>,
     thread_type: Option<String>,
     title: Option<String>,
+    git_branch: Option<String>,
     goal: Option<String>,
     status: String,
     priority: i64,
@@ -56,6 +59,7 @@ pub struct ThreadResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskThreadRequest {
     title: String,
+    git_branch: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -64,6 +68,7 @@ struct ThreadAccessRow {
     group_id: String,
     agent_id: Option<String>,
     title: Option<String>,
+    git_branch: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -105,6 +110,7 @@ impl From<ThreadAccessRow> for ThreadResponse {
             created_by: None,
             thread_type,
             title: row.title,
+            git_branch: row.git_branch,
             goal: None,
             status: row.status,
             priority: 0,
@@ -143,7 +149,7 @@ pub async fn list_group(
     .await?;
 
     let rows: Vec<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.status, t.created_at, t.updated_at, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.status, t.created_at, t.updated_at, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
          FROM threads t \
@@ -169,6 +175,11 @@ pub async fn create_group(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let title = validate_title(&body.title)?;
+    let requested_branch = body
+        .git_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty());
     ensure_active_owned_conversation(
         state.db.pool(),
         &group_id,
@@ -178,20 +189,68 @@ pub async fn create_group(
     .await?;
 
     let id = Uuid::new_v4().to_string();
+    let provisioned = if let Some(requested_branch) = requested_branch {
+        let already_bound: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM threads \
+             WHERE group_id = ? AND agent_id IS NULL AND git_branch = ?)",
+        )
+        .bind(&group_id)
+        .bind(requested_branch)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
+        if already_bound {
+            return Err(ApiError::conflict(
+                "branch is already bound to another task",
+            ));
+        }
+
+        let workspace = workspace_files::load_owned_local_workspace(
+            state.db.pool(),
+            ConversationRoot::conversation(ConversationScope::Groups, &group_id, &owner_id),
+        )
+        .await?;
+        let worktree_path = state.task_worktree_root.join(&group_id).join(&id);
+        let binding =
+            workspace_git::create_task_worktree(&workspace.root, &worktree_path, requested_branch)
+                .await
+                .map_err(|error| ApiError::invalid_input(error.to_string()))?;
+        let canonical_path = match tokio::fs::canonicalize(&worktree_path).await {
+            Ok(path) => path,
+            Err(_) => {
+                rollback_task_worktree(&workspace.root, &worktree_path, &binding).await;
+                return Err(ApiError::internal("failed to resolve task worktree path"));
+            }
+        };
+        Some((workspace.root, canonical_path, binding))
+    } else {
+        None
+    };
     let now = now_rfc3339();
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO threads \
-         (id, group_id, agent_id, title, status, next_seq, created_at, updated_at) \
-         VALUES (?, ?, NULL, ?, 'active', 1, ?, ?)",
+         (id, group_id, agent_id, title, git_branch, worktree_path, status, next_seq, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, ?, ?, 'active', 1, ?, ?)",
     )
     .bind(&id)
     .bind(&group_id)
     .bind(title)
+    .bind(provisioned.as_ref().map(|(_, _, binding)| &binding.branch))
+    .bind(
+        provisioned
+            .as_ref()
+            .map(|(_, path, _)| path.to_string_lossy().into_owned()),
+    )
     .bind(&now)
     .bind(&now)
     .execute(state.db.pool())
-    .await
-    .map_err(|_| ApiError::internal("failed to create task"))?;
+    .await;
+    if inserted.is_err() {
+        if let Some((root, path, binding)) = &provisioned {
+            rollback_task_worktree(root, path, binding).await;
+        }
+        return Err(ApiError::internal("failed to create task"));
+    }
 
     let thread = fetch_owned_thread(state.db.pool(), &id, &owner_id).await?;
     Ok((StatusCode::CREATED, Json(ThreadResponse::from(thread))))
@@ -332,7 +391,7 @@ async fn fetch_owned_thread(
     owner_id: &str,
 ) -> Result<ThreadAccessRow, ApiError> {
     let row: Option<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.status, t.created_at, t.updated_at, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.status, t.created_at, t.updated_at, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
          FROM threads t \
@@ -358,6 +417,18 @@ async fn fetch_owned_thread(
         ));
     }
     Ok(row)
+}
+
+async fn rollback_task_worktree(root: &FsPath, path: &FsPath, binding: &TaskWorktree) {
+    if let Err(error) = workspace_git::remove_task_worktree(root, path).await {
+        tracing::warn!(%error, path = %path.display(), "failed to roll back task worktree");
+        return;
+    }
+    if binding.created_branch {
+        if let Err(error) = workspace_git::delete_branch(root, &binding.branch, true).await {
+            tracing::warn!(%error, branch = %binding.branch, "failed to roll back task branch");
+        }
+    }
 }
 
 fn ensure_task_thread(thread: &ThreadAccessRow) -> Result<(), ApiError> {

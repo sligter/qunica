@@ -20,11 +20,11 @@ export function useCreateGroupThread(groupId: string) {
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (title: string) =>
+    mutationFn: (body: { title: string; git_branch?: string | null }) =>
       fetchJson<GroupThread>(`/groups/${groupId}/threads`, {
         method: 'POST',
         token,
-        body: { title },
+        body,
       }),
     onSuccess: (created) => {
       queryClient.setQueryData<GroupThread[]>(groupThreadsKey(groupId), (threads = []) => [
