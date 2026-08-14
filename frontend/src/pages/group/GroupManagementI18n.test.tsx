@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   agents: [] as { id: string; workspace_id: string | null }[],
   workspaces: [] as { id: string; local_path: string | null }[],
   groupThreads: [] as GroupThread[],
+  useGroupAgents: vi.fn(),
   gitBranches: {
     branches: [
       { name: 'main', full_name: 'refs/heads/main', kind: 'local', current: true, upstream: null, ahead: 0, behind: 0 },
@@ -74,7 +75,10 @@ vi.mock('@/hooks/useGroups', () => ({
   useUpdateGroup: () => ({ isPending: false, mutateAsync: mocks.mutateAsync }),
 }))
 vi.mock('@/hooks/useGroupAgents', () => ({
-  useGroupAgents: () => ({ data: mocks.groupAgents, error: null, isLoading: false }),
+  useGroupAgents: (...args: unknown[]) => {
+    mocks.useGroupAgents(...args)
+    return { data: mocks.groupAgents, error: null, isLoading: false }
+  },
 }))
 vi.mock('@/hooks/useGroupMessages', () => ({
   useConversationMessages: () => ({
@@ -256,6 +260,7 @@ describe('group management i18n', () => {
     mocks.agents = []
     mocks.workspaces = []
     mocks.groupThreads = [taskThread]
+    mocks.useGroupAgents.mockReset()
     mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
     mocks.createTaskMutateAsync.mockReset().mockImplementation(async (
@@ -380,6 +385,7 @@ describe('group management i18n', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Current task' })).toHaveTextContent('Second task')
+    expect(mocks.useGroupAgents).toHaveBeenCalledWith('group-1', 'thread-2')
   })
 
   it('keeps task switching and creation available while the current task runs', () => {

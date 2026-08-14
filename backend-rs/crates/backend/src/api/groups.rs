@@ -52,7 +52,8 @@ const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id,
         AND messages.sender_type = 'agent' \
         AND messages.sender_id = group_agents.agent_id \
         AND messages.status = 'visible' \
-        AND threads.status IN ('active', 'running', 'paused') \
+        AND ((? IS NULL AND threads.status IN ('active', 'running', 'paused')) \
+             OR messages.thread_id = ?) \
         AND json_type(messages.content_json, '$.context_usage') = 'object' \
       ORDER BY messages.created_at DESC, messages.seq DESC, messages.id DESC \
       LIMIT 1) AS context_usage_json";
@@ -204,6 +205,11 @@ pub struct GroupAgentAddRequest {
     /// Legacy alias for `workspace_mode`; `true` is `group`, `false` is `self`.
     #[serde(default)]
     share_group_workspace: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListGroupAgentsQuery {
+    thread_id: Option<String>,
 }
 
 impl GroupAgentAddRequest {
@@ -2492,12 +2498,32 @@ pub async fn list_group_agents(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
+    Query(query): Query<ListGroupAgentsQuery>,
 ) -> Result<Json<Vec<GroupAgentResponse>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
+    let thread_id = query
+        .thread_id
+        .as_deref()
+        .map(|value| validate_uuid(value, "thread id"))
+        .transpose()?;
 
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
-    let rows = fetch_group_agent_rows(state.db.pool(), &group_id).await?;
+    if let Some(thread_id) = thread_id.as_deref() {
+        let belongs_to_group: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM threads \
+             WHERE id = ? AND group_id = ? AND agent_id IS NULL AND status != 'cleared')",
+        )
+        .bind(thread_id)
+        .bind(&group_id)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
+        if !belongs_to_group {
+            return Err(ApiError::not_found("task not found"));
+        }
+    }
+    let rows = fetch_group_agent_rows(state.db.pool(), &group_id, thread_id.as_deref()).await?;
     Ok(Json(
         rows.into_iter().map(GroupAgentResponse::from).collect(),
     ))
@@ -2878,6 +2904,7 @@ async fn fetch_row(pool: &SqlitePool, group_id: &str) -> Result<Option<GroupRow>
 async fn fetch_group_agent_rows(
     pool: &SqlitePool,
     group_id: &str,
+    thread_id: Option<&str>,
 ) -> Result<Vec<GroupAgentRow>, ApiError> {
     let sql = format!(
         "SELECT {GROUP_AGENT_COLUMNS} \
@@ -2889,6 +2916,8 @@ async fn fetch_group_agent_rows(
          ORDER BY group_agents.joined_at ASC, group_agents.agent_id ASC"
     );
     sqlx::query_as::<_, GroupAgentRow>(&sql)
+        .bind(thread_id)
+        .bind(thread_id)
         .bind(group_id)
         .fetch_all(pool)
         .await
@@ -2910,6 +2939,8 @@ async fn fetch_group_agent_row(
            AND agents.status = 'active'"
     );
     sqlx::query_as::<_, GroupAgentRow>(&sql)
+        .bind(Option::<&str>::None)
+        .bind(Option::<&str>::None)
         .bind(group_id)
         .bind(agent_id)
         .fetch_optional(pool)

@@ -45,6 +45,7 @@ export function MessageItem({
   // fall back to a query when a caller renders a message without one.
   const groupAgents = useGroupAgents(
     agents === undefined && scope === 'groups' ? groupId : undefined,
+    message.thread_id ?? undefined,
   )
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))

@@ -238,6 +238,7 @@ export function MessageList({
                 <StreamTimeline
                   run={run}
                   groupId={groupId}
+                  agents={agents}
                   agentIsSystem={agentIsSystem}
                   onSubmitHumanInput={onSubmitHumanInput}
                 />

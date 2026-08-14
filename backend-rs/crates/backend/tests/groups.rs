@@ -4594,7 +4594,7 @@ async fn group_auto_share_workspace_setting_applies_only_to_new_members() {
 }
 
 #[tokio::test]
-async fn group_agents_return_current_thread_context_usage() {
+async fn group_agents_scope_context_usage_to_requested_task() {
     let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "group-agent-usage@example.com").await;
     let workspace = create_workspace(&app, &token).await;
@@ -4602,6 +4602,7 @@ async fn group_agents_return_current_thread_context_usage() {
     let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[&agent]).await;
     let group_id = group["id"].as_str().unwrap();
     let thread_id = Uuid::new_v4().to_string();
+    let empty_thread_id = Uuid::new_v4().to_string();
     let message_id = Uuid::new_v4().to_string();
     let usage = json!({
         "input_tokens": 3026,
@@ -4619,6 +4620,16 @@ async fn group_agents_return_current_thread_context_usage() {
          VALUES (?, ?, NULL, 'active', 2, '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z')",
     )
     .bind(&thread_id)
+    .bind(group_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO threads \
+         (id, group_id, agent_id, status, next_seq, created_at, updated_at) \
+         VALUES (?, ?, NULL, 'active', 1, '2026-07-28T00:01:00Z', '2026-07-28T00:01:00Z')",
+    )
+    .bind(&empty_thread_id)
     .bind(group_id)
     .execute(state.db.pool())
     .await
@@ -4647,6 +4658,30 @@ async fn group_agents_return_current_thread_context_usage() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(rows[0]["context_usage"], usage);
+
+    let (status, rows) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/agents?thread_id={thread_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows[0]["context_usage"], usage);
+
+    let (status, rows) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/agents?thread_id={empty_thread_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows[0]["context_usage"], Value::Null);
 
     sqlx::query("UPDATE threads SET status = 'cleared' WHERE id = ?")
         .bind(&thread_id)

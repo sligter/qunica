@@ -37,7 +37,6 @@ export function GroupChatPage() {
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const { groupId } = useParams<{ groupId: string }>()
   const group = useGroup(groupId)
-  const groupAgents = useGroupAgents(groupId)
   const groupThreads = useGroupThreads(groupId)
   const [selection, setSelection] = useState(() => ({
     groupId,
@@ -46,6 +45,14 @@ export function GroupChatPage() {
   const selectedThreadId = selection.groupId === groupId
     ? selection.threadId
     : readSelectedThreadId(groupId)
+  const threads = groupThreads.data ?? []
+  const selectedThread = threads.find((thread) => thread.id === selectedThreadId)
+    ?? threads.find((thread) => thread.status !== 'archived')
+    ?? threads[0]
+  const groupAgents = useGroupAgents(
+    groupId,
+    groupThreads.data ? selectedThread?.id : null,
+  )
 
   useEffect(() => {
     if (!group.data?.name) return
@@ -78,10 +85,6 @@ export function GroupChatPage() {
   }
 
   const agents = groupAgents.data ?? []
-  const threads = groupThreads.data ?? []
-  const selectedThread = threads.find((thread) => thread.id === selectedThreadId)
-    ?? threads.find((thread) => thread.status !== 'archived')
-    ?? threads[0]
   const selectThread = (threadId: string) => {
     setSelection({ groupId, threadId })
     persistSelectedThreadId(groupId, threadId)

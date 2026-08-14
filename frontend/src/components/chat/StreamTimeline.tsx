@@ -29,11 +29,12 @@ import type {
   StreamTimelineEvent,
   StreamToolEvent,
 } from '@/stores/messageStore'
-import type { ContextUsage } from '@/types/api'
+import type { ContextUsage, GroupAgentRead } from '@/types/api'
 
 interface StreamTimelineProps {
   run: StreamRun
   groupId?: string
+  agents?: GroupAgentRead[]
   onSubmitHumanInput?: (content: string) => void
   agentIsSystem?: boolean
 }
@@ -447,21 +448,22 @@ function AgentBlockView({
 export function StreamTimeline({
   run,
   groupId = run.group_id,
+  agents,
   onSubmitHumanInput,
   agentIsSystem,
 }: StreamTimelineProps) {
   const { t } = useTranslation('chat')
-  const groupAgents = useGroupAgents(groupId)
-  // Last-known usage per group-agent. The live `agent_start` events don't carry
+  const groupAgents = useGroupAgents(agents === undefined ? groupId : undefined)
+  // Last-known usage per agent in this task. The live `agent_start` events don't carry
   // context_usage (it's computed only after the LLM responds), so without this
   // fallback the avatar ring stays blank for the whole streaming turn.
   const usageByAgentId = useMemo(() => {
     const map = new Map<string, ContextUsage>()
-    for (const agent of groupAgents.data ?? []) {
+    for (const agent of agents ?? groupAgents.data ?? []) {
       if (agent.context_usage) map.set(agent.agent_id, agent.context_usage)
     }
     return map
-  }, [groupAgents.data])
+  }, [agents, groupAgents.data])
   const blocks = buildBlocks(run.events, t('messages.agent'))
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
