@@ -4594,7 +4594,7 @@ async fn group_auto_share_workspace_setting_applies_only_to_new_members() {
 }
 
 #[tokio::test]
-async fn group_agents_return_last_context_usage() {
+async fn group_agents_return_current_thread_context_usage() {
     let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "group-agent-usage@example.com").await;
     let workspace = create_workspace(&app, &token).await;
@@ -4647,6 +4647,19 @@ async fn group_agents_return_last_context_usage() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(rows[0]["context_usage"], usage);
+
+    sqlx::query("UPDATE threads SET status = 'cleared' WHERE id = ?")
+        .bind(&thread_id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let (status, rows) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows[0]["context_usage"], Value::Null);
 }
 
 #[tokio::test]

@@ -418,6 +418,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(messages::clear_group),
         )
         .route(
+            "/api/v2/groups/:group_id/context/reset",
+            axum::routing::post(messages::reset_group_context),
+        )
+        .route(
             "/api/v2/groups/:group_id/messages/:message_id",
             axum::routing::delete(messages::delete_group),
         )

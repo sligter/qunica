@@ -280,20 +280,31 @@ pub async fn clear_direct(
     clear_for_kind(state, headers, group_id, ConversationKind::Direct).await
 }
 
+pub async fn reset_group_context(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    reset_context_for_kind(state, headers, group_id, ConversationKind::Group).await
+}
+
 pub async fn reset_direct_context(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    reset_context_for_kind(state, headers, group_id, ConversationKind::Direct).await
+}
+
+async fn reset_context_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    expected: ConversationKind,
+) -> Result<StatusCode, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
-    ensure_active_owned_conversation(
-        state.db.pool(),
-        &group_id,
-        &owner_id,
-        ConversationKind::Direct,
-    )
-    .await?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
 
     let _guard = state.write_lock.lock().await;
     let thread_ids: Vec<String> = sqlx::query_scalar(
@@ -305,7 +316,7 @@ pub async fn reset_direct_context(
     .bind(&group_id)
     .fetch_all(state.db.pool())
     .await
-    .map_err(|_| ApiError::internal("failed to load direct chat context"))?;
+    .map_err(|_| ApiError::internal("failed to load conversation context"))?;
 
     if !thread_ids.is_empty() {
         sqlx::query(
@@ -319,7 +330,7 @@ pub async fn reset_direct_context(
         .bind(&group_id)
         .execute(state.db.pool())
         .await
-        .map_err(|_| ApiError::internal("failed to reset direct chat context"))?;
+        .map_err(|_| ApiError::internal("failed to reset conversation context"))?;
     }
     drop(_guard);
 

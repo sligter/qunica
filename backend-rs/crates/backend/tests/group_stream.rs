@@ -2002,6 +2002,87 @@ async fn message_send_no_routed_agents_returns_user_message_without_provider() {
 }
 
 #[tokio::test]
+async fn group_new_task_preserves_history_and_starts_a_new_thread() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "group-new-task@example.com").await;
+    let owner = owner_id(&state, "group-new-task@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let missing_provider = uuid::Uuid::new_v4().to_string();
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &missing_provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let (status, first) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "old task"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let old_thread = first["user_message"]["thread_id"].as_str().unwrap();
+
+    let (status, history_before) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &app,
+        authed_empty(
+            "POST",
+            &format!("/api/v2/groups/{group}/context/reset"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body:?}");
+
+    let old_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(old_thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(old_status, "cleared");
+
+    let (status, history_after) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(history_after, history_before);
+
+    let (status, second) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/messages"),
+            &token,
+            json!({"content": "new task"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_ne!(
+        second["user_message"]["thread_id"].as_str().unwrap(),
+        old_thread
+    );
+}
+
+#[tokio::test]
 async fn message_send_free_speech_one_agent_returns_persisted_reply_and_history() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "send-happy@example.com").await;

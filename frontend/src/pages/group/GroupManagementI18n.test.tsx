@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   workspaces: [] as { id: string; local_path: string | null }[],
   setWorkspaceMode: vi.fn(),
   mutateAsync: vi.fn(),
+  startNewTaskMutateAsync: vi.fn(),
   clearMutateAsync: vi.fn(),
   deleteMutateAsync: vi.fn(),
   closeConversation: vi.fn(),
@@ -81,6 +82,10 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     fetchNextPage: vi.fn(),
   }),
   useClearGroupMessages: () => ({ isPending: false, mutateAsync: mocks.clearMutateAsync }),
+  useStartNewGroupTask: () => ({
+    isPending: false,
+    mutateAsync: mocks.startNewTaskMutateAsync,
+  }),
 }))
 vi.mock('@/hooks/useSendMessageStream', () => ({
   useSendMessageStream: () => ({
@@ -209,6 +214,7 @@ describe('group management i18n', () => {
     mocks.workspaces = []
     mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
+    mocks.startNewTaskMutateAsync.mockReset().mockResolvedValue(undefined)
     mocks.clearMutateAsync.mockReset()
     mocks.deleteMutateAsync.mockReset()
     mocks.closeConversation.mockReset().mockResolvedValue(undefined)
@@ -265,9 +271,30 @@ describe('group management i18n', () => {
 
     expect(screen.getByRole('heading', { name: '原样 Group 42' })).toBeVisible()
     expect(screen.getByText('公告：RAW announcement / 路径 C:/work')).toBeVisible()
+    expect(screen.getByRole('button', { name: '新任务' })).toBeVisible()
     expect(screen.getByRole('button', { name: '隐藏工作区文件' })).toBeVisible()
     expect(document.title).toBe('原样 Group 42 · AG Swarmer')
     expect(mocks.registerTerminal).toHaveBeenCalledWith('group-1', 'workspace-1')
+  })
+
+  it('starts a fresh group task only after confirmation', async () => {
+    const user = userEvent.setup()
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1']}>
+        <Routes>
+          <Route path="/groups/:groupId" element={<GroupChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Start new task' }))
+    expect(mocks.startNewTaskMutateAsync).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('alertdialog')
+    expect(within(dialog).getByRole('heading', { name: 'Start a new task?' })).toBeVisible()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Start new task' }))
+    await waitFor(() => expect(mocks.startNewTaskMutateAsync).toHaveBeenCalledOnce())
   })
 
   it('localizes the manage shell and tabs while preserving the group name', async () => {

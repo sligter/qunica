@@ -73,15 +73,29 @@ export function useClearGroupMessages(groupId: string | undefined) {
   return useClearConversationMessages('groups', groupId)
 }
 
-export function useResetDirectChatContext(chatId: string) {
+function useResetConversationContext(scope: ConversationScope, conversationId: string) {
   const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: () =>
-      fetchJson<void>(`/direct-chats/${chatId}/context/reset`, {
+      fetchJson<void>(`${conversationApiPath(scope, conversationId)}/context/reset`, {
         method: 'POST',
         token,
       }),
+    onSuccess: () => {
+      if (scope === 'groups') {
+        void qc.invalidateQueries({ queryKey: ['groups', conversationId, 'agents'] })
+      }
+    },
   })
+}
+
+export function useResetDirectChatContext(chatId: string) {
+  return useResetConversationContext('direct-chats', chatId)
+}
+
+export function useStartNewGroupTask(groupId: string) {
+  return useResetConversationContext('groups', groupId)
 }
 
 export function useDeleteGroupMessage(groupId: string) {

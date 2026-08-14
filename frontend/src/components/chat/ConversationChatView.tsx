@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Composer } from '@/components/chat/Composer'
 import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHeaderActions'
+import { GroupChatHeaderActions } from '@/components/groups/GroupChatHeaderActions'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
@@ -227,13 +228,19 @@ export function ConversationChatView({
           {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {scope === 'direct-chats' ? (
+          {scope === 'groups' ? (
+            <GroupChatHeaderActions
+              key={conversationId}
+              groupId={conversationId}
+              disabled={isConversationStreaming}
+            />
+          ) : (
             <DirectChatHeaderActions
               key={conversationId}
               chatId={conversationId}
               disabled={isConversationStreaming}
             />
-          ) : null}
+          )}
           <Button
             variant={isDockOpen ? 'secondary' : 'ghost'}
             size="icon"

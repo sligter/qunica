@@ -47,11 +47,12 @@ const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id,
      group_agents.topology_role, group_agents.speaking_order, group_agents.response_mode, \
      group_agents.context_scope_json, group_agents.status, group_agents.joined_at, \
      (SELECT json_extract(messages.content_json, '$.context_usage') \
-      FROM messages \
+      FROM messages JOIN threads ON threads.id = messages.thread_id \
       WHERE messages.group_id = group_agents.group_id \
         AND messages.sender_type = 'agent' \
         AND messages.sender_id = group_agents.agent_id \
         AND messages.status = 'visible' \
+        AND threads.status IN ('active', 'running', 'paused') \
         AND json_type(messages.content_json, '$.context_usage') = 'object' \
       ORDER BY messages.created_at DESC, messages.seq DESC, messages.id DESC \
       LIMIT 1) AS context_usage_json";

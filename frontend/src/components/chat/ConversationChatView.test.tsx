@@ -17,6 +17,7 @@ const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
 const workspacePanelMocks = vi.hoisted(() => ({ group: vi.fn() }))
 const maintenanceMocks = vi.hoisted(() => ({
   clear: vi.fn(),
+  newTask: vi.fn(),
   reset: vi.fn(),
 }))
 const messageStoreMocks = vi.hoisted(() => ({
@@ -81,6 +82,10 @@ vi.mock('@/hooks/useGroupMessages', () => ({
   }),
   useResetDirectChatContext: () => ({
     mutateAsync: maintenanceMocks.reset,
+    isPending: false,
+  }),
+  useStartNewGroupTask: () => ({
+    mutateAsync: maintenanceMocks.newTask,
     isPending: false,
   }),
 }))
@@ -159,6 +164,7 @@ describe('ConversationChatView', () => {
     composerMocks.render.mockReset()
     workspacePanelMocks.group.mockReset()
     maintenanceMocks.clear.mockReset().mockResolvedValue(undefined)
+    maintenanceMocks.newTask.mockReset().mockResolvedValue(undefined)
     maintenanceMocks.reset.mockReset().mockResolvedValue(undefined)
     messageStoreMocks.clearWarnings.mockReset()
     messageStoreMocks.activeResumesByMessageId = {}
@@ -202,6 +208,7 @@ describe('ConversationChatView', () => {
     view.rerender(conversationElement({ scope: 'groups' }))
     expect(screen.queryByRole('button', { name: 'Reset context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Clear chat' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start new task' })).toBeVisible()
   })
 
   it('confirms private-chat context reset and message clearing', async () => {
