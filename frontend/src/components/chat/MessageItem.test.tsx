@@ -50,6 +50,7 @@ function message(overrides: Partial<Message>): Message {
     status: 'visible',
     refs: null,
     context_usage: null,
+    response_segments: null,
     reasoning: null,
     tool_calls: null,
     turn_id: null,
@@ -110,6 +111,24 @@ describe('MessageItem', () => {
     expect(within(activity).getByText('Read')).toBeVisible()
     expect(within(activity).getByText('Grep')).toBeVisible()
     expect(screen.getByText('Final answer')).toBeVisible()
+  })
+
+  it('restores persisted response segments as separate bubbles', () => {
+    render(
+      <MessageItem
+        groupId="group-1"
+        message={message({
+          content: 'First bubbleSecond bubble',
+          response_segments: ['First bubble', 'Second bubble'],
+        })}
+      />,
+    )
+
+    const firstBubble = screen.getByText('First bubble').closest('.rounded-lg')
+    const secondBubble = screen.getByText('Second bubble').closest('.rounded-lg')
+    expect(firstBubble).not.toBeNull()
+    expect(secondBubble).not.toBeNull()
+    expect(firstBubble).not.toBe(secondBubble)
   })
 
   it('keeps long user content inside a shrinkable right-aligned column', () => {

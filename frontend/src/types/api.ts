@@ -754,6 +754,8 @@ export interface Message {
   status: string
   refs: Record<string, unknown> | null
   context_usage: ContextUsage | null
+  /** Visible response bubbles, split where reasoning or tools interrupted text. */
+  response_segments?: string[] | null
   /** Persisted reasoning segments (from `content_json`), in order. */
   reasoning?: string[] | null
   /** Persisted tool calls (from `content_json`), in order. */

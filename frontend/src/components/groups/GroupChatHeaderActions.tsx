@@ -81,19 +81,30 @@ export function GroupChatHeaderActions({
         <SelectTrigger
           className="h-8 w-36 border-0 bg-muted/60 px-2 shadow-none sm:w-52 lg:w-64"
           aria-label={t('tasks.switcher')}
+          title={selectedThread ? displayTitle(selectedThread) : undefined}
         >
-          <span className="flex min-w-0 items-center gap-2">
+          <span className="!flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
             <ListTodo className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <SelectValue placeholder={t('tasks.none')} />
+            <SelectValue className="truncate" placeholder={t('tasks.none')} />
           </span>
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="max-w-[calc(100vw-2rem)] sm:w-80">
           {activeThreads.length > 0 ? (
             <SelectGroup>
               <SelectLabel>{t('tasks.active')}</SelectLabel>
               {activeThreads.map((thread) => (
-                <SelectItem key={thread.id} value={thread.id}>
-                  {displayTitle(thread)}
+                <SelectItem
+                  key={thread.id}
+                  value={thread.id}
+                  textValue={displayTitle(thread)}
+                  className="min-w-0 whitespace-nowrap"
+                >
+                  <span
+                    className="block max-w-[calc(100vw-6rem)] truncate sm:max-w-64"
+                    title={displayTitle(thread)}
+                  >
+                    {displayTitle(thread)}
+                  </span>
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -103,8 +114,18 @@ export function GroupChatHeaderActions({
             <SelectGroup>
               <SelectLabel>{t('tasks.archived')}</SelectLabel>
               {archivedThreads.map((thread) => (
-                <SelectItem key={thread.id} value={thread.id}>
-                  {displayTitle(thread)} · {t('tasks.archived')}
+                <SelectItem
+                  key={thread.id}
+                  value={thread.id}
+                  textValue={`${displayTitle(thread)} · ${t('tasks.archived')}`}
+                  className="min-w-0 whitespace-nowrap"
+                >
+                  <span
+                    className="block max-w-[calc(100vw-6rem)] truncate sm:max-w-64"
+                    title={`${displayTitle(thread)} · ${t('tasks.archived')}`}
+                  >
+                    {displayTitle(thread)} · {t('tasks.archived')}
+                  </span>
                 </SelectItem>
               ))}
             </SelectGroup>

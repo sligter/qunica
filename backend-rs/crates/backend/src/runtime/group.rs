@@ -2350,12 +2350,14 @@ struct RecordedToolCall {
     result: Option<String>,
 }
 
-/// Structured data accumulated across one agent turn so reasoning blocks, tool
-/// cards, and the final context usage survive a restart (persisted in
-/// `content_json`). Transient stream events remain the live source of truth;
-/// this is the durable mirror.
+/// Structured data accumulated across one agent turn so response segments,
+/// reasoning blocks, tool cards, and the final context usage survive a restart
+/// (persisted in `content_json`). Transient stream events remain the live source
+/// of truth; this is the durable mirror.
 #[derive(Clone, Default, Deserialize)]
 struct TurnData {
+    #[serde(default)]
+    response_segments: Vec<String>,
     #[serde(default)]
     reasoning: Vec<String>,
     #[serde(default)]
@@ -2369,6 +2371,14 @@ impl TurnData {
         content_json
             .and_then(|raw| serde_json::from_str(raw).ok())
             .unwrap_or_default()
+    }
+
+    fn push_response(&mut self, text: &str, new_segment: bool) {
+        if new_segment || self.response_segments.is_empty() {
+            self.response_segments.push(text.to_string());
+        } else if let Some(last) = self.response_segments.last_mut() {
+            last.push_str(text);
+        }
     }
 
     /// Append a reasoning delta to the current (last) reasoning segment,
@@ -2467,7 +2477,10 @@ impl TurnData {
 
     /// True when there is nothing structured worth persisting.
     fn is_empty(&self) -> bool {
-        self.reasoning.iter().all(|segment| segment.is_empty())
+        self.response_segments
+            .iter()
+            .all(|segment| segment.is_empty())
+            && self.reasoning.iter().all(|segment| segment.is_empty())
             && self.tool_calls.is_empty()
             && self.context_usage.is_none()
     }
@@ -2480,6 +2493,11 @@ impl TurnData {
         }
         let reasoning: Vec<&String> = self
             .reasoning
+            .iter()
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        let response_segments: Vec<&String> = self
+            .response_segments
             .iter()
             .filter(|segment| !segment.is_empty())
             .collect();
@@ -2500,6 +2518,7 @@ impl TurnData {
             .collect();
         let payload = json!({
             "schema_version": CONTENT_JSON_SCHEMA_VERSION,
+            "response_segments": response_segments,
             "reasoning": reasoning,
             "tool_calls": tool_calls,
             "context_usage": self.context_usage,
@@ -2699,6 +2718,7 @@ async fn run_agent_turn(
         // A reasoning delta starts a new segment when the previous delta was not
         // reasoning (so token/tool interleaving splits reasoning blocks).
         let mut last_was_reasoning = false;
+        let mut last_was_response = false;
 
         loop {
             let delta = match await_with_cancellation(ctx, deltas.recv()).await {
@@ -2727,6 +2747,8 @@ async fn run_agent_turn(
                         .await
                     {
                         Ok(()) => {
+                            turn.push_response(&text, !last_was_response);
+                            last_was_response = true;
                             content.push_str(&text);
                             round_content.push_str(&text);
                         }
@@ -2748,6 +2770,7 @@ async fn run_agent_turn(
                     }
                 }
                 ChatDelta::Reasoning(text) => {
+                    last_was_response = false;
                     turn.push_reasoning(&text, !last_was_reasoning);
                     last_was_reasoning = true;
                     if let Err(err) = ctx
@@ -2772,6 +2795,7 @@ async fn run_agent_turn(
                 }
                 ChatDelta::ToolCall(call) => {
                     last_was_reasoning = false;
+                    last_was_response = false;
                     tool_calls.push(call);
                 }
                 ChatDelta::Usage(usage) => {
@@ -3046,6 +3070,7 @@ async fn run_acp_agent_turn(
         model: &usage_model,
     };
     let mut last_was_reasoning = false;
+    let mut last_was_response = false;
     while let Some(event) = match await_with_cancellation(ctx, run.next_event()).await {
         Ok(event) => event,
         Err(StepErr::Cancelled) => {
@@ -3057,6 +3082,7 @@ async fn run_acp_agent_turn(
         match event.kind {
             AcpEventKind::Run => {
                 last_was_reasoning = false;
+                last_was_response = false;
                 let payload = merge_agent_identity(event.data, agent);
                 let run_id = payload.get("run_id").and_then(json_str);
                 let tool_name = Some(format!(
@@ -3092,10 +3118,13 @@ async fn run_acp_agent_turn(
                         json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
                     )
                     .await?;
+                    turn.push_response(&text, !last_was_response);
+                    last_was_response = true;
                     content.push_str(&text);
                 }
             }
             AcpEventKind::Reasoning => {
+                last_was_response = false;
                 let text = event.data.as_str().unwrap_or_default().to_string();
                 if !text.is_empty() {
                     turn.push_reasoning(&text, !last_was_reasoning);
@@ -3109,6 +3138,7 @@ async fn run_acp_agent_turn(
             }
             AcpEventKind::ToolCallStart => {
                 last_was_reasoning = false;
+                last_was_response = false;
                 // The ACP payload lacks the agent identity the LLM path injects;
                 // merge it in so tool cards render under this agent's timeline
                 // instead of a phantom "Agent" block (agent_id -> unknown-agent).
@@ -3123,6 +3153,7 @@ async fn run_acp_agent_turn(
             }
             AcpEventKind::ToolCallResult => {
                 last_was_reasoning = false;
+                last_was_response = false;
                 let payload = merge_agent_identity(event.data, agent);
                 turn.record_tool_result(
                     payload.get("tool_call_id").and_then(json_str),
@@ -6371,6 +6402,20 @@ mod tests {
         assert_eq!(
             payload["tool_calls"][0]["result"],
             "complete file contents"
+        );
+    }
+
+    #[test]
+    fn turn_data_persists_response_bubble_boundaries() {
+        let mut turn = TurnData::default();
+        turn.push_response("First ", true);
+        turn.push_response("bubble", false);
+        turn.push_response("Second bubble", true);
+
+        let payload: Value = serde_json::from_str(&turn.to_content_json().unwrap()).unwrap();
+        assert_eq!(
+            payload["response_segments"],
+            json!(["First bubble", "Second bubble"])
         );
     }
 

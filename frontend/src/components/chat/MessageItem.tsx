@@ -87,6 +87,11 @@ export function MessageItem({
   const isInterrupted = message.status === 'interrupted'
   const showStreamingDot = isStreaming || isResuming
   const time = formatTime(message.created_at, language)
+  const persistedSegments = message.response_segments?.filter((segment) => segment.length > 0) ?? []
+  const content = message.content ?? ''
+  const contentSegments = !isUser && persistedSegments.length > 0 && persistedSegments.join('') === content
+    ? persistedSegments
+    : [content]
 
   return (
     <div
@@ -150,28 +155,31 @@ export function MessageItem({
             toolCalls={message.tool_calls}
           />
         )}
-        <div
-          className={cn(
-            'min-w-0 max-w-full rounded-lg',
-            inputRequest
-              ? 'w-full'
-              : isUser
-                ? 'chat-user-bubble px-3 py-2'
-                : 'border border-l-4 border-border border-l-primary/60 bg-card px-3 py-2 text-foreground shadow-sm',
-            isInterrupted && !isResuming && 'border-warning',
-          )}
-        >
-          {inputRequest ? (
+        {inputRequest ? (
+          <div className="min-w-0 w-full max-w-full rounded-lg">
             <HumanInputRequestForm
               request={inputRequest}
               targetDisplayName={senderName}
               onSubmitResponse={onSubmitHumanInput}
             />
-          ) : (
-            <MarkdownMessage content={message.content || ' '} isUser={isUser} groupId={groupId} />
-          )}
-          {!inputRequest && message.attachments.length > 0 ? <MessageAttachments groupId={groupId} attachments={message.attachments} scope={scope} /> : null}
-        </div>
+          </div>
+        ) : contentSegments.map((segment, index) => (
+          <div
+            key={index}
+            className={cn(
+              'min-w-0 max-w-full rounded-lg',
+              isUser
+                ? 'chat-user-bubble px-3 py-2'
+                : 'border border-l-4 border-border border-l-primary/60 bg-card px-3 py-2 text-foreground shadow-sm',
+              isInterrupted && !isResuming && 'border-warning',
+            )}
+          >
+            <MarkdownMessage content={segment || ' '} isUser={isUser} groupId={groupId} />
+            {index === contentSegments.length - 1 && message.attachments.length > 0 ? (
+              <MessageAttachments groupId={groupId} attachments={message.attachments} scope={scope} />
+            ) : null}
+          </div>
+        ))}
         {(isInterrupted || isResuming) && message.thread_id && (
           <InterruptedMessageActions
             groupId={groupId}

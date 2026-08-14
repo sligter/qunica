@@ -92,6 +92,7 @@ pub struct MessageResponse {
     status: String,
     refs: Option<Value>,
     context_usage: Option<Value>,
+    response_segments: Option<Vec<String>>,
     reasoning: Option<Value>,
     tool_calls: Option<Value>,
     turn_id: Option<String>,
@@ -175,6 +176,10 @@ impl From<MessageRow> for MessageResponse {
                 Some(Value::Object(_)) => value.get("context_usage").cloned(),
                 _ => None,
             });
+        let response_segments = parsed
+            .as_ref()
+            .and_then(|value| serde_json::from_value(value["response_segments"].clone()).ok())
+            .filter(|segments: &Vec<String>| !segments.is_empty());
         let reasoning = parsed
             .as_ref()
             .and_then(|value| match value.get("reasoning") {
@@ -203,6 +208,7 @@ impl From<MessageRow> for MessageResponse {
             status: row.status,
             refs: None,
             context_usage,
+            response_segments,
             reasoning,
             tool_calls,
             turn_id: row.turn_id,
