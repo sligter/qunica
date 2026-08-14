@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
+import { DEFAULT_ACP_TIMEOUT_SECONDS } from '@/components/agents/acpRuntimeConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -361,9 +362,8 @@ export function ExternalRuntimeFields({
             id="acp-timeout"
             type="number"
             min={1}
-            max={21600}
             value={timeoutSeconds}
-            onChange={(event) => onTimeoutSecondsChange(Number(event.target.value) || 3600)}
+            onChange={(event) => onTimeoutSecondsChange(Number(event.target.value) || DEFAULT_ACP_TIMEOUT_SECONDS)}
           />
         </div>
         <div className="space-y-1.5">

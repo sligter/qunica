@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::acp::{
     canonicalize_acp_runtime, normalize_acp_runtime, probe_acp_runtime_capabilities,
     AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities, AcpRuntimeConfig, PermissionPolicy,
+    DEFAULT_TIMEOUT_SECONDS,
 };
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::process::tokio_command_no_window;
@@ -137,7 +138,7 @@ struct AcpRuntimePresetResponse {
     command: Option<String>,
     args: Vec<&'static str>,
     env: BTreeMap<String, String>,
-    timeout_seconds: i64,
+    timeout_seconds: u64,
     permission_policy: &'static str,
     default_model: Option<&'static str>,
     default_mode: Option<&'static str>,
@@ -1057,7 +1058,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
                 vec!["-y", "@agentclientprotocol/codex-acp"]
             },
             env: BTreeMap::new(),
-            timeout_seconds: 3600,
+            timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             permission_policy: "deny",
             default_model: None,
             default_mode: Some("read-only"),
@@ -1101,7 +1102,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             command: Some(npx.command.clone()),
             args: vec!["@agentclientprotocol/claude-agent-acp"],
             env: BTreeMap::new(),
-            timeout_seconds: 3600,
+            timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             permission_policy: "deny",
             default_model: None,
             default_mode: Some("default"),
@@ -1145,7 +1146,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
                 vec!["-y", "pi-acp"]
             },
             env: BTreeMap::new(),
-            timeout_seconds: 3600,
+            timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             permission_policy: "deny",
             default_model: None,
             default_mode: None,
@@ -1165,7 +1166,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             command: Some(opencode.command.clone()),
             args: vec!["acp"],
             env: BTreeMap::new(),
-            timeout_seconds: 3600,
+            timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             permission_policy: "deny",
             default_model: None,
             default_mode: None,

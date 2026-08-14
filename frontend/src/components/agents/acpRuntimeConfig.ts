@@ -1,3 +1,5 @@
+export const DEFAULT_ACP_TIMEOUT_SECONDS = 21_600
+
 export function formatAcpArgs(args: string[] | undefined): string {
   return args?.join(' ') ?? ''
 }

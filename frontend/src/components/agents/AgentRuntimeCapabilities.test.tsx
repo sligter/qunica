@@ -63,7 +63,7 @@ const mocks = vi.hoisted(() => ({
       command: 'npx',
       args: ['-y', '@agentclientprotocol/codex-acp'],
       env: { ACP_MODE: 'test' },
-      timeout_seconds: 3600,
+      timeout_seconds: 21600,
       permission_policy: 'deny',
       default_model: 'gpt-preset',
       default_mode: 'agent',
@@ -313,6 +313,8 @@ describe('agent runtime capabilities', () => {
       permission_policy: 'deny',
       selected_model: 'gpt-preset',
     })
+    expect(screen.getByLabelText('Timeout seconds')).toHaveValue(21600)
+    expect(screen.getByLabelText('Timeout seconds')).not.toHaveAttribute('max')
     expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('gpt-preset')
     await user.click(screen.getByRole('button', { name: 'Show thinking options' }))
     expect(screen.getByRole('option', { name: /xhigh/i })).toHaveTextContent('XHigh')

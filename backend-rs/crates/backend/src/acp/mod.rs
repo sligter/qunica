@@ -47,7 +47,7 @@ pub use capabilities::{
 pub use config::{
     canonicalize_acp_runtime, normalize_acp_runtime, AcpConfigError, AcpConfigValue,
     AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy, BLOCKED_ENV_KEYS,
-    DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
 };
 pub use process::{
     build_child_env, spawn_acp_child, AcpAuditError, AcpRunAudit, AcpRunContext, SpawnedAcpChild,
@@ -1071,7 +1071,7 @@ async fn drive_existing_session_prompt(
         prompt_has_image_attachments,
         supports_prompt_images,
     );
-    let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
+    let session = timeout(Duration::from_secs(config.timeout_seconds), session);
     tokio::pin!(session);
     tokio::select! {
         biased;
@@ -1103,7 +1103,7 @@ async fn drive_new_session_prompt(
         prompt_has_image_attachments,
         config,
     );
-    let session = timeout(Duration::from_secs(config.timeout_seconds as u64), session);
+    let session = timeout(Duration::from_secs(config.timeout_seconds), session);
     tokio::pin!(session);
     tokio::select! {
         biased;

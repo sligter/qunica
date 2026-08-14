@@ -3333,6 +3333,32 @@ async fn acp_invalid_params_fails_dispatch_without_silence() {
     assert_invalid_params_agent_error(&events, &agent_id);
     assert!(kinds(&events).contains(&"done".to_string()));
     assert!(!kinds(&events).contains(&"agent_message".to_string()));
+    let (history_status, history) = send(
+        &app,
+        authed_empty(
+            "GET",
+            &format!("/api/v2/groups/{group}/messages?limit=30"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(history_status, StatusCode::OK);
+    let checkpoint = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["sender_id"] == agent_id)
+        .expect("failed ACP run is available from persisted history");
+    assert_eq!(checkpoint["status"], "interrupted");
+    assert_eq!(
+        checkpoint["tool_calls"][0]["tool_name"],
+        "External CLI: acp"
+    );
+    assert_eq!(checkpoint["tool_calls"][0]["status"], "failed");
+    assert!(checkpoint["tool_calls"][0]["result_summary"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Invalid params"));
     let audit: (String, Option<String>) =
         sqlx::query_as("SELECT status, error_message FROM external_agent_runs WHERE agent_id = ?")
             .bind(&agent_id)

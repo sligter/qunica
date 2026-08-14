@@ -829,7 +829,7 @@ async fn agent_runtime_kind_acp_clears_provider_and_stores_runtime() {
             "command": "claude-acp",
             "args": ["--flag"],
             "env": {},
-            "timeout_seconds": 3600,
+            "timeout_seconds": 21600,
             "permission_policy": "deny",
             "model": null,
             "mode": null,
@@ -861,7 +861,7 @@ async fn agent_runtime_kind_acp_clears_provider_and_stores_runtime() {
             "command": "claude-acp",
             "args": ["--v2"],
             "env": {},
-            "timeout_seconds": 3600,
+            "timeout_seconds": 21600,
             "permission_policy": "deny",
             "model": null,
             "mode": null,
@@ -897,7 +897,7 @@ async fn acp_runtime_presets_include_pi_and_opencode() {
     let pi = presets.iter().find(|preset| preset["id"] == "pi").unwrap();
     assert_eq!(pi["profile"], "pi");
     assert_eq!(pi["permission_policy"], "deny");
-    assert_eq!(pi["timeout_seconds"], 3600);
+    assert_eq!(pi["timeout_seconds"], 21600);
     if pi["installed"].as_bool().unwrap_or(false) {
         let command = pi["command"].as_str().expect("pi command");
         assert!(
@@ -916,7 +916,7 @@ async fn acp_runtime_presets_include_pi_and_opencode() {
         .unwrap();
     assert_eq!(opencode["profile"], "opencode");
     assert_eq!(opencode["permission_policy"], "deny");
-    assert_eq!(opencode["timeout_seconds"], 3600);
+    assert_eq!(opencode["timeout_seconds"], 21600);
     assert_eq!(opencode["args"], json!(["acp"]));
     let opencode_command = opencode["command"].as_str().expect("opencode command");
     if opencode["installed"].as_bool().unwrap_or(false) {

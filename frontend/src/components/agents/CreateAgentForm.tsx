@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
 import {
+  DEFAULT_ACP_TIMEOUT_SECONDS,
   formatAcpArgs,
   formatAcpEnv,
   parseAcpArgs,
@@ -65,7 +66,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   acp_command: z.string().optional(),
   acp_args: z.string().optional(),
   acp_env: z.string().optional(),
-  acp_timeout_seconds: z.number().int().min(1).max(21600),
+  acp_timeout_seconds: z.number().int().min(1),
   acp_permission_policy: z.enum(['deny', 'auto_allow']),
   acp_model: z.string().optional(),
   acp_mode: z.string().optional(),
@@ -143,7 +144,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       acp_command: '',
       acp_args: '',
       acp_env: '',
-      acp_timeout_seconds: 3600,
+      acp_timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
       acp_permission_policy: 'deny',
       acp_model: '',
       acp_mode: '',

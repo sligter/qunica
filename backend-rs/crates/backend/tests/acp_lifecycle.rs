@@ -12,7 +12,6 @@ use ag_swarmer_backend::acp::{
     shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpEventKind, AcpImage,
     AcpRunAudit, AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile,
     PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
-    MAX_TIMEOUT_SECONDS,
 };
 use ag_swarmer_backend::db::Db;
 use serde_json::{json, Value};
@@ -196,10 +195,12 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
         err_message(json!({ "command": "agent", "args": ["a\0b"] })),
         "ACP runtime arg is invalid"
     );
-    assert_eq!(
-        err_message(json!({ "command": "agent", "timeout_seconds": MAX_TIMEOUT_SECONDS + 1 })),
-        "ACP runtime timeout_seconds is out of range"
-    );
+    let uncapped_timeout = normalize_acp_runtime(Some(&json!({
+        "command": "agent",
+        "timeout_seconds": u64::MAX,
+    })))
+    .expect("positive timeouts have no policy-level cap");
+    assert_eq!(uncapped_timeout.timeout_seconds, u64::MAX);
     assert_eq!(
         err_message(json!({ "command": "agent", "timeout_seconds": -5 })),
         "ACP runtime timeout_seconds is out of range"

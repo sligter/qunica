@@ -15,9 +15,7 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 /// Default per-turn timeout applied when a config omits `timeout_seconds`.
-pub const DEFAULT_TIMEOUT_SECONDS: u32 = 3600;
-/// Upper bound for `timeout_seconds` (6 hours).
-pub const MAX_TIMEOUT_SECONDS: u32 = 6 * 60 * 60;
+pub const DEFAULT_TIMEOUT_SECONDS: u64 = 21_600;
 
 /// Environment keys an ACP runtime config may never override.
 ///
@@ -111,8 +109,8 @@ pub struct AcpRuntimeConfig {
     /// Extra environment for the child process (NUL-free keys/values; no
     /// blocked keys).
     pub env: BTreeMap<String, String>,
-    /// Per-turn timeout in seconds, in `1..=MAX_TIMEOUT_SECONDS`.
-    pub timeout_seconds: u32,
+    /// Per-turn timeout in seconds. Positive values have no policy-level cap.
+    pub timeout_seconds: u64,
     /// Permission-request handling policy.
     pub permission_policy: PermissionPolicy,
     /// Runtime profile selecting host-auth/session behavior.
@@ -429,28 +427,30 @@ fn normalize_env(value: Option<&Value>) -> Result<BTreeMap<String, String>, AcpC
     }
 }
 
-fn normalize_timeout(value: Option<&Value>) -> Result<u32, AcpConfigError> {
+fn normalize_timeout(value: Option<&Value>) -> Result<u64, AcpConfigError> {
     // Mirror Python's `int(raw.get("timeout_seconds") or DEFAULT)`: a missing
-    // value or a literal 0 falls back to the default; any other value is used
-    // as-is and then range-checked.
-    let seconds: i64 = match value {
-        None | Some(Value::Null) => DEFAULT_TIMEOUT_SECONDS as i64,
+    // value or a literal 0 falls back to the default; any other positive value
+    // is used as-is.
+    let seconds = match value {
+        None | Some(Value::Null) => DEFAULT_TIMEOUT_SECONDS,
         Some(v) => {
             let n = v
-                .as_i64()
-                .or_else(|| v.as_f64().map(|f| f as i64))
+                .as_u64()
+                .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
+                .or_else(|| {
+                    v.as_f64()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .map(|n| n as u64)
+                })
                 .ok_or_else(|| invalid("ACP runtime timeout_seconds is out of range"))?;
             if n == 0 {
-                DEFAULT_TIMEOUT_SECONDS as i64
+                DEFAULT_TIMEOUT_SECONDS
             } else {
                 n
             }
         }
     };
-    if seconds < 1 || seconds > MAX_TIMEOUT_SECONDS as i64 {
-        return Err(invalid("ACP runtime timeout_seconds is out of range"));
-    }
-    Ok(seconds as u32)
+    Ok(seconds)
 }
 
 fn normalize_permission_policy(value: Option<&Value>) -> Result<PermissionPolicy, AcpConfigError> {

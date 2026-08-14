@@ -2594,7 +2594,15 @@ async fn run_agent_turn(
     .await?;
 
     if agent.runtime_kind == "acp" {
-        return run_acp_agent_turn(services, ctx, agent, group, delegated_input).await;
+        return run_acp_agent_turn(
+            services,
+            ctx,
+            agent,
+            group,
+            delegated_input,
+            handoff_depth == 0,
+        )
+        .await;
     }
 
     let (provider_cfg, provider_name) = resolve_provider(&services.pool, agent)
@@ -2943,6 +2951,7 @@ async fn run_acp_agent_turn(
     agent: &Candidate,
     group: &GroupRuntimeConfig,
     delegated_input: Option<&str>,
+    checkpoint_interrupted: bool,
 ) -> Result<AgentRunResult, StepErr> {
     let raw = agent
         .external_runtime_json
@@ -3021,6 +3030,7 @@ async fn run_acp_agent_turn(
 
     let mut content = String::new();
     let mut turn = TurnData::default();
+    let acp_run_id = run.run_id().to_string();
     let usage_record_id = Uuid::new_v4().to_string();
     let usage_thread_id = ctx.thread_id.clone();
     let usage_dimensions = TokenUsageDimensions {
@@ -3047,7 +3057,31 @@ async fn run_acp_agent_turn(
         match event.kind {
             AcpEventKind::Run => {
                 last_was_reasoning = false;
-                ctx.emit(StreamEventKind::AcpAgentRun, event.data).await?;
+                let payload = merge_agent_identity(event.data, agent);
+                let run_id = payload.get("run_id").and_then(json_str);
+                let tool_name = Some(format!(
+                    "External CLI: {}",
+                    payload
+                        .get("adapter")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                ));
+                match payload.get("status").and_then(Value::as_str) {
+                    Some("running") => turn.record_tool_start(
+                        run_id,
+                        tool_name,
+                        Some("started".to_string()),
+                        payload.get("cwd").and_then(json_str),
+                    ),
+                    Some(status) => turn.record_tool_result(
+                        run_id,
+                        tool_name,
+                        Some(status.to_string()),
+                        payload.get("summary").and_then(json_str),
+                    ),
+                    None => {}
+                }
+                ctx.emit(StreamEventKind::AcpAgentRun, payload).await?;
             }
             AcpEventKind::Token => {
                 last_was_reasoning = false;
@@ -3123,12 +3157,21 @@ async fn run_acp_agent_turn(
             return Err(StepErr::Cancelled);
         }
         Ok(Err(error)) => {
+            let summary = error.to_string();
+            turn.record_tool_result(
+                Some(acp_run_id),
+                Some("External CLI: acp".to_string()),
+                Some("failed".to_string()),
+                Some(summary.clone()),
+            );
+            maybe_persist_interrupted_agent(ctx, agent, &content, &turn, checkpoint_interrupted)
+                .await?;
             ctx.emit(
                 StreamEventKind::Error,
                 json!({
                     "agent_id": agent.agent_id,
                     "display_name": agent.display_name,
-                    "message": error.to_string(),
+                    "message": summary,
                 }),
             )
             .await?;

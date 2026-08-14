@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
+import { DEFAULT_ACP_TIMEOUT_SECONDS } from '@/components/agents/acpRuntimeConfig'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type { AcpRuntimePresetListResponse, AcpRuntimePresetRead } from '@/types/api'
@@ -14,7 +15,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp'],
     env: {},
-    timeout_seconds: 3600,
+    timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
     permission_policy: 'deny',
     default_model: null,
     default_mode: 'read-only',
@@ -59,7 +60,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     command: 'npx',
     args: ['@agentclientprotocol/claude-agent-acp'],
     env: {},
-    timeout_seconds: 3600,
+    timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
     permission_policy: 'deny',
     default_model: null,
     default_mode: 'default',
@@ -96,7 +97,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     command: 'npx',
     args: ['-y', 'pi-acp'],
     env: {},
-    timeout_seconds: 3600,
+    timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
     permission_policy: 'deny',
     default_model: null,
     default_mode: null,
@@ -116,7 +117,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     command: 'opencode',
     args: ['acp'],
     env: {},
-    timeout_seconds: 3600,
+    timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
     permission_policy: 'deny',
     default_model: null,
     default_mode: null,
