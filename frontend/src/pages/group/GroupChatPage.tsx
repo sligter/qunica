@@ -13,6 +13,25 @@ import { useGroupThreads } from '@/hooks/useGroupThreads'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
 
+const SELECTED_THREAD_STORAGE_PREFIX = 'ag-swarmer:groups:selected-thread:'
+
+function readSelectedThreadId(groupId: string | undefined): string | undefined {
+  if (!groupId || typeof window === 'undefined') return undefined
+  try {
+    return window.localStorage.getItem(`${SELECTED_THREAD_STORAGE_PREFIX}${groupId}`) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+function persistSelectedThreadId(groupId: string, threadId: string): void {
+  try {
+    window.localStorage.setItem(`${SELECTED_THREAD_STORAGE_PREFIX}${groupId}`, threadId)
+  } catch {
+    // Task selection persistence must not block chat when storage is unavailable.
+  }
+}
+
 export function GroupChatPage() {
   const { t, i18n } = useTranslation(['groups', 'chat'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
@@ -20,7 +39,13 @@ export function GroupChatPage() {
   const group = useGroup(groupId)
   const groupAgents = useGroupAgents(groupId)
   const groupThreads = useGroupThreads(groupId)
-  const [selectedThreadId, setSelectedThreadId] = useState<string>()
+  const [selection, setSelection] = useState(() => ({
+    groupId,
+    threadId: readSelectedThreadId(groupId),
+  }))
+  const selectedThreadId = selection.groupId === groupId
+    ? selection.threadId
+    : readSelectedThreadId(groupId)
 
   useEffect(() => {
     if (!group.data?.name) return
@@ -57,6 +82,10 @@ export function GroupChatPage() {
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId)
     ?? threads.find((thread) => thread.status !== 'archived')
     ?? threads[0]
+  const selectThread = (threadId: string) => {
+    setSelection({ groupId, threadId })
+    persistSelectedThreadId(groupId, threadId)
+  }
   return (
     <ConversationChatView
       key={`groups:${groupId}`}
@@ -77,12 +106,12 @@ export function GroupChatPage() {
           threads={threads}
           selectedThread={selectedThread}
           disabled={disabled}
-          onSelect={setSelectedThreadId}
+          onSelect={selectThread}
           onArchived={(archivedId) => {
             const next = threads.find(
               (thread) => thread.id !== archivedId && thread.status !== 'archived',
             )
-            setSelectedThreadId(next?.id ?? archivedId)
+            selectThread(next?.id ?? archivedId)
           }}
         />
       )}

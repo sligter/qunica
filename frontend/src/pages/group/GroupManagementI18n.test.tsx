@@ -243,11 +243,11 @@ describe('group management i18n', () => {
     mocks.groupThreads = [taskThread]
     mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
-    mocks.createTaskMutateAsync.mockReset().mockImplementation(async (title: string) => ({
-      ...taskThread,
-      id: 'thread-2',
-      title,
-    }))
+    mocks.createTaskMutateAsync.mockReset().mockImplementation(async (title: string) => {
+      const created = { ...taskThread, id: 'thread-2', title }
+      mocks.groupThreads = [created, ...mocks.groupThreads]
+      return created
+    })
     mocks.createTaskReset.mockReset()
     mocks.archiveTaskMutateAsync.mockReset()
     mocks.clearMutateAsync.mockReset()
@@ -255,6 +255,7 @@ describe('group management i18n', () => {
     mocks.closeConversation.mockReset().mockResolvedValue(undefined)
     mocks.toggleDock.mockReset().mockResolvedValue(undefined)
     mocks.registerTerminal.mockReset()
+    window.localStorage.removeItem('ag-swarmer:groups:selected-thread:group-1')
   })
 
   afterEach(async () => {
@@ -331,7 +332,27 @@ describe('group management i18n', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Start new task' }))
     await waitFor(() => {
       expect(mocks.createTaskMutateAsync).toHaveBeenCalledWith('Release checklist')
+      expect(window.localStorage.getItem('ag-swarmer:groups:selected-thread:group-1'))
+        .toBe('thread-2')
     })
+  })
+
+  it('restores the last selected task when the group is reopened', async () => {
+    mocks.groupThreads = [
+      taskThread,
+      { ...taskThread, id: 'thread-2', title: 'Second task' },
+    ]
+    window.localStorage.setItem('ag-swarmer:groups:selected-thread:group-1', 'thread-2')
+
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1']}>
+        <Routes>
+          <Route path="/groups/:groupId" element={<GroupChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Current task' })).toHaveTextContent('Second task')
   })
 
   it('localizes the manage shell and tabs while preserving the group name', async () => {

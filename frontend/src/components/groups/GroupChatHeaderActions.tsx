@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Archive, ListPlus, ListTodo } from 'lucide-react'
+import { Archive, ChevronRight, ListPlus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -72,19 +72,22 @@ export function GroupChatHeaderActions({
   }
 
   return (
-    <div className="flex min-w-0 items-center gap-1">
+    <div className="flex min-w-0 items-center gap-0.5">
+      <ChevronRight
+        className="mx-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/50"
+        aria-hidden="true"
+      />
       <Select
         value={selectedThread?.id}
         onValueChange={onSelect}
         disabled={busy || threads.length === 0}
       >
         <SelectTrigger
-          className="h-8 w-36 border-0 bg-muted/60 px-2 shadow-none sm:w-52 lg:w-64"
+          className="h-8 w-32 border-0 bg-transparent px-2 text-left font-medium shadow-none transition-colors hover:bg-muted/60 data-[state=open]:bg-muted/60 sm:w-48 lg:w-60"
           aria-label={t('tasks.switcher')}
           title={selectedThread ? displayTitle(selectedThread) : undefined}
         >
-          <span className="!flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-            <ListTodo className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="!flex min-w-0 flex-1 items-center overflow-hidden">
             <SelectValue className="truncate" placeholder={t('tasks.none')} />
           </span>
         </SelectTrigger>
