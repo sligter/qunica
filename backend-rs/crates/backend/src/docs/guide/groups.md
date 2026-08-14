@@ -15,7 +15,7 @@ A group needs a name. Binding a workspace is what lets its agents touch files; w
 
 ## Communication modes
 
-`communication_mode` sets the deterministic speaking order.
+`communication_mode` sets the legal speaking route.
 
 - `mesh` — no ordering; the default.
 - `star` — a hub agent goes first.
@@ -24,7 +24,12 @@ A group needs a name. Binding a workspace is what lets its agents touch files; w
 
 ## Scheduling and budgets
 
-Every group and direct chat uses the bounded scheduler. It records each turn and dispatch so the trace shows which agent ran, why it was selected, and what it cost.
+Every group and direct chat uses the same persisted scheduler. It records each turn and dispatch so the trace shows which agent ran, why it was selected, and what it cost.
+
+`scheduler_mode` is independent from the communication mode:
+
+- `bounded` consumes candidates and stops at the configured work limits.
+- `automatic` lets the moderator repeatedly choose a legal speaker or finish the turn. It ignores agent-step, per-agent, hop, moderator-call, and token limits, while retaining failure limits, moderator timeout, cancellation, and supersession.
 
 Older scheduler-off conversations are migrated to a one-pass profile: each selected agent can run once, moderator and agent follow-ups are disabled, and selection follows the deterministic order. Direct chats use the same profile with one candidate.
 
@@ -37,7 +42,7 @@ Budgets that end a turn when exhausted:
 
 `agent_mention_policy` decides what an agent-to-agent mention does: `display_only` just renders it, `bounded_schedule` dispatches a real follow-up.
 
-A **moderator** can be enabled with its own provider and model to pick the next speaker. `turn_timeout_seconds` currently limits moderator calls; it is not an agent execution timeout.
+A **moderator** can be enabled with its own provider and model to pick the next legal speaker. Automatic mode requires it. `turn_timeout_seconds` currently limits moderator calls; it is not an agent execution timeout.
 
 See [the scheduler design](../../../../../../GROUP_SCHEDULER.md) for the runtime and persistence contract.
 

@@ -81,6 +81,7 @@ pub enum TurnReason {
     ServerRestart,
     PersistenceFailed,
     Silence,
+    ModeratorFinished,
 }
 
 impl TurnReason {
@@ -94,6 +95,7 @@ impl TurnReason {
             Self::ServerRestart => "server_restart",
             Self::PersistenceFailed => "persistence_failed",
             Self::Silence => "silence",
+            Self::ModeratorFinished => "moderator_finished",
         }
     }
 }
@@ -111,6 +113,7 @@ impl TryFrom<&str> for TurnReason {
             "server_restart" => Ok(Self::ServerRestart),
             "persistence_failed" => Ok(Self::PersistenceFailed),
             "silence" => Ok(Self::Silence),
+            "moderator_finished" => Ok(Self::ModeratorFinished),
             other => Err(SchedulerModelError::UnknownTurnReason(other.to_owned())),
         }
     }
@@ -281,6 +284,7 @@ mod tests {
             (TurnReason::ServerRestart, "server_restart"),
             (TurnReason::PersistenceFailed, "persistence_failed"),
             (TurnReason::Silence, "silence"),
+            (TurnReason::ModeratorFinished, "moderator_finished"),
         ] {
             assert_eq!(reason.as_str(), persisted);
             assert_eq!(TurnReason::try_from(persisted).unwrap(), reason);

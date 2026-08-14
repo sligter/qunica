@@ -34,6 +34,7 @@ export function parseConversationUpdatedEvent(
 }
 
 export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.object({
+  scheduler_mode: z.enum(['bounded', 'automatic']),
   agent_mention_policy: z.enum(['display_only', 'bounded_schedule']),
   max_agent_steps: z.number().int().min(1).nullable(),
   max_steps_per_agent: z.number().int().min(1),
@@ -93,6 +94,7 @@ const groupTurnTerminationReasonSchema = z.enum([
   'server_restart',
   'persistence_failed',
   'silence',
+  'moderator_finished',
 ])
 
 const groupTurnBudgetUsageSchema = z
@@ -107,6 +109,7 @@ const groupTurnBudgetUsageSchema = z
 
 const groupTurnBudgetLimitsSchema = z
   .object({
+    unbounded: z.boolean().default(false),
     max_agent_steps: z.number().int().positive(),
     max_steps_per_agent: z.number().int().positive(),
     max_hops: z.number().int().nonnegative(),
@@ -179,7 +182,7 @@ const turnCompletedPayloadSchema = z.union([
     .object({
       turn_id: z.string(),
       status: z.literal('completed'),
-      reason: z.null(),
+      reason: z.union([z.null(), z.literal('moderator_finished')]),
       budget: groupTurnTerminalBudgetSchema,
     })
     .strict(),
@@ -217,7 +220,7 @@ const turnCompletedPayloadSchema = z.union([
     .strict(),
 ])
 
-const schedulerEventSchema: z.ZodType<SchedulerStreamUpdate> = z.discriminatedUnion('kind', [
+const schedulerEventSchema = z.discriminatedUnion('kind', [
   schedulerEventBaseSchema.extend({
     kind: z.literal('turn_started'),
     payload: z

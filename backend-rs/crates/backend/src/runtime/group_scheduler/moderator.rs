@@ -9,8 +9,10 @@ use crate::llm::{build_provider, ChatDelta, ChatMessage, ChatRequest, ProviderCo
 pub const MAX_OBJECTIVE_CHARS: usize = 2_000;
 pub const MAX_RECENT_MESSAGES: usize = 4;
 pub const MAX_MESSAGE_CHARS: usize = 1_000;
+pub const MAX_PROGRESS_SUMMARY_CHARS: usize = 4_000;
 
-const SYSTEM_INSTRUCTION: &str = "You are a private group scheduler moderator. Select exactly one candidate agent_id from the provided candidates. Respond with JSON only in the form {\"agent_id\":\"...\"}.";
+const BOUNDED_SYSTEM_INSTRUCTION: &str = "You are a private group scheduler moderator. Select exactly one candidate agent_id from the provided candidates. Respond with JSON only in the form {\"agent_id\":\"...\"}.";
+const AUTOMATIC_SYSTEM_INSTRUCTION: &str = "You are a private autonomous group scheduler moderator. Decide whether the user's objective is complete. Respond with JSON only: {\"action\":\"dispatch\",\"agent_id\":\"...\",\"summary\":\"...\"} to continue, or {\"action\":\"finish\",\"summary\":\"...\"} to finish. Choose only a provided candidate. The summary must concisely preserve completed work, evidence, and remaining work for the next decision.";
 
 #[derive(Debug, Clone)]
 pub struct ModeratorConfig {
@@ -39,11 +41,24 @@ pub struct ModeratorRequest {
     pub recent_messages: Vec<ModeratorMessage>,
     pub candidates: Vec<ModeratorCandidate>,
     pub remaining_steps: u32,
+    pub automatic: bool,
+    pub progress_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeratorSelection {
     pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeratorDecision {
+    Dispatch {
+        selection: ModeratorSelection,
+        summary: Option<String>,
+    },
+    Finish {
+        summary: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +89,7 @@ impl ModeratorFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeratorAttempt {
-    pub result: Result<ModeratorSelection, ModeratorFailure>,
+    pub result: Result<ModeratorDecision, ModeratorFailure>,
     pub provider_called: bool,
     pub total_tokens: u64,
 }
@@ -109,20 +124,21 @@ pub async fn select_with_moderator(
         Err(_) => return failed(ModeratorFailure::Provider, false, 0),
     };
     let request = bounded_request(request);
+    let automatic = request.automatic;
     let candidates = request.candidates.clone();
-    let request = moderator_chat_request(config, &request);
+    let chat_request = moderator_chat_request(config, &request);
 
     let deadline = tokio::time::Instant::now() + config.timeout;
     let provider_called = true;
-    let mut deltas = match tokio::time::timeout_at(deadline, provider.stream(request)).await {
+    let mut deltas = match tokio::time::timeout_at(deadline, provider.stream(chat_request)).await {
         Ok(Ok(deltas)) => deltas,
         Ok(Err(_)) => return failed(ModeratorFailure::Provider, provider_called, 0),
         Err(_) => return failed(ModeratorFailure::Timeout, provider_called, 0),
     };
     match collect_response(&mut deltas, deadline).await {
-        Ok((response, total_tokens)) => match parse_selection(&response, &candidates) {
-            Ok(selection) => ModeratorAttempt {
-                result: Ok(selection),
+        Ok((response, total_tokens)) => match parse_decision(&response, &candidates, automatic) {
+            Ok(decision) => ModeratorAttempt {
+                result: Ok(decision),
                 provider_called,
                 total_tokens,
             },
@@ -167,20 +183,32 @@ async fn resolve_provider(
 }
 
 fn moderator_chat_request(config: &ModeratorConfig, request: &ModeratorRequest) -> ChatRequest {
+    let (instruction, input) = if request.automatic {
+        (
+            AUTOMATIC_SYSTEM_INSTRUCTION,
+            json!({
+                "objective": request.objective,
+                "recent_messages": request.recent_messages,
+                "progress_summary": request.progress_summary,
+                "candidates": request.candidates,
+            }),
+        )
+    } else {
+        (
+            BOUNDED_SYSTEM_INSTRUCTION,
+            json!({
+                "objective": request.objective,
+                "recent_messages": request.recent_messages,
+                "candidates": request.candidates,
+                "remaining_steps": request.remaining_steps,
+            }),
+        )
+    };
     ChatRequest {
         model: config.model.clone(),
         messages: vec![
-            ChatMessage::text("system", SYSTEM_INSTRUCTION),
-            ChatMessage::text(
-                "user",
-                json!({
-                    "objective": request.objective,
-                    "recent_messages": request.recent_messages,
-                    "candidates": request.candidates,
-                    "remaining_steps": request.remaining_steps,
-                })
-                .to_string(),
-            ),
+            ChatMessage::text("system", instruction),
+            ChatMessage::text("user", input.to_string()),
         ],
         temperature: Some(0.0),
         reasoning_passback: false,
@@ -246,6 +274,11 @@ fn bounded_request(request: ModeratorRequest) -> ModeratorRequest {
             })
             .collect(),
         remaining_steps: request.remaining_steps,
+        automatic: request.automatic,
+        progress_summary: request
+            .progress_summary
+            .as_deref()
+            .map(|summary| truncate(summary, MAX_PROGRESS_SUMMARY_CHARS)),
     }
 }
 
@@ -253,10 +286,35 @@ fn truncate(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
-fn parse_selection(
+fn parse_decision(
     response: &str,
     candidates: &[ModeratorCandidate],
-) -> Result<ModeratorSelection, ModeratorFailure> {
+    automatic: bool,
+) -> Result<ModeratorDecision, ModeratorFailure> {
+    if automatic {
+        #[derive(Deserialize)]
+        #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+        enum AutomaticResponse {
+            Dispatch { agent_id: String, summary: String },
+            Finish { summary: String },
+        }
+
+        return match serde_json::from_str(response)
+            .map_err(|_| ModeratorFailure::InvalidResponse)?
+        {
+            AutomaticResponse::Dispatch { agent_id, summary } => {
+                validate_candidate(&agent_id, candidates)?;
+                Ok(ModeratorDecision::Dispatch {
+                    selection: ModeratorSelection { agent_id },
+                    summary: Some(validate_summary(summary)?),
+                })
+            }
+            AutomaticResponse::Finish { summary } => Ok(ModeratorDecision::Finish {
+                summary: validate_summary(summary)?,
+            }),
+        };
+    }
+
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct SelectionResponse {
@@ -265,15 +323,32 @@ fn parse_selection(
 
     let response: SelectionResponse =
         serde_json::from_str(response).map_err(|_| ModeratorFailure::InvalidResponse)?;
-    if candidates
-        .iter()
-        .any(|candidate| candidate.agent_id == response.agent_id)
-    {
-        Ok(ModeratorSelection {
+    validate_candidate(&response.agent_id, candidates)?;
+    Ok(ModeratorDecision::Dispatch {
+        selection: ModeratorSelection {
             agent_id: response.agent_id,
-        })
-    } else {
+        },
+        summary: None,
+    })
+}
+
+fn validate_candidate(
+    agent_id: &str,
+    candidates: &[ModeratorCandidate],
+) -> Result<(), ModeratorFailure> {
+    candidates
+        .iter()
+        .any(|candidate| candidate.agent_id == agent_id)
+        .then_some(())
+        .ok_or(ModeratorFailure::InvalidResponse)
+}
+
+fn validate_summary(summary: String) -> Result<String, ModeratorFailure> {
+    let summary = summary.trim();
+    if summary.is_empty() {
         Err(ModeratorFailure::InvalidResponse)
+    } else {
+        Ok(truncate(summary, MAX_PROGRESS_SUMMARY_CHARS))
     }
 }
 
@@ -288,9 +363,10 @@ fn failed(failure: ModeratorFailure, provider_called: bool, total_tokens: u64) -
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_request, collect_response, moderator_chat_request, parse_selection,
-        resolve_provider, ModeratorCandidate, ModeratorConfig, ModeratorFailure, ModeratorMessage,
-        ModeratorRequest, MAX_MESSAGE_CHARS, MAX_OBJECTIVE_CHARS, MAX_RECENT_MESSAGES,
+        bounded_request, collect_response, moderator_chat_request, parse_decision,
+        resolve_provider, ModeratorCandidate, ModeratorConfig, ModeratorDecision, ModeratorFailure,
+        ModeratorMessage, ModeratorRequest, MAX_MESSAGE_CHARS, MAX_OBJECTIVE_CHARS,
+        MAX_RECENT_MESSAGES,
     };
     use crate::{db::Db, llm::ChatDelta};
     use serde_json::Value;
@@ -303,15 +379,22 @@ mod tests {
             display_name: "Alpha".to_owned(),
             reason: "eligible".to_owned(),
         }];
-        assert_eq!(
-            parse_selection(r#"{"agent_id":"a"}"#, &candidates)
-                .unwrap()
-                .agent_id,
-            "a"
-        );
-        assert!(parse_selection(r#"{"agent_id":"a","reason":"x"}"#, &candidates).is_err());
-        assert!(parse_selection(r#"{"agent_id":7}"#, &candidates).is_err());
-        assert!(parse_selection(r#"{"agent_id":"missing"}"#, &candidates).is_err());
+        assert!(matches!(
+            parse_decision(r#"{"agent_id":"a"}"#, &candidates, false),
+            Ok(ModeratorDecision::Dispatch { selection, summary: None })
+                if selection.agent_id == "a"
+        ));
+        assert!(parse_decision(r#"{"agent_id":"a","reason":"x"}"#, &candidates, false).is_err());
+        assert!(parse_decision(r#"{"agent_id":7}"#, &candidates, false).is_err());
+        assert!(parse_decision(r#"{"agent_id":"missing"}"#, &candidates, false).is_err());
+        assert!(matches!(
+            parse_decision(
+                r#"{"action":"finish","summary":"done"}"#,
+                &candidates,
+                true
+            ),
+            Ok(ModeratorDecision::Finish { summary }) if summary == "done"
+        ));
     }
 
     #[test]
@@ -326,6 +409,8 @@ mod tests {
                 .collect(),
             candidates: Vec::new(),
             remaining_steps: 3,
+            automatic: true,
+            progress_summary: Some("progress".repeat(2_000)),
         };
 
         let bounded = bounded_request(request);
@@ -336,6 +421,7 @@ mod tests {
             bounded.recent_messages[0].content.chars().count(),
             MAX_MESSAGE_CHARS
         );
+        assert_eq!(bounded.progress_summary.unwrap().chars().count(), 4_000);
     }
 
     #[test]
@@ -358,6 +444,8 @@ mod tests {
                 reason: "eligible".to_owned(),
             }],
             remaining_steps: 2,
+            automatic: false,
+            progress_summary: None,
         });
 
         let chat = moderator_chat_request(&config, &request);

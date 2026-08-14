@@ -30,6 +30,7 @@ const group: GroupRead = {
   status: 'active',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  scheduler_mode: 'bounded',
   agent_mention_policy: 'display_only',
   max_agent_steps: null,
   max_steps_per_agent: 3,

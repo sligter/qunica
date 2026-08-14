@@ -102,6 +102,7 @@ const group: GroupRead = {
   status: 'active',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  scheduler_mode: 'bounded',
   agent_mention_policy: 'display_only',
   max_agent_steps: null,
   max_steps_per_agent: 3,
@@ -144,23 +145,23 @@ describe('GroupSchedulerSettingsSection', () => {
   it('localizes scheduler labels and empty provider state', async () => {
     await i18n.changeLanguage('en-US')
     renderSection()
-    expect(screen.getByText('Bounded scheduler')).toBeVisible()
+    expect(screen.getByText(i18n.t('groups:scheduler.title'))).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Agent mention policy' })).toBeVisible()
     expect(screen.getAllByText('No provider')[0]).toBeVisible()
 
     cleanup()
     await i18n.changeLanguage('zh-CN')
     renderSection()
-    expect(screen.getByText('有界调度器')).toBeVisible()
-    expect(screen.getAllByText('无提供商')[0]).toBeVisible()
+    expect(screen.getByText(i18n.t('groups:scheduler.title'))).toBeVisible()
+    expect(screen.getAllByText(i18n.t('groups:scheduler.noProvider'))[0]).toBeVisible()
   })
 
-  it('renders null max_agent_steps as the Auto mode and submits null', async () => {
+  it('renders null max_agent_steps as the automatic budget and submits null', async () => {
     const user = userEvent.setup()
     renderSection()
 
     expect(screen.getByRole('combobox', { name: 'Maximum agent steps mode' })).toHaveTextContent(
-      'Auto',
+      'Automatic budget',
     )
 
     await user.clear(screen.getByRole('spinbutton', { name: 'Steps per agent' }))
@@ -186,6 +187,7 @@ describe('GroupSchedulerSettingsSection', () => {
       expect(mocks.mutateAsync).toHaveBeenCalledTimes(1)
     })
     expect(mocks.mutateAsync).toHaveBeenCalledWith({
+      scheduler_mode: 'bounded',
       agent_mention_policy: 'display_only',
       max_agent_steps: null,
       max_steps_per_agent: 4,
@@ -198,6 +200,32 @@ describe('GroupSchedulerSettingsSection', () => {
       moderator_enabled: false,
       moderator_provider_id: null,
       moderator_model: null,
+    })
+  })
+
+  it('enables automatic scheduling and disables only ignored work limits', async () => {
+    const user = userEvent.setup()
+    renderSection({
+      ...group,
+      moderator_enabled: true,
+      moderator_provider_id: 'provider-1',
+      moderator_model: 'gpt-test',
+    })
+
+    await user.click(screen.getByRole('combobox', { name: 'Scheduler mode' }))
+    await user.click(await screen.findByRole('option', { name: 'Automatic' }))
+
+    expect(screen.getByRole('switch', { name: 'Enable moderator' })).toBeDisabled()
+    expect(screen.getByLabelText('Steps per agent')).toBeDisabled()
+    expect(screen.getByLabelText('Total tokens')).toBeDisabled()
+    expect(screen.getByLabelText('Consecutive failures')).toBeEnabled()
+    expect(screen.getByLabelText('Moderator timeout')).toBeEnabled()
+
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ scheduler_mode: 'automatic', moderator_enabled: true }),
+      )
     })
   })
 

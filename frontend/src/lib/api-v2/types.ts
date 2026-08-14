@@ -55,8 +55,10 @@ export interface ApiErrorEnvelope {
 }
 
 export type AgentMentionPolicy = 'display_only' | 'bounded_schedule'
+export type SchedulerMode = 'bounded' | 'automatic'
 
 export interface GroupSchedulerConfig {
+  scheduler_mode: SchedulerMode
   agent_mention_policy: AgentMentionPolicy
   max_agent_steps: number | null
   max_steps_per_agent: number
@@ -113,6 +115,7 @@ export type GroupTurnTerminationReason =
   | 'server_restart'
   | 'persistence_failed'
   | 'silence'
+  | 'moderator_finished'
 
 export type SchedulerDispatchFailureReason = 'persistence_failed'
 
@@ -125,6 +128,7 @@ export interface GroupTurnBudgetUsage {
 }
 
 export interface GroupTurnBudgetLimits {
+  unbounded: boolean
   max_agent_steps: number
   max_steps_per_agent: number
   max_hops: number
@@ -259,7 +263,7 @@ type TurnBudgetExhaustedPayload =
   | TurnTerminalPayload<'failure_budget_exhausted', 'failure_budget_exhausted'>
 type TurnCompletedPayload =
   | TurnTerminalPayload<'waiting_for_user', 'waiting_for_user'>
-  | TurnTerminalPayload<'completed', null>
+  | TurnTerminalPayload<'completed', null | 'moderator_finished'>
   | TurnTerminalPayload<'silence', 'silence'>
   | TurnTerminalPayload<'failed', 'persistence_failed'>
   | TurnTerminalPayload<'budget_exhausted', 'budget_exhausted'>

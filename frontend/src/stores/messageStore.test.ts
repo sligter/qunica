@@ -75,6 +75,7 @@ describe('messageStore scheduler state', () => {
       update('turn_started', {
         turn_id: 'turn-1',
         budget: {
+          unbounded: false,
           max_agent_steps: 8,
           max_steps_per_agent: 3,
           max_hops: 4,
@@ -91,6 +92,7 @@ describe('messageStore scheduler state', () => {
       { ...update('turn_started', {
         turn_id: 'turn-2',
         budget: {
+          unbounded: false,
           max_agent_steps: 8,
           max_steps_per_agent: 3,
           max_hops: 4,
@@ -138,6 +140,7 @@ describe('messageStore scheduler state', () => {
       update('turn_started', {
         turn_id: 'turn-1',
         budget: {
+          unbounded: false,
           max_agent_steps: 8,
           max_steps_per_agent: 3,
           max_hops: 4,
@@ -237,6 +240,7 @@ describe('messageStore scheduler state', () => {
       update('turn_started', {
         turn_id: 'turn-2',
         budget: {
+          unbounded: false,
           max_agent_steps: 30,
           max_steps_per_agent: 30,
           max_hops: 4,
@@ -274,6 +278,7 @@ describe('messageStore scheduler state', () => {
       update('turn_started', {
         turn_id: 'turn-1',
         budget: {
+          unbounded: false,
           max_agent_steps: 8,
           max_steps_per_agent: 3,
           max_hops: 4,
@@ -318,6 +323,7 @@ describe('messageStore scheduler state', () => {
       update('turn_started', {
         turn_id: 'turn-1',
         budget: {
+          unbounded: false,
           max_agent_steps: 8,
           max_steps_per_agent: 3,
           max_hops: 4,
@@ -350,6 +356,7 @@ describe('messageStore scheduler state', () => {
       update('turn_started', {
         turn_id: 'turn-1',
         budget: {
+          unbounded: false,
           max_agent_steps: 8,
           max_steps_per_agent: 3,
           max_hops: 4,

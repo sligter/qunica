@@ -28,12 +28,18 @@ const NO_SELECTION = '__none__'
 const UNKNOWN_POLICY_PREFIX = '__unknown_policy__:'
 const AUTO_MAX_AGENT_STEPS = 8
 type AgentMentionPolicy = GroupSchedulerConfig['agent_mention_policy']
+type SchedulerMode = GroupSchedulerConfig['scheduler_mode']
 
 const mentionPolicies: AgentMentionPolicy[] = ['display_only', 'bounded_schedule']
+const schedulerModes: SchedulerMode[] = ['bounded', 'automatic']
 const mentionPolicyKeys = {
   display_only: 'scheduler.displayOnly',
   bounded_schedule: 'scheduler.boundedSchedule',
 } as const satisfies Record<AgentMentionPolicy, string>
+const schedulerModeKeys = {
+  bounded: 'scheduler.boundedMode',
+  automatic: 'scheduler.automaticMode',
+} as const satisfies Record<SchedulerMode, string>
 
 function isAgentMentionPolicy(value: string): value is AgentMentionPolicy {
   return mentionPolicies.some((policy) => policy === value)
@@ -41,6 +47,7 @@ function isAgentMentionPolicy(value: string): value is AgentMentionPolicy {
 
 const schedulerFormSchema = z
   .object({
+    scheduler_mode: z.enum(['bounded', 'automatic']),
     agent_mention_policy: z.string(),
     max_agent_steps_mode: z.enum(['auto', 'custom']),
     max_agent_steps_custom: z.number().int().min(1, 'minOne'),
@@ -86,6 +93,7 @@ interface GroupSchedulerSettingsSectionProps {
 
 function groupToFormValues(group: GroupSchedulerConfig): SchedulerFormValues {
   return {
+    scheduler_mode: group.scheduler_mode,
     agent_mention_policy: group.agent_mention_policy,
     max_agent_steps_mode: group.max_agent_steps === null ? 'auto' : 'custom',
     max_agent_steps_custom: group.max_agent_steps ?? AUTO_MAX_AGENT_STEPS,
@@ -144,6 +152,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const [topologyError, setTopologyError] = useState(false)
 
   const moderatorEnabled = form.watch('moderator_enabled')
+  const schedulerMode = form.watch('scheduler_mode')
   const selectedProviderId = form.watch('moderator_provider_id')
   const selectedModel = form.watch('moderator_model')
   const maxAgentStepsMode = form.watch('max_agent_steps_mode')
@@ -213,6 +222,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   }, [form, group])
 
   const schedulerControlsDisabled = update.isPending
+  const boundedControlsDisabled = update.isPending || schedulerMode === 'automatic'
   const moderatorControlsDisabled = update.isPending || !moderatorEnabled
 
   const onSubmit = form.handleSubmit(async (values) => {
@@ -227,6 +237,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
     }
 
     const payload: GroupUpdate = {
+      scheduler_mode: values.scheduler_mode,
       agent_mention_policy:
         values.agent_mention_policy as GroupUpdate['agent_mention_policy'],
       max_agent_steps:
@@ -286,6 +297,33 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
         className="divide-y divide-border"
       >
         <SettingsRow
+          label={t('scheduler.mode')}
+          description={t('scheduler.modeDescription')}
+        >
+          <Select
+            value={schedulerMode}
+            onValueChange={(value) => {
+              if (schedulerModes.includes(value as SchedulerMode)) {
+                updateValue('scheduler_mode', value as SchedulerMode)
+                if (value === 'automatic') updateValue('moderator_enabled', true)
+              }
+            }}
+            disabled={schedulerControlsDisabled}
+          >
+            <SelectTrigger className="w-52" aria-label={t('scheduler.mode')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {schedulerModes.map((mode) => (
+                <SelectItem key={mode} value={mode}>
+                  {t(schedulerModeKeys[mode])}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+
+        <SettingsRow
           label={t('scheduler.mentionPolicy')}
           description={t('scheduler.mentionPolicyDescription')}
         >
@@ -333,7 +371,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
                   updateValue('max_agent_steps_mode', value)
                 }
               }}
-              disabled={schedulerControlsDisabled}
+              disabled={boundedControlsDisabled}
             >
               <SelectTrigger className="w-full" aria-label={t('scheduler.maximumStepsMode')}>
                 <SelectValue />
@@ -354,7 +392,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
                 min={1}
                 step={1}
                 className="w-full"
-                disabled={schedulerControlsDisabled || maxAgentStepsMode !== 'custom'}
+                disabled={boundedControlsDisabled || maxAgentStepsMode !== 'custom'}
                 {...form.register('max_agent_steps_custom', numericRegistration())}
               />
               <FieldError message={form.formState.errors.max_agent_steps_custom?.message} />
@@ -374,7 +412,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={1}
               step={1}
               className="w-24"
-              disabled={schedulerControlsDisabled}
+              disabled={boundedControlsDisabled}
               {...form.register('max_steps_per_agent', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_steps_per_agent?.message} />
@@ -389,7 +427,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={0}
               step={1}
               className="w-24"
-              disabled={schedulerControlsDisabled}
+              disabled={boundedControlsDisabled}
               {...form.register('max_scheduler_hops', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_scheduler_hops?.message} />
@@ -404,7 +442,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={0}
               step={1}
               className="w-24"
-              disabled={schedulerControlsDisabled}
+              disabled={boundedControlsDisabled}
               {...form.register('max_moderator_calls', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_moderator_calls?.message} />
@@ -449,7 +487,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={1}
               step={1}
               className="w-24"
-              disabled={schedulerControlsDisabled}
+              disabled={boundedControlsDisabled}
               {...form.register('max_total_tokens', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_total_tokens?.message} />
@@ -476,7 +514,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
           <Switch
             checked={moderatorEnabled}
             onCheckedChange={(value) => updateValue('moderator_enabled', value)}
-            disabled={schedulerControlsDisabled}
+            disabled={schedulerControlsDisabled || schedulerMode === 'automatic'}
             aria-label={t('scheduler.enableModerator')}
           />
         </SettingsRow>

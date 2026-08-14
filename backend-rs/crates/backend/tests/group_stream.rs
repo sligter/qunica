@@ -956,6 +956,21 @@ fn moderator_body(agent_id: &str, total_tokens: i64) -> String {
     )
 }
 
+fn automatic_moderator_body(decision: Value, total_tokens: i64) -> String {
+    format!(
+        "data: {}\ndata: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": decision.to_string()}}]}),
+        json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": total_tokens,
+                "completion_tokens": 0,
+                "total_tokens": total_tokens,
+            }
+        })
+    )
+}
+
 fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
     let tool_calls: Vec<Value> = calls
         .into_iter()
@@ -4020,6 +4035,115 @@ async fn moderator_selection_persists_reason_and_usage() {
             && event["payload"]["agent_id"] == bob
             && event["payload"]["content"] == "selected agent response"
     }));
+}
+
+#[tokio::test]
+async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finishes() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "automatic-scheduler@example.com").await;
+    let owner = owner_id(&state, "automatic-scheduler@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
+    let group = create_group(
+        &app,
+        &token,
+        &workspace,
+        json!({
+            "free_speech": true,
+            "communication_mode": "ring",
+            "scheduler_mode": "automatic",
+            "max_agent_steps": 1,
+            "max_steps_per_agent": 1,
+            "max_scheduler_hops": 0,
+            "max_moderator_calls": 1,
+            "max_total_tokens": 1,
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "automatic-moderator",
+        }),
+    )
+    .await;
+    let agent_provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![text_body("first result"), text_body("second result")]).await,
+    )
+    .await;
+    let first = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "First",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let second = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Second",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    set_agent_topology(&state, &group, &first, None, Some(1)).await;
+    set_agent_topology(&state, &group, &second, None, Some(2)).await;
+    let (moderator_url, moderator_requests) = recording_fake_provider_sequence(vec![
+        automatic_moderator_body(
+            json!({"action": "dispatch", "agent_id": first, "summary": "first assigned"}),
+            2,
+        ),
+        automatic_moderator_body(
+            json!({"action": "dispatch", "agent_id": second, "summary": "first done"}),
+            2,
+        ),
+        automatic_moderator_body(json!({"action": "finish", "summary": "all done"}), 2),
+    ])
+    .await;
+    update_provider_base_url(&state, &moderator_provider, &moderator_url).await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "finish the task"}),
+    )
+    .await;
+
+    assert_eq!(speaker_order(&state, &group).await, ["First", "Second"]);
+    let turn: (String, Option<String>, String, i64, i64, i64) = sqlx::query_as(
+        "SELECT status, termination_reason, scheduler_strategy, agent_steps, moderator_calls, total_tokens \
+         FROM group_turns WHERE group_id = ?",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        turn,
+        (
+            "completed".to_owned(),
+            Some("moderator_finished".to_owned()),
+            "automatic".to_owned(),
+            2,
+            3,
+            6,
+        )
+    );
+    assert!(events.iter().any(|event| {
+        event["kind"] == "turn_started" && event["payload"]["budget"]["unbounded"] == true
+    }));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "turn_completed"
+            && event["payload"]["reason"] == "moderator_finished"
+    }));
+
+    let requests = moderator_requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    let second_input: Value =
+        serde_json::from_str(requests[1]["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(second_input["progress_summary"], "first assigned");
 }
 
 #[tokio::test]
@@ -7405,11 +7529,21 @@ async fn star_mode_lets_the_hub_speak_first_even_when_it_joined_last() {
     let token = register_and_login(&app, "topology-star-order@example.com").await;
     let owner = owner_id(&state, "topology-star-order@example.com").await;
     let workspace = create_workspace(&app, &token).await;
+    let (moderator_url, moderator_requests) =
+        recording_fake_provider_sequence(vec![moderator_body("not-eligible", 0)]).await;
+    let moderator_provider = seed_provider(&state, &owner, &moderator_url).await;
     let group = create_group(
         &app,
         &token,
         &workspace,
-        json!({"free_speech": true, "scheduler_enabled": true, "communication_mode": "star"}),
+        json!({
+            "free_speech": true,
+            "scheduler_enabled": true,
+            "communication_mode": "star",
+            "moderator_enabled": true,
+            "moderator_provider_id": moderator_provider,
+            "moderator_model": "moderator-model"
+        }),
     )
     .await;
     let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
@@ -7443,6 +7577,7 @@ async fn star_mode_lets_the_hub_speak_first_even_when_it_joined_last() {
 
     assert_eq!(kinds(&events).last().unwrap(), "done");
     assert_eq!(speaker_order(&state, &group).await, ["Hub", "Spoke"]);
+    assert!(moderator_requests.lock().await.is_empty());
 }
 
 #[tokio::test]

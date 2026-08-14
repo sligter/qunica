@@ -35,7 +35,7 @@ use crate::tools::{resolve_workspace_path, ToolError};
 const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, \
      free_speech, proactive_mode, \
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
-     agent_mention_policy, max_agent_steps, max_steps_per_agent, \
+     scheduler_mode, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
      max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
      max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
      moderator_provider_id, moderator_model, \
@@ -120,6 +120,8 @@ pub struct CreateRequest {
     #[serde(default)]
     communication_mode: Option<String>,
     #[serde(default)]
+    scheduler_mode: Option<String>,
+    #[serde(default)]
     agent_mention_policy: Option<String>,
     #[serde(default)]
     max_agent_steps: Option<i64>,
@@ -171,6 +173,8 @@ pub struct UpdateRequest {
     agent_free_mention_max_dispatches: Option<i64>,
     #[serde(default)]
     communication_mode: Option<String>,
+    #[serde(default)]
+    scheduler_mode: Option<String>,
     #[serde(default)]
     agent_mention_policy: Option<String>,
     #[serde(default, deserialize_with = "double_option")]
@@ -395,6 +399,7 @@ pub struct GroupResponse {
     allow_agent_free_mention: bool,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
+    scheduler_mode: String,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -522,6 +527,7 @@ struct GroupRow {
     allow_agent_free_mention: i64,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
+    scheduler_mode: String,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -544,6 +550,7 @@ struct GroupRow {
 
 #[derive(Debug)]
 struct SchedulerConfigFields {
+    scheduler_mode: String,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -565,6 +572,11 @@ impl SchedulerConfigFields {
         body: &CreateRequest,
     ) -> Result<Self, ApiError> {
         Self {
+            scheduler_mode: body
+                .scheduler_mode
+                .as_deref()
+                .unwrap_or("bounded")
+                .to_string(),
             agent_mention_policy: body
                 .agent_mention_policy
                 .as_deref()
@@ -593,6 +605,10 @@ impl SchedulerConfigFields {
         existing: &GroupRow,
     ) -> Result<Self, ApiError> {
         Self {
+            scheduler_mode: body
+                .scheduler_mode
+                .clone()
+                .unwrap_or_else(|| existing.scheduler_mode.clone()),
             agent_mention_policy: body
                 .agent_mention_policy
                 .clone()
@@ -635,6 +651,7 @@ impl SchedulerConfigFields {
     }
 
     async fn validate(mut self, pool: &SqlitePool, owner_id: &str) -> Result<Self, ApiError> {
+        self.scheduler_mode = validate_scheduler_mode(&self.scheduler_mode)?;
         self.agent_mention_policy = validate_agent_mention_policy(&self.agent_mention_policy)?;
         if self.max_agent_steps.is_some_and(|value| value < 1) {
             return Err(ApiError::invalid_input("max_agent_steps must be >= 1"));
@@ -677,6 +694,11 @@ impl SchedulerConfigFields {
             }
             self.moderator_provider_id =
                 Some(validate_moderator_provider(pool, provider_id, owner_id).await?);
+        }
+        if self.scheduler_mode == "automatic" && self.moderator_enabled == 0 {
+            return Err(ApiError::invalid_input(
+                "automatic scheduler mode requires the moderator",
+            ));
         }
 
         Ok(self)
@@ -778,6 +800,7 @@ impl From<GroupRow> for GroupResponse {
             allow_agent_free_mention: row.allow_agent_free_mention != 0,
             agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches,
             communication_mode: row.communication_mode,
+            scheduler_mode: row.scheduler_mode,
             agent_mention_policy: row.agent_mention_policy,
             max_agent_steps: row.max_agent_steps,
             max_steps_per_agent: row.max_steps_per_agent,
@@ -942,12 +965,12 @@ pub(crate) async fn create_inner(
          (id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, free_speech, \
           proactive_mode, \
           allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
-          scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
+          scheduler_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
           max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
           max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
           moderator_provider_id, moderator_model, \
           status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
                  'active', ?, ?)",
     )
     .bind(&id)
@@ -962,6 +985,7 @@ pub(crate) async fn create_inner(
     .bind(allow_agent_free_mention as i64)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
+    .bind(&scheduler.scheduler_mode)
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
     .bind(scheduler.max_steps_per_agent)
@@ -1144,7 +1168,7 @@ pub(crate) async fn update_inner(
          name = ?, description = ?, announcement = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
          proactive_mode = ?, \
          allow_agent_free_mention = ?, agent_free_mention_max_dispatches = ?, \
-         communication_mode = ?, agent_mention_policy = ?, \
+         communication_mode = ?, scheduler_mode = ?, agent_mention_policy = ?, \
          max_agent_steps = ?, max_steps_per_agent = ?, max_scheduler_hops = ?, \
          max_moderator_calls = ?, max_consecutive_failures = ?, max_total_failures = ?, \
          max_total_tokens = ?, turn_timeout_seconds = ?, moderator_enabled = ?, \
@@ -1161,6 +1185,7 @@ pub(crate) async fn update_inner(
     .bind(allow_agent_free_mention)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
+    .bind(&scheduler.scheduler_mode)
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
     .bind(scheduler.max_steps_per_agent)
@@ -4751,6 +4776,16 @@ fn validate_agent_mention_policy(raw: &str) -> Result<String, ApiError> {
         "bounded_schedule" => Ok("bounded_schedule".to_string()),
         _ => Err(ApiError::invalid_input(
             "agent_mention_policy must be display_only or bounded_schedule",
+        )),
+    }
+}
+
+fn validate_scheduler_mode(raw: &str) -> Result<String, ApiError> {
+    match raw.trim() {
+        "bounded" => Ok("bounded".to_string()),
+        "automatic" => Ok("automatic".to_string()),
+        _ => Err(ApiError::invalid_input(
+            "scheduler_mode must be bounded or automatic",
         )),
     }
 }

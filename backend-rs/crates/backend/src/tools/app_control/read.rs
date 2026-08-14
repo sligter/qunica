@@ -278,7 +278,7 @@ fn detail_columns(kind: TargetKind) -> &'static str {
         }
         TargetKind::Group => {
             "g.id, g.name, g.description, g.announcement, g.workspace_id, g.free_speech, \
-             g.proactive_mode, g.communication_mode, g.agent_mention_policy, \
+             g.proactive_mode, g.communication_mode, g.scheduler_mode, g.agent_mention_policy, \
              g.max_total_tokens, g.turn_timeout_seconds, g.created_at"
         }
         TargetKind::Chat => "g.id, g.name, g.direct_agent_id, g.created_at, g.updated_at",

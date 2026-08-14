@@ -5562,6 +5562,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     assert!(group.get("scheduler_enabled").is_none());
+    assert_eq!(group["scheduler_mode"], "bounded");
     assert_eq!(group["agent_mention_policy"], "display_only");
     assert_eq!(group["max_agent_steps"], Value::Null);
     assert_eq!(group["max_steps_per_agent"], 3);
@@ -5586,6 +5587,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
             &format!("/api/v2/groups/{group_id}"),
             &token,
             json!({
+                "scheduler_mode": "automatic",
                 "agent_mention_policy": "bounded_schedule",
                 "max_agent_steps": 18,
                 "max_steps_per_agent": 4,
@@ -5604,6 +5606,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     .await;
     assert_eq!(status, StatusCode::OK, "body: {updated:?}");
     assert!(updated.get("scheduler_enabled").is_none());
+    assert_eq!(updated["scheduler_mode"], "automatic");
     assert_eq!(updated["agent_mention_policy"], "bounded_schedule");
     assert_eq!(updated["max_agent_steps"], 18);
     assert_eq!(updated["max_steps_per_agent"], 4);
@@ -5623,6 +5626,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["scheduler_mode"], "automatic");
     assert_eq!(fetched["max_agent_steps"], 18);
     assert_eq!(fetched["max_total_tokens"], 240_000);
     assert_eq!(fetched["moderator_provider_id"], provider);
@@ -5634,6 +5638,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
             &format!("/api/v2/groups/{group_id}"),
             &token,
             json!({
+                "scheduler_mode": "bounded",
                 "agent_mention_policy": "display_only",
                 "max_agent_steps": Value::Null,
                 "moderator_enabled": false,
@@ -5681,6 +5686,8 @@ async fn group_scheduler_rejects_invalid_budget_and_moderator_provider() {
         json!({"turn_timeout_seconds": 0}),
         json!({"turn_timeout_seconds": 3601}),
         json!({"agent_mention_policy": "unbounded"}),
+        json!({"scheduler_mode": "automatic"}),
+        json!({"scheduler_mode": "endless"}),
     ] {
         let (status, body) = send(
             &app,

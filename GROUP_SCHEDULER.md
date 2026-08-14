@@ -1,22 +1,29 @@
 # Unified conversation scheduler
 
-Group and direct conversations use one bounded Rust scheduler. Each user message creates a persisted turn, and every agent execution is a dispatch under that turn. There is no separate legacy runtime path.
+Group and direct conversations use one Rust scheduler. Each user message creates a persisted turn, and every agent execution is a dispatch under that turn. There is no separate legacy runtime path.
+
+`scheduler_mode` controls turn lifetime independently from the group's communication topology:
+
+- `bounded` consumes the eligible candidates and applies the configured work budgets.
+- `automatic` lets the moderator repeatedly dispatch legal candidates or finish the turn. Agent-step, per-agent, hop, moderator-call, and token limits do not stop the turn; failure fuses, moderator timeout, user cancellation, and supersession remain active.
+
+`mesh`, `star`, `hierarchical`, and `ring` only define the legal routing frontier. In particular, a moderator cannot bypass the hub, leader, or next ring position.
 
 ## Routing
 
-The conversation rules first establish eligible agents: explicit user mentions take priority; otherwise `free_speech` or `proactive_mode` may include every eligible member. The scheduler chooses work in this order:
+The conversation rules first establish eligible agents: explicit user mentions take priority; otherwise `free_speech` or `proactive_mode` may include every eligible member. The topology then establishes the current legal frontier. The scheduler chooses work in this order:
 
 1. User mentions.
 2. Agent mentions when `agent_mention_policy` is `bounded_schedule`.
-3. The moderator when enabled and at least two candidates remain.
+3. The moderator when enabled: bounded mode asks it to choose when at least two candidates remain; automatic mode asks it to dispatch or finish even with one candidate.
 4. The deterministic topology and `speaking_order` order.
 5. Natural completion.
 
-The moderator can only choose among already eligible agents. A moderator failure falls back to deterministic order and cannot decide whether the turn continues.
+The moderator can only choose among agents in the legal frontier. A moderator failure falls back to deterministic order and is counted by the failure fuse in automatic mode.
 
 ## Budget profiles
 
-The general budget limits total agent steps, steps per agent, handoff hops, moderator calls, consecutive and total failures, and total tokens.
+The bounded mode limits total agent steps, steps per agent, handoff hops, moderator calls, consecutive and total failures, and total tokens. Automatic mode ignores the work and cost limits but still enforces consecutive and total failure limits.
 
 The former sequential fan-out behavior is the following degenerate profile:
 
@@ -30,7 +37,7 @@ agent_mention_policy = display_only
 
 Migration applies this profile to rows formerly stored with `scheduler_enabled = 0`. The physical column remains for SQLite upgrade compatibility, but runtime and API code no longer reads or exposes the switch. Direct chats use the same profile with one candidate.
 
-When `max_agent_steps` is automatic, a one-pass profile resolves it to the selected candidate count rather than the normal 8–24 step heuristic, so every selected candidate remains reachable even in large groups.
+When bounded mode's `max_agent_steps` uses the automatic budget (`null`), a one-pass profile resolves it to the selected candidate count rather than the normal 8–24 step heuristic, so every selected candidate remains reachable even in large groups. This budget setting is distinct from `scheduler_mode = automatic`.
 
 Exhausting the candidate list is a natural completion. Budget terminal states are reserved for remaining work blocked by a limit, or for token and failure limits.
 

@@ -17,6 +17,7 @@ const budgetUsage = {
 }
 
 const budgetLimits = {
+  unbounded: false,
   max_agent_steps: 8,
   max_steps_per_agent: 3,
   max_hops: 5,
@@ -165,7 +166,7 @@ describe('parseSchedulerStreamEvent', () => {
       {
         turn_id: 'turn-1',
         status: 'completed',
-        reason: null,
+        reason: 'moderator_finished',
         budget: { ...budgetUsage, limits: budgetLimits },
       },
     ],

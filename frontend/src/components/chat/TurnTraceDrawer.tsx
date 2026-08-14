@@ -44,6 +44,7 @@ const terminationReasonKeys = {
   server_restart: 'trace.terminationReasons.server_restart',
   persistence_failed: 'trace.terminationReasons.persistence_failed',
   silence: 'trace.terminationReasons.silence',
+  moderator_finished: 'trace.terminationReasons.moderator_finished',
 } as const satisfies Record<GroupTurnTerminationReason, string>
 
 function isKnownTerminationReason(value: string): value is GroupTurnTerminationReason {
