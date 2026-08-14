@@ -14,6 +14,7 @@ const terminalMocks = vi.hoisted(() => ({
 }))
 
 const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
+const messageListMocks = vi.hoisted(() => ({ render: vi.fn() }))
 const workspacePanelMocks = vi.hoisted(() => ({ group: vi.fn() }))
 const maintenanceMocks = vi.hoisted(() => ({
   clear: vi.fn(),
@@ -24,7 +25,7 @@ const messageStoreMocks = vi.hoisted(() => ({
   clearWarnings: vi.fn(),
   activeResumesByMessageId: {} as Record<
     string,
-    { group_id: string; cancel: () => Promise<void> }
+    { state_id: string; cancel: () => Promise<void> }
   >,
 }))
 
@@ -62,7 +63,12 @@ vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
     return <div>workspace panel</div>
   },
 }))
-vi.mock('@/components/chat/MessageList', () => ({ MessageList: () => <div>message list</div> }))
+vi.mock('@/components/chat/MessageList', () => ({
+  MessageList: (props: { stateId?: string }) => {
+    messageListMocks.render(props)
+    return <div>message list</div>
+  },
+}))
 vi.mock('@/components/chat/WorkspaceEditorStage', () => ({
   WorkspaceEditorStage: ({ children }: { children: React.ReactNode }) => children,
 }))
@@ -162,6 +168,7 @@ describe('ConversationChatView', () => {
     terminalMocks.toggleDock.mockReset().mockResolvedValue(undefined)
     terminalMocks.isDockOpen = false
     composerMocks.render.mockReset()
+    messageListMocks.render.mockReset()
     workspacePanelMocks.group.mockReset()
     maintenanceMocks.clear.mockReset().mockResolvedValue(undefined)
     maintenanceMocks.reset.mockReset().mockResolvedValue(undefined)
@@ -211,12 +218,18 @@ describe('ConversationChatView', () => {
     expect(screen.getByRole('button', { name: 'Start new task' })).toBeVisible()
   })
 
-  it('drops group-local stream state when switching tasks', () => {
+  it('switches task-local message state without clearing the background task', () => {
     const view = renderConversation({ scope: 'groups', threadId: 'thread-1' })
+    expect(messageListMocks.render).toHaveBeenLastCalledWith(
+      expect.objectContaining({ stateId: 'thread-1' }),
+    )
 
     view.rerender(conversationElement({ scope: 'groups', threadId: 'thread-2' }))
 
-    expect(messageStoreMocks.clearGroupMessages).toHaveBeenCalledWith('chat-1')
+    expect(messageListMocks.render).toHaveBeenLastCalledWith(
+      expect.objectContaining({ stateId: 'thread-2' }),
+    )
+    expect(messageStoreMocks.clearGroupMessages).not.toHaveBeenCalled()
   })
 
   it('confirms private-chat context reset and message clearing', async () => {
@@ -280,7 +293,7 @@ describe('ConversationChatView', () => {
   it('shows streaming controls and stops an active resumed message', () => {
     const cancelResume = vi.fn().mockResolvedValue(undefined)
     messageStoreMocks.activeResumesByMessageId = {
-      'message-1': { group_id: 'chat-1', cancel: cancelResume },
+      'message-1': { state_id: 'chat-1', cancel: cancelResume },
     }
     renderConversation()
 

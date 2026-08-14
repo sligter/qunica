@@ -25,6 +25,7 @@ interface MessageActionsProps {
   senderName: string
   timeLabel: string
   groupId: string
+  threadId?: string | null
   scope?: ConversationScope
 }
 
@@ -119,6 +120,7 @@ interface DeleteMessageConfirmProps {
   onOpenChange: (open: boolean) => void
   messageId: string
   groupId: string
+  threadId?: string | null
   scope: ConversationScope
 }
 
@@ -131,10 +133,11 @@ function DeleteMessageConfirm({
   onOpenChange,
   messageId,
   groupId,
+  threadId,
   scope,
 }: DeleteMessageConfirmProps) {
   const { t } = useTranslation(['chat', 'common'])
-  const deleteMessage = useDeleteConversationMessage(scope, groupId)
+  const deleteMessage = useDeleteConversationMessage(scope, groupId, threadId)
 
   return (
     <ConfirmDialog
@@ -167,6 +170,7 @@ export function MessageActions({
   senderName,
   timeLabel,
   groupId,
+  threadId,
   scope = 'groups',
 }: MessageActionsProps) {
   const { t } = useTranslation(['chat', 'common'])
@@ -230,6 +234,7 @@ export function MessageActions({
           onOpenChange={setDeleteOpen}
           messageId={messageId}
           groupId={groupId}
+          threadId={threadId}
           scope={scope}
         />
       ) : null}

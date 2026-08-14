@@ -130,7 +130,7 @@ describe('useResumeStream scheduler events', () => {
     mocks.fetchJson.mockReset()
     mocks.fetchJson.mockResolvedValue(traceResponse())
     useMessageStore.setState(initialMessages, true)
-    useMessageStore.getState().setHistory('group-1', [interruptedMessage])
+    useMessageStore.getState().setHistory('thread-1', [interruptedMessage])
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
@@ -172,7 +172,7 @@ describe('useResumeStream scheduler events', () => {
       kind: 'token',
       payload: { delta: ' more' },
     })
-    expect(useMessageStore.getState().byGroup['group-1'][0].content).toBe('partial more')
+    expect(useMessageStore.getState().byGroup['thread-1'][0].content).toBe('partial more')
     emit(stream.handlers, {
       stream_id: 'stream-1',
       seq: 4,
@@ -200,13 +200,13 @@ describe('useResumeStream scheduler events', () => {
     })
 
     const state = useMessageStore.getState()
-    expect(state.byGroup['group-1'][0]).toMatchObject({
+    expect(state.byGroup['thread-1'][0]).toMatchObject({
       content: 'final',
       turn_id: 'turn-1',
       dispatch_id: 'dispatch-1',
       reply_to_message_id: 'trigger-1',
     })
-    expect(state.streamRunsByGroup['group-1']['stream-1']).toMatchObject({
+    expect(state.streamRunsByGroup['thread-1']['stream-1']).toMatchObject({
       turn_id: 'turn-1',
       scheduler_status: 'completed',
       criticalSummaries: [expect.objectContaining({ kind: 'handoff' })],
@@ -247,7 +247,7 @@ describe('useResumeStream scheduler events', () => {
       kind: 'token',
       payload: { delta: ' continued' },
     })
-    expect(useMessageStore.getState().byGroup['group-1'][0].content).toBe(
+    expect(useMessageStore.getState().byGroup['thread-1'][0].content).toBe(
       'partial continued',
     )
     emit(stream.handlers, {
@@ -281,7 +281,7 @@ describe('useResumeStream scheduler events', () => {
     })
 
     // Reloading while an agent waits must not lose what it asked.
-    const run = useMessageStore.getState().streamRunsByGroup['group-1']?.['stream-1']
+    const run = useMessageStore.getState().streamRunsByGroup['thread-1']?.['stream-1']
     const notice = run?.events.find((event) => event.type === 'waiting_for_user')
     expect(notice).toMatchObject({
       input_request: { question: 'Shall I fix the Tavily key?' },
@@ -336,7 +336,7 @@ describe('useResumeStream scheduler events', () => {
       payload: { message_id: 'message-1', agent_id: 'agent-1', content: 'stale final' },
     })
 
-    expect(useMessageStore.getState().byGroup['group-1'][0].content).toBe('partial')
+    expect(useMessageStore.getState().byGroup['thread-1'][0].content).toBe('partial')
   })
 
   it('keeps waiting_for_user status when resume ends with scheduler done', () => {
@@ -370,7 +370,7 @@ describe('useResumeStream scheduler events', () => {
       payload: { turn_id: 'turn-1' },
     })
 
-    const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    const run = useMessageStore.getState().streamRunsByGroup['thread-1']['stream-1']
     expect(run).toMatchObject({
       status: 'completed',
       scheduler_status: 'waiting_for_user',
@@ -385,7 +385,7 @@ describe('useResumeStream scheduler events', () => {
   })
 
   it('maps a resumed scheduler run back to the persisted trigger user message', () => {
-    useMessageStore.getState().setHistory('group-1', [triggerMessage, interruptedMessage])
+    useMessageStore.getState().setHistory('thread-1', [triggerMessage, interruptedMessage])
     const queryClient = new QueryClient()
     const hook = renderHook(
       () => useResumeStream('group-1', 'thread-1', 'message-1'),
@@ -420,22 +420,22 @@ describe('useResumeStream scheduler events', () => {
     })
 
     const state = useMessageStore.getState()
-    expect(state.streamRunIdByUserMessageIdByGroup['group-1']['trigger-1']).toBe(
+    expect(state.streamRunIdByUserMessageIdByGroup['thread-1']['trigger-1']).toBe(
       'stream-resumed',
     )
-    expect(state.streamRunsByGroup['group-1']['stream-resumed']).toMatchObject({
+    expect(state.streamRunsByGroup['thread-1']['stream-resumed']).toMatchObject({
       user_message_id: 'trigger-1',
       turn_id: 'turn-1',
       scheduler_status: 'completed',
     })
-    expect(state.byGroup['group-1'].map((message) => message.id)).toEqual([
+    expect(state.byGroup['thread-1'].map((message) => message.id)).toEqual([
       'trigger-1',
       'message-1',
     ])
   })
 
   it('registers a legacy resume so shared controls cancel the server and stream', async () => {
-    useMessageStore.getState().setHistory('group-1', [
+    useMessageStore.getState().setHistory('thread-1', [
       { ...interruptedMessage, turn_id: null, dispatch_id: null },
     ])
     const queryClient = new QueryClient()
@@ -454,7 +454,7 @@ describe('useResumeStream scheduler events', () => {
     })
 
     const registered = useMessageStore.getState().activeResumesByMessageId['message-1']
-    expect(registered.group_id).toBe('group-1')
+    expect(registered.state_id).toBe('thread-1')
     await act(async () => registered.cancel())
 
     expect(mocks.fetchJson).toHaveBeenCalledWith('/threads/thread-1/cancel', {
@@ -468,7 +468,7 @@ describe('useResumeStream scheduler events', () => {
   })
 
   it('reconciles waiting_for_user to the parsed cancel response before aborting', async () => {
-    useMessageStore.getState().setHistory('group-1', [triggerMessage, interruptedMessage])
+    useMessageStore.getState().setHistory('thread-1', [triggerMessage, interruptedMessage])
     const queryClient = new QueryClient()
     const hook = renderHook(
       () => useResumeStream('group-1', 'thread-1', 'message-1'),
@@ -499,7 +499,7 @@ describe('useResumeStream scheduler events', () => {
     })
     expect(stream.abort).toHaveBeenCalledTimes(1)
     expect(
-      useMessageStore.getState().streamRunsByGroup['group-1']['stream-resumed'],
+      useMessageStore.getState().streamRunsByGroup['thread-1']['stream-resumed'],
     ).toMatchObject({
       status: 'cancelled',
       scheduler_status: 'cancelled',

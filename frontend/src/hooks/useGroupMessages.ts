@@ -20,6 +20,11 @@ export const conversationMessagesKey = (
   ? [scope, id, 'messages', threadId] as const
   : [scope, id, 'messages'] as const
 
+export const conversationStateKey = (
+  conversationId: string | undefined,
+  threadId?: string | null,
+) => threadId ?? conversationId
+
 export const conversationApiPath = (scope: ConversationScope, id: string | undefined) =>
   `/${scope}/${id}`
 
@@ -103,10 +108,15 @@ export function useDeleteGroupMessage(groupId: string) {
   return useDeleteConversationMessage('groups', groupId)
 }
 
-export function useDeleteConversationMessage(scope: ConversationScope, groupId: string) {
+export function useDeleteConversationMessage(
+  scope: ConversationScope,
+  groupId: string,
+  threadId?: string | null,
+) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   const removeMessage = useMessageStore((s) => s.removeMessage)
+  const stateKey = threadId ?? groupId
   return useMutation({
     mutationFn: ({ messageId }: { messageId: string }) =>
       fetchJson<void>(`${conversationApiPath(scope, groupId)}/messages/${messageId}`, {
@@ -115,11 +125,13 @@ export function useDeleteConversationMessage(scope: ConversationScope, groupId: 
       }),
     onSuccess: (_, variables) => {
       qc.setQueryData<InfiniteData<Message[], string | undefined>>(
-        conversationMessagesKey(scope, groupId),
+        conversationMessagesKey(scope, groupId, threadId ?? undefined),
         (current) => removeMessageFromPages(current, variables.messageId),
       )
-      removeMessage(groupId, variables.messageId)
-      void qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId) })
+      removeMessage(stateKey, variables.messageId)
+      void qc.invalidateQueries({
+        queryKey: conversationMessagesKey(scope, groupId, threadId ?? undefined),
+      })
     },
   })
 }
@@ -156,6 +168,7 @@ export function useConversationMessages(
 ) {
   const token = useAuthStore((s) => s.token)
   const setHistory = useMessageStore((s) => s.setHistory)
+  const stateKey = conversationStateKey(groupId, threadId)
 
   const query = useInfiniteQuery({
     queryKey: conversationMessagesKey(scope, groupId, threadId),
@@ -180,10 +193,10 @@ export function useConversationMessages(
   )
 
   useEffect(() => {
-    if (groupId && query.data) {
-      setHistory(groupId, messages)
+    if (stateKey && query.data) {
+      setHistory(stateKey, messages)
     }
-  }, [groupId, messages, query.data, setHistory, threadId])
+  }, [messages, query.data, setHistory, stateKey])
 
   return query
 }

@@ -128,13 +128,14 @@ function emitActiveSchedulerStream(
   streamId: string,
   messageId: string,
   agentId: string,
+  threadId = 'thread-1',
 ) {
   emit(handlers, {
     stream_id: streamId,
     seq: 1,
     event_id: `${streamId}-event-1`,
     kind: 'user_message',
-    payload: { message_id: messageId, thread_id: 'thread-1', content: messageId },
+    payload: { message_id: messageId, thread_id: threadId, content: messageId },
   })
   emit(handlers, {
     stream_id: streamId,
@@ -638,6 +639,49 @@ describe('useSendMessageStream scheduler events', () => {
     await act(async () => returned.result.current.cancel())
     expect(first.abort).toHaveBeenCalledTimes(1)
     expect(returned.result.current.isStreaming).toBe(false)
+  })
+
+  it('keeps simultaneous task streams isolated and independently controllable', async () => {
+    const store = useMessageStore.getState()
+    store.setHistory('thread-1', [])
+    store.setHistory('thread-2', [])
+    const queryClient = new QueryClient()
+    const firstHook = renderHook(
+      () => useSendMessageStream('group-1', { threadId: 'thread-1' }),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => ignoreSend(firstHook.result.current.send('first task')))
+    const first = mocks.streams[0]
+    emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1', 'thread-1')
+    firstHook.unmount()
+
+    const secondHook = renderHook(
+      () => useSendMessageStream('group-1', { threadId: 'thread-2' }),
+      { wrapper: wrapper(queryClient) },
+    )
+    expect(secondHook.result.current.isStreaming).toBe(false)
+    act(() => ignoreSend(secondHook.result.current.send('second task')))
+    const second = mocks.streams[1]
+    emitActiveSchedulerStream(second.handlers, 'stream-2', 'message-2', 'agent-2', 'thread-2')
+
+    const active = useMessageStore.getState()
+    expect(active.byGroup['thread-1'].map((message) => message.id)).toEqual(['message-1'])
+    expect(active.byGroup['thread-2'].map((message) => message.id)).toEqual(['message-2'])
+    expect(active.streamRunsByGroup['thread-1']['stream-1'].group_id).toBe('group-1')
+    expect(active.activeSendsByGroup['thread-1']).toBeDefined()
+    expect(active.activeSendsByGroup['thread-2']).toBeDefined()
+
+    await act(async () => secondHook.result.current.cancel())
+    expect(second.abort).toHaveBeenCalledTimes(1)
+    expect(first.abort).not.toHaveBeenCalled()
+
+    const returned = renderHook(
+      () => useSendMessageStream('group-1', { threadId: 'thread-1' }),
+      { wrapper: wrapper(queryClient) },
+    )
+    expect(returned.result.current.isStreaming).toBe(true)
+    await act(async () => returned.result.current.cancel())
+    expect(first.abort).toHaveBeenCalledTimes(1)
   })
 
   it('rejects late bubbles and messages after supersede and invalidates the terminal trace', () => {

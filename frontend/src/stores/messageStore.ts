@@ -1,7 +1,8 @@
 /**
  * Message store — sink for the SSE message stream.
  *
- * `byGroup` is the canonical chronological history per group; populated from
+ * `byGroup` is the canonical chronological history per conversation state key
+ * (a task thread when present, otherwise the conversation id); populated from
  * `GET /messages` on mount and appended to as `user_message` / `agent_message`
  * events arrive. `inFlightByGroup` holds the partial bubbles while tokens
  * are still streaming, keyed per (groupId, agentId) within a single send
@@ -187,7 +188,7 @@ export interface StreamRun {
 }
 
 interface ActiveResume {
-  group_id: string
+  state_id: string
   cancel: () => Promise<void>
 }
 
@@ -678,7 +679,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const hasActiveStream =
         Boolean(s.activeSendsByGroup[groupId]) ||
         Object.values(s.activeResumesByMessageId).some(
-          (resume) => resume.group_id === groupId,
+          (resume) => resume.state_id === groupId,
         )
       if (!hasActiveStream) {
         return { byGroup: { ...s.byGroup, [groupId]: messages } }
@@ -940,7 +941,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const existing = groupRuns[streamId]
       const run: StreamRun = {
         id: streamId,
-        group_id: groupId,
+        group_id: userMessage.group_id,
         user_message_id: userMessage.id,
         status: 'active',
         turn_id: existing?.turn_id ?? userMessage.turn_id,
@@ -1644,7 +1645,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         resumingMessageIds: next,
         activeResumesByMessageId: {
           ...s.activeResumesByMessageId,
-          [messageId]: { group_id: groupId, cancel },
+          [messageId]: { state_id: groupId, cancel },
         },
       }
     }),

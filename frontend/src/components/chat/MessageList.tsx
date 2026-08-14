@@ -14,6 +14,7 @@ import type { ConversationScope } from '@/hooks/useGroupMessages'
 
 interface MessageListProps {
   groupId: string
+  stateId?: string
   hasOlderMessages?: boolean
   isLoadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
@@ -78,6 +79,7 @@ function timelineMessageIds(runs: Record<string, StreamRun>): Set<string> {
 
 export function MessageList({
   groupId,
+  stateId = groupId,
   hasOlderMessages = false,
   isLoadingOlderMessages = false,
   onLoadOlderMessages,
@@ -88,15 +90,15 @@ export function MessageList({
   agentIsSystem,
 }: MessageListProps) {
   const { t } = useTranslation('chat')
-  const messages = useMessageStore((s) => s.byGroup[groupId] ?? EMPTY_MESSAGES)
+  const messages = useMessageStore((s) => s.byGroup[stateId] ?? EMPTY_MESSAGES)
   const warnings = useMessageStore(
-    (s) => s.warningsByGroup[groupId] ?? EMPTY_WARNINGS,
+    (s) => s.warningsByGroup[stateId] ?? EMPTY_WARNINGS,
   )
   const streamRuns = useMessageStore(
-    (s) => s.streamRunsByGroup[groupId] ?? EMPTY_STREAM_RUNS,
+    (s) => s.streamRunsByGroup[stateId] ?? EMPTY_STREAM_RUNS,
   )
   const streamRunIdsByUserMessageId = useMessageStore(
-    (s) => s.streamRunIdByUserMessageIdByGroup[groupId] ?? EMPTY_STREAM_RUN_IDS,
+    (s) => s.streamRunIdByUserMessageIdByGroup[stateId] ?? EMPTY_STREAM_RUN_IDS,
   )
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
@@ -128,16 +130,16 @@ export function MessageList({
 
   const updateNearBottom = useCallback(() => {
     const node = scrollRef.current
-    if (node) storeScrollTop(groupId, node.scrollTop)
+    if (node) storeScrollTop(stateId, node.scrollTop)
     const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
     setShowJumpToLatest(canScroll && !isNearBottom)
-  }, [getScrollState, groupId])
+  }, [getScrollState, stateId])
 
   const jumpToLatest = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
     const node = scrollRef.current
-    if (node) storeScrollTop(groupId, maxScrollTop(node))
+    if (node) storeScrollTop(stateId, maxScrollTop(node))
     isNearBottomRef.current = true
     setShowJumpToLatest(false)
   }
@@ -146,14 +148,14 @@ export function MessageList({
     restoredScrollRef.current = false
     isNearBottomRef.current = true
     setShowJumpToLatest(false)
-  }, [groupId])
+  }, [stateId])
 
   useEffect(() => {
     if (restoredScrollRef.current) return
     if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
     const node = scrollRef.current
     if (!node) return
-    const storedScrollTop = readStoredScrollTop(groupId)
+    const storedScrollTop = readStoredScrollTop(stateId)
 
     const maxRestorableScrollTop = maxScrollTop(node)
     node.scrollTop = storedScrollTop === null
@@ -163,7 +165,7 @@ export function MessageList({
     isNearBottomRef.current = isNearBottom
     setShowJumpToLatest(canScroll && !isNearBottom)
     restoredScrollRef.current = true
-  }, [getScrollState, groupId, hasActiveStreamRun, messages.length, streamRuns])
+  }, [getScrollState, hasActiveStreamRun, messages.length, stateId, streamRuns])
 
   useEffect(() => {
     if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
@@ -175,14 +177,14 @@ export function MessageList({
         block: 'end',
       })
       const node = scrollRef.current
-      if (node) storeScrollTop(groupId, maxScrollTop(node))
+      if (node) storeScrollTop(stateId, maxScrollTop(node))
       isNearBottomRef.current = true
       setShowJumpToLatest(false)
       return
     }
     isNearBottomRef.current = false
     setShowJumpToLatest(canScroll)
-  }, [messages, streamRuns, warnings, groupId, hasActiveStreamRun, getScrollState])
+  }, [messages, streamRuns, warnings, stateId, hasActiveStreamRun, getScrollState])
 
   return (
     <div
@@ -235,6 +237,7 @@ export function MessageList({
               {run ? (
                 <StreamTimeline
                   run={run}
+                  groupId={groupId}
                   agentIsSystem={agentIsSystem}
                   onSubmitHumanInput={onSubmitHumanInput}
                 />

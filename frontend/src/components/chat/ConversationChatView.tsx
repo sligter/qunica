@@ -122,6 +122,7 @@ export function ConversationChatView({
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
   useTerminalConversationRegistration(conversationId, workspaceId)
+  const stateId = threadId ?? conversationId
   const messagesQuery = useConversationMessages(scope, conversationId, threadId)
   const stream = useSendMessageStream(conversationId, {
     scope,
@@ -133,15 +134,14 @@ export function ConversationChatView({
     void sendMessage(content).catch(() => undefined)
   }, [sendMessage])
   const clearWarnings = useMessageStore((state) => state.clearWarnings)
-  const clearLocalMessages = useMessageStore((state) => state.clearGroupMessages)
   const activeResumesByMessageId = useMessageStore(
     (state) => state.activeResumesByMessageId,
   )
   const activeResumes = useMemo(
     () => Object.values(activeResumesByMessageId).filter(
-      (resume) => resume.group_id === conversationId,
+      (resume) => resume.state_id === stateId,
     ),
-    [activeResumesByMessageId, conversationId],
+    [activeResumesByMessageId, stateId],
   )
   const isConversationStreaming = stream.isStreaming || activeResumes.length > 0
   const cancelConversationStream = useCallback(() => {
@@ -166,12 +166,8 @@ export function ConversationChatView({
       capabilities.showWorkspace ? readWorkspaceFilesOpen(conversationId) : false,
     )
     setSelectedTurnId(null)
-    clearWarnings(conversationId)
-  }, [capabilities.showWorkspace, clearWarnings, conversationId, threadId])
-
-  useEffect(() => () => {
-    if (threadId) clearLocalMessages(conversationId)
-  }, [clearLocalMessages, conversationId, threadId])
+    clearWarnings(stateId)
+  }, [capabilities.showWorkspace, clearWarnings, conversationId, stateId])
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -280,6 +276,7 @@ export function ConversationChatView({
             <div className="flex min-h-0 flex-1 flex-col">
               <MessageList
                 groupId={conversationId}
+                stateId={stateId}
                 hasOlderMessages={messagesQuery.hasNextPage}
                 isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
                 onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}

@@ -54,8 +54,8 @@ export function GroupChatHeaderActions({
   const [title, setTitle] = useState('')
   const activeThreads = threads.filter((thread) => thread.status !== 'archived')
   const archivedThreads = threads.filter((thread) => thread.status === 'archived')
-  const busy = disabled || createThread.isPending || archiveThread.isPending
   const displayTitle = (thread: GroupThread) => thread.title || t('tasks.untitled')
+  const mutating = createThread.isPending || archiveThread.isPending
 
   const create = async (event: FormEvent) => {
     event.preventDefault()
@@ -80,7 +80,7 @@ export function GroupChatHeaderActions({
       <Select
         value={selectedThread?.id}
         onValueChange={onSelect}
-        disabled={busy || threads.length === 0}
+        disabled={mutating || threads.length === 0}
       >
         <SelectTrigger
           className="h-8 w-32 border-0 bg-transparent px-2 text-left font-medium shadow-none transition-colors hover:bg-muted/60 data-[state=open]:bg-muted/60 sm:w-48 lg:w-60"
@@ -146,7 +146,7 @@ export function GroupChatHeaderActions({
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-muted-foreground"
-            disabled={busy}
+            disabled={mutating}
             aria-label={t('actions.newTask')}
             title={t('actions.newTask')}
           >
@@ -192,7 +192,7 @@ export function GroupChatHeaderActions({
         variant="ghost"
         size="icon"
         className="h-8 w-8 text-muted-foreground"
-        disabled={busy || !selectedThread || selectedThread.status === 'archived'}
+        disabled={disabled || mutating || !selectedThread || selectedThread.status === 'archived'}
         onClick={() => setArchiveOpen(true)}
         aria-label={t('tasks.archive')}
         title={t('tasks.archive')}

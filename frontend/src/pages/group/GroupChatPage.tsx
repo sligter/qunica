@@ -88,7 +88,7 @@ export function GroupChatPage() {
   }
   return (
     <ConversationChatView
-      key={`groups:${groupId}`}
+      key={`groups:${groupId}:${selectedThread?.id ?? 'no-task'}`}
       conversationId={groupId}
       threadId={selectedThread?.id}
       workspaceId={group.data.workspace_id}

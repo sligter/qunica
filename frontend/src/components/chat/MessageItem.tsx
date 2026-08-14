@@ -145,6 +145,7 @@ export function MessageItem({
               senderName={senderName}
               timeLabel={time}
               groupId={groupId}
+              threadId={message.thread_id}
               scope={scope}
             />
           )}

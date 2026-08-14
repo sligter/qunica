@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   createTaskMutateAsync: vi.fn(),
   createTaskReset: vi.fn(),
   archiveTaskMutateAsync: vi.fn(),
+  isStreaming: false,
   clearMutateAsync: vi.fn(),
   deleteMutateAsync: vi.fn(),
   closeConversation: vi.fn(),
@@ -102,7 +103,7 @@ vi.mock('@/hooks/useGroupThreads', () => ({
 vi.mock('@/hooks/useSendMessageStream', () => ({
   useSendMessageStream: () => ({
     error: null,
-    isStreaming: false,
+    isStreaming: mocks.isStreaming,
     send: vi.fn(),
     cancel: vi.fn(),
   }),
@@ -250,6 +251,7 @@ describe('group management i18n', () => {
     })
     mocks.createTaskReset.mockReset()
     mocks.archiveTaskMutateAsync.mockReset()
+    mocks.isStreaming = false
     mocks.clearMutateAsync.mockReset()
     mocks.deleteMutateAsync.mockReset()
     mocks.closeConversation.mockReset().mockResolvedValue(undefined)
@@ -353,6 +355,26 @@ describe('group management i18n', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Current task' })).toHaveTextContent('Second task')
+  })
+
+  it('keeps task switching and creation available while the current task runs', () => {
+    mocks.isStreaming = true
+    mocks.groupThreads = [
+      taskThread,
+      { ...taskThread, id: 'thread-2', title: 'Second task' },
+    ]
+
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1']}>
+        <Routes>
+          <Route path="/groups/:groupId" element={<GroupChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Current task' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Start new task' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Archive task' })).toBeDisabled()
   })
 
   it('localizes the manage shell and tabs while preserving the group name', async () => {

@@ -33,6 +33,7 @@ import type { ContextUsage } from '@/types/api'
 
 interface StreamTimelineProps {
   run: StreamRun
+  groupId?: string
   onSubmitHumanInput?: (content: string) => void
   agentIsSystem?: boolean
 }
@@ -445,11 +446,12 @@ function AgentBlockView({
 
 export function StreamTimeline({
   run,
+  groupId = run.group_id,
   onSubmitHumanInput,
   agentIsSystem,
 }: StreamTimelineProps) {
   const { t } = useTranslation('chat')
-  const groupAgents = useGroupAgents(run.group_id)
+  const groupAgents = useGroupAgents(groupId)
   // Last-known usage per group-agent. The live `agent_start` events don't carry
   // context_usage (it's computed only after the LLM responds), so without this
   // fallback the avatar ring stays blank for the whole streaming turn.
@@ -503,7 +505,7 @@ export function StreamTimeline({
             key={`${block.agentId}-${index}`}
             block={block}
             runStatus={run.status}
-            groupId={run.group_id}
+            groupId={groupId}
             fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
             agentIsSystem={agentIsSystem}
             onSubmitHumanInput={onSubmitHumanInput}
