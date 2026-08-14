@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 
 import { Composer } from '@/components/chat/Composer'
 import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHeaderActions'
-import { GroupChatHeaderActions } from '@/components/groups/GroupChatHeaderActions'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
 import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
@@ -32,6 +31,7 @@ type WorkspaceFilesOpenUpdater = boolean | ((current: boolean) => boolean)
 
 export interface ConversationChatViewProps {
   conversationId: string
+  threadId?: string
   workspaceId: string | null
   scope: ConversationScope
   agents: GroupAgentRead[]
@@ -39,6 +39,7 @@ export interface ConversationChatViewProps {
   subtitle?: React.ReactNode
   announcement?: string | null
   headerActions?: React.ReactNode
+  renderHeaderContext?: (disabled: boolean) => React.ReactNode
   capabilities: {
     showAnnouncement: boolean
     showManage: boolean
@@ -102,6 +103,7 @@ function isEditableShortcutTarget(event: globalThis.KeyboardEvent): boolean {
 
 export function ConversationChatView({
   conversationId,
+  threadId,
   workspaceId,
   scope,
   agents,
@@ -109,6 +111,7 @@ export function ConversationChatView({
   subtitle,
   announcement,
   headerActions,
+  renderHeaderContext,
   capabilities,
   onConversationUpdated,
   disabledComposerReason,
@@ -119,9 +122,10 @@ export function ConversationChatView({
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
   useTerminalConversationRegistration(conversationId, workspaceId)
-  const messagesQuery = useConversationMessages(scope, conversationId)
+  const messagesQuery = useConversationMessages(scope, conversationId, threadId)
   const stream = useSendMessageStream(conversationId, {
     scope,
+    threadId,
     onConversationUpdated,
   })
   const sendMessage = stream.send
@@ -129,6 +133,7 @@ export function ConversationChatView({
     void sendMessage(content).catch(() => undefined)
   }, [sendMessage])
   const clearWarnings = useMessageStore((state) => state.clearWarnings)
+  const clearLocalMessages = useMessageStore((state) => state.clearGroupMessages)
   const activeResumesByMessageId = useMessageStore(
     (state) => state.activeResumesByMessageId,
   )
@@ -162,7 +167,11 @@ export function ConversationChatView({
     )
     setSelectedTurnId(null)
     clearWarnings(conversationId)
-  }, [capabilities.showWorkspace, clearWarnings, conversationId])
+  }, [capabilities.showWorkspace, clearWarnings, conversationId, threadId])
+
+  useEffect(() => () => {
+    if (threadId) clearLocalMessages(conversationId)
+  }, [clearLocalMessages, conversationId, threadId])
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -223,24 +232,19 @@ export function ConversationChatView({
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-background px-4 lg:px-5">
-        <div className="flex min-w-0 items-baseline gap-3">
+        <div className="flex min-w-0 items-center gap-2">
           <h1 className="font-serif truncate text-base font-semibold tracking-tight">{title}</h1>
-          {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
+          {renderHeaderContext?.(isConversationStreaming)}
+          {subtitle ? <span className="hidden text-xs text-muted-foreground lg:inline">{subtitle}</span> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {scope === 'groups' ? (
-            <GroupChatHeaderActions
-              key={conversationId}
-              groupId={conversationId}
-              disabled={isConversationStreaming}
-            />
-          ) : (
+          {scope === 'direct-chats' ? (
             <DirectChatHeaderActions
               key={conversationId}
               chatId={conversationId}
               disabled={isConversationStreaming}
             />
-          )}
+          ) : null}
           <Button
             variant={isDockOpen ? 'secondary' : 'ghost'}
             size="icon"
@@ -314,7 +318,7 @@ export function ConversationChatView({
               <Composer
                 models={models}
                 defaultModel={defaultModel}
-                key={`${scope}:${conversationId}:${workspaceId ?? 'no-workspace'}`}
+                key={`${scope}:${conversationId}:${threadId ?? 'no-thread'}:${workspaceId ?? 'no-workspace'}`}
                 conversationId={conversationId}
                 workspaceId={workspaceId}
                 scope={scope}

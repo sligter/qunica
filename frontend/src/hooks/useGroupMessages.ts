@@ -12,8 +12,13 @@ const INITIAL_PAGE_PARAM: string | undefined = undefined
 
 export type ConversationScope = 'groups' | 'direct-chats'
 
-export const conversationMessagesKey = (scope: ConversationScope, id: string | undefined) =>
-  [scope, id, 'messages'] as const
+export const conversationMessagesKey = (
+  scope: ConversationScope,
+  id: string | undefined,
+  threadId?: string,
+) => threadId
+  ? [scope, id, 'messages', threadId] as const
+  : [scope, id, 'messages'] as const
 
 export const conversationApiPath = (scope: ConversationScope, id: string | undefined) =>
   `/${scope}/${id}`
@@ -94,10 +99,6 @@ export function useResetDirectChatContext(chatId: string) {
   return useResetConversationContext('direct-chats', chatId)
 }
 
-export function useStartNewGroupTask(groupId: string) {
-  return useResetConversationContext('groups', groupId)
-}
-
 export function useDeleteGroupMessage(groupId: string) {
   return useDeleteConversationMessage('groups', groupId)
 }
@@ -148,15 +149,20 @@ export function useGroupMessages(groupId: string | undefined) {
 }
 
 /** Fetch historical messages for either supported conversation container. */
-export function useConversationMessages(scope: ConversationScope, groupId: string | undefined) {
+export function useConversationMessages(
+  scope: ConversationScope,
+  groupId: string | undefined,
+  threadId?: string,
+) {
   const token = useAuthStore((s) => s.token)
   const setHistory = useMessageStore((s) => s.setHistory)
 
   const query = useInfiniteQuery({
-    queryKey: conversationMessagesKey(scope, groupId),
+    queryKey: conversationMessagesKey(scope, groupId, threadId),
     queryFn: ({ pageParam }: { pageParam?: string }) => {
       const params = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE) })
       if (pageParam) params.set('before', pageParam)
+      if (threadId) params.set('thread_id', threadId)
       return fetchJson<Message[]>(
         `${conversationApiPath(scope, groupId)}/messages?${params.toString()}`,
         { token },
@@ -177,7 +183,7 @@ export function useConversationMessages(scope: ConversationScope, groupId: strin
     if (groupId && query.data) {
       setHistory(groupId, messages)
     }
-  }, [groupId, messages, query.data, setHistory])
+  }, [groupId, messages, query.data, setHistory, threadId])
 
   return query
 }

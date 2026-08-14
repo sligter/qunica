@@ -2055,7 +2055,7 @@ async fn group_new_task_preserves_history_and_starts_a_new_thread() {
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(old_status, "cleared");
+    assert_eq!(old_status, "archived");
 
     let (status, history_after) = send(
         &app,

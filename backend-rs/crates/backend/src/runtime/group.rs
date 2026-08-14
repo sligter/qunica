@@ -6027,11 +6027,12 @@ async fn resolve_or_create_thread(
     req: &TurnRequest,
 ) -> anyhow::Result<String> {
     if let Some(thread_id) = &req.thread_id {
-        let row: Option<(String, String, String)> =
-            sqlx::query_as("SELECT id, group_id, status FROM threads WHERE id = ?")
-                .bind(thread_id)
-                .fetch_optional(&services.pool)
-                .await?;
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT id, group_id, status FROM threads WHERE id = ? AND agent_id IS NULL",
+        )
+        .bind(thread_id)
+        .fetch_optional(&services.pool)
+        .await?;
         return match row {
             Some((id, group_id, status)) if group_id == req.group_id && status == "active" => {
                 Ok(id)
@@ -6053,12 +6054,15 @@ async fn resolve_or_create_thread(
     }
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
+    let title = default_task_title(&req.content);
     sqlx::query(
-        "INSERT INTO threads (id, group_id, agent_id, status, next_seq, created_at, updated_at) \
-         VALUES (?, ?, NULL, 'active', 1, ?, ?)",
+        "INSERT INTO threads \
+         (id, group_id, agent_id, title, status, next_seq, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, 'active', 1, ?, ?)",
     )
     .bind(&id)
     .bind(&req.group_id)
+    .bind(title)
     .bind(&now)
     .bind(&now)
     .execute(&services.pool)
@@ -6070,12 +6074,29 @@ async fn active_group_thread(pool: &SqlitePool, group_id: &str) -> anyhow::Resul
     let id: Option<String> = sqlx::query_scalar(
         "SELECT id FROM threads \
          WHERE group_id = ? AND agent_id IS NULL AND status = 'active' \
-         ORDER BY created_at ASC, id ASC LIMIT 1",
+         ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1",
     )
     .bind(group_id)
     .fetch_optional(pool)
     .await?;
     Ok(id)
+}
+
+fn default_task_title(content: &str) -> String {
+    // ponytail: the first line is enough for automatic titles; explicit task creation accepts a name.
+    let title: String = content
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(80)
+        .collect();
+    if title.is_empty() {
+        "Task".to_string()
+    } else {
+        title
+    }
 }
 
 fn now_rfc3339() -> String {
@@ -6090,6 +6111,13 @@ mod tests {
     use crate::runtime::conversation_context::{
         ConversationActor, ConversationAttachment, ConversationMessage,
     };
+
+    #[test]
+    fn automatic_task_title_uses_a_bounded_first_line() {
+        assert_eq!(default_task_title("  Ship release\nignore this"), "Ship release");
+        assert_eq!(default_task_title("   "), "Task");
+        assert_eq!(default_task_title(&"x".repeat(81)).chars().count(), 80);
+    }
 
     #[test]
     fn candidate_reload_errors_skip_only_expected_ineligible_state() {

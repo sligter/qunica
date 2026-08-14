@@ -76,6 +76,7 @@ pub type SendRequest = MessageInput;
 pub struct ListMessagesQuery {
     limit: Option<String>,
     before: Option<String>,
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -249,17 +250,38 @@ async fn list_for_kind(
         .as_deref()
         .map(|raw| validate_uuid(raw, "before message id"))
         .transpose()?;
+    let thread_id = query
+        .thread_id
+        .as_deref()
+        .map(|raw| validate_uuid(raw, "thread id"))
+        .transpose()?;
 
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
+    if let Some(thread_id) = thread_id.as_deref() {
+        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, false).await?;
+    }
 
     let before_cursor = match before_id {
-        Some(before_id) => {
-            Some(fetch_visible_message_cursor(state.db.pool(), &group_id, &before_id).await?)
-        }
+        Some(before_id) => Some(
+            fetch_visible_message_cursor(
+                state.db.pool(),
+                &group_id,
+                thread_id.as_deref(),
+                &before_id,
+            )
+            .await?,
+        ),
         None => None,
     };
 
-    let mut rows = fetch_message_page(state.db.pool(), &group_id, limit, before_cursor).await?;
+    let mut rows = fetch_message_page(
+        state.db.pool(),
+        &group_id,
+        thread_id.as_deref(),
+        limit,
+        before_cursor,
+    )
+    .await?;
     rows.reverse();
     Ok(Json(rows.into_iter().map(MessageResponse::from).collect()))
 }
@@ -319,13 +341,19 @@ async fn reset_context_for_kind(
     .map_err(|_| ApiError::internal("failed to load conversation context"))?;
 
     if !thread_ids.is_empty() {
+        let next_status = if expected == ConversationKind::Group {
+            "archived"
+        } else {
+            "cleared"
+        };
         sqlx::query(
             "UPDATE threads \
-             SET status = 'cleared', updated_at = ? \
+             SET status = ?, updated_at = ? \
              WHERE group_id = ? \
                AND agent_id IS NULL \
                AND status IN ('active', 'running', 'paused', 'completed', 'failed', 'created')",
         )
+        .bind(next_status)
         .bind(now_rfc3339())
         .bind(&group_id)
         .execute(state.db.pool())
@@ -617,6 +645,14 @@ async fn send_for_owner(
 
     let content = body.content.trim().to_string();
     ensure_active_owned_conversation(state.db.pool(), &group_id, owner_id, expected).await?;
+    let thread_id = body
+        .thread_id
+        .as_deref()
+        .map(|raw| validate_uuid(raw, "thread id"))
+        .transpose()?;
+    if let Some(thread_id) = thread_id.as_deref() {
+        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, true).await?;
+    }
     if expected == ConversationKind::Direct {
         ensure_direct_agent_available(state.db.pool(), &group_id, owner_id).await?;
     }
@@ -657,7 +693,7 @@ async fn send_for_owner(
     let request = TurnRequest {
         group_id: group_id.clone(),
         owner_id: owner_id.to_string(),
-        thread_id: body.thread_id,
+        thread_id,
         content,
         attachments,
         model_override,
@@ -884,6 +920,14 @@ async fn stream_for_kind(
 
     let content = body.content.trim().to_string();
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
+    let thread_id = body
+        .thread_id
+        .as_deref()
+        .map(|raw| validate_uuid(raw, "thread id"))
+        .transpose()?;
+    if let Some(thread_id) = thread_id.as_deref() {
+        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, false).await?;
+    }
     if expected == ConversationKind::Direct {
         ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
     }
@@ -929,6 +973,9 @@ async fn stream_for_kind(
         let body = futures_util::stream::iter(replay.into_iter().map(event_to_sse)).boxed();
         return Ok(Sse::new(body));
     }
+    if let Some(thread_id) = thread_id.as_deref() {
+        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, true).await?;
+    }
 
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
@@ -944,7 +991,7 @@ async fn stream_for_kind(
     let request = TurnRequest {
         group_id,
         owner_id,
-        thread_id: body.thread_id,
+        thread_id,
         content,
         attachments,
         model_override,
@@ -1012,14 +1059,19 @@ async fn fetch_message_response(
 async fn fetch_visible_message_cursor(
     pool: &sqlx::SqlitePool,
     group_id: &str,
+    thread_id: Option<&str>,
     message_id: &str,
 ) -> Result<i64, ApiError> {
     sqlx::query_scalar(
         "SELECT rowid FROM messages \
-         WHERE id = ? AND group_id = ? AND status IN ('visible', 'interrupted')",
+         WHERE id = ? AND group_id = ? \
+           AND (? IS NULL OR thread_id = ?) \
+           AND status IN ('visible', 'interrupted')",
     )
     .bind(message_id)
     .bind(group_id)
+    .bind(thread_id)
+    .bind(thread_id)
     .fetch_optional(pool)
     .await
     .map_err(|_| ApiError::internal("database error"))?
@@ -1029,6 +1081,7 @@ async fn fetch_visible_message_cursor(
 async fn fetch_message_page(
     pool: &sqlx::SqlitePool,
     group_id: &str,
+    thread_id: Option<&str>,
     limit: i64,
     before_cursor: Option<i64>,
 ) -> Result<Vec<MessageRow>, ApiError> {
@@ -1042,13 +1095,16 @@ async fn fetch_message_page(
                         m.created_at \
                  FROM messages m \
                  LEFT JOIN group_turns gt ON gt.id = m.turn_id \
-                 WHERE m.group_id = ? \
-                   AND m.status IN ('visible', 'interrupted') \
+                  WHERE m.group_id = ? \
+                    AND (? IS NULL OR m.thread_id = ?) \
+                    AND m.status IN ('visible', 'interrupted') \
                    AND m.rowid < ? \
                  ORDER BY m.rowid DESC \
                  LIMIT ?",
             )
             .bind(group_id)
+            .bind(thread_id)
+            .bind(thread_id)
             .bind(before_rowid)
             .bind(limit)
             .fetch_all(pool)
@@ -1063,11 +1119,15 @@ async fn fetch_message_page(
                         m.created_at \
                  FROM messages m \
                  LEFT JOIN group_turns gt ON gt.id = m.turn_id \
-                 WHERE m.group_id = ? AND m.status IN ('visible', 'interrupted') \
+                  WHERE m.group_id = ? \
+                    AND (? IS NULL OR m.thread_id = ?) \
+                    AND m.status IN ('visible', 'interrupted') \
                  ORDER BY m.rowid DESC \
                  LIMIT ?",
             )
             .bind(group_id)
+            .bind(thread_id)
+            .bind(thread_id)
             .bind(limit)
             .fetch_all(pool)
             .await
@@ -1096,6 +1156,28 @@ async fn ensure_direct_agent_available(
     active
         .map(|_| ())
         .ok_or_else(|| ApiError::conflict("direct chat agent is unavailable"))
+}
+
+async fn ensure_conversation_thread(
+    pool: &sqlx::SqlitePool,
+    group_id: &str,
+    thread_id: &str,
+    require_active: bool,
+) -> Result<(), ApiError> {
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM threads \
+         WHERE id = ? AND group_id = ? AND agent_id IS NULL AND status != 'cleared'",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    let status = status.ok_or_else(|| ApiError::not_found("thread not found"))?;
+    if require_active && status != "active" {
+        return Err(ApiError::conflict("thread is not active"));
+    }
+    Ok(())
 }
 
 fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {

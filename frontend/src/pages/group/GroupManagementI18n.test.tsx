@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import i18n from '@/i18n'
 import { ApiError } from '@/lib/api-v2/client'
-import type { GroupAgentRead, GroupMemberRead, GroupRead } from '@/types/api'
+import type { GroupAgentRead, GroupMemberRead, GroupRead, GroupThread } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
   group: null as GroupRead | null,
@@ -13,9 +13,12 @@ const mocks = vi.hoisted(() => ({
   groupMembers: [] as GroupMemberRead[],
   agents: [] as { id: string; workspace_id: string | null }[],
   workspaces: [] as { id: string; local_path: string | null }[],
+  groupThreads: [] as GroupThread[],
   setWorkspaceMode: vi.fn(),
   mutateAsync: vi.fn(),
-  startNewTaskMutateAsync: vi.fn(),
+  createTaskMutateAsync: vi.fn(),
+  createTaskReset: vi.fn(),
+  archiveTaskMutateAsync: vi.fn(),
   clearMutateAsync: vi.fn(),
   deleteMutateAsync: vi.fn(),
   closeConversation: vi.fn(),
@@ -82,9 +85,18 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     fetchNextPage: vi.fn(),
   }),
   useClearGroupMessages: () => ({ isPending: false, mutateAsync: mocks.clearMutateAsync }),
-  useStartNewGroupTask: () => ({
+}))
+vi.mock('@/hooks/useGroupThreads', () => ({
+  useGroupThreads: () => ({ data: mocks.groupThreads, error: null, isLoading: false }),
+  useCreateGroupThread: () => ({
+    error: null,
     isPending: false,
-    mutateAsync: mocks.startNewTaskMutateAsync,
+    mutateAsync: mocks.createTaskMutateAsync,
+    reset: mocks.createTaskReset,
+  }),
+  useArchiveGroupThread: () => ({
+    isPending: false,
+    mutateAsync: mocks.archiveTaskMutateAsync,
   }),
 }))
 vi.mock('@/hooks/useSendMessageStream', () => ({
@@ -201,6 +213,22 @@ const groupAgent: GroupAgentRead = {
   joined_at: '2026-01-01T00:00:00Z',
 }
 
+const taskThread: GroupThread = {
+  id: 'thread-1',
+  group_id: 'group-1',
+  agent_id: null,
+  created_by: null,
+  thread_type: 'task_thread',
+  title: 'Existing task',
+  goal: null,
+  status: 'active',
+  priority: 0,
+  started_at: null,
+  completed_at: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
 async function setLanguage(language: 'en-US' | 'zh-CN') {
   await i18n.changeLanguage(language)
 }
@@ -212,9 +240,16 @@ describe('group management i18n', () => {
     mocks.groupMembers = []
     mocks.agents = []
     mocks.workspaces = []
+    mocks.groupThreads = [taskThread]
     mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
-    mocks.startNewTaskMutateAsync.mockReset().mockResolvedValue(undefined)
+    mocks.createTaskMutateAsync.mockReset().mockImplementation(async (title: string) => ({
+      ...taskThread,
+      id: 'thread-2',
+      title,
+    }))
+    mocks.createTaskReset.mockReset()
+    mocks.archiveTaskMutateAsync.mockReset()
     mocks.clearMutateAsync.mockReset()
     mocks.deleteMutateAsync.mockReset()
     mocks.closeConversation.mockReset().mockResolvedValue(undefined)
@@ -277,7 +312,7 @@ describe('group management i18n', () => {
     expect(mocks.registerTerminal).toHaveBeenCalledWith('group-1', 'workspace-1')
   })
 
-  it('starts a fresh group task only after confirmation', async () => {
+  it('creates and selects a named group task', async () => {
     const user = userEvent.setup()
     await setLanguage('en-US')
     render(
@@ -289,12 +324,14 @@ describe('group management i18n', () => {
     )
 
     await user.click(screen.getByRole('button', { name: 'Start new task' }))
-    expect(mocks.startNewTaskMutateAsync).not.toHaveBeenCalled()
-    const dialog = screen.getByRole('alertdialog')
-    expect(within(dialog).getByRole('heading', { name: 'Start a new task?' })).toBeVisible()
-
+    expect(mocks.createTaskMutateAsync).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Start a new task' })).toBeVisible()
+    await user.type(within(dialog).getByLabelText('Task title'), 'Release checklist')
     await user.click(within(dialog).getByRole('button', { name: 'Start new task' }))
-    await waitFor(() => expect(mocks.startNewTaskMutateAsync).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(mocks.createTaskMutateAsync).toHaveBeenCalledWith('Release checklist')
+    })
   })
 
   it('localizes the manage shell and tabs while preserving the group name', async () => {

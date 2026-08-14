@@ -642,6 +642,22 @@ export interface ClearGroupMessagesResponse {
   cleared_count: number
 }
 
+export interface GroupThread {
+  id: string
+  group_id: string
+  agent_id: string | null
+  created_by: string | null
+  thread_type: string | null
+  title: string | null
+  goal: string | null
+  status: string
+  priority: number
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type WebSearchProvider = 'tavily'
 export type TavilySearchDepth = 'basic' | 'advanced'
 export type Appearance = 'light' | 'dark' | 'system'

@@ -224,7 +224,8 @@ impl SequenceAllocator {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
         let result = sqlx::query(
-            "UPDATE threads SET status = ?, updated_at = ? WHERE id = ? AND status != 'cleared'",
+            "UPDATE threads SET status = ?, updated_at = ? \
+             WHERE id = ? AND status NOT IN ('cleared', 'archived')",
         )
         .bind(status)
         .bind(&now)
@@ -372,7 +373,7 @@ async fn ensure_thread_writable(
         .bind(thread_id)
         .fetch_optional(&mut **tx)
         .await?;
-    if status.as_deref() == Some("cleared") || status.is_none() {
+    if matches!(status.as_deref(), None | Some("cleared" | "archived")) {
         return Err(anyhow::anyhow!("thread is not writable"));
     }
     Ok(())

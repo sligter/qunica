@@ -1,13 +1,15 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { MessagesSquare, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
+import { GroupChatHeaderActions } from '@/components/groups/GroupChatHeaderActions'
 import { Button } from '@/components/ui/button'
 import { PageState } from '@/components/ui/page-state'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useGroup } from '@/hooks/useGroups'
+import { useGroupThreads } from '@/hooks/useGroupThreads'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
 
@@ -17,6 +19,8 @@ export function GroupChatPage() {
   const { groupId } = useParams<{ groupId: string }>()
   const group = useGroup(groupId)
   const groupAgents = useGroupAgents(groupId)
+  const groupThreads = useGroupThreads(groupId)
+  const [selectedThreadId, setSelectedThreadId] = useState<string>()
 
   useEffect(() => {
     if (!group.data?.name) return
@@ -41,12 +45,23 @@ export function GroupChatPage() {
   if (group.isLoading || !group.data) {
     return <PageState variant="loading" title={t('manage.loading')} />
   }
+  if (groupThreads.error) {
+    return <PageState variant="error" title={String(groupThreads.error)} />
+  }
+  if (groupThreads.isLoading) {
+    return <PageState variant="loading" title={t('tasks.loading')} />
+  }
 
   const agents = groupAgents.data ?? []
+  const threads = groupThreads.data ?? []
+  const selectedThread = threads.find((thread) => thread.id === selectedThreadId)
+    ?? threads.find((thread) => thread.status !== 'archived')
+    ?? threads[0]
   return (
     <ConversationChatView
       key={`groups:${groupId}`}
       conversationId={groupId}
+      threadId={selectedThread?.id}
       workspaceId={group.data.workspace_id}
       scope="groups"
       agents={agents}
@@ -56,6 +71,24 @@ export function GroupChatPage() {
         formattedCount: formatNumber(agents.length, language),
       })}
       announcement={t('header.announcement', { text: group.data.announcement ?? '' })}
+      renderHeaderContext={(disabled) => (
+        <GroupChatHeaderActions
+          groupId={groupId}
+          threads={threads}
+          selectedThread={selectedThread}
+          disabled={disabled}
+          onSelect={setSelectedThreadId}
+          onArchived={(archivedId) => {
+            const next = threads.find(
+              (thread) => thread.id !== archivedId && thread.status !== 'archived',
+            )
+            setSelectedThreadId(next?.id ?? archivedId)
+          }}
+        />
+      )}
+      disabledComposerReason={
+        selectedThread?.status === 'archived' ? t('tasks.archivedReadOnly') : undefined
+      }
       headerActions={
         <Button variant="ghost" size="icon" asChild aria-label={t('actions.manage')}>
           <Link to={`/groups/${groupId}/manage`}>

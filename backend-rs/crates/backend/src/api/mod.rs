@@ -430,6 +430,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(messages::stream_group),
         )
         .route(
+            "/api/v2/groups/:group_id/threads",
+            axum::routing::post(threads::create_group).get(threads::list_group),
+        )
+        .route(
             "/api/v2/direct-chats/:group_id/messages",
             axum::routing::post(messages::send_direct).get(messages::list_direct),
         )
@@ -498,6 +502,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/threads/:thread_id/resume",
             axum::routing::post(threads::resume),
+        )
+        .route(
+            "/api/v2/threads/:thread_id/archive",
+            axum::routing::post(threads::archive),
         )
         .route(
             "/api/v2/skills",

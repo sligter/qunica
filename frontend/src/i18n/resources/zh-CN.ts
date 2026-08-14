@@ -250,6 +250,11 @@ export const zhCN: TranslationShape<typeof enUS> = {
     thinking: { default: '默认', low: '低', medium: '中', high: '高', xhigh: '极高' },
   },
   groups: {
+    tasks: {
+      switcher: '当前任务', none: '尚无任务', active: '进行中', archived: '已归档', untitled: '未命名任务', loading: '正在加载任务…',
+      title: '任务标题', createTitle: '开始新任务', createDescription: '为此任务设置独立的标题和上下文。', creating: '正在创建…', createError: '创建任务失败：{{message}}',
+      archive: '归档任务', archiveTitle: '归档“{{title}}”？', archiveDescription: '消息会保留，但此任务将变为只读。', archivedReadOnly: '此任务已归档。请选择进行中的任务或开始新任务。',
+    },
     pageTitle: 'AG Swarmer',
     loadError: '无法加载群组。',
     empty: '暂无群组。点击“新建群组”即可开始。',
@@ -265,7 +270,6 @@ export const zhCN: TranslationShape<typeof enUS> = {
     header: { agent_one: '{{formattedCount}} 个 Agent', agent_other: '{{formattedCount}} 个 Agent', announcement: '公告：{{text}}' },
     emptyAgents: '此群组中还没有 Agent，请在群组设置中添加。',
     actions: { manage: '管理群组', create: '创建群组', delete: '删除群组', newTask: '新任务' },
-    newTask: { title: '开始新任务？', description: '聊天记录会保留，但 Agent 后续回复不会再读取当前任务的消息上下文。' },
     create: { title: '创建新群组', description: '群组是用户与 Agent 协作的共享上下文。请选择现有工作区、创建本地工作区，或让应用在已配置的群组工作区根目录下自动创建。', name: '群组名称', required: '必填', nameTooLong: '不得超过 100 个字符', workspace: '群组工作区', workspaceDescription: '选择现有工作区或创建本地工作区。留空时将从系统根目录自动创建。', workspaceSelected: '此群组将使用所选工作区。', workspaceLoading: '正在加载系统设置…', workspaceAutoCreate: '将在以下位置创建新的专用工作区：', workspaceMissing: '尚未配置群组工作区根目录。', workspaceSettingsLink: '请在系统设置中配置', workspaceMissingSuffix: '后再创建群组。', optionalDescription: '描述（可选）', optionalAnnouncement: '公告（可选）', announcementPlaceholder: '每个 Agent 系统提示词中都会包含的简短说明。', communicationMode: '通信模式', initialAgents: '初始 Agent（可选）', noAgents: '暂无 Agent。请先在 Agent 标签页中创建。', submit: '创建群组', creating: '正在创建…', cancel: '取消' },
     manage: { title: '管理群组', documentTitle: '{{name}} · 管理 · AG Swarmer', back: '返回群组聊天', members: '成员', settings: '设置', notes: '笔记', loading: '正在加载…', loadError: '无法加载群组。', loadErrorDetail: '无法加载群组：{{message}}', notFound: '未找到群组。' },
     members: { title: '成员', count_one: '此群组共有 {{formattedCount}} 位用户和 Agent。', count_other: '此群组共有 {{formattedCount}} 位用户和 Agent。', search: '搜索成员', all: '全部', human: '用户', agents: 'Agent', muted: '已静音', workspace: '工作区', leader: '领导者', noMatches: '没有匹配的成员。', details: '成员详情', detailsHint: '选择成员以管理访问、静音状态和 Agent 拓扑。', topology: '通信拓扑', currentMode: '当前模式：{{mode}}。选择 Agent 以配置其角色或顺序。', addHuman: '添加用户成员', searchUsers: '搜索用户', addAgent: '添加 Agent', noAgents: '没有可添加的 Agent。', noDescription: '暂无描述。', loadError: '无法加载成员。', loading: '正在加载…', add: '添加', adding: '正在添加…', allowWorkspace: '允许使用工作区', agentId: 'Agent ID：{{id}}', userId: '用户 ID：{{id}}', groupWorkspace: '群组工作区', sharedWorkspaceAccess: '共享工作区访问权限。', share: '共享', unshare: '取消共享', workspaceAccess: '工作区访问', workspaceAccessDescription: '该 Agent 在回合中可以读写哪些目录。', workspacePrimary: '普通相对路径解析于：{{location}}', workspaceMount: '挂载在 ~self/：{{location}}', workspaceNotConfigured: '未配置', workspaceModes: { group: '群组工作区', groupAndSelf: '群组 + 自己的目录', self: '仅自己的目录', groupHint: '与其他成员一样，读写群组工作区。', groupAndSelfHint: '在群组工作区中工作，同时可用 ~self/ 前缀访问自己的目录。', selfHint: '隔离：无法访问群组文件和消息附件，产出也不会进入群组工作区。' }, starTopology: '星状拓扑', setAsHub: '将此 Agent 设为中心。', makeHub: '设为中心', hierarchyRole: '层级角色', noTopologyRole: '无拓扑角色', unknownTopologyRole: '未知拓扑角色：{{value}}', mute: '静音', unmute: '取消静音', remove: '移除', removeTitle: '移除 {{name}}？', removeDescription: '此成员将不再属于该群组。', workspaceSharing: '共享群组工作区', topologyRole: '拓扑角色', speakingOrder: '发言顺序', member: '成员', owner: '所有者', admin: '管理员', agent: 'Agent', worker: '工作者', hub: '中心', participant: '参与者', modes: { mesh: '网状', star: '星状', hierarchical: '分层', ring: '环状' }, errors: { topology: '无法更新拓扑', agentMute: '无法更新 Agent 静音状态', memberMute: '无法更新成员静音状态', removeAgent: '无法移除 Agent', removeMember: '无法移除成员', workspace: '无法更新工作区共享', detail: '{{message}}：{{detail}}' } },

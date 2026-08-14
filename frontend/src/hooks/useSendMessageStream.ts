@@ -301,6 +301,7 @@ function createPendingSendAcknowledgement(): PendingSendAcknowledgement {
 
 interface SendMessageStreamOptions {
   scope?: ConversationScope
+  threadId?: string
   onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
 }
 
@@ -309,6 +310,7 @@ export function useSendMessageStream(
   options: SendMessageStreamOptions = {},
 ) {
   const scope = options.scope ?? 'groups'
+  const threadId = options.threadId
   const onConversationUpdated = options.onConversationUpdated
   const token = useAuthStore((s) => s.token)
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
@@ -397,6 +399,9 @@ export function useSendMessageStream(
     if (!groupId) return
     void qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId) })
     void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
+    if (scope === 'groups') {
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'threads'] })
+    }
   }, [groupId, qc, scope])
 
   const invalidateTurn = useCallback(
@@ -591,6 +596,7 @@ export function useSendMessageStream(
       const message = {
         ...(typeof input === 'string' ? { content: input, attachments: [] } : input),
         client_request_id: id,
+        ...(threadId ? { thread_id: threadId } : {}),
       }
 
       try {
@@ -935,6 +941,7 @@ export function useSendMessageStream(
       setStreamAgentContextUsage,
       startSend,
       startStreamRun,
+      threadId,
       token,
       onConversationUpdated,
       upsertStreamExternalRun,

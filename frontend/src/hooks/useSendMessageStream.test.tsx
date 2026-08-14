@@ -183,10 +183,10 @@ describe('useSendMessageStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
-  it('sends its stable local request id to the backend', () => {
+  it('sends its stable local request id and selected task to the backend', () => {
     const queryClient = new QueryClient()
     const hook = renderHook(
-      () => useSendMessageStream('group-1'),
+      () => useSendMessageStream('group-1', { threadId: 'thread-1' }),
       { wrapper: wrapper(queryClient) },
     )
 
@@ -196,6 +196,7 @@ describe('useSendMessageStream scheduler events', () => {
       content: 'hello',
       attachments: [],
       client_request_id: expect.any(String),
+      thread_id: 'thread-1',
     })
   })
 

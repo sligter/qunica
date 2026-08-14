@@ -17,10 +17,10 @@ const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
 const workspacePanelMocks = vi.hoisted(() => ({ group: vi.fn() }))
 const maintenanceMocks = vi.hoisted(() => ({
   clear: vi.fn(),
-  newTask: vi.fn(),
   reset: vi.fn(),
 }))
 const messageStoreMocks = vi.hoisted(() => ({
+  clearGroupMessages: vi.fn(),
   clearWarnings: vi.fn(),
   activeResumesByMessageId: {} as Record<
     string,
@@ -84,10 +84,6 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     mutateAsync: maintenanceMocks.reset,
     isPending: false,
   }),
-  useStartNewGroupTask: () => ({
-    mutateAsync: maintenanceMocks.newTask,
-    isPending: false,
-  }),
 }))
 vi.mock('@/hooks/usePersistentPaneWidth', () => ({
   usePersistentPaneWidth: () => ({
@@ -120,24 +116,28 @@ vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
 interface ConversationRenderOptions {
   conversationId?: string
   scope?: 'groups' | 'direct-chats'
+  threadId?: string
   workspaceId?: string | null
 }
 
 function conversationElement({
   conversationId = 'chat-1',
   scope = 'direct-chats',
+  threadId,
   workspaceId = 'workspace-1',
 }: ConversationRenderOptions = {}) {
   return (
     <I18nextProvider i18n={i18n}>
       <ConversationChatView
         conversationId={conversationId}
+        threadId={threadId}
         workspaceId={workspaceId}
         scope={scope}
         agents={[]}
         title="Direct chat"
         subtitle="Solo"
         announcement="group only"
+        renderHeaderContext={scope === 'groups' ? () => <button>Start new task</button> : undefined}
         headerActions={<button>Manage Group</button>}
         capabilities={{
           showAnnouncement: false,
@@ -164,8 +164,8 @@ describe('ConversationChatView', () => {
     composerMocks.render.mockReset()
     workspacePanelMocks.group.mockReset()
     maintenanceMocks.clear.mockReset().mockResolvedValue(undefined)
-    maintenanceMocks.newTask.mockReset().mockResolvedValue(undefined)
     maintenanceMocks.reset.mockReset().mockResolvedValue(undefined)
+    messageStoreMocks.clearGroupMessages.mockReset()
     messageStoreMocks.clearWarnings.mockReset()
     messageStoreMocks.activeResumesByMessageId = {}
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
@@ -209,6 +209,14 @@ describe('ConversationChatView', () => {
     expect(screen.queryByRole('button', { name: 'Reset context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Clear chat' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start new task' })).toBeVisible()
+  })
+
+  it('drops group-local stream state when switching tasks', () => {
+    const view = renderConversation({ scope: 'groups', threadId: 'thread-1' })
+
+    view.rerender(conversationElement({ scope: 'groups', threadId: 'thread-2' }))
+
+    expect(messageStoreMocks.clearGroupMessages).toHaveBeenCalledWith('chat-1')
   })
 
   it('confirms private-chat context reset and message clearing', async () => {

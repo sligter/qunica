@@ -14,14 +14,16 @@ use axum::{
     Json,
 };
 use futures_util::{stream::BoxStream, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
     api::{
         auth::current_user_id,
+        conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
         sse_replay::{fetch_replay_events_for_thread, last_event_id, parse_replay_cursor},
         AppState,
@@ -51,16 +53,23 @@ pub struct ThreadResponse {
     updated_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateTaskThreadRequest {
+    title: String,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct ThreadAccessRow {
     id: String,
     group_id: String,
     agent_id: Option<String>,
+    title: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
     group_owner_id: Option<String>,
     group_status: Option<String>,
+    conversation_kind: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -84,13 +93,18 @@ struct ResumeTarget {
 
 impl From<ThreadAccessRow> for ThreadResponse {
     fn from(row: ThreadAccessRow) -> Self {
+        let thread_type = match (row.agent_id.is_none(), row.conversation_kind.as_deref()) {
+            (true, Some("group")) => Some("task_thread".to_string()),
+            (true, Some("direct")) => Some("chat_thread".to_string()),
+            _ => None,
+        };
         Self {
             id: row.id,
             group_id: row.group_id,
             agent_id: row.agent_id,
             created_by: None,
-            thread_type: None,
-            title: None,
+            thread_type,
+            title: row.title,
             goal: None,
             status: row.status,
             priority: 0,
@@ -109,6 +123,118 @@ pub async fn get(
 ) -> Result<Json<ThreadResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    Ok(Json(ThreadResponse::from(thread)))
+}
+
+pub async fn list_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<ThreadResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    ensure_active_owned_conversation(
+        state.db.pool(),
+        &group_id,
+        &owner_id,
+        ConversationKind::Group,
+    )
+    .await?;
+
+    let rows: Vec<ThreadAccessRow> = sqlx::query_as(
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.status, t.created_at, t.updated_at, \
+                g.owner_id AS group_owner_id, g.status AS group_status, \
+                g.conversation_kind AS conversation_kind \
+         FROM threads t \
+         JOIN groups g ON g.id = t.group_id \
+         WHERE t.group_id = ? AND t.agent_id IS NULL AND t.status != 'cleared' \
+         ORDER BY CASE WHEN t.status = 'archived' THEN 1 ELSE 0 END, \
+                  t.updated_at DESC, t.created_at DESC, t.id DESC",
+    )
+    .bind(&group_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+
+    Ok(Json(rows.into_iter().map(ThreadResponse::from).collect()))
+}
+
+pub async fn create_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Json(body): Json<CreateTaskThreadRequest>,
+) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let title = validate_title(&body.title)?;
+    ensure_active_owned_conversation(
+        state.db.pool(),
+        &group_id,
+        &owner_id,
+        ConversationKind::Group,
+    )
+    .await?;
+
+    let id = Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+    sqlx::query(
+        "INSERT INTO threads \
+         (id, group_id, agent_id, title, status, next_seq, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, 'active', 1, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&group_id)
+    .bind(title)
+    .bind(&now)
+    .bind(&now)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to create task"))?;
+
+    let thread = fetch_owned_thread(state.db.pool(), &id, &owner_id).await?;
+    Ok((StatusCode::CREATED, Json(ThreadResponse::from(thread))))
+}
+
+pub async fn archive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(thread_id): Path<String>,
+) -> Result<Json<ThreadResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    ensure_task_thread(&thread)?;
+    if thread.status == "archived" {
+        return Ok(Json(ThreadResponse::from(thread)));
+    }
+    if thread.status == "cleared" {
+        return Err(ApiError::conflict("task has been cleared"));
+    }
+
+    let updated = sqlx::query(
+        "UPDATE threads SET status = 'archived', updated_at = ? \
+         WHERE id = ? AND status NOT IN ('running', 'archived', 'cleared') \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM group_turns \
+             WHERE thread_id = ? AND status IN ('pending', 'running', 'waiting_for_user') \
+           )",
+    )
+    .bind(now_rfc3339())
+    .bind(&thread_id)
+    .bind(&thread_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to archive task"))?;
+    if updated.rows_affected() == 0 {
+        let current = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+        if current.status == "archived" {
+            return Ok(Json(ThreadResponse::from(current)));
+        }
+        return Err(ApiError::conflict("task is still running"));
+    }
+
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     Ok(Json(ThreadResponse::from(thread)))
 }
@@ -206,8 +332,9 @@ async fn fetch_owned_thread(
     owner_id: &str,
 ) -> Result<ThreadAccessRow, ApiError> {
     let row: Option<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.status, t.created_at, t.updated_at, \
-                g.owner_id AS group_owner_id, g.status AS group_status \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.status, t.created_at, t.updated_at, \
+                g.owner_id AS group_owner_id, g.status AS group_status, \
+                g.conversation_kind AS conversation_kind \
          FROM threads t \
          LEFT JOIN groups g ON g.id = t.group_id \
          WHERE t.id = ?",
@@ -231,6 +358,13 @@ async fn fetch_owned_thread(
         ));
     }
     Ok(row)
+}
+
+fn ensure_task_thread(thread: &ThreadAccessRow) -> Result<(), ApiError> {
+    if thread.agent_id.is_some() || thread.conversation_kind.as_deref() != Some("group") {
+        return Err(ApiError::not_found("task not found"));
+    }
+    Ok(())
 }
 
 async fn latest_interrupted_message(
@@ -287,4 +421,20 @@ fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {
     Uuid::parse_str(raw.trim())
         .map(|id| id.to_string())
         .map_err(|_| ApiError::invalid_input(format!("invalid {field}")))
+}
+
+fn validate_title(raw: &str) -> Result<String, ApiError> {
+    let title = raw.trim();
+    if title.is_empty() || title.chars().count() > 80 {
+        return Err(ApiError::invalid_input(
+            "title must be between 1 and 80 characters",
+        ));
+    }
+    Ok(title.to_string())
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }
