@@ -3204,6 +3204,17 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
     let resumed_message = payloads_of_kind(&resumed, StreamEventKind::AgentMessage);
     assert_eq!(resumed_message[0]["message_id"], interrupted_id);
     assert_eq!(resumed_message[0]["content"], " resumed from checkpoint");
+    // The resume event must carry the full turn structure so the client can
+    // rebuild per-segment bubbles and tool-call bubbles without a refetch.
+    let resumed_tool_calls = resumed_message[0]["tool_calls"]
+        .as_array()
+        .expect("resume agent_message event carries tool_calls");
+    assert_eq!(resumed_tool_calls.len(), 2);
+    let resumed_segments = resumed_message[0]["response_segments"]
+        .as_array()
+        .expect("resume agent_message event carries response_segments");
+    assert_eq!(resumed_segments.len(), 1);
+    assert_eq!(resumed_segments[0], " resumed from checkpoint");
     let resumed_checkpoint: String =
         sqlx::query_scalar("SELECT content_json FROM messages WHERE id = ?")
             .bind(&interrupted_id)

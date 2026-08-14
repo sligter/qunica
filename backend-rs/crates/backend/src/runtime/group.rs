@@ -513,11 +513,24 @@ impl StreamCtx {
     /// events before emitting them.
     async fn emit_resume_completion(
         &mut self,
-        payload: Value,
+        mut payload: Value,
         message_id: &str,
         content: &str,
         content_json: Option<&str>,
     ) -> Result<(), StepErr> {
+        // The resume `agent_message` event must carry the full persisted turn
+        // structure (response segments, reasoning, tool calls) so the client
+        // can rebuild the message's bubbles immediately instead of showing a
+        // single merged bubble until a history refetch lands.
+        if let (Some(raw), Some(object)) = (content_json, payload.as_object_mut()) {
+            if let Ok(turn) = serde_json::from_str::<Value>(raw) {
+                for field in ["response_segments", "reasoning", "tool_calls"] {
+                    if let Some(value) = turn.get(field) {
+                        object.insert(field.to_string(), value.clone());
+                    }
+                }
+            }
+        }
         let message_event = self.next_event(StreamEventKind::AgentMessage, payload);
         let done_event = self.next_event(StreamEventKind::Done, json!({}));
         self.allocator

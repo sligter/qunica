@@ -288,6 +288,60 @@ describe('useResumeStream scheduler events', () => {
     })
   })
 
+  it('keeps response segments, reasoning and tool calls from the resumed agent_message event', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'agent_message',
+      payload: {
+        message_id: 'message-1',
+        agent_id: 'agent-1',
+        content: 'first tool result',
+        response_segments: ['first', 'after tool'],
+        reasoning: ['thinking...'],
+        tool_calls: [
+          {
+            tool_call_id: 'call_1',
+            tool_name: 'Read',
+            status: 'completed',
+            args_summary: 'note.txt',
+            result_summary: 'ok',
+          },
+        ],
+      },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 3,
+      event_id: 'event-3',
+      kind: 'done',
+      payload: { turn_id: 'turn-1' },
+    })
+
+    const message = useMessageStore.getState().byGroup['thread-1'][0]
+    expect(message.content).toBe('first tool result')
+    expect(message.response_segments).toEqual(['first', 'after tool'])
+    expect(message.reasoning).toEqual(['thinking...'])
+    expect(message.tool_calls).toEqual([
+      expect.objectContaining({ tool_call_id: 'call_1', tool_name: 'Read' }),
+    ])
+  })
+
   it('rejects resumed tokens and final messages after the turn is superseded', () => {
     const queryClient = new QueryClient()
     const hook = renderHook(

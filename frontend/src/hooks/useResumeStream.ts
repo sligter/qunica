@@ -35,6 +35,20 @@ const agentMessagePayloadSchema = z.object({
   agent_id: z.string().optional(),
   sender_id: z.string().nullable().optional(),
   content: z.string().nullable().optional(),
+  response_segments: z.array(z.string()).nullable().optional(),
+  reasoning: z.array(z.string()).nullable().optional(),
+  tool_calls: z
+    .array(
+      z.object({
+        tool_call_id: z.string().nullable().optional(),
+        tool_name: z.string().nullable().optional(),
+        status: z.string().nullable().optional(),
+        args_summary: z.string().nullable().optional(),
+        result_summary: z.string().nullable().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
 })
 
 const errorPayloadSchema = z.object({
@@ -67,6 +81,9 @@ function buildAgentMessage(
     status: 'visible',
     refs: previous?.refs ?? null,
     context_usage: previous?.context_usage ?? null,
+    response_segments: payload.response_segments ?? previous?.response_segments ?? null,
+    reasoning: payload.reasoning ?? previous?.reasoning ?? null,
+    tool_calls: payload.tool_calls ?? previous?.tool_calls ?? null,
     turn_id: turnId ?? previous?.turn_id ?? null,
     dispatch_id: previous?.dispatch_id ?? null,
     reply_to_message_id: previous?.reply_to_message_id ?? event.stream_id,
