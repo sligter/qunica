@@ -7,6 +7,7 @@
 //! never interleave with another writer's update.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
 use serde_json::Value;
@@ -14,6 +15,9 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+const SQLITE_WRITE_ATTEMPTS: usize = 3;
+const SQLITE_WRITE_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 /// A message row to persist at a freshly allocated thread sequence.
 pub struct NewMessage {
@@ -261,17 +265,48 @@ impl SequenceAllocator {
         thread_id: &str,
         event: &StreamEvent<Value>,
     ) -> anyhow::Result<()> {
-        let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
-        persist_event_in_tx(&mut tx, thread_id, event).await?;
-        tx.commit().await?;
-        Ok(())
+        self.persist_events(thread_id, std::slice::from_ref(event))
+            .await
     }
 
     /// Persist an ordered event group atomically. Scheduler terminal markers
     /// use this so replay can never observe a terminal event without its
     /// transport-level `done` event.
     pub async fn persist_events(
+        &self,
+        thread_id: &str,
+        events: &[StreamEvent<Value>],
+    ) -> anyhow::Result<()> {
+        for attempt in 1..=SQLITE_WRITE_ATTEMPTS {
+            match self.persist_events_once(thread_id, events).await {
+                Err(error)
+                    if attempt < SQLITE_WRITE_ATTEMPTS && is_transient_sqlite_lock(&error) =>
+                {
+                    tracing::warn!(
+                        thread_id,
+                        event_count = events.len(),
+                        attempt,
+                        error = %error,
+                        "retrying stream event persistence after SQLite lock"
+                    );
+                    tokio::time::sleep(SQLITE_WRITE_RETRY_DELAY).await;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        thread_id,
+                        event_count = events.len(),
+                        error = %error,
+                        "failed to persist stream event"
+                    );
+                    return Err(error);
+                }
+                Ok(()) => return Ok(()),
+            }
+        }
+        unreachable!("stream event retry loop always returns")
+    }
+
+    async fn persist_events_once(
         &self,
         thread_id: &str,
         events: &[StreamEvent<Value>],
@@ -331,15 +366,6 @@ pub(crate) async fn persist_message_with_event_in_tx(
     Ok(next_seq)
 }
 
-pub(crate) async fn persist_event_in_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    thread_id: &str,
-    event: &StreamEvent<Value>,
-) -> anyhow::Result<()> {
-    let now = now_rfc3339();
-    insert_stream_event(tx, thread_id, event, &now).await
-}
-
 async fn insert_stream_event(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: &str,
@@ -386,6 +412,15 @@ fn kind_str(kind: &StreamEventKind) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+fn is_transient_sqlite_lock(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<sqlx::Error>()
+        .and_then(sqlx::Error::as_database_error)
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| matches!(code & 0xff, 5 | 6))
 }
 
 fn now_rfc3339() -> String {

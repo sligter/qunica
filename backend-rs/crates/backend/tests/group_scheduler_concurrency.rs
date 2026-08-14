@@ -7,7 +7,7 @@ use ag_swarmer_backend::{
             ActionKind, DispatchOutput, DispatchStatus, FinishDispatch, NewDispatch, NewTurn,
             SchedulerStore, SchedulerStoreError, SelectionReason, TurnStatus,
         },
-        sequence::NewMessage,
+        sequence::{NewMessage, SequenceAllocator},
         StreamEvent, StreamEventKind,
     },
 };
@@ -184,6 +184,59 @@ async fn finishing_a_dispatch_retries_a_transient_sqlite_write_lock() {
         finished.output_message_id.as_deref(),
         Some("message-after-lock")
     );
+}
+
+#[tokio::test]
+async fn persisting_a_stream_event_retries_a_transient_sqlite_write_lock() {
+    let (fixture, _directory) = Fixture::new_file().await;
+
+    // busy_timeout is connection-local. Configure every pooled connection so
+    // the first attempt fails promptly instead of waiting out the blocker.
+    let mut connections = Vec::new();
+    for _ in 0..8 {
+        connections.push(fixture.pool.acquire().await.unwrap());
+    }
+    for connection in &mut connections {
+        sqlx::query("PRAGMA busy_timeout = 1")
+            .execute(&mut **connection)
+            .await
+            .unwrap();
+    }
+    drop(connections);
+
+    let mut blocker = fixture.pool.begin().await.unwrap();
+    sqlx::query("UPDATE groups SET updated_at = 'blocked' WHERE id = ?")
+        .bind(&fixture.group_id)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    let allocator = SequenceAllocator::new(fixture.pool.clone(), Arc::new(Mutex::new(())));
+    let event = StreamEvent::new(
+        Uuid::new_v4(),
+        0,
+        StreamEventKind::AcpAgentRun,
+        json!({"status": "completed"}),
+    );
+    let ready = Arc::new(Barrier::new(2));
+    let persist_ready = ready.clone();
+    let thread_id = fixture.thread_id.clone();
+    let persist = tokio::spawn(async move {
+        persist_ready.wait().await;
+        allocator.persist_event(&thread_id, &event).await
+    });
+    ready.wait().await;
+    let started = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    blocker.rollback().await.unwrap();
+
+    persist.await.unwrap().unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+    let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stream_events")
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+    assert_eq!(event_count, 1);
 }
 
 struct Fixture {
