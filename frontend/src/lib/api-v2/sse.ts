@@ -2,22 +2,32 @@ import { fetchEventSource } from '@microsoft/fetch-event-source'
 
 import { apiUrl } from '@/lib/runtime'
 
+import {
+  isAbortError,
+  isNetworkError,
+  isRetryableHttpStatus,
+  MAX_RETRY_ATTEMPTS,
+  retryDelayMs,
+} from './retry'
 import type { StreamEvent } from './types'
-
-const MAX_RETRY_ATTEMPTS = 5
-const BASE_RETRY_MS = 1_000
-const MAX_RETRY_MS = 5_000
 
 export interface ApiV2SseHandlers {
   onEvent: (event: StreamEvent) => void
+  onRetry?: (attempt: number, delayMs: number) => void
   onError?: (err: unknown) => void
   onClose?: () => void
 }
 
 class FatalSseError extends Error {}
+class RetryableSseError extends Error {}
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError'
+export class SseRetryExhaustedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `SSE retry policy exhausted after ${MAX_RETRY_ATTEMPTS} attempts: ${errorMessage(cause)}`,
+    )
+    this.name = 'SseRetryExhaustedError'
+  }
 }
 
 function errorMessage(err: unknown): string {
@@ -41,7 +51,8 @@ export function openApiV2SseStream(opts: {
   }
 
   if (opts.lastEventId) {
-    headers['Last-Event-ID'] = opts.lastEventId
+    // fetch-event-source keeps this header updated from every subsequent msg.id.
+    headers['last-event-id'] = opts.lastEventId
   }
 
   void fetchEventSource(apiUrl(opts.url), {
@@ -52,9 +63,11 @@ export function openApiV2SseStream(opts: {
     openWhenHidden: true,
     onopen: async (response) => {
       if (!response.ok) {
+        if (isRetryableHttpStatus(response.status)) {
+          throw new RetryableSseError(`SSE open failed: ${response.status}`)
+        }
         throw new FatalSseError(`SSE open failed: ${response.status}`)
       }
-      retryAttempts = 0
     },
     onmessage: (msg) => {
       let parsed: StreamEvent
@@ -64,34 +77,38 @@ export function openApiV2SseStream(opts: {
         throw new FatalSseError(`SSE event was not valid JSON: ${errorMessage(err)}`)
       }
       terminalEventSeen = parsed.kind === 'done' || parsed.kind === 'error'
+      retryAttempts = 0
       opts.handlers.onEvent(parsed)
     },
     onerror: (err) => {
       if (ctrl.signal.aborted || isAbortError(err)) {
         return
       }
-      if (err instanceof FatalSseError) {
+      if (
+        err instanceof FatalSseError ||
+        (!(err instanceof RetryableSseError) && !isNetworkError(err))
+      ) {
         opts.handlers.onError?.(err)
         throw err
       }
       retryAttempts += 1
       if (retryAttempts > MAX_RETRY_ATTEMPTS) {
-        const fatal = new FatalSseError(
-          `SSE retry policy exhausted after ${MAX_RETRY_ATTEMPTS} attempts: ${errorMessage(err)}`,
-        )
+        const fatal = new SseRetryExhaustedError(err)
         opts.handlers.onError?.(fatal)
         throw fatal
       }
-      return Math.min(BASE_RETRY_MS * retryAttempts, MAX_RETRY_MS)
+      const delayMs = retryDelayMs(retryAttempts)
+      opts.handlers.onRetry?.(retryAttempts, delayMs)
+      return delayMs
     },
     onclose: () => {
       if (ctrl.signal.aborted || terminalEventSeen) {
         opts.handlers.onClose?.()
         return
       }
-      throw new Error('SSE closed before a terminal event')
+      throw new RetryableSseError('SSE closed before a terminal event')
     },
-  })
+  }).catch(() => undefined)
 
   return ctrl
 }

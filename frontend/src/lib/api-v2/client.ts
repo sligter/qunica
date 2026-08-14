@@ -7,6 +7,7 @@
 
 import { apiUrl } from '@/lib/runtime'
 
+import { fetchWithRetry } from './retry'
 import type { ApiErrorEnvelope } from './types'
 
 const BASE = '/api/v2'
@@ -90,6 +91,7 @@ function apiErrorFromResponse(status: number, parsed: unknown, fallbackText: str
 }
 
 export async function fetchJson<T>(path: string, opts: FetchOptions = {}): Promise<T> {
+  const method = opts.method ?? 'GET'
   const headers: Record<string, string> = {
     Accept: 'application/json',
   }
@@ -100,12 +102,12 @@ export async function fetchJson<T>(path: string, opts: FetchOptions = {}): Promi
     headers.Authorization = `Bearer ${opts.token}`
   }
 
-  const res = await fetch(apiUrl(`${BASE}${path}`), {
-    method: opts.method ?? 'GET',
+  const res = await fetchWithRetry(apiUrl(`${BASE}${path}`), {
+    method,
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     signal: opts.signal,
-  })
+  }, method === 'GET' || method === 'DELETE' || path.endsWith('/cancel'))
 
   if (res.status === 204) {
     return undefined as T
@@ -140,12 +142,13 @@ export async function fetchFormData<T>(
     headers.Authorization = `Bearer ${opts.token}`
   }
 
-  const res = await fetch(apiUrl(`${BASE}${path}`), {
-    method: opts.method ?? 'POST',
+  const method = opts.method ?? 'POST'
+  const res = await fetchWithRetry(apiUrl(`${BASE}${path}`), {
+    method,
     headers,
     body: formData,
     signal: opts.signal,
-  })
+  }, method === 'GET' || method === 'DELETE' || path.endsWith('/cancel'))
 
   if (res.status === 204) {
     return undefined as T

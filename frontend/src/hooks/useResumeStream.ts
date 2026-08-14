@@ -18,6 +18,7 @@ import {
   waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import type { RetryState } from '@/lib/api-v2/retry'
 import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
@@ -116,6 +117,8 @@ export function useResumeStream(
 
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState<RetryState | null>(null)
+  const [retryExhausted, setRetryExhausted] = useState(false)
   const ctrlRef = useRef<AbortController | null>(null)
   const streamIdRef = useRef<string | null>(null)
 
@@ -129,6 +132,7 @@ export function useResumeStream(
 
   const finish = useCallback(() => {
     setIsStreaming(false)
+    setRetry(null)
     ctrlRef.current = null
     streamIdRef.current = null
     if (messageId) endResume(messageId)
@@ -185,6 +189,8 @@ export function useResumeStream(
   const resume = useCallback(() => {
     if (!groupId || !threadId || !messageId || !token || isStreaming) return
     setError(null)
+    setRetry(null)
+    setRetryExhausted(false)
     setIsStreaming(true)
     startResume(groupId, messageId, cancel)
 
@@ -194,6 +200,7 @@ export function useResumeStream(
       token,
       handlers: {
         onEvent: (event) => {
+          setRetry(null)
           const streamId = event.stream_id
           streamIdRef.current = streamId
           const schedulerUpdate = parseSchedulerStreamEvent(event)
@@ -290,7 +297,13 @@ export function useResumeStream(
             }
           }
         },
+        onRetry: (attempt, delayMs) => {
+          setRetry({ attempt, delayMs })
+        },
         onError: (err) => {
+          setRetryExhausted(
+            err instanceof Error && err.name === 'SseRetryExhaustedError',
+          )
           setError(err instanceof Error ? err.message : String(err))
           finish()
         },
@@ -320,5 +333,5 @@ export function useResumeStream(
     token,
   ])
 
-  return { resume, cancel, isStreaming, error }
+  return { resume, cancel, isStreaming, error, retry, retryExhausted }
 }

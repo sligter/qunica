@@ -17,6 +17,7 @@ import {
 } from '@/hooks/useGroupMessages'
 import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
+import { MAX_RETRY_ATTEMPTS } from '@/lib/api-v2/retry'
 import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
@@ -278,10 +279,27 @@ export function ConversationChatView({
                 agentIsSystem={agentIsSystem}
               />
 
+              {stream.retry ? (
+                <div className="shrink-0 px-4">
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="mx-auto w-full max-w-6xl rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground"
+                  >
+                    {t('stream.reconnecting', {
+                      attempt: stream.retry.attempt,
+                      max: MAX_RETRY_ATTEMPTS,
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               {stream.error ? (
                 <div className="shrink-0 px-4">
                   <div className="mx-auto w-full max-w-6xl rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {t('stream.error', { message: stream.error })}
+                    {stream.retryExhausted
+                      ? t('stream.retryExhausted', { max: MAX_RETRY_ATTEMPTS })
+                      : t('stream.error', { message: stream.error })}
                   </div>
                 </div>
               ) : null}

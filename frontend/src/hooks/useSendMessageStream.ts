@@ -19,6 +19,7 @@ import {
   waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import type { RetryState } from '@/lib/api-v2/retry'
 import { pendingActionFromOutput } from '@/lib/appActions'
 import type {
   ConversationUpdatedPayload,
@@ -344,7 +345,10 @@ export function useSendMessageStream(
 
   const [activeStreamCount, setActiveStreamCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState<RetryState | null>(null)
+  const [retryExhausted, setRetryExhausted] = useState(false)
   const streamsRef = useRef<Map<string, AbortController>>(new Map())
+  const retriesRef = useRef<Map<string, RetryState>>(new Map())
   const streamIdsRef = useRef<Map<string, string>>(new Map())
   const erroredStreamIdsRef = useRef<Set<string>>(new Set())
   const agentNamesRef = useRef<Map<string, string>>(new Map())
@@ -375,9 +379,20 @@ export function useSendMessageStream(
     setActiveStreamCount(streamsRef.current.size)
   }, [])
 
+  const refreshRetry = useCallback(() => {
+    setRetry(
+      [...retriesRef.current.values()].sort((a, b) => b.attempt - a.attempt)[0] ?? null,
+    )
+  }, [])
+
+  const clearRetry = useCallback((id: string) => {
+    if (retriesRef.current.delete(id)) refreshRetry()
+  }, [refreshRetry])
+
   useEffect(() => {
     const abandonedGroupId = groupId
     const streams = streamsRef.current
+    const retries = retriesRef.current
     const streamIds = streamIdsRef.current
     const erroredStreamIds = erroredStreamIdsRef.current
     const agentNames = agentNamesRef.current
@@ -408,6 +423,7 @@ export function useSendMessageStream(
         clearToolActivity(abandonedGroupId)
       }
       streams.clear()
+      retries.clear()
       streamIds.clear()
       erroredStreamIds.clear()
       agentNames.clear()
@@ -419,6 +435,7 @@ export function useSendMessageStream(
       }
       pendingSendAcknowledgements.clear()
       setActiveStreamCount(0)
+      setRetry(null)
     }
   }, [clearToolActivity, detachStreamRun, groupId, scope])
 
@@ -493,6 +510,7 @@ export function useSendMessageStream(
       )
       streamsRef.current.get(id)?.abort()
       streamsRef.current.delete(id)
+      clearRetry(id)
       streamIdsRef.current.delete(id)
       schedulerTurnByRequestRef.current.delete(id)
     }
@@ -517,6 +535,7 @@ export function useSendMessageStream(
   }, [
     clearActiveAgent,
     clearInFlight,
+    clearRetry,
     clearStreamInFlight,
     groupId,
     invalidate,
@@ -533,6 +552,7 @@ export function useSendMessageStream(
         new Error('Message stream ended before the user message was acknowledged'),
       )
       streamsRef.current.delete(id)
+      clearRetry(id)
       const resolvedStreamId = streamId ?? streamIdsRef.current.get(id)
       if (resolvedStreamId && groupId) {
         clearActiveAgent(groupId, undefined, resolvedStreamId)
@@ -556,6 +576,7 @@ export function useSendMessageStream(
     },
     [
       clearActiveAgent,
+      clearRetry,
       completePendingCancellation,
       groupId,
       invalidate,
@@ -587,6 +608,7 @@ export function useSendMessageStream(
       const acknowledgement = createPendingSendAcknowledgement()
       pendingSendAcknowledgementsRef.current.set(id, acknowledgement)
       setError(null)
+      setRetryExhausted(false)
       clearWarnings(groupId)
       clearToolActivity(groupId)
       const message = {
@@ -601,6 +623,7 @@ export function useSendMessageStream(
           token,
           handlers: {
           onEvent: (event) => {
+            clearRetry(id)
             const streamId = event.stream_id
             streamIdsRef.current.set(id, streamId)
             const schedulerUpdate = parseSchedulerStreamEvent(event)
@@ -857,8 +880,16 @@ export function useSendMessageStream(
               }
             }
           },
+          onRetry: (attempt, delayMs) => {
+            retriesRef.current.set(id, { attempt, delayMs })
+            refreshRetry()
+          },
           onError: (err) => {
             const message = err instanceof Error ? err.message : String(err)
+            clearRetry(id)
+            setRetryExhausted(
+              err instanceof Error && err.name === 'SseRetryExhaustedError',
+            )
             rejectSendBeforeAcknowledgement(id, err)
             setError(message)
             const streamId = streamIdsRef.current.get(id)
@@ -896,6 +927,7 @@ export function useSendMessageStream(
       clearActiveAgent,
       clearAgentInFlight,
       clearInFlight,
+      clearRetry,
       clearStreamInFlight,
       clearToolActivity,
       clearWarnings,
@@ -917,6 +949,7 @@ export function useSendMessageStream(
       pushWarning,
       qc,
       refreshActiveCount,
+      refreshRetry,
       rejectSendBeforeAcknowledgement,
       scope,
       setActiveAgent,
@@ -948,5 +981,13 @@ export function useSendMessageStream(
     return promise
   }, [completePendingCancellation])
 
-  return { send, cancel, isStreaming: activeStreamCount > 0, activeStreamCount, error }
+  return {
+    send,
+    cancel,
+    isStreaming: activeStreamCount > 0,
+    activeStreamCount,
+    error,
+    retry,
+    retryExhausted,
+  }
 }
