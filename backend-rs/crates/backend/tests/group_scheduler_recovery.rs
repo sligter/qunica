@@ -119,8 +119,9 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
         .unwrap();
 
     sqlx::query(
-        "UPDATE threads SET status = 'running' \
-         WHERE id IN ('thread-running', 'thread-resume')",
+        "UPDATE threads \
+         SET status = CASE WHEN id = 'thread-failed' THEN 'failed' ELSE 'running' END \
+         WHERE id IN ('thread-running', 'thread-resume', 'thread-failed')",
     )
     .execute(&pool)
     .await
@@ -195,7 +196,7 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
 
     let recovered_threads: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, status FROM threads \
-         WHERE id IN ('thread-running', 'thread-resume') \
+         WHERE id IN ('thread-running', 'thread-resume', 'thread-failed') \
          ORDER BY id",
     )
     .fetch_all(state.db.pool())
@@ -204,6 +205,7 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
     assert_eq!(
         recovered_threads,
         vec![
+            ("thread-failed".to_owned(), "active".to_owned()),
             ("thread-resume".to_owned(), "paused".to_owned()),
             ("thread-running".to_owned(), "active".to_owned()),
         ]
@@ -255,6 +257,7 @@ async fn seed_scheduler_entities(pool: &SqlitePool) {
         "thread-waiting",
         "thread-terminal",
         "thread-resume",
+        "thread-failed",
     ] {
         sqlx::query(
             "INSERT INTO threads (id, group_id, created_at, updated_at) \

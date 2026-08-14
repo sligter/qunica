@@ -2043,17 +2043,6 @@ async fn fail_scheduled_persistence(
             );
         }
     }
-    if ctx
-        .allocator
-        .set_thread_status(&ctx.thread_id, "failed")
-        .await
-        .is_err()
-    {
-        tracing::error!(
-            turn_id,
-            "failed to update thread after scheduler persistence error"
-        );
-    }
     ctx.fail("scheduler persistence failed").await
 }
 

@@ -425,6 +425,8 @@ impl SchedulerStore {
         .execute(&mut *tx)
         .await?;
 
+        // Persistence failures end a turn, not its reusable task thread. Also
+        // repair legacy rows that coupled the two states.
         sqlx::query(
             "UPDATE threads \
              SET status = CASE \
@@ -436,7 +438,7 @@ impl SchedulerStore {
                      ELSE 'active' \
                  END, \
                  updated_at = ? \
-             WHERE status = 'running'",
+             WHERE status IN ('running', 'failed')",
         )
         .bind(&now)
         .execute(&mut *tx)
