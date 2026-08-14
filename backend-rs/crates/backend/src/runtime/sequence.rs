@@ -242,6 +242,39 @@ impl SequenceAllocator {
         Ok(())
     }
 
+    /// Supersede a paused thread so a new user message can start a fresh turn.
+    ///
+    /// A thread is paused because its last turn was interrupted (provider
+    /// failure, disconnect, or cancel after partial output). Sending a new
+    /// message should not dead-end in a 409: the interrupted checkpoint stays
+    /// in history as a normal visible message and the thread returns to
+    /// `active`, so the new turn starts cleanly. Returns `false` when the
+    /// thread was not paused.
+    pub async fn supersede_paused_thread(&self, thread_id: &str) -> anyhow::Result<bool> {
+        let _guard = self.write_lock.lock().await;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE threads SET status = 'active', updated_at = ? \
+             WHERE id = ? AND status = 'paused'",
+        )
+        .bind(&now)
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 1 {
+            sqlx::query(
+                "UPDATE messages SET status = 'visible' \
+                 WHERE thread_id = ? AND status = 'interrupted'",
+            )
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Atomically claim a paused thread for a detached resume task.
     pub async fn claim_paused_thread(&self, thread_id: &str) -> anyhow::Result<bool> {
         let _guard = self.write_lock.lock().await;

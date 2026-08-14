@@ -26,7 +26,7 @@ fn moderator_decision_requires_two_legal_candidates() {
     let budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
     let one_candidate = ["a".to_owned()];
     assert!(matches!(
-        next_decision(&budget, None, &[], &[], &one_candidate, 0, true),
+        next_decision(&budget, None, &[], &[], &one_candidate, 0, true, false),
         SchedulerDecision::Dispatch(ref dispatch)
             if dispatch.target_agent_id == "a"
                 && dispatch.selection_reason == SelectionReason::DeterministicOrder
@@ -35,7 +35,7 @@ fn moderator_decision_requires_two_legal_candidates() {
     let candidates = ["a".to_owned(), "b".to_owned()];
 
     assert!(matches!(
-        next_decision(&budget, None, &[], &[], &candidates, 0, true),
+        next_decision(&budget, None, &[], &[], &candidates, 0, true, false),
         SchedulerDecision::RequestModerator
     ));
 }

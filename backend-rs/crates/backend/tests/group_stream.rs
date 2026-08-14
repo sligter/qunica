@@ -2354,12 +2354,12 @@ async fn message_send_bad_thread_id_errors_without_user_message() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("active thread"));
+        .contains("thread not found"));
     let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
         .bind(&group)
         .fetch_one(state.db.pool())
@@ -3242,6 +3242,109 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
                 .as_str()
                 .is_some_and(|content| content.contains("durable tool result"))
     }));
+}
+
+#[tokio::test]
+async fn new_message_supersedes_paused_thread_after_provider_failure() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "supersede-paused@example.com").await;
+    let owner = owner_id(&state, "supersede-paused@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "durable tool result").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) = recording_fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            tool_body(vec![(
+                "call_read",
+                "Read",
+                json!({"file_path": "note.txt"}),
+            )]),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (StatusCode::OK, text_body("fresh reply after supersede")),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+
+    // First turn fails after a tool round (same shape as a provider quota
+    // exhaustion), leaving an interrupted checkpoint and a paused thread.
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "please inspect note.txt"}),
+    )
+    .await;
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "dispatch_failed"));
+
+    let (thread_id, interrupted_id): (String, String) = sqlx::query_as(
+        "SELECT thread_id, id FROM messages \
+         WHERE group_id = ? AND sender_type = 'agent' AND status = 'interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "paused");
+
+    // A brand-new message on the same task must supersede the paused thread
+    // instead of failing the SSE open with 409, and start a fresh turn.
+    let second = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "try again", "thread_id": thread_id}),
+    )
+    .await;
+    assert!(second
+        .iter()
+        .any(|event| event["kind"] == "agent_message"));
+
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "active");
+    let interrupted_status: String =
+        sqlx::query_scalar("SELECT status FROM messages WHERE id = ?")
+            .bind(&interrupted_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(interrupted_status, "visible");
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 5);
 }
 
 #[tokio::test]

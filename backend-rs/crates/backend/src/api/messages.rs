@@ -35,8 +35,8 @@ use crate::{
         AppState,
     },
     runtime::{
-        group::MessageAttachment, run_group_turn, run_group_turn_with_stream_id, RuntimeServices,
-        TurnOutcome, TurnRequest,
+        group::MessageAttachment, run_group_turn, run_group_turn_with_stream_id, sequence::SequenceAllocator,
+        RuntimeServices, TurnOutcome, TurnRequest,
     },
 };
 
@@ -264,7 +264,7 @@ async fn list_for_kind(
 
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
     if let Some(thread_id) = thread_id.as_deref() {
-        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, false).await?;
+        ensure_conversation_thread(state.db.pool(), &group_id, thread_id).await?;
     }
 
     let before_cursor = match before_id {
@@ -658,7 +658,7 @@ async fn send_for_owner(
         .map(|raw| validate_uuid(raw, "thread id"))
         .transpose()?;
     if let Some(thread_id) = thread_id.as_deref() {
-        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, true).await?;
+        ensure_writable_thread(state, &group_id, thread_id).await?;
     }
     if expected == ConversationKind::Direct {
         ensure_direct_agent_available(state.db.pool(), &group_id, owner_id).await?;
@@ -933,7 +933,7 @@ async fn stream_for_kind(
         .map(|raw| validate_uuid(raw, "thread id"))
         .transpose()?;
     if let Some(thread_id) = thread_id.as_deref() {
-        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, false).await?;
+        ensure_conversation_thread(state.db.pool(), &group_id, thread_id).await?;
     }
     if expected == ConversationKind::Direct {
         ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
@@ -981,7 +981,7 @@ async fn stream_for_kind(
         return Ok(Sse::new(body));
     }
     if let Some(thread_id) = thread_id.as_deref() {
-        ensure_conversation_thread(state.db.pool(), &group_id, thread_id, true).await?;
+        ensure_writable_thread(&state, &group_id, thread_id).await?;
     }
 
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
@@ -1165,11 +1165,48 @@ async fn ensure_direct_agent_available(
         .ok_or_else(|| ApiError::conflict("direct chat agent is unavailable"))
 }
 
+/// Ensure a conversation thread accepts a brand-new user message.
+///
+/// `active` threads are writable as-is. A `paused` thread carries an
+/// interrupted checkpoint (provider failure, disconnect, or cancel after
+/// partial output); a new message supersedes it instead of failing with 409:
+/// the partial reply stays in history as a normal visible message and the
+/// thread returns to `active` so the new turn starts fresh. Archived, cleared
+/// and other terminal threads stay read-only.
+async fn ensure_writable_thread(
+    state: &AppState,
+    group_id: &str,
+    thread_id: &str,
+) -> Result<(), ApiError> {
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM threads \
+         WHERE id = ? AND group_id = ? AND agent_id IS NULL AND status != 'cleared'",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    match status.as_deref() {
+        Some("active") => Ok(()),
+        Some("paused") => {
+            let allocator =
+                SequenceAllocator::new(state.db.pool().clone(), state.write_lock.clone());
+            allocator
+                .supersede_paused_thread(thread_id)
+                .await
+                .map_err(|_| ApiError::internal("failed to supersede paused thread"))?;
+            Ok(())
+        }
+        Some(_) => Err(ApiError::conflict("thread is not active")),
+        None => Err(ApiError::not_found("thread not found")),
+    }
+}
+
 async fn ensure_conversation_thread(
     pool: &sqlx::SqlitePool,
     group_id: &str,
     thread_id: &str,
-    require_active: bool,
 ) -> Result<(), ApiError> {
     let status: Option<String> = sqlx::query_scalar(
         "SELECT status FROM threads \
@@ -1180,10 +1217,7 @@ async fn ensure_conversation_thread(
     .fetch_optional(pool)
     .await
     .map_err(|_| ApiError::internal("database error"))?;
-    let status = status.ok_or_else(|| ApiError::not_found("thread not found"))?;
-    if require_active && status != "active" {
-        return Err(ApiError::conflict("thread is not active"));
-    }
+    status.ok_or_else(|| ApiError::not_found("thread not found"))?;
     Ok(())
 }
 
