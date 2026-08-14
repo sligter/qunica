@@ -216,6 +216,50 @@ describe('useResumeStream scheduler events', () => {
     })
   })
 
+  it('keeps a resume stream alive and controllable after the chat remounts', () => {
+    const queryClient = new QueryClient()
+    const firstHook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => firstHook.result.current.resume())
+    const stream = mocks.streams[0]
+    firstHook.unmount()
+
+    expect(stream.abort).not.toHaveBeenCalled()
+    const remounted = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    expect(remounted.result.current.isStreaming).toBe(true)
+
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'turn_started',
+      payload: { turn_id: 'turn-1', budget },
+    })
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'token',
+      payload: { delta: ' continued' },
+    })
+    expect(useMessageStore.getState().byGroup['group-1'][0].content).toBe(
+      'partial continued',
+    )
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 3,
+      event_id: 'event-3',
+      kind: 'done',
+      payload: { turn_id: 'turn-1' },
+    })
+    expect(remounted.result.current.isStreaming).toBe(false)
+  })
+
   it('replays a pending question when resuming', () => {
     const queryClient = new QueryClient()
     const hook = renderHook(

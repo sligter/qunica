@@ -191,6 +191,10 @@ interface ActiveResume {
   cancel: () => Promise<void>
 }
 
+interface ActiveSend {
+  cancel: () => Promise<void>
+}
+
 interface MessageState {
   byGroup: Record<string, Message[]>
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
@@ -200,6 +204,7 @@ interface MessageState {
   streamRunsByGroup: Record<string, Record<string, StreamRun>>
   streamRunIdByUserMessageIdByGroup: Record<string, Record<string, string>>
   streamRunOrderByGroup: Record<string, string[]>
+  activeSendsByGroup: Record<string, ActiveSend>
   resumingMessageIds: Set<string>
   activeResumesByMessageId: Record<string, ActiveResume>
 
@@ -264,7 +269,6 @@ interface MessageState {
     streamId: string,
     userMessageId: string,
   ) => void
-  detachStreamRun: (groupId: string, streamId: string) => void
   reconcileSchedulerTurn: (groupId: string, trace: GroupTurnTraceResponse) => void
   acceptsStreamEvent: (groupId: string, streamId: string) => boolean
   markStreamRunWaitingForUser: (groupId: string, streamId: string) => string | null
@@ -273,6 +277,8 @@ interface MessageState {
   markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
   appendToMessage: (groupId: string, messageId: string, delta: string) => void
   replaceMessage: (groupId: string, message: Message) => void
+  startSend: (groupId: string, cancel: () => Promise<void>) => void
+  endSend: (groupId: string) => void
   startResume: (
     groupId: string,
     messageId: string,
@@ -663,13 +669,34 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   streamRunsByGroup: {},
   streamRunIdByUserMessageIdByGroup: {},
   streamRunOrderByGroup: {},
+  activeSendsByGroup: {},
   resumingMessageIds: new Set(),
   activeResumesByMessageId: {},
 
   setHistory: (groupId, messages) =>
-    set((s) => ({
-      byGroup: { ...s.byGroup, [groupId]: messages },
-    })),
+    set((s) => {
+      const hasActiveStream =
+        Boolean(s.activeSendsByGroup[groupId]) ||
+        Object.values(s.activeResumesByMessageId).some(
+          (resume) => resume.group_id === groupId,
+        )
+      if (!hasActiveStream) {
+        return { byGroup: { ...s.byGroup, [groupId]: messages } }
+      }
+
+      const local = s.byGroup[groupId] ?? []
+      const localById = new Map(local.map((message) => [message.id, message]))
+      const historyIds = new Set(messages.map((message) => message.id))
+      return {
+        byGroup: {
+          ...s.byGroup,
+          [groupId]: [
+            ...messages.map((message) => localById.get(message.id) ?? message),
+            ...local.filter((message) => !historyIds.has(message.id)),
+          ],
+        },
+      }
+    }),
 
   prependHistory: (groupId, messages) =>
     set((s) => {
@@ -1376,50 +1403,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     }),
 
-  detachStreamRun: (groupId, streamId) =>
-    set((s) => {
-      const streamPrefix = `${streamId}:`
-      const groupInFlight = s.inFlightByGroup[groupId] ?? {}
-      const nextInFlight = Object.fromEntries(
-        Object.entries(groupInFlight).filter(([key]) => !key.startsWith(streamPrefix)),
-      )
-      const groupActive = s.activeAgentsByGroup[groupId] ?? {}
-      const nextActive = Object.fromEntries(
-        Object.entries(groupActive).filter(([key]) => !key.startsWith(streamPrefix)),
-      )
-      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
-      const run = groupRuns[streamId]
-      if (!run || run.status !== 'active') {
-        return {
-          inFlightByGroup: { ...s.inFlightByGroup, [groupId]: nextInFlight },
-          activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: nextActive },
-        }
-      }
-
-      const nextRuns = { ...groupRuns }
-      delete nextRuns[streamId]
-      const groupRunIdsByMessage =
-        s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
-      const nextRunIdsByMessage = Object.fromEntries(
-        Object.entries(groupRunIdsByMessage).filter(([, runId]) => runId !== streamId),
-      )
-      return {
-        inFlightByGroup: { ...s.inFlightByGroup, [groupId]: nextInFlight },
-        activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: nextActive },
-        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: nextRuns },
-        streamRunIdByUserMessageIdByGroup: {
-          ...s.streamRunIdByUserMessageIdByGroup,
-          [groupId]: nextRunIdsByMessage,
-        },
-        streamRunOrderByGroup: {
-          ...s.streamRunOrderByGroup,
-          [groupId]: (s.streamRunOrderByGroup[groupId] ?? []).filter(
-            (runId) => runId !== streamId,
-          ),
-        },
-      }
-    }),
-
   reconcileSchedulerTurn: (groupId, trace) =>
     set((s) => {
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
@@ -1636,6 +1619,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const list = s.byGroup[groupId] ?? []
       const next = list.map((m) => (m.id === message.id ? message : m))
       return { byGroup: { ...s.byGroup, [groupId]: next } }
+    }),
+
+  startSend: (groupId, cancel) =>
+    set((s) => ({
+      activeSendsByGroup: {
+        ...s.activeSendsByGroup,
+        [groupId]: { cancel },
+      },
+    })),
+
+  endSend: (groupId) =>
+    set((s) => {
+      const activeSendsByGroup = { ...s.activeSendsByGroup }
+      delete activeSendsByGroup[groupId]
+      return { activeSendsByGroup }
     }),
 
   startResume: (groupId, messageId, cancel) =>

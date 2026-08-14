@@ -45,6 +45,7 @@ export function GroupChatPage() {
   const agents = groupAgents.data ?? []
   return (
     <ConversationChatView
+      key={`groups:${groupId}`}
       conversationId={groupId}
       workspaceId={group.data.workspace_id}
       scope="groups"

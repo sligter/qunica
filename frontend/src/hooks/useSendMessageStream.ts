@@ -7,7 +7,7 @@
  * never share transient state.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
@@ -338,9 +338,13 @@ export function useSendMessageStream(
   const acceptsStreamEvent = useMessageStore((s) => s.acceptsStreamEvent)
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
   const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
-  const detachStreamRun = useMessageStore((s) => s.detachStreamRun)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunError = useMessageStore((s) => s.markStreamRunError)
+  const activeSend = useMessageStore((s) =>
+    groupId ? s.activeSendsByGroup[groupId] : undefined,
+  )
+  const startSend = useMessageStore((s) => s.startSend)
+  const endSend = useMessageStore((s) => s.endSend)
   const qc = useQueryClient()
 
   const [activeStreamCount, setActiveStreamCount] = useState(0)
@@ -388,56 +392,6 @@ export function useSendMessageStream(
   const clearRetry = useCallback((id: string) => {
     if (retriesRef.current.delete(id)) refreshRetry()
   }, [refreshRetry])
-
-  useEffect(() => {
-    const abandonedGroupId = groupId
-    const streams = streamsRef.current
-    const retries = retriesRef.current
-    const streamIds = streamIdsRef.current
-    const erroredStreamIds = erroredStreamIdsRef.current
-    const agentNames = agentNamesRef.current
-    const schedulerTurns = schedulerTurnByRequestRef.current
-    const pendingSendAcknowledgements = pendingSendAcknowledgementsRef.current
-    return () => {
-      const hadAbandonedStreams = streams.size > 0
-      const pendingCancellation = pendingCancellationRef.current
-      if (pendingCancellation) {
-        pendingCancellation.resolve()
-        pendingCancellationRef.current = null
-      }
-      for (const [requestId, ctrl] of streams) {
-        const acknowledgement = pendingSendAcknowledgements.get(requestId)
-        if (acknowledgement) {
-          pendingSendAcknowledgements.delete(requestId)
-          acknowledgement.reject(new Error(
-            'Message stream ended before the user message was acknowledged',
-          ))
-        }
-        ctrl.abort()
-        const streamId = streamIds.get(requestId)
-        if (abandonedGroupId && streamId) {
-          detachStreamRun(abandonedGroupId, streamId)
-        }
-      }
-      if (abandonedGroupId && hadAbandonedStreams) {
-        clearToolActivity(abandonedGroupId)
-      }
-      streams.clear()
-      retries.clear()
-      streamIds.clear()
-      erroredStreamIds.clear()
-      agentNames.clear()
-      schedulerTurns.clear()
-      for (const acknowledgement of pendingSendAcknowledgements.values()) {
-        acknowledgement.reject(new Error(
-          'Message stream ended before the user message was acknowledged',
-        ))
-      }
-      pendingSendAcknowledgements.clear()
-      setActiveStreamCount(0)
-      setRetry(null)
-    }
-  }, [clearToolActivity, detachStreamRun, groupId, scope])
 
   const invalidate = useCallback(() => {
     if (!groupId) return
@@ -527,6 +481,7 @@ export function useSendMessageStream(
       } else {
         clearInFlight(groupId)
       }
+      if (streamsRef.current.size === 0) endSend(groupId)
     }
     pendingCancellationRef.current = null
     setError(null)
@@ -537,6 +492,7 @@ export function useSendMessageStream(
     clearInFlight,
     clearRetry,
     clearStreamInFlight,
+    endSend,
     groupId,
     invalidate,
     reconcileSchedulerTurn,
@@ -544,6 +500,25 @@ export function useSendMessageStream(
     refreshActiveCount,
     token,
   ])
+
+  const cancelOwned = useCallback((): Promise<void> => {
+    const existing = pendingCancellationRef.current
+    if (existing) return existing.promise
+
+    let resolve!: () => void
+    const promise = new Promise<void>((next) => {
+      resolve = next
+    })
+    const pending: PendingCancellation = {
+      requestIds: new Set(streamsRef.current.keys()),
+      completing: false,
+      promise,
+      resolve,
+    }
+    pendingCancellationRef.current = pending
+    void completePendingCancellation()
+    return promise
+  }, [completePendingCancellation])
 
   const finishStream = useCallback(
     (id: string, streamId?: string | null) => {
@@ -570,6 +545,7 @@ export function useSendMessageStream(
       refreshActiveCount()
       if (groupId && streamsRef.current.size === 0) {
         clearActiveAgent(groupId)
+        endSend(groupId)
       }
       invalidate()
       void completePendingCancellation()
@@ -578,6 +554,7 @@ export function useSendMessageStream(
       clearActiveAgent,
       clearRetry,
       completePendingCancellation,
+      endSend,
       groupId,
       invalidate,
       rejectSendBeforeAcknowledgement,
@@ -908,6 +885,7 @@ export function useSendMessageStream(
           },
         })
         streamsRef.current.set(id, ctrl)
+        startSend(groupId, cancelOwned)
         refreshActiveCount()
       } catch (error) {
         const startupError = asError(error, 'Unable to start the message stream')
@@ -931,6 +909,7 @@ export function useSendMessageStream(
       clearStreamInFlight,
       clearToolActivity,
       clearWarnings,
+      cancelOwned,
       completePendingCancellation,
       currentUserId,
       clearStreamingStreamDraft,
@@ -954,6 +933,7 @@ export function useSendMessageStream(
       scope,
       setActiveAgent,
       setStreamAgentContextUsage,
+      startSend,
       startStreamRun,
       token,
       onConversationUpdated,
@@ -962,30 +942,11 @@ export function useSendMessageStream(
     ],
   )
 
-  const cancel = useCallback((): Promise<void> => {
-    const existing = pendingCancellationRef.current
-    if (existing) return existing.promise
-
-    let resolve!: () => void
-    const promise = new Promise<void>((next) => {
-      resolve = next
-    })
-    const pending: PendingCancellation = {
-      requestIds: new Set(streamsRef.current.keys()),
-      completing: false,
-      promise,
-      resolve,
-    }
-    pendingCancellationRef.current = pending
-    void completePendingCancellation()
-    return promise
-  }, [completePendingCancellation])
-
   return {
     send,
-    cancel,
-    isStreaming: activeStreamCount > 0,
-    activeStreamCount,
+    cancel: activeSend?.cancel ?? cancelOwned,
+    isStreaming: Boolean(activeSend),
+    activeStreamCount: activeStreamCount || (activeSend ? 1 : 0),
     error,
     retry,
     retryExhausted,

@@ -533,87 +533,110 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
-  it('detaches two abandoned local streams on unmount without server cancellation', () => {
+  it('keeps active streams alive across unmount and hands them to the remounted chat', () => {
     useMessageStore.getState().setHistory('group-1', [persistedMessage('persisted')])
     const queryClient = new QueryClient()
-    const hook = renderHook(() => useSendMessageStream('group-1'), {
+    const firstHook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
     act(() => {
-      ignoreSend(hook.result.current.send('first'))
-      ignoreSend(hook.result.current.send('second'))
+      ignoreSend(firstHook.result.current.send('first'))
+      ignoreSend(firstHook.result.current.send('second'))
     })
     const [first, second] = mocks.streams
     emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
     emitActiveSchedulerStream(second.handlers, 'stream-2', 'message-2', 'agent-2')
 
-    hook.unmount()
+    firstHook.unmount()
 
-    const state = useMessageStore.getState()
-    expect(first.abort).toHaveBeenCalledTimes(1)
-    expect(second.abort).toHaveBeenCalledTimes(1)
+    expect(first.abort).not.toHaveBeenCalled()
+    expect(second.abort).not.toHaveBeenCalled()
     expect(mocks.fetchJson).not.toHaveBeenCalled()
-    expect(state.byGroup['group-1'].map((message) => message.id)).toEqual([
+    expect(useMessageStore.getState().byGroup['group-1'].map((message) => message.id)).toEqual([
       'persisted',
       'message-1',
       'message-2',
     ])
-    expect(state.streamRunsByGroup['group-1']).toEqual({})
-    expect(state.streamRunIdByUserMessageIdByGroup['group-1']).toEqual({})
-    expect(state.streamRunOrderByGroup['group-1']).toEqual([])
-    expect(state.inFlightByGroup['group-1']).toEqual({})
-    expect(state.activeAgentsByGroup['group-1']).toEqual({})
-    expect(state.toolActivityByGroup['group-1']).toEqual([])
+    expect(useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']).toMatchObject({
+      status: 'active',
+    })
+
+    const remounted = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    expect(remounted.result.current.isStreaming).toBe(true)
+    expect(remounted.result.current.activeStreamCount).toBe(1)
+
+    emit(second.handlers, {
+      stream_id: 'stream-2',
+      seq: 6,
+      event_id: 'stream-2-event-6',
+      kind: 'token',
+      payload: { agent_id: 'agent-2', delta: '-continued' },
+    })
+    expect(
+      useMessageStore.getState().inFlightByGroup['group-1']['stream-2:agent-2'].content,
+    ).toBe('working-continued')
+
+    emit(first.handlers, {
+      stream_id: 'stream-1',
+      seq: 6,
+      event_id: 'stream-1-event-6',
+      kind: 'done',
+      payload: { turn_id: 'stream-1-turn' },
+    })
+    expect(remounted.result.current.isStreaming).toBe(true)
+    emit(second.handlers, {
+      stream_id: 'stream-2',
+      seq: 7,
+      event_id: 'stream-2-event-7',
+      kind: 'done',
+      payload: { turn_id: 'stream-2-turn' },
+    })
+    expect(remounted.result.current.isStreaming).toBe(false)
   })
 
-  it('uses the old group id when a route change cleans up active streams', () => {
+  it('keeps a background stream isolated and cancellable after navigation', async () => {
     const store = useMessageStore.getState()
     store.setHistory('group-1', [persistedMessage('group-1-history')])
     store.setHistory('group-2', [persistedMessage('group-2-history', 'group-2')])
-    store.startStreamRun(
-      'group-2',
-      'group-2-stream',
-      persistedMessage('group-2-trigger', 'group-2'),
-    )
-    store.patchInFlight('group-2', 'group-2-agent', 'keep', 'group-2-stream')
-    store.pushToolActivity('group-2', {
-      id: 'group-2-tool',
-      agent_id: 'group-2-agent',
-      display_name: 'Group Two Agent',
-      tool_name: 'lookup',
-      status: 'started',
-    })
     const queryClient = new QueryClient()
-    const hook = renderHook(
-      ({ groupId }) => useSendMessageStream(groupId),
-      {
-        initialProps: { groupId: 'group-1' },
-        wrapper: wrapper(queryClient),
-      },
-    )
-    act(() => ignoreSend(hook.result.current.send('first')))
+    const firstHook = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => ignoreSend(firstHook.result.current.send('first')))
     const first = mocks.streams[0]
     emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
+    firstHook.unmount()
 
-    hook.rerender({ groupId: 'group-2' })
-
-    const state = useMessageStore.getState()
-    expect(first.abort).toHaveBeenCalledTimes(1)
-    expect(mocks.fetchJson).not.toHaveBeenCalled()
-    expect(state.byGroup['group-1'].map((message) => message.id)).toEqual([
-      'group-1-history',
-      'message-1',
-    ])
-    expect(state.streamRunsByGroup['group-1']).toEqual({})
-    expect(state.inFlightByGroup['group-1']).toEqual({})
-    expect(state.toolActivityByGroup['group-1']).toEqual([])
-    expect(state.streamRunsByGroup['group-2']['group-2-stream']).toBeDefined()
-    expect(state.inFlightByGroup['group-2']['group-2-stream:group-2-agent']).toMatchObject({
-      content: 'keep',
+    const secondHook = renderHook(() => useSendMessageStream('group-2'), {
+      wrapper: wrapper(queryClient),
     })
-    expect(state.toolActivityByGroup['group-2']).toEqual([
-      expect.objectContaining({ id: 'group-2-tool' }),
+
+    expect(secondHook.result.current.isStreaming).toBe(false)
+    expect(first.abort).not.toHaveBeenCalled()
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+    emit(first.handlers, {
+      stream_id: 'stream-1',
+      seq: 6,
+      event_id: 'stream-1-event-6',
+      kind: 'token',
+      payload: { agent_id: 'agent-1', delta: '-continued' },
+    })
+    const state = useMessageStore.getState()
+    expect(state.inFlightByGroup['group-1']['stream-1:agent-1'].content).toBe(
+      'working-continued',
+    )
+    expect(state.byGroup['group-2'].map((message) => message.id)).toEqual([
+      'group-2-history',
     ])
+
+    const returned = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    await act(async () => returned.result.current.cancel())
+    expect(first.abort).toHaveBeenCalledTimes(1)
+    expect(returned.result.current.isStreaming).toBe(false)
   })
 
   it('rejects late bubbles and messages after supersede and invalidates the terminal trace', () => {

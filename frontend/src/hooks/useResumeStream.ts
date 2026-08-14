@@ -7,7 +7,7 @@
  * until query invalidation reconciles with the persisted row.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
@@ -113,6 +113,9 @@ export function useResumeStream(
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
   const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
+  const activeResume = useMessageStore((s) =>
+    messageId ? s.activeResumesByMessageId[messageId] : undefined,
+  )
   const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
@@ -121,14 +124,6 @@ export function useResumeStream(
   const [retryExhausted, setRetryExhausted] = useState(false)
   const ctrlRef = useRef<AbortController | null>(null)
   const streamIdRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    return () => {
-      const wasStreaming = ctrlRef.current !== null
-      ctrlRef.current?.abort()
-      if (wasStreaming && messageId) endResume(messageId)
-    }
-  }, [endResume, messageId])
 
   const finish = useCallback(() => {
     setIsStreaming(false)
@@ -187,7 +182,7 @@ export function useResumeStream(
   ])
 
   const resume = useCallback(() => {
-    if (!groupId || !threadId || !messageId || !token || isStreaming) return
+    if (!groupId || !threadId || !messageId || !token || isStreaming || activeResume) return
     setError(null)
     setRetry(null)
     setRetryExhausted(false)
@@ -316,6 +311,7 @@ export function useResumeStream(
   }, [
     appendStreamNotice,
     appendToMessage,
+    activeResume,
     acceptsStreamEvent,
     applySchedulerEvent,
     cancel,
@@ -333,5 +329,12 @@ export function useResumeStream(
     token,
   ])
 
-  return { resume, cancel, isStreaming, error, retry, retryExhausted }
+  return {
+    resume,
+    cancel: activeResume?.cancel ?? cancel,
+    isStreaming: isStreaming || Boolean(activeResume),
+    error,
+    retry,
+    retryExhausted,
+  }
 }
