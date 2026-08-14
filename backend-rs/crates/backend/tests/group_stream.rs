@@ -2604,7 +2604,7 @@ async fn messages_delete_soft_deletes_visible_message_and_preserves_rows() {
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(thread_status, "cleared");
+    assert_eq!(thread_status, "active");
 }
 
 #[tokio::test]

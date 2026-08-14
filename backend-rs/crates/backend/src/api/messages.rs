@@ -532,8 +532,9 @@ async fn delete_for_kind(
         return Err(ApiError::not_found("message not found"));
     }
 
-    let thread_cleared = sqlx::query(
-        "UPDATE threads \
+    let thread_cleared = expected == ConversationKind::Direct
+        && sqlx::query(
+            "UPDATE threads \
          SET status = 'cleared', updated_at = ? \
          WHERE id = ? \
            AND group_id = ? \
@@ -545,16 +546,16 @@ async fn delete_for_kind(
                AND messages.group_id = ? \
                AND messages.status IN ('visible', 'interrupted') \
            )",
-    )
-    .bind(&now)
-    .bind(&thread_id)
-    .bind(&group_id)
-    .bind(&group_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|_| ApiError::internal("failed to update message thread"))?
-    .rows_affected()
-        > 0;
+        )
+        .bind(&now)
+        .bind(&thread_id)
+        .bind(&group_id)
+        .bind(&group_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to update message thread"))?
+        .rows_affected()
+            > 0;
 
     tx.commit()
         .await

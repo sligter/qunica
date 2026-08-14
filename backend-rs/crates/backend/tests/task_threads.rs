@@ -97,6 +97,35 @@ async fn task_threads_create_list_filter_and_archive() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/groups/{group_id}/messages/{first_message}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, filtered) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/messages?limit=30&thread_id={first_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(filtered.as_array().unwrap().is_empty());
+    let first_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&first_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(first_status, "active");
+
     let (status, archived) = send(
         &app,
         authed(
