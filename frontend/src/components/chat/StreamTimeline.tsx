@@ -460,6 +460,9 @@ function AgentBlockView({
       )
     }
     if (isActivityEvent(event)) return null
+    // The checklist has its own block below the activity bubble; falling
+    // through here would render it as a notice with no message.
+    if (event.type === 'todo') return null
     if (event.type === 'done') return null
     return (
       <AgentNotice

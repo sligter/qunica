@@ -26,8 +26,11 @@ export function InterruptedMessageActions({
 
   return (
     <div className="flex items-center gap-2 text-xs">
+      {/* `resume` is wrapped rather than passed straight to onClick: it takes an
+          optional approval answer, so handing it over directly would send
+          React's click event as the decision this turn is waiting on. */}
       {!isStreaming ? (
-        <Button size="sm" variant="outline" onClick={resume} className="h-7 gap-1.5">
+        <Button size="sm" variant="outline" onClick={() => resume()} className="h-7 gap-1.5">
           <Play className="h-3 w-3" />
           {t('messages.continue')}
         </Button>
