@@ -160,6 +160,11 @@ pub enum ChatDelta {
     Reasoning(String),
     ToolCall(ToolCall),
     Usage(ContextUsage),
+    /// The provider connection ended in the middle of the response, so whatever
+    /// arrived is incomplete. This is distinct from [`ChatDelta::Done`]: a
+    /// consumer must treat the round as failed rather than as an answer, or a
+    /// dropped connection reads as a model that simply stopped talking.
+    Truncated(String),
     Done,
 }
 

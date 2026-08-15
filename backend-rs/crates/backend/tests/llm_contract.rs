@@ -14,6 +14,7 @@ use ag_swarmer_backend::llm::{
 use ag_swarmer_domain::runtime::ChatContentPart;
 use axum::{body::Body, http::header, response::IntoResponse, Router};
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Mutex;
 
@@ -33,6 +34,32 @@ async fn fake_server(body: &'static str) -> String {
         axum::serve(listener, app)
             .await
             .expect("serve fake provider");
+    });
+
+    format!("http://{addr}")
+}
+
+/// Start a server that answers with valid headers and a partial body, then
+/// drops the connection with the promised bytes unsent — what a gateway idle
+/// timeout looks like from the client side.
+async fn truncating_server(partial_body: &'static str) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut discard = [0u8; 8192];
+            let _ = socket.read(&mut discard).await;
+            let head = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: text/event-stream\r\n\
+                        Content-Length: 65536\r\n\r\n";
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(partial_body.as_bytes()).await;
+            let _ = socket.flush().await;
+            // Dropping `socket` here cuts the body short of Content-Length.
+        }
     });
 
     format!("http://{addr}")
@@ -288,6 +315,54 @@ async fn llm_contract_openai_maps_usage_and_streamed_tool_calls() {
 }
 
 #[tokio::test]
+async fn llm_contract_openai_emits_tool_calls_finished_with_stop() {
+    // Some OpenAI-compatible gateways close a tool-calling turn with `stop`
+    // instead of `tool_calls`. The buffered call still has to be emitted, or the
+    // agent's round ends with no tool result and no text.
+    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\
+                data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"note.txt\\\"}\"}}]},\"finish_reason\":\"stop\"}]}\n\
+                data: [DONE]\n";
+    let url = fake_server(body).await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+
+    let calls = tool_calls(&deltas);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, "Read");
+    assert_eq!(calls[0].2, serde_json::json!({ "file_path": "note.txt" }));
+}
+
+#[tokio::test]
+async fn llm_contract_openai_drops_tool_calls_truncated_by_the_token_limit() {
+    // `length` means the arguments were cut mid-JSON, so the call is incomplete
+    // and must not be handed to the tool executor.
+    let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\"}}]},\"finish_reason\":\"length\"}]}\n\
+                data: [DONE]\n";
+    let url = fake_server(body).await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+
+    assert!(tool_calls(&deltas).is_empty());
+}
+
+#[tokio::test]
+async fn llm_contract_openai_reports_a_cut_stream_as_truncated_not_done() {
+    // The provider hung up mid-body. The deltas that did arrive are kept, but
+    // the stream must close with `Truncated` — ending it with `Done` would make
+    // a dropped connection indistinguishable from a model that stopped talking.
+    let url = truncating_server("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+
+    assert_eq!(tokens(&deltas), vec!["Hel"]);
+    assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))));
+    assert!(!ends_with_done(&deltas));
+}
+
+#[tokio::test]
 async fn llm_contract_openai_serializes_tool_continuation_messages() {
     let (url, captures) = capture_server("data: [DONE]\n").await;
     let provider = OpenAiCompatibleProvider::new(url, "test-key");
@@ -378,9 +453,12 @@ async fn llm_contract_anthropic_maps_text_and_thinking_deltas() {
 
     assert_eq!(tokens(&deltas), vec!["Hello"]);
     assert_eq!(reasoning(&deltas), vec!["pondering"]);
+    // Anthropic reports the input count once in `message_start` and only the
+    // output count in `message_delta`, so the closing usage carries the
+    // remembered input forward to report a turn total.
     assert_eq!(
         usages(&deltas),
-        vec![(Some(25), None, None), (None, Some(9), None)]
+        vec![(Some(25), None, None), (Some(25), Some(9), Some(34))]
     );
     assert!(ends_with_done(&deltas));
 }

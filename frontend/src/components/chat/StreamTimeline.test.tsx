@@ -293,6 +293,59 @@ describe('StreamTimeline activity rendering', () => {
     expect(activity.open).toBe(false)
   })
 
+  it('settles a finished run whose last activity events never got a terminal status', async () => {
+    // A turn that ends without a reply (silence, error, cancellation) leaves its
+    // final reasoning/tool events on `streaming`/`started`. The bubble must
+    // still read as finished once the run itself is over.
+    const events = [
+      event({
+        id: 'reasoning-1',
+        stream_id: 'stream-1',
+        type: 'reasoning',
+        agent_id: 'agent-1',
+        display_name: 'Researcher',
+        content: 'Still working.',
+        status: 'streaming',
+        created_at: '2026-07-16T10:00:02Z',
+      }),
+      event({
+        id: 'tool-1',
+        stream_id: 'stream-1',
+        type: 'tool',
+        agent_id: 'agent-1',
+        display_name: 'Researcher',
+        tool_call_id: 'call-1',
+        tool_name: 'Read',
+        status: 'started',
+        created_at: '2026-07-16T10:00:03Z',
+      }),
+      event({
+        id: 'silent-1',
+        stream_id: 'stream-1',
+        type: 'agent_silent',
+        agent_id: 'agent-1',
+        display_name: 'Researcher',
+        message: 'No visible reply',
+        created_at: '2026-07-16T10:00:04Z',
+      }),
+    ]
+
+    await i18n.changeLanguage('en-US')
+    render(<StreamTimeline run={run(events, 'completed')} />)
+    expect(screen.queryByText('streaming')).not.toBeInTheDocument()
+    // The activity bubble stays collapsed, so assert presence rather than
+    // visibility: jest-dom reports a closed `details` as not visible.
+    const activity = screen.getByRole('group', {
+      name: 'Activity: 1 reasoning, 1 tool',
+    }) as HTMLDetailsElement
+    expect(activity.open).toBe(false)
+    expect(screen.getByText('No visible reply')).toBeVisible()
+
+    await i18n.changeLanguage('zh-CN')
+    expect(await screen.findByText('没有可见回复')).toBeVisible()
+    expect(screen.queryByText('生成中')).not.toBeInTheDocument()
+  })
+
   it('shows approvals after the reply instead of hiding them in activity', () => {
     render(
       <StreamTimeline

@@ -241,6 +241,11 @@ async fn collect_response(
             }
             ChatDelta::Done => break,
             ChatDelta::Reasoning(_) => {}
+            // A cut connection leaves the selection JSON half-written, which
+            // would parse as a malformed decision rather than a provider fault.
+            ChatDelta::Truncated(_) => {
+                return Err((ModeratorFailure::Provider, total_tokens));
+            }
             ChatDelta::ToolCall(_) => {
                 return Err((ModeratorFailure::UnexpectedDelta, total_tokens));
             }

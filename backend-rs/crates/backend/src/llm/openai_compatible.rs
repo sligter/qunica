@@ -150,7 +150,17 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
             }
         }
 
-        if choice["finish_reason"].as_str() == Some("tool_calls") {
+        // `tool_calls` is the documented finish reason for a tool-calling turn,
+        // but several gateways close the same turn with `stop`. Waiting for the
+        // documented value dropped the buffered calls on those providers, so the
+        // agent's round ended with neither a tool result nor visible text — a
+        // turn that looks like the model simply said nothing. Truncated turns
+        // (`length`, `content_filter`) are still dropped: their argument JSON is
+        // incomplete, so the call must not be executed.
+        if matches!(
+            choice["finish_reason"].as_str(),
+            Some("tool_calls") | Some("stop")
+        ) {
             for (_, accum) in std::mem::take(&mut state.tools) {
                 out.push(accum.finish());
             }

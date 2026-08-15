@@ -176,9 +176,14 @@ impl ToolAccum {
 
 /// Drive a streaming HTTP response to completion, splitting it into lines and
 /// feeding each line through `parse`. Any deltas the parser returns are
-/// forwarded on `tx`. A terminating [`ChatDelta::Done`] is always sent once the
-/// upstream stream ends, regardless of whether the provider emitted an explicit
-/// end-of-stream marker.
+/// forwarded on `tx`. A terminating [`ChatDelta::Done`] is sent once the
+/// upstream stream ends cleanly, regardless of whether the provider emitted an
+/// explicit end-of-stream marker.
+///
+/// If the transport fails part-way through the body — a gateway idle timeout, a
+/// dropped connection — the response is incomplete, so [`ChatDelta::Truncated`]
+/// is sent instead of `Done`. Ending such a stream with `Done` would hand the
+/// caller a partial answer that is indistinguishable from a complete one.
 ///
 /// Bytes are buffered so that multi-byte UTF-8 sequences and SSE lines split
 /// across network chunks are reassembled before parsing.
@@ -192,7 +197,10 @@ where
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(_) => break,
+            Err(error) => {
+                let _ = tx.send(ChatDelta::Truncated(error.to_string())).await;
+                return;
+            }
         };
         buf.extend_from_slice(&chunk);
 

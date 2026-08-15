@@ -666,6 +666,29 @@ async fn fake_provider(body: &'static str) -> String {
     format!("http://{addr}")
 }
 
+/// A provider that answers with valid headers and a partial body, then drops
+/// the connection with the promised bytes unsent — a gateway idle timeout as
+/// the backend sees it.
+async fn truncating_fake_provider(partial_body: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut discard = [0u8; 8192];
+            let _ = socket.read(&mut discard).await;
+            let head = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: text/event-stream\r\n\
+                        Content-Length: 65536\r\n\r\n";
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(partial_body.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
 async fn recording_fake_provider(body: &'static str) -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -988,6 +1011,30 @@ fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
         .collect();
     format!(
         "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
+    )
+}
+
+/// A single stream that first emits a text delta and then a tool call, so the
+/// interrupted checkpoint carries a text segment before the tool card.
+fn text_then_tool_body(text: &str, calls: Vec<(&str, &str, Value)>) -> String {
+    let tool_calls: Vec<Value> = calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, name, args))| {
+            json!({
+                "index": index,
+                "id": id,
+                "function": {
+                    "name": name,
+                    "arguments": args.to_string(),
+                },
+            })
+        })
+        .collect();
+    format!(
+        "data: {}\ndata: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": text}}]}),
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
 }
@@ -3248,6 +3295,142 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
         message["role"] == "assistant" && message["tool_calls"][0]["id"] == "call_read_resume"
     }));
     assert!(continued_messages.iter().any(|message| {
+        message["role"] == "tool"
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("durable tool result"))
+    }));
+}
+
+#[tokio::test]
+async fn resume_preserves_pre_tool_text_segments_and_strips_heavy_event_tool_fields() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-text-segments@example.com").await;
+    let owner = owner_id(&state, "resume-text-segments@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("note.txt"), "durable tool result").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) = recording_fake_provider_status_sequence(vec![
+        (
+            StatusCode::OK,
+            text_then_tool_body(
+                "before tool ",
+                vec![(
+                    "call_read",
+                    "Read",
+                    json!({"file_path": "note.txt"}),
+                )],
+            ),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary provider failure".to_string(),
+        ),
+        (StatusCode::OK, text_body("after tool")),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"read": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "please inspect note.txt"}),
+    )
+    .await;
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "dispatch_failed"));
+
+    let (thread_id, interrupted_id, content_json): (String, String, String) = sqlx::query_as(
+        "SELECT thread_id, id, content_json FROM messages \
+         WHERE group_id = ? AND sender_type = 'agent' AND status = 'interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&content_json).unwrap();
+    // The text emitted before the tool call survives as its own segment, with
+    // the tool card alongside it in the durable checkpoint.
+    assert_eq!(checkpoint["response_segments"], json!(["before tool "]));
+    assert_eq!(checkpoint["tool_calls"][0]["tool_call_id"], "call_read");
+    assert!(checkpoint["tool_calls"][0]["result"]
+        .as_str()
+        .is_some_and(|result| result.contains("durable tool result")));
+
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({}),
+    )
+    .await;
+    let resumed_message = payloads_of_kind(&resumed, StreamEventKind::AgentMessage);
+    assert_eq!(resumed_message[0]["message_id"], interrupted_id);
+    assert_eq!(resumed_message[0]["content"], "before tool after tool");
+    // The resumed event keeps both text segments (pre-tool and post-tool) so
+    // the client renders two bubbles around the tool card, not one merged blob.
+    let resumed_segments = resumed_message[0]["response_segments"]
+        .as_array()
+        .expect("resume agent_message event carries response_segments");
+    assert_eq!(resumed_segments.len(), 2);
+    assert_eq!(resumed_segments[0], "before tool ");
+    assert_eq!(resumed_segments[1], "after tool");
+    // Tool cards in the event carry only the render summary fields; the heavy
+    // `args`/`result` stay in content_json and must not be duplicated here.
+    let resumed_tool_calls = resumed_message[0]["tool_calls"]
+        .as_array()
+        .expect("resume agent_message event carries tool_calls");
+    assert_eq!(resumed_tool_calls.len(), 1);
+    assert_eq!(resumed_tool_calls[0]["tool_call_id"], "call_read");
+    assert_eq!(resumed_tool_calls[0]["tool_name"], "Read");
+    assert!(resumed_tool_calls[0].get("args").is_none());
+    assert!(resumed_tool_calls[0].get("result").is_none());
+
+    // The durable row still keeps the full tool payload for the LLM context.
+    let resumed_checkpoint: String =
+        sqlx::query_scalar("SELECT content_json FROM messages WHERE id = ?")
+            .bind(&interrupted_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let resumed_checkpoint: Value = serde_json::from_str(&resumed_checkpoint).unwrap();
+    assert_eq!(resumed_checkpoint["tool_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        resumed_checkpoint["tool_calls"][0]["tool_call_id"],
+        "call_read"
+    );
+    assert!(resumed_checkpoint["tool_calls"][0]["result"]
+        .as_str()
+        .is_some_and(|result| result.contains("durable tool result")));
+    assert!(resumed_checkpoint["tool_calls"][0].get("args").is_some());
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 5);
+    let resume_messages = requests[4]["messages"].as_array().unwrap();
+    assert!(resume_messages.iter().any(|message| {
+        message["role"] == "assistant" && message["tool_calls"][0]["id"] == "call_read"
+    }));
+    assert!(resume_messages.iter().any(|message| {
         message["role"] == "tool"
             && message["content"]
                 .as_str()
@@ -6725,6 +6908,96 @@ async fn group_stream_proactive_silent_turn_does_not_persist_agent_message() {
             .await
             .unwrap();
     assert_eq!(user_messages, 1);
+}
+
+#[tokio::test]
+async fn group_stream_reply_without_visible_text_announces_the_silent_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "no-text@example.com").await;
+    let owner = owner_id(&state, "no-text@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+
+    // A reasoning-only round: the model thinks, then ends the turn without ever
+    // emitting visible content. The client needs to hear that the turn is over,
+    // otherwise the agent's bubble stays on "streaming" with no reply.
+    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\
+                data: [DONE]\n";
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice status?"}),
+    )
+    .await;
+
+    let kinds = kinds(&events);
+    assert!(kinds.contains(&"agent_silent".to_string()));
+    assert!(!kinds.contains(&"agent_message".to_string()));
+    let agent_messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'agent'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(agent_messages, 0);
+}
+
+#[tokio::test]
+async fn group_stream_cut_provider_connection_fails_the_turn_instead_of_falling_silent() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "cut-stream@example.com").await;
+    let owner = owner_id(&state, "cut-stream@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+
+    // The provider delivers one delta and then drops the connection. A cut
+    // connection is a failure, not an agent that chose to stay quiet.
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &truncating_fake_provider("data: {\"choices\":[{\"delta\":{\"content\":\"Working\"}}]}\n")
+            .await,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice go"}),
+    )
+    .await;
+
+    let kinds = kinds(&events);
+    assert!(kinds.contains(&"error".to_string()));
+    assert!(!kinds.contains(&"agent_silent".to_string()));
+    assert!(!kinds.contains(&"silence".to_string()));
+    let dispatch_statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM agent_dispatches WHERE target_agent_id IS NOT NULL")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap();
+    assert!(!dispatch_statuses.iter().any(|status| status == "silent"));
 }
 
 #[tokio::test]

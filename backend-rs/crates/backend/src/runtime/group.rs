@@ -518,16 +518,34 @@ impl StreamCtx {
         content: &str,
         content_json: Option<&str>,
     ) -> Result<(), StepErr> {
-        // The resume `agent_message` event must carry the full persisted turn
-        // structure (response segments, reasoning, tool calls) so the client
+        // The resume `agent_message` event must carry the persisted turn
+        // structure (response segments, reasoning, tool cards) so the client
         // can rebuild the message's bubbles immediately instead of showing a
-        // single merged bubble until a history refetch lands.
+        // single merged bubble until a history refetch lands. Tool cards are
+        // projected to the summary fields the client renders: the heavy
+        // `args`/`result` stay only in `content_json` (the messages table),
+        // not duplicated into the durable stream event payload.
         if let (Some(raw), Some(object)) = (content_json, payload.as_object_mut()) {
             if let Ok(turn) = serde_json::from_str::<Value>(raw) {
-                for field in ["response_segments", "reasoning", "tool_calls"] {
+                for field in ["response_segments", "reasoning"] {
                     if let Some(value) = turn.get(field) {
                         object.insert(field.to_string(), value.clone());
                     }
+                }
+                if let Some(tool_calls) = turn.get("tool_calls").and_then(Value::as_array) {
+                    let projected: Vec<Value> = tool_calls
+                        .iter()
+                        .map(|call| {
+                            json!({
+                                "tool_call_id": call.get("tool_call_id"),
+                                "tool_name": call.get("tool_name"),
+                                "status": call.get("status"),
+                                "args_summary": call.get("args_summary"),
+                                "result_summary": call.get("result_summary"),
+                            })
+                        })
+                        .collect();
+                    object.insert("tool_calls".to_string(), Value::Array(projected));
                 }
             }
         }
@@ -1178,6 +1196,12 @@ async fn run_scheduled_turn(
             let (status, reason, outcome) = match status {
                 TurnStatus::Silence if had_visible => {
                     (TurnStatus::Completed, None, TurnOutcome::Completed)
+                }
+                // Nothing was said because a dispatch failed, not because the
+                // agents chose to stay quiet. Filing that as "completed
+                // silently" puts a green check on a provider fault.
+                TurnStatus::Silence if scheduler_runtime.budget.total_failures() > 0 => {
+                    (TurnStatus::Failed, None, TurnOutcome::Error)
                 }
                 TurnStatus::Completed => {
                     (TurnStatus::Completed, Some(reason), TurnOutcome::Completed)
@@ -2982,6 +3006,33 @@ async fn run_agent_turn(
                         return Err(err);
                     }
                 }
+                ChatDelta::Truncated(reason) => {
+                    // The provider hung up mid-response. Checkpoint whatever the
+                    // agent produced so the user can resume it, then fail the
+                    // round: reporting a cut connection as a finished turn is how
+                    // a ten-minute tool chain ends up filed as "completed
+                    // silently" with nothing to show for it.
+                    maybe_persist_interrupted_agent(
+                        ctx,
+                        agent,
+                        &content,
+                        &turn,
+                        checkpoint_interrupted,
+                    )
+                    .await?;
+                    ctx.emit(
+                        StreamEventKind::Error,
+                        json!({
+                            "agent_id": agent.agent_id,
+                            "display_name": agent.display_name,
+                            "message": format!("Provider stream ended early: {reason}"),
+                        }),
+                    )
+                    .await?;
+                    return Err(StepErr::Db(anyhow::anyhow!(
+                        "provider stream ended early: {reason}"
+                    )));
+                }
                 ChatDelta::Done => break,
             }
         }
@@ -4237,6 +4288,16 @@ async fn finish_agent_content(
                 outcome: AgentExecutionOutcome::NoVisible,
             }));
         }
+        // The model ended its turn with no visible text at all — a reasoning-only
+        // round, a stream the provider truncated after the tool calls, or a
+        // dropped tool call. Only the explicit silent marker used to announce
+        // itself, so those turns left the agent's bubble stuck on "streaming"
+        // with no reply and no reason. Announce them the same way.
+        ctx.emit_durable_event(
+            StreamEventKind::AgentSilent,
+            json!({ "agent_id": agent.agent_id, "display_name": agent.display_name }),
+        )
+        .await?;
         return Ok(AgentRunResult::NoVisible);
     }
 

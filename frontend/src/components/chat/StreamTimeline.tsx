@@ -132,6 +132,9 @@ function AgentNotice({
   onSubmitHumanInput?: (content: string) => void
   renderedInputRequests: Set<string>
 }) {
+  const { t } = useTranslation('chat')
+  const noticeKey = knownStreamNoticeKey(event)
+  const message = noticeKey ? t(noticeKey) : event.message
   if (event.type === 'waiting_for_user') {
     const inputRequest = normalizeHumanInputRequest(event.input_request, event.message)
     if (inputRequest) {
@@ -148,7 +151,7 @@ function AgentNotice({
     return (
       <NoticeShell tone="warning">
         <PauseCircle className="h-3.5 w-3.5" />
-        {event.message}
+        {message}
       </NoticeShell>
     )
   }
@@ -156,7 +159,7 @@ function AgentNotice({
     return (
       <NoticeShell tone="destructive">
         <XCircle className="h-3.5 w-3.5" />
-        {event.message}
+        {message}
       </NoticeShell>
     )
   }
@@ -164,12 +167,12 @@ function AgentNotice({
     return (
       <NoticeShell tone="muted">
         <GitBranch className="h-3.5 w-3.5" />
-        {event.message}
+        {message}
       </NoticeShell>
     )
   }
   // agent_silent
-  return <NoticeShell tone="muted">{event.message}</NoticeShell>
+  return <NoticeShell tone="muted">{message}</NoticeShell>
 }
 
 interface AgentBlock {
@@ -197,6 +200,9 @@ function knownStreamNoticeKey(event: StreamNoticeEvent): string | null {
   }
   if (event.type === 'agent_error' && event.message === 'Stream failed') {
     return 'messages.warnings.streamFailed'
+  }
+  if (event.type === 'agent_silent' && event.message === 'No visible reply') {
+    return 'messages.warnings.noVisibleReply'
   }
   if (event.type === 'waiting_for_user' && event.message === 'Waiting for your input') {
     return 'messages.warnings.waitingForInput'
@@ -299,15 +305,20 @@ function AgentBlockView({
 }) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const waiting = runStatus === 'active' && blockIsWaiting(block)
-  const streaming = blockIsStreaming(block) || waiting
+  // A run that has reached a terminal status is never still streaming, whatever
+  // the last event statuses say: a turn that ends without a reply (silence,
+  // error, cancellation) leaves its final reasoning/tool events on `streaming`
+  // and `started`, and those would otherwise pin the bubble to "streaming".
+  const live = runStatus === 'active'
+  const waiting = live && blockIsWaiting(block)
+  const streaming = waiting || (live && blockIsStreaming(block))
   const reasoning: ActivityReasoningSegment[] = block.events.flatMap((event) =>
     event.type === 'reasoning'
       ? [
           {
             id: event.id,
             content: event.content,
-            streaming: event.status === 'streaming',
+            streaming: live && event.status === 'streaming',
           },
         ]
       : [],
@@ -378,14 +389,16 @@ function AgentBlockView({
       return []
     },
   )
-  const activityActive = block.events.some(
-    (event) =>
-      (event.type === 'reasoning' && event.status === 'streaming') ||
-      (event.type === 'tool' && event.status === 'started') ||
-      (event.type === 'external_run' &&
-        (event.status === 'running' ||
-          (event.status === undefined && event.exit_code === undefined))),
-  )
+  const activityActive =
+    live &&
+    block.events.some(
+      (event) =>
+        (event.type === 'reasoning' && event.status === 'streaming') ||
+        (event.type === 'tool' && event.status === 'started') ||
+        (event.type === 'external_run' &&
+          (event.status === 'running' ||
+            (event.status === undefined && event.exit_code === undefined))),
+    )
   const visibleEvents = block.events.filter((event) => !isActivityEvent(event))
   const renderEvent = (event: StreamTimelineEvent): ReactNode => {
     if (event.type === 'agent_start') return null

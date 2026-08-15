@@ -510,6 +510,9 @@ async fn probe_model(config: ProviderConfig) -> TestModelResponse {
                 }
                 ChatDelta::ToolCall(_) => return Ok(()),
                 ChatDelta::Done => break,
+                ChatDelta::Truncated(reason) => {
+                    anyhow::bail!("provider stream ended early: {reason}")
+                }
                 ChatDelta::Token(_) | ChatDelta::Reasoning(_) | ChatDelta::Usage(_) => {}
             }
         }

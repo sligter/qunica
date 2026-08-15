@@ -2054,6 +2054,11 @@ pub async fn generate_group_workspace_git_commit_message(
         match delta {
             ChatDelta::Token(text) => raw.push_str(&text),
             ChatDelta::Done => break,
+            ChatDelta::Truncated(reason) => {
+                return Err(ApiError::invalid_input(format!(
+                    "commit message generation failed: provider stream ended early: {reason}"
+                )));
+            }
             ChatDelta::Reasoning(_) | ChatDelta::ToolCall(_) | ChatDelta::Usage(_) => {}
         }
     }
