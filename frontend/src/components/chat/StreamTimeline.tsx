@@ -11,6 +11,7 @@ import {
 import { AssistantApprovalCard } from '@/components/assistant/AssistantApprovalCard'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { TodoChecklist } from '@/components/chat/TodoChecklist'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import {
   humanInputRequestFromText,
@@ -27,15 +28,19 @@ import type {
   StreamResponseDraftEvent,
   StreamRun,
   StreamTimelineEvent,
+  StreamTodoEvent,
   StreamToolEvent,
 } from '@/stores/messageStore'
-import type { ContextUsage, GroupAgentRead } from '@/types/api'
+import { ToolApprovalPrompt } from '@/components/chat/ToolApprovalPrompt'
+import type { ContextUsage, GroupAgentRead, TodoItem } from '@/types/api'
 
 interface StreamTimelineProps {
   run: StreamRun
   groupId?: string
   agents?: GroupAgentRead[]
   onSubmitHumanInput?: (content: string) => void
+  /** Thread the approval card resumes; absent for a non-threaded conversation. */
+  threadId?: string
   agentIsSystem?: boolean
 }
 
@@ -126,15 +131,37 @@ function NoticeShell({
 function AgentNotice({
   event,
   onSubmitHumanInput,
+  groupId,
+  threadId,
   renderedInputRequests,
 }: {
   event: StreamNoticeEvent
   onSubmitHumanInput?: (content: string) => void
+  groupId: string
+  threadId?: string
   renderedInputRequests: Set<string>
 }) {
   const { t } = useTranslation('chat')
   const noticeKey = knownStreamNoticeKey(event)
   const message = noticeKey ? t(noticeKey) : event.message
+  if (event.type === 'approval_required') {
+    if (!event.approval_request) {
+      return (
+        <NoticeShell tone="warning">
+          <PauseCircle className="h-3.5 w-3.5" />
+          {message}
+        </NoticeShell>
+      )
+    }
+    return (
+      <ToolApprovalPrompt
+        groupId={groupId}
+        threadId={threadId}
+        request={event.approval_request}
+        resolved={event.approval_resolved}
+      />
+    )
+  }
   if (event.type === 'waiting_for_user') {
     const inputRequest = normalizeHumanInputRequest(event.input_request, event.message)
     if (inputRequest) {
@@ -277,6 +304,18 @@ function isActivityEvent(
   return event.type === 'reasoning' || event.type === 'tool' || event.type === 'external_run'
 }
 
+/**
+ * The checklist as of the end of this block.
+ *
+ * A block can hold several `todo` events once an agent speaks between
+ * `TodoWrite` calls; only the last one is current, and rendering the earlier
+ * ones would show the same list at three different stages of the same work.
+ */
+function latestTodos(block: AgentBlock): TodoItem[] {
+  const todos = block.events.filter((event): event is StreamTodoEvent => event.type === 'todo')
+  return todos.length > 0 ? todos[todos.length - 1].todos : []
+}
+
 function toolDefaultOpen(status: StreamToolEvent['status']): boolean {
   return (
     status === 'started' ||
@@ -293,6 +332,7 @@ function AgentBlockView({
   fallbackUsage,
   agentIsSystem,
   onSubmitHumanInput,
+  threadId,
   renderedInputRequests,
 }: {
   block: AgentBlock
@@ -301,6 +341,7 @@ function AgentBlockView({
   fallbackUsage: ContextUsage | null
   agentIsSystem?: boolean
   onSubmitHumanInput?: (content: string) => void
+  threadId?: string
   renderedInputRequests: Set<string>
 }) {
   const { t, i18n } = useTranslation('chat')
@@ -399,7 +440,12 @@ function AgentBlockView({
           (event.status === 'running' ||
             (event.status === undefined && event.exit_code === undefined))),
     )
-  const visibleEvents = block.events.filter((event) => !isActivityEvent(event))
+  // The checklist renders as its own block below the activity bubble, so it
+  // must not also fall through to the generic notice renderer.
+  const todos = latestTodos(block)
+  const visibleEvents = block.events.filter(
+    (event) => !isActivityEvent(event) && event.type !== 'todo',
+  )
   const renderEvent = (event: StreamTimelineEvent): ReactNode => {
     if (event.type === 'agent_start') return null
     if (event.type === 'response_draft' || event.type === 'agent_message') {
@@ -420,6 +466,8 @@ function AgentBlockView({
         key={event.id}
         event={event}
         onSubmitHumanInput={onSubmitHumanInput}
+        groupId={groupId}
+        threadId={threadId}
         renderedInputRequests={renderedInputRequests}
       />
     )
@@ -448,6 +496,7 @@ function AgentBlockView({
         <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
           {waiting ? <WaitingHint label={t('stream.preparing')} /> : null}
           <AgentActivityBubble reasoning={reasoning} tools={tools} active={activityActive} />
+          <TodoChecklist todos={todos} />
           {visibleEvents.map(renderEvent)}
           {pendingActions.map(({ id, action }) => (
             <AssistantApprovalCard key={id} action={action} />
@@ -463,6 +512,7 @@ export function StreamTimeline({
   groupId = run.group_id,
   agents,
   onSubmitHumanInput,
+  threadId,
   agentIsSystem,
 }: StreamTimelineProps) {
   const { t } = useTranslation('chat')
@@ -505,6 +555,20 @@ export function StreamTimeline({
       {blocks.map((block, index) => {
         if (block.kind === 'notice') {
           if (block.event.type === 'done') return null
+          // An approval is a control, not a status line: it keeps its card even
+          // when the event arrived without an agent to group it under.
+          if (block.event.type === 'approval_required' && block.event.approval_request) {
+            return (
+              <div key={`${block.event.id}-${index}`} className="px-4 py-1">
+                <ToolApprovalPrompt
+                  groupId={groupId}
+                  threadId={threadId}
+                  request={block.event.approval_request}
+                  resolved={block.event.approval_resolved}
+                />
+              </div>
+            )
+          }
           const noticeKey = knownStreamNoticeKey(block.event)
           return (
             <div
@@ -524,6 +588,7 @@ export function StreamTimeline({
             fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
             agentIsSystem={agentIsSystem}
             onSubmitHumanInput={onSubmitHumanInput}
+            threadId={threadId}
             renderedInputRequests={renderedInputRequests}
           />
         )

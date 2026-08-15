@@ -35,8 +35,8 @@ use crate::{
         AppState,
     },
     runtime::{
-        group::MessageAttachment, run_group_turn, run_group_turn_with_stream_id, sequence::SequenceAllocator,
-        RuntimeServices, TurnOutcome, TurnRequest,
+        group::MessageAttachment, run_group_turn, run_group_turn_with_stream_id,
+        sequence::SequenceAllocator, RuntimeServices, TurnOutcome, TurnRequest,
     },
 };
 
@@ -95,6 +95,8 @@ pub struct MessageResponse {
     response_segments: Option<Vec<String>>,
     reasoning: Option<Value>,
     tool_calls: Option<Value>,
+    /// The agent's checklist as of the end of this turn, when it kept one.
+    todos: Option<Value>,
     turn_id: Option<String>,
     dispatch_id: Option<String>,
     reply_to_message_id: Option<String>,
@@ -192,6 +194,10 @@ impl From<MessageRow> for MessageResponse {
                 Some(Value::Array(items)) if !items.is_empty() => value.get("tool_calls").cloned(),
                 _ => None,
             });
+        let todos = parsed.as_ref().and_then(|value| match value.get("todos") {
+            Some(Value::Array(items)) if !items.is_empty() => value.get("todos").cloned(),
+            _ => None,
+        });
         let attachments = parsed
             .as_ref()
             .and_then(|value| serde_json::from_value(value["attachments"].clone()).ok())
@@ -211,6 +217,7 @@ impl From<MessageRow> for MessageResponse {
             response_segments,
             reasoning,
             tool_calls,
+            todos,
             turn_id: row.turn_id,
             dispatch_id: row.dispatch_id,
             reply_to_message_id: row.reply_to_message_id,
@@ -1251,6 +1258,10 @@ fn is_durable_response_event(kind: &StreamEventKind) -> bool {
             | StreamEventKind::AgentMessage
             | StreamEventKind::AgentSilent
             | StreamEventKind::WaitingForUser
+            // Replayable for the same reason a pending question is: reloading
+            // while an agent waits for approval must not lose the card, or the
+            // paused turn becomes unresumable from the UI.
+            | StreamEventKind::ApprovalRequired
             | StreamEventKind::Silence
     )
 }

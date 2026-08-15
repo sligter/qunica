@@ -20,7 +20,7 @@ import type {
   GroupTurnTerminationReason,
   SchedulerStreamUpdate,
 } from '@/lib/api-v2/types'
-import type { ContextUsage, Message } from '@/types/api'
+import type { ContextUsage, Message, TodoItem } from '@/types/api'
 
 export interface StreamingBubble {
   id: string
@@ -135,6 +135,20 @@ export interface StreamToolEvent extends StreamTimelineEventBase {
   pending_action?: PendingAppAction
 }
 
+/**
+ * The agent's checklist as of now.
+ *
+ * One event per agent per run rather than one per `TodoWrite` call: the tool
+ * replaces the list every time, so keeping the revisions would render the same
+ * checklist over and over as the agent ticks items off.
+ */
+export interface StreamTodoEvent extends StreamTimelineEventBase {
+  type: 'todo'
+  agent_id: string
+  display_name: string
+  todos: TodoItem[]
+}
+
 export interface StreamExternalRunEvent extends StreamTimelineEventBase {
   type: 'external_run'
   run_id: string
@@ -156,12 +170,37 @@ export interface StreamAgentMessageEvent extends StreamTimelineEventBase {
   context_usage?: ContextUsage | null
 }
 
+/** A gated tool call waiting on the user, with everything the card renders. */
+export interface StreamApprovalRequest {
+  tool_call_id: string
+  rule: string
+  capability: string
+  reason: string
+  tool_name: string
+  subject: string
+}
+
 export interface StreamNoticeEvent extends StreamTimelineEventBase {
-  type: 'agent_silent' | 'agent_handoff' | 'waiting_for_user' | 'warning' | 'agent_error' | 'done'
+  type:
+    | 'agent_silent'
+    | 'agent_handoff'
+    | 'waiting_for_user'
+    | 'approval_required'
+    | 'warning'
+    | 'agent_error'
+    | 'done'
   message: string
   agent_id?: string
   display_name?: string
   input_request?: HumanInputRequest
+  /** Present only on `approval_required`. */
+  approval_request?: StreamApprovalRequest
+  /**
+   * Set once the user answers, so a card that has been acted on stops offering
+   * buttons. A reload re-reads the durable event, and without this the answered
+   * card would come back live.
+   */
+  approval_resolved?: 'approved' | 'declined'
 }
 
 export type StreamTimelineEvent =
@@ -169,6 +208,7 @@ export type StreamTimelineEvent =
   | StreamResponseDraftEvent
   | StreamReasoningEvent
   | StreamToolEvent
+  | StreamTodoEvent
   | StreamExternalRunEvent
   | StreamAgentMessageEvent
   | StreamNoticeEvent
@@ -250,6 +290,14 @@ interface MessageState {
   clearStreamingStreamDraft: (groupId: string, streamId: string, agentId: string) => void
   finalizeStreamDraft: (groupId: string, streamId: string, message: Message, displayName?: string) => void
   upsertStreamTool: (groupId: string, streamId: string, activity: ToolActivity) => void
+  /** Replace an agent's checklist for this run with the list it just wrote. */
+  upsertStreamTodos: (
+    groupId: string,
+    streamId: string,
+    agentId: string,
+    todos: TodoItem[],
+    displayName?: string,
+  ) => void
   upsertStreamExternalRun: (
     groupId: string,
     streamId: string,
@@ -273,6 +321,19 @@ interface MessageState {
   reconcileSchedulerTurn: (groupId: string, trace: GroupTurnTraceResponse) => void
   acceptsStreamEvent: (groupId: string, streamId: string) => boolean
   markStreamRunWaitingForUser: (groupId: string, streamId: string) => string | null
+  /**
+   * Mark an approval card as answered so it stops offering buttons.
+   *
+   * Keyed on the tool call rather than the notice id: the durable
+   * `approval_required` event is replayed on reload with a fresh notice id, and
+   * an answered card that came back live would invite a second click on a
+   * command that has already run.
+   */
+  resolveStreamApproval: (
+    groupId: string,
+    toolCallId: string,
+    outcome: 'approved' | 'declined',
+  ) => void
   markStreamRunDone: (groupId: string, streamId: string) => void
   markStreamRunError: (groupId: string, streamId: string, message: string) => void
   markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
@@ -1253,6 +1314,47 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     }),
 
+  upsertStreamTodos: (groupId, streamId, agentId, todos, displayName) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId] ?? {}
+      const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
+      const timestamp = nowIso()
+      const run = groupRuns[streamId] ?? emptyStreamRun(groupId, streamId, timestamp)
+      // Keyed on the agent, not the tool call: every `TodoWrite` in a turn
+      // rewrites the same checklist, so a per-call id would stack one copy per
+      // ticked-off item.
+      const eventId = `todo:${streamId}:${agentId}`
+      const existing = run.events.find(
+        (event): event is StreamTodoEvent => event.id === eventId && event.type === 'todo',
+      )
+      const event: StreamTodoEvent = {
+        id: eventId,
+        type: 'todo',
+        stream_id: streamId,
+        agent_id: agentId,
+        display_name: displayName ?? existing?.display_name ?? '',
+        todos,
+        created_at: existing?.created_at ?? timestamp,
+        updated_at: timestamp,
+      }
+      const nextRun: StreamRun = {
+        ...run,
+        status: 'active',
+        updated_at: timestamp,
+        events: upsertTimelineEvent(run.events, event),
+      }
+      return {
+        streamRunsByGroup: {
+          ...s.streamRunsByGroup,
+          [groupId]: { ...groupRuns, [streamId]: nextRun },
+        },
+        streamRunOrderByGroup: {
+          ...s.streamRunOrderByGroup,
+          [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
+        },
+      }
+    }),
+
   upsertStreamExternalRun: (groupId, streamId, eventInput) =>
     set((s) => {
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
@@ -1326,6 +1428,32 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           ...s.streamRunOrderByGroup,
           [groupId]: groupOrder.includes(streamId) ? groupOrder : [...groupOrder, streamId],
         },
+      }
+    }),
+
+  resolveStreamApproval: (groupId, toolCallId, outcome) =>
+    set((s) => {
+      const groupRuns = s.streamRunsByGroup[groupId]
+      if (!groupRuns) return s
+      let changed = false
+      const nextRuns: Record<string, StreamRun> = {}
+      for (const [streamId, run] of Object.entries(groupRuns)) {
+        const events = run.events.map((event) => {
+          if (
+            event.type !== 'approval_required' ||
+            event.approval_request?.tool_call_id !== toolCallId ||
+            event.approval_resolved
+          ) {
+            return event
+          }
+          changed = true
+          return { ...event, approval_resolved: outcome }
+        })
+        nextRuns[streamId] = changed ? { ...run, events } : run
+      }
+      if (!changed) return s
+      return {
+        streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: nextRuns },
       }
     }),
 

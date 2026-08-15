@@ -743,6 +743,14 @@ export interface MessageToolCall {
   result_summary: string | null
 }
 
+export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+
+/** One line of the checklist an agent keeps with `TodoWrite`. */
+export interface TodoItem {
+  content: string
+  status: TodoStatus
+}
+
 export interface Message {
   id: string
   group_id: string
@@ -761,6 +769,8 @@ export interface Message {
   reasoning?: string[] | null
   /** Persisted tool calls (from `content_json`), in order. */
   tool_calls?: MessageToolCall[] | null
+  /** The agent's checklist as of the end of this turn (from `content_json`). */
+  todos?: TodoItem[] | null
   turn_id: string | null
   dispatch_id: string | null
   reply_to_message_id: string | null

@@ -9,6 +9,8 @@ export type LegacyStreamEventKind =
   | 'agent_message'
   | 'agent_silent'
   | 'waiting_for_user'
+  | 'approval_required'
+  | 'todo_update'
   | 'context_usage'
   | 'acp_agent_run'
   | 'silence'

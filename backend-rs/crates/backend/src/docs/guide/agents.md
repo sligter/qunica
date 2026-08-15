@@ -35,7 +35,7 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 | `GenerateImage` | yes | Generate an image and save it under `generations/`; needs Settings → Media |
 | `GenerateVideo` | yes | Generate a video and save it under `generations/`; needs Settings → Media |
 | `AskUser` | no | Pause and ask the user a question |
-| `TodoWrite` | no | Track multi-step work within a turn |
+| `TodoWrite` | no | Keep a checklist of the current work, one status per item |
 | `ExitPlanMode` | no | Present a plan for approval |
 | `SkillManager` | no | List and load mounted skills |
 

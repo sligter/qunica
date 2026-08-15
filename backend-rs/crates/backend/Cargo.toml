@@ -21,7 +21,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
-shlex = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "time", "json", "macros", "migrate"] }
 tempfile = "3"
 thiserror = "1"
@@ -33,6 +32,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 walkdir = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Job objects own a spawned shell's descendants, and `MultiByteToWideChar`
+# decodes output from a legacy console code page. See `src/process.rs` and
+# `src/tools/shell.rs`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_JobObjects",
+] }
+
+# `killpg` reaches a spawned shell's process group. See `src/process.rs`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

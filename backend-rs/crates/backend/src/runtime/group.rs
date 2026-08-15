@@ -50,13 +50,15 @@ use crate::acp::{
 };
 use crate::llm::{
     build_provider, model_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest,
-    LlmProvider, ProviderConfig, ReasoningEffort, ToolCall, ToolDefinition,
+    LlmProvider, ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall, ToolDefinition,
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
     resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AgentAsToolMode, CallerAgent,
     AGENT_AS_TOOL_NAME,
 };
+use crate::runtime::approval;
+use crate::runtime::compaction_hook::ProviderSummarizer;
 use crate::runtime::conversation_context::{
     load_conversation, load_conversation_for_resume, sanitize_acp_agent_brief,
     to_acp_incremental_prompt, to_acp_prompt, to_llm_messages, AttachmentAccess,
@@ -71,9 +73,11 @@ use crate::runtime::group_scheduler::{
     ModeratorRequest, NewDispatch, NewTurn, SchedulerDecision, SchedulerDispatch, SchedulerStore,
     SelectionReason, TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
 };
+use crate::runtime::hooks::{HookChain, RequestRecovery, StepContext};
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{
-    McpMount, MountedSkill, ToolExecutor, ToolResult, ToolStatus, WorkspaceMount, SELF_MOUNT_NAME,
+    todo, ApprovalDecision, ApprovalRequest, McpMount, MountedSkill, TodoItem, ToolExecutor,
+    ToolResult, ToolStatus, WorkspaceMount, SELF_MOUNT_NAME,
 };
 
 /// Total wall clock MCP tool discovery may spend before a turn starts.
@@ -111,6 +115,8 @@ pub struct RuntimeServices {
     /// Pooled MCP connections, shared process-wide so a stdio server is spawned
     /// once rather than once per turn.
     pub mcp: Arc<McpManager>,
+    /// Behaviour attached around each step of the agent loop.
+    pub hooks: HookChain,
     active_turns: ActiveTurnRegistry,
     // Retained for direct runtime tests that exercise the pre-registry
     // cancellation hook. HTTP cancellation uses `active_turns` instead.
@@ -123,9 +129,16 @@ impl RuntimeServices {
             pool,
             write_lock,
             mcp: McpManager::shared(),
+            hooks: HookChain::defaults(),
             active_turns: ActiveTurnRegistry::new(),
             cancellation: None,
         }
+    }
+
+    /// Replace the hook chain, for tests that need to observe or suppress it.
+    pub fn with_hooks(mut self, hooks: HookChain) -> Self {
+        self.hooks = hooks;
+        self
     }
 
     pub fn with_active_turn_registry(mut self, active_turns: ActiveTurnRegistry) -> Self {
@@ -192,6 +205,9 @@ pub struct ResumeRequest {
     pub message_id: String,
     pub existing_content: String,
     pub content_json: Option<String>,
+    /// The answer to a tool call this thread paused on, when the resume is
+    /// carrying one. `None` resumes an ordinary interruption.
+    pub approval: Option<ApprovalDecision>,
 }
 
 /// How a turn ended.
@@ -363,6 +379,7 @@ pub async fn run_thread_resume(
             message_id: req.message_id.clone(),
             existing_content: req.existing_content.clone(),
             turn: TurnData::from_content_json(req.content_json.as_deref()),
+            approval: req.approval.clone(),
         }),
         cancellation: services.cancellation.clone(),
     };
@@ -404,6 +421,9 @@ struct ResumeState {
     message_id: String,
     existing_content: String,
     turn: TurnData,
+    /// Answered on the way in and consumed once, before the first request: the
+    /// paused call is replayed rather than re-proposed by the model.
+    approval: Option<ApprovalDecision>,
 }
 
 #[derive(Clone)]
@@ -519,15 +539,15 @@ impl StreamCtx {
         content_json: Option<&str>,
     ) -> Result<(), StepErr> {
         // The resume `agent_message` event must carry the persisted turn
-        // structure (response segments, reasoning, tool cards) so the client
-        // can rebuild the message's bubbles immediately instead of showing a
-        // single merged bubble until a history refetch lands. Tool cards are
-        // projected to the summary fields the client renders: the heavy
-        // `args`/`result` stay only in `content_json` (the messages table),
-        // not duplicated into the durable stream event payload.
+        // structure (response segments, reasoning, todo checklist, tool cards)
+        // so the client can rebuild the message's bubbles immediately instead
+        // of showing a single merged bubble until a history refetch lands. Tool
+        // cards are projected to the summary fields the client renders: the
+        // heavy `args`/`result` stay only in `content_json` (the messages
+        // table), not duplicated into the durable stream event payload.
         if let (Some(raw), Some(object)) = (content_json, payload.as_object_mut()) {
             if let Ok(turn) = serde_json::from_str::<Value>(raw) {
-                for field in ["response_segments", "reasoning"] {
+                for field in ["response_segments", "reasoning", "todos"] {
                     if let Some(value) = turn.get(field) {
                         object.insert(field.to_string(), value.clone());
                     }
@@ -642,7 +662,7 @@ macro_rules! step {
                 let _ = $ctx.emit_done().await;
                 return Ok(TurnOutcome::Error);
             }
-            Err(StepErr::Db(err)) => return $ctx.fail(&err.to_string()).await,
+            Err(StepErr::Db(err)) => return $ctx.fail(&user_facing_error(&err)).await,
             Err(StepErr::SchedulerPersistence) => {
                 return $ctx.fail("scheduler persistence failed").await
             }
@@ -2087,12 +2107,36 @@ async fn start_provider_stream(
                 tracing::warn!(attempt = retry, error = %error, "retrying transient provider failure");
                 await_with_cancellation(ctx, tokio::time::sleep(delay)).await?;
             }
-            Err(_) => return Err(StepErr::Db(anyhow::anyhow!("provider execution failed"))),
+            // The provider's own explanation travels with the failure rather
+            // than being collapsed to "provider execution failed". The caller's
+            // hooks need it to tell a context overflow from a bad request, and
+            // the user needs it to tell a missing model from a dead key.
+            Err(error) => return Err(StepErr::Db(error)),
         }
     }
 }
 
+/// Render a failed step for the user.
+///
+/// A provider HTTP failure is reduced to its status. The full error — body
+/// included — stays in the tracing log for the operator, but the body is the
+/// provider's own text and providers echo the submitted credential back in
+/// authentication errors, so it must not reach a chat stream. Every other error
+/// is already host-authored and passes through.
+fn user_facing_error(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<ProviderHttpError>() {
+        Some(http) => http.safe_message(),
+        None => error.to_string(),
+    }
+}
+
+/// Whether `error` is worth re-issuing the same request for.
 fn is_transient_provider_error(error: &anyhow::Error) -> bool {
+    // A provider HTTP failure is classified from the status it carried, which
+    // survives now that the body is preserved.
+    if let Some(http) = error.downcast_ref::<ProviderHttpError>() {
+        return http.is_transient();
+    }
     let Some(error) = error.downcast_ref::<reqwest::Error>() else {
         return false;
     };
@@ -2524,6 +2568,11 @@ struct RecordedToolCall {
     result_summary: Option<String>,
     args: Option<Value>,
     result: Option<String>,
+    /// The question a paused call is waiting on, kept so a resume can replay
+    /// the exact call the user was shown rather than re-prompting the model.
+    /// `None` for every call that never needed approval.
+    #[serde(default)]
+    approval_request: Option<Value>,
 }
 
 /// Structured data accumulated across one agent turn so response segments,
@@ -2538,6 +2587,11 @@ struct TurnData {
     reasoning: Vec<String>,
     #[serde(default)]
     tool_calls: Vec<RecordedToolCall>,
+    /// The latest `TodoWrite` checklist for this turn. Replaced rather than
+    /// appended: an agent that ticks off item two rewrites the whole list, and
+    /// keeping every revision would grow the message with the work.
+    #[serde(default)]
+    todos: Vec<TodoItem>,
     #[serde(default)]
     context_usage: Option<Value>,
 }
@@ -2586,6 +2640,7 @@ impl TurnData {
             result_summary: None,
             args,
             result: None,
+            approval_request: None,
         });
     }
 
@@ -2624,7 +2679,55 @@ impl TurnData {
             result_summary,
             args: None,
             result,
+            approval_request: None,
         });
+    }
+
+    /// Recover the call and question a resume is answering.
+    ///
+    /// Matches on `tool_call_id` *and* on the call still being unanswered: a
+    /// user who clicks an approval card twice, or one whose page replayed a
+    /// stale event, must not run the command a second time. A call that has a
+    /// result is no longer pending, so the second answer finds nothing.
+    fn pending_approval(&self, tool_call_id: &str) -> Option<(ToolCall, ApprovalRequest)> {
+        let recorded = self.tool_calls.iter().find(|call| {
+            call.tool_call_id.as_deref() == Some(tool_call_id)
+                && call.status.as_deref() == Some("approval_required")
+                && call.result.is_none()
+        })?;
+        let request = recorded
+            .approval_request
+            .clone()
+            .and_then(|value| serde_json::from_value(value).ok())?;
+        Some((
+            ToolCall {
+                id: tool_call_id.to_string(),
+                name: recorded.tool_name.clone()?,
+                args: recorded.args.clone()?,
+                provider_metadata: None,
+            },
+            request,
+        ))
+    }
+
+    /// Replace the checklist with the latest one the agent wrote.
+    ///
+    /// The live `todo_update` events are the source of truth while a turn runs;
+    /// this is the durable mirror a reload rebuilds the checklist from, exactly
+    /// as `reasoning` and `tool_calls` are.
+    fn record_todos(&mut self, todos: Vec<TodoItem>) {
+        self.todos = todos;
+    }
+
+    /// Attach the question a paused call is waiting on.
+    fn record_tool_approval_request(&mut self, tool_call_id: &str, request: &ApprovalRequest) {
+        if let Some(call) = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| call.tool_call_id.as_deref() == Some(tool_call_id))
+        {
+            call.approval_request = serde_json::to_value(request).ok();
+        }
     }
 
     fn record_tool_args(&mut self, tool_call_id: &str, args: Value) {
@@ -2658,6 +2761,7 @@ impl TurnData {
             .all(|segment| segment.is_empty())
             && self.reasoning.iter().all(|segment| segment.is_empty())
             && self.tool_calls.is_empty()
+            && self.todos.is_empty()
             && self.context_usage.is_none()
     }
 
@@ -2689,6 +2793,7 @@ impl TurnData {
                     "result_summary": call.result_summary,
                     "args": call.args,
                     "result": call.result,
+                    "approval_request": call.approval_request,
                 })
             })
             .collect();
@@ -2697,6 +2802,7 @@ impl TurnData {
             "response_segments": response_segments,
             "reasoning": reasoning,
             "tool_calls": tool_calls,
+            "todos": self.todos,
             "context_usage": self.context_usage,
         });
         serde_json::to_string(&payload).ok()
@@ -2803,12 +2909,23 @@ async fn run_agent_turn(
     let (provider_cfg, provider_name) = resolve_provider(&services.pool, agent)
         .await
         .map_err(StepErr::Db)?;
-    let provider = build_provider(&provider_cfg).map_err(StepErr::Db)?;
+    let provider: Arc<dyn LlmProvider> =
+        Arc::from(build_provider(&provider_cfg).map_err(StepErr::Db)?);
     // A per-message override wins over the agent's configured model. The API
     // layer already checked it against the bound provider's catalog.
     let model = ctx.model_override.clone().unwrap_or_else(|| {
         model_from_config(&agent.model_config_json, &provider_cfg.default_model)
     });
+    // Hooks summarize through the agent's own provider and model, so a
+    // compacted span is described by the model that produced it.
+    let step = StepContext {
+        agent_id: agent.agent_id.clone(),
+        agent_display_name: agent.display_name.clone(),
+        model: model.clone(),
+        context_window_tokens: provider_cfg.context_window_tokens,
+        context_output_reserve_ratio: provider_cfg.context_output_reserve_ratio,
+        summarizer: Arc::new(ProviderSummarizer::new(provider.clone(), model.clone())),
+    };
     let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
@@ -2850,6 +2967,42 @@ async fn run_agent_turn(
         .map(|resume| resume.turn.clone())
         .unwrap_or_default();
 
+    // A resume carrying an approval answer runs the paused call *before* the
+    // model is asked anything. Re-prompting instead would let the replayed turn
+    // propose a different command than the one the user saw and approved, which
+    // would make the approval card a decoration rather than a control.
+    if let Some(decision) = ctx
+        .resume
+        .as_ref()
+        .and_then(|resume| resume.approval.clone())
+    {
+        match replay_approved_call(
+            services,
+            ctx,
+            agent,
+            &invocation.executor,
+            &mut turn,
+            &decision,
+        )
+        .await?
+        {
+            Some(exchange) => messages.extend(exchange),
+            None => {
+                // The card no longer matches anything pending — answered twice,
+                // or replayed from a stale page. Say so rather than silently
+                // resuming as if the command had run.
+                ctx.emit(
+                    StreamEventKind::Warning,
+                    json!({
+                        "message": "That approval no longer applies to a pending command; \
+                                    nothing was run."
+                    }),
+                )
+                .await?;
+            }
+        }
+    }
+
     let usage_thread_id = ctx.thread_id.clone();
     let usage_dimensions = TokenUsageDimensions {
         owner_id: &agent.owner_id,
@@ -2865,6 +3018,16 @@ async fn run_agent_turn(
     };
 
     loop {
+        // `pre_step` is where compaction runs: the message list is reduced
+        // before a request is derived from it, not after the provider rejects
+        // it. Notices are surfaced so a shrinking context is visible rather than
+        // something the user discovers by noticing the agent forgot.
+        for notice in services.hooks.pre_step(&step, &mut messages).await {
+            tracing::info!(agent_id = %agent.agent_id, notice = %notice, "pre-step hook");
+            ctx.emit(StreamEventKind::Warning, json!({ "message": notice }))
+                .await?;
+        }
+
         let usage_record_id = Uuid::new_v4().to_string();
         let request = ChatRequest {
             model: model.clone(),
@@ -2877,6 +3040,39 @@ async fn run_agent_turn(
         };
         let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
             Ok(deltas) => deltas,
+            Err(StepErr::Db(error)) => {
+                // A rejected request may still be recoverable — a context
+                // overflow shrinks and retries rather than ending the turn.
+                // A hook only asks for a retry when it actually changed
+                // something, so this cannot spin on an unchanged request.
+                match services
+                    .hooks
+                    .request_error(&step, &mut messages, &error)
+                    .await
+                {
+                    RequestRecovery::Retry { reason } => {
+                        tracing::warn!(
+                            agent_id = %agent.agent_id,
+                            error = %error,
+                            "retrying provider request after hook recovery"
+                        );
+                        ctx.emit(StreamEventKind::Warning, json!({ "message": reason }))
+                            .await?;
+                        continue;
+                    }
+                    RequestRecovery::Propagate => {
+                        maybe_persist_interrupted_agent(
+                            ctx,
+                            agent,
+                            &content,
+                            &turn,
+                            checkpoint_interrupted,
+                        )
+                        .await?;
+                        return Err(StepErr::Db(error));
+                    }
+                }
+            }
             Err(error) => {
                 maybe_persist_interrupted_agent(
                     ctx,
@@ -3081,26 +3277,57 @@ async fn run_agent_turn(
         ));
 
         let mut wait_for_user: Option<Value> = None;
-        for call in tool_calls {
-            let result = execute_tool_call(
+        let mut pending_approval: Option<(ToolCall, ApprovalRequest)> = None;
+        for batch in tool_call_batches(&tool_calls) {
+            let results = execute_tool_batch(
+                &services.hooks,
+                &step,
                 ctx,
                 agent,
                 &invocation.executor,
-                &call,
+                batch,
                 checkpoint_interrupted,
                 &content,
                 &mut turn,
             )
             .await?;
-            messages.push(ChatMessage::tool_result(
-                call.id,
-                call.name,
-                format!("status: {:?}\n{}", result.status, result.output),
-            ));
-            if matches!(result.status, ToolStatus::WaitingForUser) {
-                wait_for_user = Some(tool_input_request_payload(&result.output));
+            for (call, result) in results {
+                // A call awaiting approval gets no tool result: the turn stops
+                // here and the call is replayed after the user answers, so
+                // pushing a placeholder now would leave a result the model
+                // reads as the command's outcome.
+                if matches!(result.status, ToolStatus::ApprovalRequired) {
+                    if let Some(request) = tool_approval_request(&result.output) {
+                        pending_approval = Some((call, request));
+                        break;
+                    }
+                }
+                messages.push(ChatMessage::tool_result(
+                    call.id.clone(),
+                    call.name.clone(),
+                    format!("status: {:?}\n{}", result.status, result.output),
+                ));
+                if matches!(result.status, ToolStatus::WaitingForUser) {
+                    wait_for_user = Some(tool_input_request_payload(&result.output));
+                    break;
+                }
+            }
+            if wait_for_user.is_some() || pending_approval.is_some() {
                 break;
             }
+        }
+
+        if let Some((call, request)) = pending_approval {
+            return pause_for_approval(
+                ctx,
+                agent,
+                &content,
+                turn,
+                &call,
+                &request,
+                checkpoint_interrupted,
+            )
+            .await;
         }
 
         if let Some(input_request) = wait_for_user {
@@ -3155,6 +3382,133 @@ async fn run_agent_turn(
             return Ok(AgentRunResult::WaitingForUser);
         }
     }
+}
+
+/// Lift the structured approval request out of a paused tool result.
+fn tool_approval_request(output: &str) -> Option<ApprovalRequest> {
+    serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|value| value.get("approval_request").cloned())
+        .and_then(|request| serde_json::from_value(request).ok())
+}
+
+/// Stop the turn until a human answers `request`.
+///
+/// The paused call is checkpointed with its arguments and **no result**, and the
+/// thread is left `paused` with an `interrupted` message — the exact state
+/// `/threads/{id}/resume` already knows how to pick up. That is what lets the
+/// answer replay the call the user actually saw instead of re-prompting the
+/// model and hoping it proposes the same command twice.
+///
+/// A nested or private execution cannot pause a thread it does not own, so it
+/// reports the request to its caller as a failed step instead.
+async fn pause_for_approval(
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    turn: TurnData,
+    call: &ToolCall,
+    request: &ApprovalRequest,
+    checkpoint_interrupted: bool,
+) -> Result<AgentRunResult, StepErr> {
+    if ctx.private_execution || !checkpoint_interrupted {
+        return Ok(AgentRunResult::Private(AgentExecution {
+            final_content: format!(
+                "This step needs approval before it can run: {}",
+                request.summary()
+            ),
+            turn_data: turn,
+            outcome: AgentExecutionOutcome::WaitingForUser,
+        }));
+    }
+
+    persist_interrupted_agent(ctx, agent, content, &turn).await?;
+    ctx.emit_durable_event(
+        StreamEventKind::ApprovalRequired,
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "message": request.summary(),
+            "tool_call_id": call.id,
+            "tool_name": call.name,
+            "approval_request": request,
+        }),
+    )
+    .await?;
+    Ok(AgentRunResult::WaitingForUser)
+}
+
+/// Run the tool call a user has just answered for, before the model is asked
+/// anything.
+///
+/// Returns the assistant/tool message pair to splice onto the request so the
+/// model's next turn reads the outcome of the exact call it made. `None` when
+/// the decision does not match a call that is actually waiting — a stale card,
+/// or a `tool_call_id` from another turn.
+async fn replay_approved_call(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    executor: &ToolExecutor,
+    turn: &mut TurnData,
+    decision: &ApprovalDecision,
+) -> Result<Option<[ChatMessage; 2]>, StepErr> {
+    let Some((call, request)) = turn.pending_approval(&decision.tool_call_id) else {
+        return Ok(None);
+    };
+
+    approval::record_decision(
+        &services.pool,
+        &ctx.thread_id,
+        &agent.agent_id,
+        &request,
+        decision,
+    )
+    .await
+    .map_err(StepErr::Db)?;
+
+    emit_tool_call_start(ctx, agent, &call).await?;
+    let result = if decision.approved {
+        // The executor was built with this rule granted, so the policy that
+        // paused the call now lets it through.
+        await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await?
+    } else {
+        ToolResult {
+            status: ToolStatus::Failed,
+            output: approval::declined_result(&request, decision.note.as_deref()),
+        }
+    };
+
+    turn.record_tool_result(
+        Some(call.id.clone()),
+        Some(call.name.clone()),
+        Some(tool_status_wire(result.status).to_string()),
+        Some(summarize_text(&result.output)),
+    );
+    turn.record_tool_output(&call.id, result.output.clone());
+    ctx.emit(
+        StreamEventKind::ToolCallResult,
+        json!({
+            "agent_id": agent.agent_id,
+            "display_name": agent.display_name,
+            "tool_call_id": call.id,
+            "tool_name": call.name,
+            "status": tool_status_wire(result.status),
+            "result_summary": summarize_text(&result.output),
+            "output": result.output,
+        }),
+    )
+    .await?;
+
+    let tool_message = ChatMessage::tool_result(
+        call.id.clone(),
+        call.name.clone(),
+        format!("status: {:?}\n{}", result.status, result.output),
+    );
+    Ok(Some([
+        ChatMessage::assistant_tool_calls("", vec![call]),
+        tool_message,
+    ]))
 }
 
 async fn maybe_persist_interrupted_agent(
@@ -3466,48 +3820,138 @@ fn acp_context_usage(data: &Value) -> ag_swarmer_domain::runtime::ContextUsage {
     }
 }
 
-async fn execute_tool_call(
+/// Tools with no side effects, which are safe to run concurrently.
+///
+/// Everything absent from this list is treated as mutating and runs alone, in
+/// model order. That includes every MCP tool: the runtime cannot know what a
+/// third-party server does, and guessing wrong means two writes racing.
+fn is_read_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "Read"
+            | "Glob"
+            | "Grep"
+            | "Fetch"
+            | "WebSearch"
+            | "SkillManager"
+            | "AppList"
+            | "AppGet"
+            | "AppState"
+            | "AppDocs"
+            | "ShellJobs"
+            | "ShellOutput"
+    )
+}
+
+/// Split one assistant message's tool calls into batches that may run together.
+///
+/// Consecutive read-only calls form one concurrent batch; every other call is a
+/// batch of its own. Batching only consecutive calls preserves the model's
+/// ordering across a read/write boundary, so a `Read` issued after a `Write`
+/// still observes it.
+fn tool_call_batches(calls: &[ToolCall]) -> Vec<&[ToolCall]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    while start < calls.len() {
+        if !is_read_only_tool(&calls[start].name) {
+            batches.push(&calls[start..start + 1]);
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < calls.len() && is_read_only_tool(&calls[end].name) {
+            end += 1;
+        }
+        batches.push(&calls[start..end]);
+        start = end;
+    }
+    batches
+}
+
+/// Run one batch of tool calls, returning results in model order.
+///
+/// A single-call batch runs directly. A multi-call batch runs concurrently:
+/// three `Read`s that each wait on the filesystem used to cost three round trips
+/// of latency for no reason. Start and result events are still emitted in model
+/// order so the transcript reads the way the model wrote it.
+#[allow(clippy::too_many_arguments)]
+async fn execute_tool_batch(
+    hooks: &HookChain,
+    step: &StepContext,
     ctx: &mut StreamCtx,
     agent: &Candidate,
     executor: &ToolExecutor,
-    call: &ToolCall,
+    calls: &[ToolCall],
     checkpoint_interrupted: bool,
     content: &str,
     turn: &mut TurnData,
-) -> Result<ToolResult, StepErr> {
-    turn.record_tool_start(
-        Some(call.id.clone()),
-        Some(call.name.clone()),
-        Some("started".to_string()),
-        Some(summarize_value(&call.args)),
-    );
-    turn.record_tool_args(&call.id, call.args.clone());
-    if let Err(err) = emit_tool_call_start(ctx, agent, call).await {
-        if matches!(err, StepErr::Cancelled) {
-            maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
-                .await?;
-        }
-        return Err(err);
-    }
-
-    let result =
-        match await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await {
-            Ok(result) => result,
-            Err(error) => {
+) -> Result<Vec<(ToolCall, ToolResult)>, StepErr> {
+    for call in calls {
+        turn.record_tool_start(
+            Some(call.id.clone()),
+            Some(call.name.clone()),
+            Some("started".to_string()),
+            Some(summarize_value(&call.args)),
+        );
+        turn.record_tool_args(&call.id, call.args.clone());
+        if let Err(err) = emit_tool_call_start(ctx, agent, call).await {
+            if matches!(err, StepErr::Cancelled) {
                 maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
                     .await?;
-                return Err(error);
             }
-        };
-    turn.record_tool_result(
-        Some(call.id.clone()),
-        Some(call.name.clone()),
-        Some(tool_status_wire(result.status).to_string()),
-        Some(summarize_text(&result.output)),
-    );
-    turn.record_tool_output(&call.id, result.output.clone());
-    if let Err(err) = ctx
-        .emit(
+            return Err(err);
+        }
+    }
+
+    let pending = calls.iter().map(|call| async move {
+        // A hook may answer for the tool without running it; that decision has
+        // to happen inside the concurrent unit so a blocked call does not hold
+        // up the batch.
+        if let Some(result) = hooks.pre_tool(step, call).await {
+            return result;
+        }
+        executor.execute(&call.name, call.args.clone()).await
+    });
+    let results = match await_with_cancellation(ctx, futures_util::future::join_all(pending)).await
+    {
+        Ok(results) => results,
+        Err(error) => {
+            maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
+                .await?;
+            return Err(error);
+        }
+    };
+
+    let mut completed = Vec::with_capacity(calls.len());
+    for (call, mut result) in calls.iter().zip(results) {
+        hooks.post_tool(step, call, &mut result).await;
+        // A call awaiting approval has produced no result. Recording one would
+        // make `to_llm_messages` replay it as a completed tool call on the next
+        // turn, so the model would read a result for a command that never ran —
+        // and the replay path would have nothing left to execute.
+        let awaiting_approval = matches!(result.status, ToolStatus::ApprovalRequired);
+        turn.record_tool_result(
+            Some(call.id.clone()),
+            Some(call.name.clone()),
+            Some(tool_status_wire(result.status).to_string()),
+            (!awaiting_approval).then(|| summarize_text(&result.output)),
+        );
+        if awaiting_approval {
+            if let Some(request) = tool_approval_request(&result.output) {
+                turn.record_tool_approval_request(&call.id, &request);
+            }
+        } else {
+            turn.record_tool_output(&call.id, result.output.clone());
+        }
+        // A checklist is turn state, not one tool's output. The client renders
+        // it as its own block and a reload rebuilds it from the turn record, so
+        // it travels as its own event rather than staying buried in the
+        // collapsed activity row this tool result becomes.
+        let todos = todo::todos_from_output(&result.output);
+        if let Some(items) = todos.as_ref() {
+            turn.record_todos(items.clone());
+        }
+        let mut emissions = vec![(
             StreamEventKind::ToolCallResult,
             json!({
                 "agent_id": agent.agent_id,
@@ -3518,16 +3962,36 @@ async fn execute_tool_call(
                 "result_summary": summarize_text(&result.output),
                 "output": result.output,
             }),
-        )
-        .await
-    {
-        if matches!(err, StepErr::Cancelled) {
-            maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
-                .await?;
+        )];
+        if let Some(items) = todos {
+            emissions.push((
+                StreamEventKind::TodoUpdate,
+                json!({
+                    "agent_id": agent.agent_id,
+                    "display_name": agent.display_name,
+                    "tool_call_id": call.id,
+                    "todos": items,
+                }),
+            ));
         }
-        return Err(err);
+        for (kind, payload) in emissions {
+            if let Err(err) = ctx.emit(kind, payload).await {
+                if matches!(err, StepErr::Cancelled) {
+                    maybe_persist_interrupted_agent(
+                        ctx,
+                        agent,
+                        content,
+                        turn,
+                        checkpoint_interrupted,
+                    )
+                    .await?;
+                }
+                return Err(err);
+            }
+        }
+        completed.push((call.clone(), result));
     }
-    Ok(result)
+    Ok(completed)
 }
 
 fn tool_status_wire(status: ToolStatus) -> &'static str {
@@ -4894,9 +5358,33 @@ async fn build_invocation_context(
         executor
     };
 
+    // Rules this thread has remembered, plus the one being answered right now.
+    // The in-flight grant matters even when the user did not choose "remember":
+    // without it the replayed call would hit the same policy question it was
+    // just approved past, and the turn would pause forever.
+    let mut approvals = approval::load_grants(pool, &ctx.thread_id)
+        .await
+        .unwrap_or_default();
+    if let Some(decision) = ctx
+        .resume
+        .as_ref()
+        .and_then(|resume| resume.approval.as_ref())
+    {
+        if decision.approved {
+            if let Some((_, request)) = ctx
+                .resume
+                .as_ref()
+                .and_then(|resume| resume.turn.pending_approval(&decision.tool_call_id))
+            {
+                approvals.grant(request.rule);
+            }
+        }
+    }
+    let executor = executor.with_approvals(approvals);
+
     let mut tools = enabled_tools
         .iter()
-        .filter_map(|name| tool_definition(name))
+        .flat_map(|name| tool_definitions_for(name))
         .collect::<Vec<_>>();
     tools.extend(
         executor
@@ -4909,6 +5397,11 @@ async fn build_invocation_context(
     // hash map, and a list that reshuffles every turn defeats prompt caching.
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
+    // The prompt names the tools the model can actually call, which is not the
+    // configured list: enabling `bash` yields the host's shell tool under its
+    // real dialect name plus the job tools that go with it.
+    let advertised_tools: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+
     // Render the prompt from what the executor actually retained, not from what
     // the mode asked for: a mount can be dropped as unusable or redundant, and
     // advertising one the tools do not have would be a lie the agent acts on.
@@ -4917,7 +5410,7 @@ async fn build_invocation_context(
         ctx,
         agent,
         group,
-        &enabled_tools,
+        &advertised_tools,
         &mounted_skills,
         &executor,
     )
@@ -4979,33 +5472,28 @@ async fn resolve_mcp_tools(services: &RuntimeServices, agent: &Candidate) -> Mcp
         }
     });
 
-    let resolved = match tokio::time::timeout(
-        MCP_RESOLVE_BUDGET,
-        futures_util::future::join_all(listings),
-    )
-    .await
-    {
-        Ok(resolved) => resolved,
-        Err(_) => {
-            // Every server is still connecting. Rather than hold the turn open,
-            // start it with no MCP tools and tell the agent why.
-            tracing::warn!(
-                agent_id = %agent.agent_id,
-                "MCP tool resolution exceeded its budget; starting the turn without MCP tools"
-            );
-            return McpMount::new(
-                Vec::new(),
-                Vec::new(),
-                vec![(
-                    "MCP servers".to_string(),
-                    format!(
-                        "did not respond within {}s",
-                        MCP_RESOLVE_BUDGET.as_secs()
-                    ),
-                )],
-            );
-        }
-    };
+    let resolved =
+        match tokio::time::timeout(MCP_RESOLVE_BUDGET, futures_util::future::join_all(listings))
+            .await
+        {
+            Ok(resolved) => resolved,
+            Err(_) => {
+                // Every server is still connecting. Rather than hold the turn open,
+                // start it with no MCP tools and tell the agent why.
+                tracing::warn!(
+                    agent_id = %agent.agent_id,
+                    "MCP tool resolution exceeded its budget; starting the turn without MCP tools"
+                );
+                return McpMount::new(
+                    Vec::new(),
+                    Vec::new(),
+                    vec![(
+                        "MCP servers".to_string(),
+                        format!("did not respond within {}s", MCP_RESOLVE_BUDGET.as_secs()),
+                    )],
+                );
+            }
+        };
 
     let mut bindings: Vec<McpToolBinding> = Vec::new();
     let mut configs: Vec<McpServerConfig> = Vec::new();
@@ -5045,7 +5533,10 @@ async fn resolve_mcp_tools(services: &RuntimeServices, agent: &Candidate) -> Mcp
 /// from the tool list alone.
 fn mcp_tool_definition(binding: &McpToolBinding) -> ToolDefinition {
     let description = if binding.description.is_empty() {
-        format!("Tool '{}' from MCP server '{}'.", binding.tool_name, binding.server_name)
+        format!(
+            "Tool '{}' from MCP server '{}'.",
+            binding.tool_name, binding.server_name
+        )
     } else {
         format!("[MCP: {}] {}", binding.server_name, binding.description)
     };
@@ -5200,16 +5691,24 @@ async fn build_agent_system_prompt(
 }
 
 /// Describe the host that executes provider-native tools for this turn.
+///
+/// The shell line names the resolved interpreter and its dialect rather than a
+/// guess from `cfg!(windows)`. A prompt that claimed `cmd.exe` while a tool
+/// called `Bash` ran PowerShell gave the model two wrong answers at once.
 fn render_runtime_environment(executor: &ToolExecutor) -> String {
-    let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+    let shell = crate::tools::process_shell();
     let cwd = executor
         .workspace_root()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| "not configured".to_string());
     format!(
-        "Runtime environment:\n- operating_system: {}\n- architecture: {}\n- shell: {shell}\n- current_working_directory: {cwd}",
+        "Runtime environment:\n- operating_system: {}\n- architecture: {}\n- shell: {} ({})\n\
+         - shell_tool: {}\n- current_working_directory: {cwd}",
         std::env::consts::OS,
         std::env::consts::ARCH,
+        shell.program.display(),
+        shell.dialect.label(),
+        shell.dialect.tool_name(),
     )
 }
 
@@ -5658,6 +6157,58 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
     }
 }
 
+/// Provider-facing definitions for one configured tool name.
+///
+/// Every name maps to exactly one definition except the shell: enabling `bash`
+/// yields the resolved host shell under its own dialect's name, plus the three
+/// job tools that make a long-running command usable. Configuration still
+/// stores `Bash`, so no agent has to be migrated for the host to run PowerShell.
+fn tool_definitions_for(name: &str) -> Vec<ToolDefinition> {
+    if name != "Bash" {
+        return tool_definition(name).into_iter().collect();
+    }
+    let dialect = crate::tools::process_shell().dialect;
+    ["ShellOutput", "ShellKill", "ShellJobs"]
+        .into_iter()
+        .filter_map(tool_definition)
+        .chain(shell_tool_definition(dialect))
+        .collect()
+}
+
+/// The shell tool, named and described for the dialect that will parse it.
+fn shell_tool_definition(dialect: crate::tools::ShellDialect) -> Option<ToolDefinition> {
+    Some(ToolDefinition {
+        name: dialect.tool_name().to_string(),
+        description: format!(
+            "Run a guarded shell command in the bound workspace. {} Output is capped and \
+             truncation keeps the tail, spilling the complete text to a workspace file. Set \
+             run_in_background for work that outlives one reply (builds, test suites, servers) \
+             and read it back with ShellOutput.",
+            dialect.guidance()
+        ),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": format!("A single {} command line", dialect.label())
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Seconds before the command's whole process tree is terminated"
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Return a job id immediately instead of waiting for the command to finish"
+                }
+            },
+            "required": ["command"],
+            "additionalProperties": false
+        }),
+    })
+}
+
 fn tool_definition(name: &str) -> Option<ToolDefinition> {
     let (description, schema) = match name {
         "Read" => (
@@ -5745,12 +6296,21 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                 &["pattern"],
             ),
         ),
-        "Bash" => (
-            "Run a guarded shell command in the bound workspace.",
-            object_schema(
-                &[("command", "string"), ("timeout_seconds", "integer")],
-                &["command"],
-            ),
+        // The shell itself is defined by `shell_tool_definition`, which names it
+        // after the dialect that will parse the command.
+        "ShellOutput" => (
+            "Read whatever a background shell job has produced since the last read. Reads are \
+             incremental and never repeat output.",
+            object_schema(&[("job_id", "string")], &["job_id"]),
+        ),
+        "ShellKill" => (
+            "Terminate a background shell job and every process it started.",
+            object_schema(&[("job_id", "string")], &["job_id"]),
+        ),
+        "ShellJobs" => (
+            "List the background shell jobs started in this workspace, with their status and log \
+             locations.",
+            object_schema(&[], &[]),
         ),
         "AskUser" => (
             "Ask the human user for bounded input without blocking the server.",
@@ -5800,8 +6360,36 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
             object_schema(&[("action", "string"), ("skill_name", "string")], &[]),
         ),
         "TodoWrite" => (
-            "Record bounded todo items for this turn.",
-            object_schema(&[("todos", "array")], &[]),
+            "Record the checklist for the work in front of you. Each call replaces the whole \
+             list, so send every item every time with its status as of now: exactly one item \
+             should be in_progress while you work on it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The complete checklist, in the order the work happens",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "One short line naming the step"
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "Where this step stands right now"
+                                }
+                            },
+                            "required": ["content", "status"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["todos"],
+                "additionalProperties": false
+            }),
         ),
         "ExitPlanMode" => (
             "Request user approval for an implementation plan.",
@@ -6403,7 +6991,10 @@ mod tests {
 
     #[test]
     fn automatic_task_title_uses_a_bounded_first_line() {
-        assert_eq!(default_task_title("  Ship release\nignore this"), "Ship release");
+        assert_eq!(
+            default_task_title("  Ship release\nignore this"),
+            "Ship release"
+        );
         assert_eq!(default_task_title("   "), "Task");
         assert_eq!(default_task_title(&"x".repeat(81)).chars().count(), 80);
     }
@@ -6467,20 +7058,136 @@ mod tests {
     }
 
     #[test]
+    fn a_provider_http_failure_reaches_the_user_as_a_status_and_nothing_else() {
+        // The body is preserved on the error so hooks can classify it and the
+        // log can carry it, but it is the provider's own text: an auth error
+        // routinely echoes the submitted key back.
+        let error: anyhow::Error = ProviderHttpError {
+            status: 401,
+            body: r#"{"error":{"message":"Incorrect API key provided: sk-live-abc123"}}"#
+                .to_string(),
+        }
+        .into();
+
+        let rendered = user_facing_error(&error);
+        assert_eq!(rendered, "The provider returned HTTP 401.");
+        assert!(!rendered.contains("sk-live-abc123"));
+        // Host-authored errors are unchanged.
+        assert_eq!(
+            user_facing_error(&anyhow::anyhow!("thread is already closed")),
+            "thread is already closed"
+        );
+    }
+
+    #[test]
+    fn provider_failures_are_retried_only_when_retrying_could_help() {
+        let transient: anyhow::Error = ProviderHttpError {
+            status: 503,
+            body: "upstream unavailable".to_string(),
+        }
+        .into();
+        let permanent: anyhow::Error = ProviderHttpError {
+            status: 400,
+            body: "unknown model".to_string(),
+        }
+        .into();
+        assert!(is_transient_provider_error(&transient));
+        assert!(!is_transient_provider_error(&permanent));
+    }
+
+    #[test]
+    fn consecutive_read_only_calls_batch_and_a_write_breaks_the_batch() {
+        fn call(name: &str) -> ToolCall {
+            ToolCall {
+                id: name.to_string(),
+                name: name.to_string(),
+                args: json!({}),
+                provider_metadata: None,
+            }
+        }
+
+        let calls = vec![
+            call("Read"),
+            call("Grep"),
+            call("Write"),
+            call("Read"),
+            call("Glob"),
+        ];
+        let batches: Vec<Vec<&str>> = tool_call_batches(&calls)
+            .into_iter()
+            .map(|batch| batch.iter().map(|c| c.name.as_str()).collect())
+            .collect();
+
+        assert_eq!(
+            batches,
+            vec![vec!["Read", "Grep"], vec!["Write"], vec!["Read", "Glob"],],
+            "a write must not be reordered around the reads on either side of it"
+        );
+
+        // An MCP tool is opaque, so it never joins a concurrent batch.
+        let mcp = vec![call("Read"), call("mcp__notion__search")];
+        assert_eq!(tool_call_batches(&mcp).len(), 2);
+        assert!(tool_call_batches(&[]).is_empty());
+    }
+
+    #[test]
     fn runtime_environment_section_matches_host() {
         let root = tempfile::tempdir().unwrap();
         let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
 
         let section = render_runtime_environment(&executor);
+        let shell = crate::tools::process_shell();
 
         assert!(section.contains(&format!("- operating_system: {}", std::env::consts::OS)));
         assert!(section.contains(&format!("- architecture: {}", std::env::consts::ARCH)));
-        assert!(section.contains(if cfg!(windows) {
-            "- shell: cmd.exe"
-        } else {
-            "- shell: sh"
-        }));
+        // The prompt names the interpreter that was actually resolved, so the
+        // dialect it teaches and the tool name it offers cannot drift apart.
+        assert!(
+            section.contains(&format!(
+                "- shell: {} ({})",
+                shell.program.display(),
+                shell.dialect.label()
+            )),
+            "{section}"
+        );
+        assert!(
+            section.contains(&format!("- shell_tool: {}", shell.dialect.tool_name())),
+            "{section}"
+        );
         assert!(section.contains(&root.path().to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn enabling_bash_advertises_the_host_shell_and_its_job_tools() {
+        let names: Vec<String> = tool_definitions_for("Bash")
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let dialect = crate::tools::process_shell().dialect;
+
+        assert!(
+            names.contains(&dialect.tool_name().to_string()),
+            "the shell should be advertised under its dialect's name: {names:?}"
+        );
+        for job_tool in ["ShellOutput", "ShellKill", "ShellJobs"] {
+            assert!(names.contains(&job_tool.to_string()), "{names:?}");
+        }
+
+        // Every other configured name still maps to exactly one definition.
+        assert_eq!(tool_definitions_for("Read").len(), 1);
+        assert!(tool_definitions_for("NotATool").is_empty());
+    }
+
+    #[test]
+    fn the_shell_tool_description_states_its_dialect() {
+        let definition = shell_tool_definition(crate::tools::ShellDialect::PowerShell).unwrap();
+        assert_eq!(definition.name, "Pwsh");
+        assert!(
+            definition.description.contains("parsed by PowerShell"),
+            "{}",
+            definition.description
+        );
+        assert!(definition.input_schema["properties"]["run_in_background"].is_object());
     }
 
     #[test]
@@ -6519,7 +7226,10 @@ mod tests {
         assert!(enabled_mcp_selections(Some("not json")).is_empty());
         assert!(enabled_mcp_selections(Some(r#"{"tools":{}}"#)).is_empty());
         // Entries with no usable server id are dropped, not counted as blanks.
-        assert!(enabled_mcp_selections(Some(r#"{"mcp_servers":[{"enabled":true},{"server_id":"  "}]}"#)).is_empty());
+        assert!(enabled_mcp_selections(Some(
+            r#"{"mcp_servers":[{"enabled":true},{"server_id":"  "}]}"#
+        ))
+        .is_empty());
     }
 
     #[test]
@@ -6610,7 +7320,10 @@ mod tests {
 
         let section = render_mcp_section(&executor);
 
-        assert!(section.contains("- GitHub: mcp__github__create_issue"), "{section}");
+        assert!(
+            section.contains("- GitHub: mcp__github__create_issue"),
+            "{section}"
+        );
         assert!(
             section.contains("- Weather: unavailable this turn (connection refused)"),
             "{section}"
@@ -6656,7 +7369,9 @@ mod tests {
     async fn mcp_tool_names_are_unknown_when_no_server_is_mounted() {
         let executor = ToolExecutor::without_workspace();
 
-        let result = executor.execute("mcp__github__create_issue", json!({})).await;
+        let result = executor
+            .execute("mcp__github__create_issue", json!({}))
+            .await;
 
         assert_eq!(result.status, ToolStatus::SetupRequired);
         assert!(result.output.contains("MCP server"), "{}", result.output);
@@ -6685,10 +7400,7 @@ mod tests {
             payload["tool_calls"][0]["args"],
             json!({"file_path": "note.txt"})
         );
-        assert_eq!(
-            payload["tool_calls"][0]["result"],
-            "complete file contents"
-        );
+        assert_eq!(payload["tool_calls"][0]["result"], "complete file contents");
     }
 
     #[test]

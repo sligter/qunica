@@ -155,6 +155,7 @@ export function MessageItem({
           <PersistedTurnDetails
             reasoning={message.reasoning}
             toolCalls={message.tool_calls}
+            todos={message.todos}
           />
         )}
         {inputRequest ? (

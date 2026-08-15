@@ -243,13 +243,8 @@ impl LlmProvider for GeminiProvider {
             }]);
         }
 
-        let resp = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+        let resp = self.client.post(url).json(&body).send().await?;
+        let resp = super::ensure_success(resp).await?;
 
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {

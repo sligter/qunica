@@ -19,9 +19,9 @@ use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
     app_control::{read as app_read, write as app_write, AppControlContext},
-    bash, controlled, http, media, web_search, FileEdit, MediaGenerationConfig, MountedSkill,
-    TavilySearchConfig, ToolError, ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools,
-    MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
+    controlled, http, media, shell, web_search, ApprovalGrants, FileEdit, MediaGenerationConfig,
+    MountedSkill, TavilySearchConfig, ToolError, ToolResult, ToolStatus, WorkspaceMount,
+    WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
 /// The MCP tools mounted into an executor, with the servers needed to call them.
@@ -126,6 +126,9 @@ pub struct ToolExecutor {
     /// Present only for the built-in Assistant. Its absence is what makes the
     /// app-control tools unavailable to every other agent.
     app_control: Option<AppControlContext>,
+    /// Policy rules the user has approved for this thread. Empty by default, so
+    /// a caller that never wires approvals through still gets the gate.
+    approvals: ApprovalGrants,
 }
 
 // `McpManager` holds live connections and so cannot derive `Debug`; the rest of
@@ -143,6 +146,7 @@ impl std::fmt::Debug for ToolExecutor {
             .field("mcp_mount", &self.mcp_mount)
             .field("mcp_connected", &self.mcp_manager.is_some())
             .field("app_control", &self.app_control.is_some())
+            .field("approvals", &self.approvals)
             .finish()
     }
 }
@@ -183,6 +187,7 @@ impl ToolExecutor {
             mcp_mount: McpMount::default(),
             mcp_manager: None,
             app_control: None,
+            approvals: ApprovalGrants::default(),
         })
     }
 
@@ -201,6 +206,7 @@ impl ToolExecutor {
             mcp_mount: McpMount::default(),
             mcp_manager: None,
             app_control: None,
+            approvals: ApprovalGrants::default(),
         }
     }
 
@@ -212,6 +218,21 @@ impl ToolExecutor {
         self.mcp_manager = Some(manager);
         self.mcp_mount = mount;
         self
+    }
+
+    /// Bind the policy rules the user has approved for this thread.
+    ///
+    /// Consuming and returning `self` matches the other optional bindings, and
+    /// the default of "nothing approved" is what makes the gate fail closed for
+    /// callers that never set it.
+    pub fn with_approvals(mut self, approvals: ApprovalGrants) -> Self {
+        self.approvals = approvals;
+        self
+    }
+
+    /// The approvals this executor runs with.
+    pub fn approvals(&self) -> &ApprovalGrants {
+        &self.approvals
     }
 
     /// Grant the app-control tools, scoped to one owner and conversation.
@@ -268,7 +289,12 @@ impl ToolExecutor {
     /// [`ToolError`] for [`execute`](Self::execute) to render.
     async fn dispatch(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         match name {
-            "Read" | "Write" | "Edit" | "Glob" | "Grep" | "Bash" => {
+            // The shell tool answers to whichever name the host advertises it
+            // under, plus the other dialects' names: a model that has seen
+            // `Bash` elsewhere should reach the shell rather than an "unknown
+            // tool" error, and its result already states the real dialect.
+            "Read" | "Write" | "Edit" | "Glob" | "Grep" | "Bash" | "Pwsh" | "Cmd" | "Shell"
+            | "ShellOutput" | "ShellKill" | "ShellJobs" => {
                 let Some(workspace) = self.workspace.clone() else {
                     return Ok(controlled::workspace_required(name));
                 };
@@ -343,7 +369,7 @@ impl ToolExecutor {
                     ),
                 })
             }
-            "TodoWrite" => Ok(controlled::todo_write(arg_todos(&args))),
+            "TodoWrite" => Ok(controlled::todo_write(super::todo::parse_todos(&args))),
             "ExitPlanMode" => Ok(controlled::exit_plan_mode(arg_str(&args, "plan")?)),
             name if is_mcp_tool_name(name) => Ok(self.run_mcp_tool(name, args).await),
             _ => Ok(unknown_tool(name)),
@@ -429,15 +455,30 @@ impl ToolExecutor {
                 let limit = arg_usize(&args, "limit", MAX_GREP_RESULTS);
                 run_blocking(move || workspace.grep(&pattern, &path, limit)).await
             }
-            // `Bash` runs in the primary root only: its command guard is built
-            // around a single root, so mounts are not reachable from a shell.
-            "Bash" => {
+            // The shell runs in the primary root only: its command policy is
+            // built around a single root, so mounts are not reachable from a
+            // shell.
+            "Bash" | "Pwsh" | "Cmd" | "Shell" => {
                 let command = arg_str(&args, "command")?.to_string();
-                let timeout_seconds =
-                    arg_u64(&args, "timeout_seconds", bash::DEFAULT_BASH_TIMEOUT_SECONDS);
-                bash::run_bash(workspace.root(), &command, timeout_seconds).await
+                let timeout_seconds = arg_u64(
+                    &args,
+                    "timeout_seconds",
+                    shell::DEFAULT_SHELL_TIMEOUT_SECONDS,
+                );
+                let run_in_background = arg_bool(&args, "run_in_background", false);
+                shell::run_shell(
+                    workspace.root(),
+                    &command,
+                    timeout_seconds,
+                    run_in_background,
+                    &self.approvals,
+                )
+                .await
             }
-            // `dispatch` only routes the six names above here.
+            "ShellOutput" => shell::read_job_output(workspace.root(), arg_str(&args, "job_id")?),
+            "ShellKill" => shell::kill_job(workspace.root(), arg_str(&args, "job_id")?),
+            "ShellJobs" => Ok(shell::list_jobs(workspace.root())),
+            // `dispatch` only routes the names above here.
             other => Ok(unknown_tool(other)),
         }
     }
@@ -581,16 +622,4 @@ fn arg_string_list(args: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// `TodoWrite` accepts either a list of strings or a single string.
-fn arg_todos(args: &Value) -> Vec<String> {
-    match args.get("todos") {
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|item| item.as_str().map(str::to_string))
-            .collect(),
-        Some(Value::String(single)) => vec![single.clone()],
-        _ => Vec::new(),
-    }
 }

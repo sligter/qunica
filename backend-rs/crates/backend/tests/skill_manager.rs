@@ -159,5 +159,8 @@ async fn skill_manager_existing_executor_constructors_still_work() {
     assert_eq!(todos.status, ToolStatus::Completed);
     let payload = parse_output(&todos);
     assert_eq!(payload["status"], "COMPLETED");
-    assert_eq!(payload["todos"], json!(["keep existing behavior"]));
+    assert_eq!(
+        payload["todos"],
+        json!([{ "content": "keep existing behavior", "status": "pending" }])
+    );
 }

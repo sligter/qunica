@@ -8,11 +8,10 @@
 use serde_json::{Map, Value};
 
 use super::{MountedSkill, ToolResult, ToolStatus};
+use crate::tools::todo::TodoItem;
 
 /// Maximum number of choices echoed back by `AskUser`.
 const MAX_ASK_CHOICES: usize = 8;
-/// Maximum number of todos echoed back by `TodoWrite`.
-const MAX_TODOS: usize = 20;
 
 const SKILL_LIST_MESSAGE: &str =
     "Skill list includes metadata only; inspect or activate a skill to load instructions.";
@@ -118,6 +117,24 @@ pub fn ask_user(question: &str, required: bool, choices: &[String]) -> ToolResul
     controlled_result("AskUser", status_label, status, Some(&message), extra)
 }
 
+/// A tool call that needs a human decision before it runs.
+///
+/// The runtime lifts `approval_request` onto the `approval_required` stream
+/// event and into the interrupted message, exactly as it does for `AskUser`'s
+/// `input_request`, so the client can render the card and the paused call can be
+/// replayed once the answer arrives.
+pub fn approval_required(request: crate::tools::ApprovalRequest) -> ToolResult {
+    let message = request.summary();
+    let encoded = serde_json::to_value(&request).unwrap_or(Value::Null);
+    controlled_result(
+        &request.tool_name,
+        "APPROVAL_REQUIRED",
+        ToolStatus::ApprovalRequired,
+        Some(&message),
+        vec![("approval_request", encoded)],
+    )
+}
+
 pub(crate) fn web_search_setup_required() -> ToolResult {
     controlled_result(
         "WebSearch",
@@ -219,19 +236,22 @@ fn skill_base_object(skill: &MountedSkill) -> Map<String, Value> {
     object
 }
 
-/// `TodoWrite`: echo a bounded list of todos back as a completed result.
-pub fn todo_write(todos: Vec<String>) -> ToolResult {
-    let bounded: Vec<Value> = todos
-        .into_iter()
-        .take(MAX_TODOS)
-        .map(Value::String)
-        .collect();
+/// `TodoWrite`: record the agent's checklist and echo it back.
+///
+/// The list travels structured, not just inside `message`: the runtime lifts it
+/// onto the `todo_update` stream event and onto the turn record, and the client
+/// renders the checklist from it. Bounding and normalization already happened
+/// in [`crate::tools::todo::parse_todos`], so what the model reads back is
+/// exactly what was recorded — a list that came back shorter than it was sent
+/// is the model's cue that something it wrote was unusable.
+pub fn todo_write(todos: Vec<TodoItem>) -> ToolResult {
+    let encoded = serde_json::to_value(&todos).unwrap_or_else(|_| Value::Array(Vec::new()));
     controlled_result(
         "TodoWrite",
         "COMPLETED",
         ToolStatus::Completed,
         None,
-        vec![("todos", Value::Array(bounded))],
+        vec![("todos", encoded)],
     )
 }
 

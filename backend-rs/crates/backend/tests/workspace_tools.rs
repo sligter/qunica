@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use ag_swarmer_backend::tools::{
-    resolve_workspace_path, FileEdit, ToolExecutor, ToolStatus, WorkspaceMount, WorkspaceTools,
-    MAX_READ_LINES, SELF_MOUNT_NAME,
+    resolve_workspace_path, ApprovalGrants, FileEdit, ToolExecutor, ToolStatus, WorkspaceMount,
+    WorkspaceTools, MAX_READ_LINES, SELF_MOUNT_NAME,
 };
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -260,10 +260,14 @@ async fn workspace_tools_glob_does_not_match_across_directory_separators() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn workspace_tools_bash_rejects_destructive_commands() {
+async fn workspace_tools_bash_gates_destructive_commands_on_a_human_decision() {
     let root = tempdir().unwrap();
+    std::fs::write(root.path().join("file.txt"), "keep me").unwrap();
     let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
 
+    // Destructive but ordinary development work: the tool asks rather than
+    // refusing, and runs nothing until the answer arrives. Refusing outright
+    // only moved the job to the human.
     for command in [
         "rm -rf build",
         "del file.txt",
@@ -278,25 +282,58 @@ async fn workspace_tools_bash_rejects_destructive_commands() {
             .await;
         assert_eq!(
             result.status,
-            ToolStatus::Failed,
-            "command should be blocked: {command}"
+            ToolStatus::ApprovalRequired,
+            "command should need approval: {command}"
         );
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["approval_request"]["subject"], command);
         assert!(
-            result.output.contains("blocked"),
-            "command `{command}` should report the safety policy, got: {}",
+            !payload["approval_request"]["rule"]
+                .as_str()
+                .unwrap()
+                .is_empty(),
+            "the request must name the rule a remembered grant is keyed on: {}",
             result.output
         );
+    }
+    assert!(
+        root.path().join("file.txt").exists(),
+        "nothing may run before the user answers"
+    );
+
+    // An executor holding the grant runs the same command.
+    let granted = ToolExecutor::new(Some(root.path().to_path_buf()))
+        .unwrap()
+        .with_approvals(ApprovalGrants::new(["delete-files".to_string()]));
+    let deleted = granted
+        .execute("Bash", json!({ "command": "rm file.txt" }))
+        .await;
+    assert_eq!(deleted.status, ToolStatus::Completed, "{}", deleted.output);
+    assert!(!root.path().join("file.txt").exists());
+
+    // Host-level operations are refused with no approval offered: no click makes
+    // formatting a volume part of a workspace task.
+    for command in ["shutdown /s /t 0", "mkfs.ext4 /dev/sda1"] {
+        let result = executor
+            .execute("Bash", json!({ "command": command }))
+            .await;
+        assert_eq!(
+            result.status,
+            ToolStatus::Failed,
+            "command should be blocked outright: {command}"
+        );
+        assert!(result.output.contains("blocked"), "{}", result.output);
     }
 
     // Empty command is rejected.
     let empty = executor.execute("Bash", json!({ "command": "   " })).await;
     assert_eq!(empty.status, ToolStatus::Failed);
 
-    // A redirection target escaping the workspace is rejected before running.
+    // A redirection target escaping the workspace stops before running.
     let escape = executor
         .execute("Bash", json!({ "command": "echo hi > ../escape.txt" }))
         .await;
-    assert_eq!(escape.status, ToolStatus::Failed);
+    assert_eq!(escape.status, ToolStatus::ApprovalRequired);
     assert!(!root.path().parent().unwrap().join("escape.txt").exists());
 }
 
@@ -324,8 +361,12 @@ async fn workspace_tools_bash_runs_in_workspace_with_bounded_output() {
         "command should run in the workspace root"
     );
 
-    // Output is bounded: dumping a large file is truncated with a marker.
-    let big = "a".repeat(20_000);
+    // Output is bounded, and truncation keeps the TAIL: a failing build prints
+    // its banner first and its error summary last, so the head is the wrong
+    // half to retain.
+    let mut big = "HEAD-MARKER\n".to_string();
+    big.push_str(&"a\n".repeat(12_000));
+    big.push_str("TAIL-MARKER\n");
     std::fs::write(root.path().join("big.txt"), &big).unwrap();
     let dump_command = if cfg!(windows) {
         "type big.txt"
@@ -337,13 +378,225 @@ async fn workspace_tools_bash_runs_in_workspace_with_bounded_output() {
         .await;
     assert_eq!(dumped.status, ToolStatus::Completed, "{}", dumped.output);
     assert!(
-        dumped.output.contains("[output truncated]"),
-        "large output should be truncated"
+        dumped.output.starts_with("[output truncated"),
+        "the truncation marker should lead the output: {}",
+        &dumped.output[..dumped.output.len().min(200)]
     );
-    let marker_len = "\n[output truncated]".chars().count();
     assert!(
-        dumped.output.chars().count() <= 12_000 + marker_len,
-        "truncated output must stay within the char bound"
+        dumped.output.contains("TAIL-MARKER"),
+        "truncation should keep the tail"
+    );
+    assert!(
+        !dumped.output.contains("HEAD-MARKER"),
+        "truncation should drop the head"
+    );
+
+    // Nothing is lost: the complete output is spilled to a workspace-relative
+    // path the model can read back with the `Read` tool.
+    let spill = dumped
+        .output
+        .lines()
+        .next()
+        .unwrap()
+        .split("complete output is at ")
+        .nth(1)
+        .and_then(|tail| tail.strip_suffix(']'))
+        .expect("truncation marker should name the spill file");
+    let spilled = executor
+        .execute("Read", json!({ "path": spill, "limit": 5 }))
+        .await;
+    assert_eq!(spilled.status, ToolStatus::Completed, "{}", spilled.output);
+    assert!(
+        spilled.output.contains("HEAD-MARKER"),
+        "the spill file should hold the discarded head: {}",
+        spilled.output
+    );
+}
+
+#[tokio::test]
+async fn workspace_tools_shell_answers_to_every_dialect_name() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    // A model that has seen `Bash` elsewhere, or reads the host-specific name
+    // off the tool list, reaches the same shell either way.
+    for name in ["Bash", "Pwsh", "Cmd", "Shell"] {
+        let result = executor
+            .execute(name, json!({ "command": "echo dialect_probe" }))
+            .await;
+        assert_eq!(
+            result.status,
+            ToolStatus::Completed,
+            "`{name}` should reach the shell: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("dialect_probe"),
+            "`{name}` output: {}",
+            result.output
+        );
+    }
+}
+
+#[tokio::test]
+async fn workspace_tools_shell_runs_a_background_job_and_reads_it_incrementally() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    let started = executor
+        .execute(
+            "Bash",
+            json!({ "command": "echo background_probe", "run_in_background": true }),
+        )
+        .await;
+    assert_eq!(started.status, ToolStatus::Completed, "{}", started.output);
+    let job_id = started
+        .output
+        .lines()
+        .find_map(|line| line.strip_prefix("job_id="))
+        .expect("background start should report a job id")
+        .to_string();
+
+    // The job runs detached, so poll until it reports output or finishes.
+    let mut seen = String::new();
+    for _ in 0..50 {
+        let read = executor
+            .execute("ShellOutput", json!({ "job_id": job_id }))
+            .await;
+        assert_eq!(read.status, ToolStatus::Completed, "{}", read.output);
+        seen.push_str(&read.output);
+        if seen.contains("background_probe") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        seen.contains("background_probe"),
+        "background output should surface: {seen}"
+    );
+
+    let listed = executor.execute("ShellJobs", json!({})).await;
+    assert!(listed.output.contains(&job_id), "{}", listed.output);
+
+    // A job id from another workspace is inert rather than readable.
+    let other = tempdir().unwrap();
+    let stranger = ToolExecutor::new(Some(other.path().to_path_buf())).unwrap();
+    let denied = stranger
+        .execute("ShellOutput", json!({ "job_id": job_id }))
+        .await;
+    assert_eq!(denied.status, ToolStatus::Failed, "{}", denied.output);
+}
+
+#[tokio::test]
+async fn workspace_tools_shell_closes_the_windows_redirect_bypass() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    // POSIX lexing collapsed this target to `....evil.txt`, which carried no
+    // `..` segment: the guard passed while the shell wrote two levels up.
+    let escaped = executor
+        .execute("Bash", json!({ "command": r"echo pwned > ..\..\evil.txt" }))
+        .await;
+    // Still caught — now as a question, since the user can legitimately allow it.
+    assert_eq!(
+        escaped.status,
+        ToolStatus::ApprovalRequired,
+        "{}",
+        escaped.output
+    );
+    let payload: Value = serde_json::from_str(&escaped.output).unwrap();
+    assert_eq!(
+        payload["approval_request"]["rule"],
+        "write-outside-workspace"
+    );
+    let escape_target = root.path().parent().unwrap().parent().unwrap();
+    assert!(!escape_target.join("evil.txt").exists());
+
+    // A command with an apostrophe and no redirection is no longer rejected by
+    // the lexer: POSIX `shlex` failed to parse it and refused the whole command.
+    let apostrophe = executor
+        .execute("Bash", json!({ "command": "echo it's fine" }))
+        .await;
+    assert_eq!(
+        apostrophe.status,
+        ToolStatus::Completed,
+        "{}",
+        apostrophe.output
+    );
+}
+
+#[tokio::test]
+async fn workspace_tools_shell_output_survives_a_non_ascii_round_trip() {
+    // The previous implementation ran `cmd /C` and decoded with
+    // `String::from_utf8_lossy`. On a Simplified-Chinese host the console code
+    // page is CP936, so a `git log`, an `npm` error, or any other Chinese output
+    // reached the model as a wall of U+FFFD with no recoverable content.
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    let echoed = executor
+        .execute("Bash", json!({ "command": "echo 你好世界" }))
+        .await;
+    assert_eq!(echoed.status, ToolStatus::Completed, "{}", echoed.output);
+    assert!(
+        echoed.output.contains("你好世界"),
+        "non-ASCII output should survive: {}",
+        echoed.output
+    );
+    assert!(
+        !echoed.output.contains('\u{FFFD}'),
+        "no character should decode to the replacement character: {}",
+        echoed.output
+    );
+
+    // The same holds for text the shell reads back off disk.
+    std::fs::write(root.path().join("notes.txt"), "第一行\n第二行\n").unwrap();
+    let dump_command = if cfg!(windows) {
+        "Get-Content notes.txt"
+    } else {
+        "cat notes.txt"
+    };
+    let dumped = executor
+        .execute("Bash", json!({ "command": dump_command }))
+        .await;
+    assert_eq!(dumped.status, ToolStatus::Completed, "{}", dumped.output);
+    assert!(
+        dumped.output.contains("第一行") && dumped.output.contains("第二行"),
+        "file contents should decode: {}",
+        dumped.output
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn workspace_tools_shell_speaks_powershell_on_windows() {
+    let root = tempdir().unwrap();
+    let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
+
+    // A PowerShell-only construct proves the dialect the tool advertises is the
+    // dialect that parses the command.
+    let result = executor
+        .execute(
+            "Bash",
+            json!({ "command": "$items = 2 + 3; Write-Output \"sum=$items\"" }),
+        )
+        .await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    assert!(
+        result.output.contains("sum=5"),
+        "PowerShell should have parsed this: {}",
+        result.output
+    );
+    assert!(result.output.contains("exit_code=0"), "{}", result.output);
+
+    // A failing native command still reports a real exit code, not PowerShell's.
+    let failed = executor
+        .execute("Bash", json!({ "command": "cmd /c exit 7" }))
+        .await;
+    assert!(
+        failed.output.contains("exit_code=7"),
+        "the native exit code should survive the wrapper: {}",
+        failed.output
     );
 }
 
@@ -459,14 +712,29 @@ async fn workspace_tools_controlled_tools_return_expected_statuses() {
         .await;
     assert_eq!(video.status, ToolStatus::SetupRequired);
 
-    // TodoWrite completes with a bounded list.
+    // TodoWrite normalizes whatever shape the model sent into a bounded
+    // checklist, so a status the model tracked is not silently dropped.
     let todos = executor
-        .execute("TodoWrite", json!({ "todos": ["one", "two"] }))
+        .execute(
+            "TodoWrite",
+            json!({
+                "todos": [
+                    { "content": "one", "status": "in_progress" },
+                    "two",
+                ]
+            }),
+        )
         .await;
     assert_eq!(todos.status, ToolStatus::Completed);
     let payload: Value = serde_json::from_str(&todos.output).unwrap();
     assert_eq!(payload["status"], "COMPLETED");
-    assert_eq!(payload["todos"], json!(["one", "two"]));
+    assert_eq!(
+        payload["todos"],
+        json!([
+            { "content": "one", "status": "in_progress" },
+            { "content": "two", "status": "pending" },
+        ])
+    );
 
     // ExitPlanMode needs approval and performs no side effect.
     let plan = executor

@@ -6,26 +6,31 @@
 //!
 //! Task 8a implemented path safety and the file tools `Read`, `Write`, `Edit`,
 //! `Glob` and `Grep` via [`workspace::WorkspaceTools`]. Task 8b completes the
-//! module: the guarded shell tool [`bash`], the bounded HTTP reader [`http`],
+//! module: the guarded shell tool [`shell`], the bounded HTTP reader [`http`],
 //! Tavily-backed search in [`web_search`], OpenAI-compatible media generation in
 //! [`media`], the non-executing tools in [`controlled`], and the [`ToolExecutor`] facade in
 //! [`executor`] that dispatches a named tool with JSON arguments and maps every
 //! internal failure to model-safe text.
 
 pub mod app_control;
-pub mod bash;
+pub mod approval;
 pub mod controlled;
 pub mod executor;
 pub mod http;
 pub(crate) mod media;
 pub mod path_safety;
+pub mod shell;
+pub mod todo;
 pub(crate) mod web_search;
 pub mod workspace;
 
 pub use app_control::AppControlContext;
+pub use approval::{ApprovalDecision, ApprovalGrants, ApprovalRequest};
 pub use executor::{McpMount, ToolExecutor};
 pub(crate) use media::MediaGenerationConfig;
 pub use path_safety::resolve_workspace_path;
+pub use shell::resolve::{process_shell, ShellDialect};
+pub use todo::{TodoItem, TodoStatus};
 pub(crate) use web_search::TavilySearchConfig;
 pub use workspace::{
     FileEdit, WorkspaceMount, WorkspaceTools, MAX_FILE_BYTES, MAX_GLOB_RESULTS, MAX_GREP_RESULTS,

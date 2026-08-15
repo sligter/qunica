@@ -34,6 +34,7 @@ use crate::{
         group::{run_thread_resume, ResumeRequest},
         RuntimeServices,
     },
+    tools::ApprovalDecision,
 };
 
 const CHANNEL_CAPACITY: usize = 64;
@@ -310,10 +311,23 @@ pub async fn cancel(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Body of a resume request.
+///
+/// Empty for an ordinary continuation. A thread paused on a tool call carries
+/// the user's answer here, and the runtime replays that exact call rather than
+/// re-prompting the model — which is what makes the approval a control over the
+/// command the user was shown, not over whatever the model proposes next.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ResumeBody {
+    approval: Option<ApprovalDecision>,
+}
+
 pub async fn resume(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(thread_id): Path<String>,
+    body: Option<Json<ResumeBody>>,
 ) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
@@ -328,6 +342,15 @@ pub async fn resume(
         return Ok(Sse::new(body));
     }
 
+    let approval = body.and_then(|Json(body)| body.approval);
+    if let Some(decision) = approval.as_ref() {
+        if decision.tool_call_id.trim().is_empty() {
+            return Err(ApiError::invalid_input(
+                "approval.tool_call_id must not be empty",
+            ));
+        }
+    }
+
     let target = resolve_resume_target(state.db.pool(), &thread_id, &owner_id).await?;
     let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
@@ -339,6 +362,7 @@ pub async fn resume(
         message_id: target.message_id,
         existing_content: target.existing_content,
         content_json: target.content_json,
+        approval,
     };
     tokio::spawn(async move {
         run_thread_resume(services, request, tx).await;

@@ -81,6 +81,13 @@ vi.mock('@/hooks/useGroupAgents', () => ({
   },
 }))
 vi.mock('@/hooks/useGroupMessages', () => ({
+  conversationStateKey: (groupId?: string, threadId?: string | null) =>
+    threadId ?? groupId,
+  conversationMessagesKey: (scope: string, groupId: string, threadId?: string) => [
+    scope,
+    groupId,
+    threadId,
+  ],
   useConversationMessages: () => ({
     error: null,
     isLoading: false,

@@ -46,6 +46,31 @@ afterEach(async () => {
 })
 
 describe('StreamTimeline activity rendering', () => {
+  it('shows only the newest checklist an agent wrote', () => {
+    const first = event({
+      id: 'todo:stream-1:agent-1',
+      stream_id: 'stream-1',
+      type: 'todo',
+      agent_id: 'agent-1',
+      display_name: 'Planner',
+      todos: [{ content: 'read the code', status: 'in_progress' as const }],
+      created_at: '2026-07-16T10:00:01Z',
+    })
+    // A later block for the same agent, as a reply between two TodoWrite calls
+    // would produce. Rendering both would show the same work at two stages.
+    const superseded = event({
+      ...first,
+      id: 'todo:stream-1:agent-1-earlier',
+      todos: [{ content: 'read the code', status: 'pending' as const }],
+    })
+    render(<StreamTimeline run={run([superseded, first])} />)
+
+    expect(screen.getByText('read the code')).toBeVisible()
+    expect(screen.getByText('0/1 done')).toBeVisible()
+    expect(screen.getByLabelText('In progress')).toBeVisible()
+    expect(screen.queryByLabelText('To do')).toBeNull()
+  })
+
   it('localizes an empty active stream state', async () => {
     await i18n.changeLanguage('en-US')
     render(<StreamTimeline run={run([], 'active')} />)

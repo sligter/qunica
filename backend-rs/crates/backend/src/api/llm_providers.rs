@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::llm::{
     build_provider, discover_models, ChatDelta, ChatMessage, ChatRequest, ModelCatalogError,
-    ModelInfo, ProviderConfig, ProviderModelConfig, MODEL_CATALOG_TIMEOUT,
+    ModelInfo, ProviderConfig, ProviderHttpError, ProviderModelConfig, MODEL_CATALOG_TIMEOUT,
 };
 
 const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -538,7 +538,16 @@ async fn probe_model(config: ProviderConfig) -> TestModelResponse {
     }
 }
 
+/// Describe a failed model probe without repeating anything the provider said.
+///
+/// The status is reported; the response body never is. Providers routinely echo
+/// the submitted credential back in an authentication error ("Incorrect API key
+/// provided: sk-…"), and this response is rendered straight into the settings
+/// UI, so the body is exactly the thing that must not travel.
 fn safe_model_test_error(error: &anyhow::Error) -> String {
+    if let Some(error) = error.downcast_ref::<ProviderHttpError>() {
+        return format!("The provider returned HTTP {}.", error.status);
+    }
     if let Some(error) = error.downcast_ref::<reqwest::Error>() {
         if let Some(status) = error.status() {
             return format!("The provider returned HTTP {status}.");

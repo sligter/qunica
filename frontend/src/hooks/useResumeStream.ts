@@ -13,8 +13,10 @@ import { z } from 'zod'
 
 import { fetchJson } from '@/lib/api-v2/client'
 import {
+  approvalRequiredPayloadSchema,
   parseGroupTurnTrace,
   parseSchedulerStreamEvent,
+  todoItemSchema,
   waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
@@ -23,6 +25,7 @@ import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { conversationMessagesKey, conversationStateKey } from '@/hooks/useGroupMessages'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
+import type { ApprovalAnswer } from '@/components/chat/ToolApprovalCard'
 import type { Message } from '@/types/api'
 
 const tokenPayloadSchema = z.object({
@@ -39,16 +42,19 @@ const agentMessagePayloadSchema = z.object({
   reasoning: z.array(z.string()).nullable().optional(),
   tool_calls: z
     .array(
+      // Defaulted rather than optional so the parsed shape matches
+      // `MessageToolCall`, where every field is present but nullable.
       z.object({
-        tool_call_id: z.string().nullable().optional(),
-        tool_name: z.string().nullable().optional(),
-        status: z.string().nullable().optional(),
-        args_summary: z.string().nullable().optional(),
-        result_summary: z.string().nullable().optional(),
+        tool_call_id: z.string().nullable().default(null),
+        tool_name: z.string().nullable().default(null),
+        status: z.string().nullable().default(null),
+        args_summary: z.string().nullable().default(null),
+        result_summary: z.string().nullable().default(null),
       }),
     )
     .nullable()
     .optional(),
+  todos: z.array(todoItemSchema).nullable().optional(),
 })
 
 const errorPayloadSchema = z.object({
@@ -84,6 +90,7 @@ function buildAgentMessage(
     response_segments: payload.response_segments ?? previous?.response_segments ?? null,
     reasoning: payload.reasoning ?? previous?.reasoning ?? null,
     tool_calls: payload.tool_calls ?? previous?.tool_calls ?? null,
+    todos: payload.todos ?? previous?.todos ?? null,
     turn_id: turnId ?? previous?.turn_id ?? null,
     dispatch_id: previous?.dispatch_id ?? null,
     reply_to_message_id: previous?.reply_to_message_id ?? event.stream_id,
@@ -130,6 +137,7 @@ export function useResumeStream(
   const markStreamRunWaitingForUser = useMessageStore((s) => s.markStreamRunWaitingForUser)
   const appendStreamNotice = useMessageStore((s) => s.appendStreamNotice)
   const markStreamRunDone = useMessageStore((s) => s.markStreamRunDone)
+  const resolveStreamApproval = useMessageStore((s) => s.resolveStreamApproval)
   const markStreamRunCancelled = useMessageStore((s) => s.markStreamRunCancelled)
   const reconcileSchedulerTurn = useMessageStore((s) => s.reconcileSchedulerTurn)
   const activeResume = useMessageStore((s) =>
@@ -203,17 +211,31 @@ export function useResumeStream(
     token,
   ])
 
-  const resume = useCallback(() => {
+  /**
+   * Continue the paused thread.
+   *
+   * `approval` answers a tool call the turn stopped on; the runtime replays that
+   * exact call rather than re-prompting the model, so the command that runs is
+   * the one the card showed.
+   */
+  const resume = useCallback((approval?: ApprovalAnswer) => {
     if (!groupId || !stateId || !threadId || !messageId || !token || isStreaming || activeResume) return
     setError(null)
     setRetry(null)
     setRetryExhausted(false)
     setIsStreaming(true)
     startResume(stateId, messageId, cancel)
+    if (approval) {
+      resolveStreamApproval(
+        stateId,
+        approval.tool_call_id,
+        approval.approved ? 'approved' : 'declined',
+      )
+    }
 
     const ctrl = openApiV2SseStream({
       url: `/api/v2/threads/${threadId}/resume`,
-      body: {},
+      body: approval ? { approval } : {},
       token,
       handlers: {
         onEvent: (event) => {
@@ -296,17 +318,44 @@ export function useResumeStream(
               }
               return
             }
+            case 'approval_required': {
+              // Replayed like the waiting notice: reloading mid-pause must not
+              // lose the card, or the paused turn becomes unanswerable.
+              const parsed = approvalRequiredPayloadSchema.safeParse(event.payload)
+              if (!parsed.success) return
+              appendStreamNotice(stateId, streamId, {
+                type: 'approval_required',
+                agent_id: parsed.data.agent_id,
+                display_name: parsed.data.display_name,
+                message: parsed.data.message ?? 'Approval required',
+                approval_request: {
+                  tool_call_id: parsed.data.tool_call_id,
+                  ...parsed.data.approval_request,
+                },
+              })
+              const turnId = markStreamRunWaitingForUser(stateId, streamId)
+              if (turnId) {
+                void qc.invalidateQueries({
+                  queryKey: ['groups', groupId, 'turns', turnId],
+                })
+              }
+              return
+            }
             case 'user_message':
             case 'conversation_updated':
             case 'agent_start':
             case 'reasoning':
             case 'tool_call_start':
             case 'tool_call_result':
+            case 'todo_update':
             case 'agent_silent':
             case 'context_usage':
             case 'acp_agent_run':
             case 'silence':
             case 'warning':
+              // The resumed `agent_message` payload carries the turn structure
+              // these events describe — reasoning, tool cards, the checklist —
+              // so replaying them live would only duplicate it.
               return
             default: {
               const _exhaustive: never = event.kind
@@ -346,6 +395,7 @@ export function useResumeStream(
     markStreamRunWaitingForUser,
     qc,
     replaceMessage,
+    resolveStreamApproval,
     startResume,
     stateId,
     threadId,

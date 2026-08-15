@@ -19,6 +19,8 @@ interface MessageListProps {
   isLoadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
   onSubmitHumanInput?: (content: string) => void
+  /** Thread an approval card resumes; absent for a non-threaded conversation. */
+  threadId?: string
   onViewTurnTrace?: (turnId: string, trigger: HTMLButtonElement) => void
   scope?: ConversationScope
   agents?: GroupAgentRead[]
@@ -84,6 +86,7 @@ export function MessageList({
   isLoadingOlderMessages = false,
   onLoadOlderMessages,
   onSubmitHumanInput,
+  threadId,
   onViewTurnTrace,
   scope = 'groups',
   agents,
@@ -241,6 +244,7 @@ export function MessageList({
                   agents={agents}
                   agentIsSystem={agentIsSystem}
                   onSubmitHumanInput={onSubmitHumanInput}
+                  threadId={threadId}
                 />
               ) : null}
             </Fragment>

@@ -222,8 +222,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        let resp = super::ensure_success(resp).await?;
 
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {

@@ -14,6 +14,14 @@ pub enum StreamEventKind {
     AgentMessage,
     AgentSilent,
     WaitingForUser,
+    /// A tool call is paused for a human to approve or decline it. The payload
+    /// carries the `approval_request` the client renders and the `tool_call_id`
+    /// the answer must name, so the paused call can be replayed exactly.
+    ApprovalRequired,
+    /// The agent rewrote its checklist. The payload carries the complete list
+    /// as of now, not a delta: `TodoWrite` replaces rather than appends, so a
+    /// client that missed an event still catches up on the next one.
+    TodoUpdate,
     ContextUsage,
     AcpAgentRun,
     Silence,

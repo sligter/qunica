@@ -274,8 +274,8 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        let resp = super::ensure_success(resp).await?;
 
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {

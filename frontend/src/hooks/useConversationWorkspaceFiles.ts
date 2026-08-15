@@ -151,6 +151,15 @@ export function conversationWorkspaceRootsQueryKey(
   return [scopeConfig(scope).queryPrefix, conversationId, 'workspace-roots'] as const
 }
 
+/**
+ * Matches the root listing of every conversation, in either scope. An agent's
+ * own workspace can surface in any conversation it belongs to, so a change to
+ * the agent itself has to invalidate all of them, not one known id.
+ */
+export function isConversationWorkspaceRootsQueryKey(queryKey: readonly unknown[]): boolean {
+  return queryKey[2] === 'workspace-roots'
+}
+
 export function conversationWorkspaceFilePreviewQueryKey(
   scope: ConversationScope,
   conversationId: string | undefined,

@@ -75,6 +75,13 @@ vi.mock('@/components/chat/WorkspaceEditorStage', () => ({
 vi.mock('@/components/chat/TurnTraceDrawer', () => ({ TurnTraceDrawer: () => <div>turn trace</div> }))
 vi.mock('@/components/layout/VerticalResizeHandle', () => ({ VerticalResizeHandle: () => <div /> }))
 vi.mock('@/hooks/useGroupMessages', () => ({
+  conversationStateKey: (groupId?: string, threadId?: string | null) =>
+    threadId ?? groupId,
+  conversationMessagesKey: (scope: string, groupId: string, threadId?: string) => [
+    scope,
+    groupId,
+    threadId,
+  ],
   useConversationMessages: () => ({
     error: null,
     isLoading: false,

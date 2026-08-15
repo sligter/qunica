@@ -431,3 +431,39 @@ export const waitingForUserPayloadSchema = z.object({
   message: z.string().optional(),
   input_request: humanInputRequestSchema.optional(),
 })
+
+/** What the runtime asks before running a gated tool call. */
+export const approvalRequestSchema = z.object({
+  rule: z.string(),
+  capability: z.string(),
+  reason: z.string(),
+  tool_name: z.string(),
+  subject: z.string(),
+})
+
+export const approvalRequiredPayloadSchema = z.object({
+  agent_id: z.string().optional(),
+  display_name: z.string().optional(),
+  message: z.string().optional(),
+  tool_call_id: z.string(),
+  tool_name: z.string().optional(),
+  approval_request: approvalRequestSchema,
+})
+
+/** One line of the checklist an agent keeps with `TodoWrite`. */
+export const todoItemSchema = z.object({
+  content: z.string(),
+  status: z.enum(['pending', 'in_progress', 'completed']),
+})
+
+/**
+ * The whole checklist as of now, never a delta.
+ *
+ * `TodoWrite` replaces the list on every call, so a client that dropped an
+ * event catches up on the next one rather than accumulating a stale union.
+ */
+export const todoUpdatePayloadSchema = z.object({
+  agent_id: z.string().optional(),
+  display_name: z.string().optional(),
+  todos: z.array(todoItemSchema),
+})

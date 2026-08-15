@@ -30,6 +30,92 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 
+/// Largest provider error body retained. Enough for any provider's JSON error;
+/// short enough that an HTML error page does not flood the log or the turn.
+const MAX_ERROR_BODY_CHARS: usize = 2_000;
+
+/// A non-2xx provider response, with the body preserved.
+///
+/// `reqwest`'s `error_for_status` discards the body, which is exactly where
+/// every provider puts the reason. That made a 400 saying "this model's maximum
+/// context length is 128000 tokens" indistinguishable from a malformed request,
+/// so the runtime could neither report it usefully nor recover from it — the
+/// turn just failed with "provider execution failed".
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("provider returned HTTP {status}: {body}")]
+pub struct ProviderHttpError {
+    pub status: u16,
+    pub body: String,
+}
+
+impl ProviderHttpError {
+    /// A rendering safe to show a user: the status, without the body.
+    ///
+    /// The body is kept on the struct for classification and server-side logs,
+    /// but never travels to a client. Providers routinely echo the submitted
+    /// credential back in an authentication error ("Incorrect API key provided:
+    /// sk-…"), so a body rendered into a chat stream or a settings panel is a
+    /// credential rendered into a chat stream or a settings panel.
+    pub fn safe_message(&self) -> String {
+        format!("The provider returned HTTP {}.", self.status)
+    }
+
+    /// Worth retrying with the same request: a timeout, a rate limit, or a
+    /// server-side fault.
+    pub fn is_transient(&self) -> bool {
+        self.status == 408 || self.status == 429 || (500..600).contains(&self.status)
+    }
+
+    /// Whether the provider rejected the request for exceeding its context
+    /// window.
+    ///
+    /// Matched on the body text because no provider signals this in a
+    /// structured, portable way: OpenAI-compatible hosts use an
+    /// `context_length_exceeded` code, Anthropic prose, Gemini something else
+    /// again. A false negative costs a failed turn (the previous behaviour); a
+    /// false positive costs one compaction that was not needed.
+    pub fn is_context_overflow(&self) -> bool {
+        if self.status != 400 && self.status != 413 && self.status != 422 {
+            return false;
+        }
+        let body = self.body.to_lowercase();
+        [
+            "context length",
+            "context_length_exceeded",
+            "maximum context",
+            "context window",
+            "too many tokens",
+            "prompt is too long",
+            "input is too long",
+            "reduce the length",
+            "exceeds the maximum",
+        ]
+        .iter()
+        .any(|needle| body.contains(needle))
+    }
+}
+
+/// Reject a non-2xx response while keeping the provider's own explanation.
+pub(crate) async fn ensure_success(
+    response: reqwest::Response,
+) -> anyhow::Result<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    let body: String = if body.chars().count() > MAX_ERROR_BODY_CHARS {
+        body.chars().take(MAX_ERROR_BODY_CHARS).collect()
+    } else {
+        body
+    };
+    Err(ProviderHttpError {
+        status: status.as_u16(),
+        body,
+    }
+    .into())
+}
+
 /// Resolved LLM provider connection settings.
 pub struct ProviderConfig {
     pub kind: String,

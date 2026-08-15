@@ -3019,6 +3019,83 @@ async fn group_stream_executes_native_tool_and_continues_model() {
     assert_eq!(messages[0]["content"], "I read the file.");
 }
 
+/// A checklist is only useful if the client can find it. It has to leave the
+/// turn twice: once live on `todo_update`, and once durably in `content_json`,
+/// so a reload rebuilds the same list instead of an empty one.
+#[tokio::test]
+async fn todo_write_streams_the_checklist_and_persists_the_latest_one() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "todo-checklist@example.com").await;
+    let owner = owner_id(&state, "todo-checklist@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_todo_1",
+            "TodoWrite",
+            json!({"todos": [
+                {"content": "read the code", "status": "in_progress"},
+                {"content": "write the fix", "status": "pending"},
+            ]}),
+        )]),
+        tool_body(vec![(
+            "call_todo_2",
+            "TodoWrite",
+            json!({"todos": [
+                {"content": "read the code", "status": "completed"},
+                {"content": "write the fix", "status": "in_progress"},
+            ]}),
+        )]),
+        text_body("Working through it."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Planner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"todo_write": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "track this work"}),
+    )
+    .await;
+
+    let updates = payloads_of_kind(&events, StreamEventKind::TodoUpdate);
+    assert_eq!(updates.len(), 2, "one event per TodoWrite call");
+    assert_eq!(updates[0]["todos"][0]["status"], "in_progress");
+    assert_eq!(updates[1]["todos"][0]["content"], "read the code");
+    assert_eq!(updates[1]["todos"][0]["status"], "completed");
+    assert_eq!(updates[1]["todos"][1]["status"], "in_progress");
+
+    // The turn record keeps the latest list, not one entry per revision.
+    let content_json: String = sqlx::query_scalar(
+        "SELECT content_json FROM messages \
+         WHERE group_id = ? AND sender_type = 'agent' AND status = 'visible'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let persisted: Value = serde_json::from_str(&content_json).unwrap();
+    assert_eq!(
+        persisted["todos"],
+        json!([
+            { "content": "read the code", "status": "completed" },
+            { "content": "write the fix", "status": "in_progress" },
+        ])
+    );
+}
+
 #[tokio::test]
 async fn group_stream_web_search_uses_saved_tavily_settings() {
     let (app, state) = router_with_state_for_tests().await;
@@ -3269,7 +3346,10 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
             .await
             .unwrap();
     let resumed_checkpoint: Value = serde_json::from_str(&resumed_checkpoint).unwrap();
-    assert_eq!(resumed_checkpoint["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        resumed_checkpoint["tool_calls"].as_array().unwrap().len(),
+        2
+    );
     assert_eq!(
         resumed_checkpoint["tool_calls"][1]["tool_call_id"],
         "call_read_resume"
@@ -3315,11 +3395,7 @@ async fn resume_preserves_pre_tool_text_segments_and_strips_heavy_event_tool_fie
             StatusCode::OK,
             text_then_tool_body(
                 "before tool ",
-                vec![(
-                    "call_read",
-                    "Read",
-                    json!({"file_path": "note.txt"}),
-                )],
+                vec![("call_read", "Read", json!({"file_path": "note.txt"}))],
             ),
         ),
         (
@@ -3414,7 +3490,10 @@ async fn resume_preserves_pre_tool_text_segments_and_strips_heavy_event_tool_fie
             .await
             .unwrap();
     let resumed_checkpoint: Value = serde_json::from_str(&resumed_checkpoint).unwrap();
-    assert_eq!(resumed_checkpoint["tool_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        resumed_checkpoint["tool_calls"].as_array().unwrap().len(),
+        1
+    );
     assert_eq!(
         resumed_checkpoint["tool_calls"][0]["tool_call_id"],
         "call_read"
@@ -3519,9 +3598,7 @@ async fn new_message_supersedes_paused_thread_after_provider_failure() {
         json!({"content": "try again", "thread_id": thread_id}),
     )
     .await;
-    assert!(second
-        .iter()
-        .any(|event| event["kind"] == "agent_message"));
+    assert!(second.iter().any(|event| event["kind"] == "agent_message"));
 
     let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
         .bind(&thread_id)
@@ -3529,12 +3606,11 @@ async fn new_message_supersedes_paused_thread_after_provider_failure() {
         .await
         .unwrap();
     assert_eq!(thread_status, "active");
-    let interrupted_status: String =
-        sqlx::query_scalar("SELECT status FROM messages WHERE id = ?")
-            .bind(&interrupted_id)
-            .fetch_one(state.db.pool())
-            .await
-            .unwrap();
+    let interrupted_status: String = sqlx::query_scalar("SELECT status FROM messages WHERE id = ?")
+        .bind(&interrupted_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
     assert_eq!(interrupted_status, "visible");
 
     let requests = requests.lock().await;
@@ -3561,12 +3637,7 @@ async fn group_stream_continues_past_24_tool_rounds() {
     }
     bodies.push(text_body("Finished after 25 tool rounds."));
 
-    let provider = seed_provider(
-        &state,
-        &owner,
-        &fake_provider_sequence(bodies).await,
-    )
-    .await;
+    let provider = seed_provider(&state, &owner, &fake_provider_sequence(bodies).await).await;
     seed_agent_with_tool_config(
         &state,
         &owner,
@@ -4432,8 +4503,7 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
         event["kind"] == "turn_started" && event["payload"]["budget"]["unbounded"] == true
     }));
     assert!(events.iter().any(|event| {
-        event["kind"] == "turn_completed"
-            && event["payload"]["reason"] == "moderator_finished"
+        event["kind"] == "turn_completed" && event["payload"]["reason"] == "moderator_finished"
     }));
 
     let requests = moderator_requests.lock().await;
@@ -7659,6 +7729,7 @@ async fn resume_thread_disconnect_completes_message_for_replay() {
         message_id: interrupted.clone(),
         existing_content: "Start".to_string(),
         content_json: None,
+        approval: None,
     };
     let (tx, mut rx) = mpsc::channel(1);
     let handle = tokio::spawn(run_thread_resume(services, request, tx));
@@ -7766,7 +7837,11 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
         .await
         .unwrap();
     let (extra_root, extra_workspace) = create_local_workspace(&app, &token).await;
-    std::fs::write(extra_root.path().join("reference.md"), "attached reference\n").unwrap();
+    std::fs::write(
+        extra_root.path().join("reference.md"),
+        "attached reference\n",
+    )
+    .unwrap();
     sqlx::query(
         "INSERT INTO agent_workspaces (agent_id, workspace_id, created_at) \
          VALUES (?, ?, '2024-01-01T00:00:01Z')",
@@ -7806,12 +7881,8 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
         "got: {system_prompt}"
     );
     assert!(
-        system_prompt.contains(if cfg!(windows) {
-            "- shell: cmd.exe"
-        } else {
-            "- shell: sh"
-        }),
-        "got: {system_prompt}"
+        system_prompt.contains("- shell_tool: "),
+        "the prompt should name the shell tool the model can actually call, got: {system_prompt}"
     );
     assert!(
         system_prompt.contains("- mode: group_and_self"),
@@ -8443,13 +8514,8 @@ async fn model_override_reaches_the_provider_request() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
     let (base_url, captured) = recording_fake_provider(OK_SSE).await;
-    let provider = seed_provider_with_models(
-        &state,
-        &owner,
-        &base_url,
-        &["test-model", "gpt-4o-mini"],
-    )
-    .await;
+    let provider =
+        seed_provider_with_models(&state, &owner, &base_url, &["test-model", "gpt-4o-mini"]).await;
     seed_agent(
         &state,
         &owner,
@@ -8481,13 +8547,8 @@ async fn omitting_the_model_override_keeps_the_configured_model() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
     let (base_url, captured) = recording_fake_provider(OK_SSE).await;
-    let provider = seed_provider_with_models(
-        &state,
-        &owner,
-        &base_url,
-        &["test-model", "gpt-4o-mini"],
-    )
-    .await;
+    let provider =
+        seed_provider_with_models(&state, &owner, &base_url, &["test-model", "gpt-4o-mini"]).await;
     seed_agent(
         &state,
         &owner,
@@ -8518,8 +8579,7 @@ async fn a_model_override_the_provider_does_not_list_is_rejected_before_the_turn
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
     let (base_url, captured) = recording_fake_provider(OK_SSE).await;
-    let provider =
-        seed_provider_with_models(&state, &owner, &base_url, &["test-model"]).await;
+    let provider = seed_provider_with_models(&state, &owner, &base_url, &["test-model"]).await;
     seed_agent(
         &state,
         &owner,
@@ -8544,4 +8604,329 @@ async fn a_model_override_the_provider_does_not_list_is_rejected_before_the_turn
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(captured.lock().await.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Tool-call approval
+// ---------------------------------------------------------------------------
+
+/// Drive a turn until it pauses on an approval, returning what the rest of the
+/// flow needs: the workspace root (holding the file the gated command targets),
+/// a token, the thread, and the events seen so far.
+async fn pause_on_shell_approval(
+    app: &Router,
+    state: &AppState,
+    email: &str,
+    follow_up: &str,
+) -> (tempfile::TempDir, String, String, Vec<Value>) {
+    let token = register_and_login(app, email).await;
+    let owner = owner_id(state, email).await;
+    let (root, workspace) = create_local_workspace(app, &token).await;
+    std::fs::write(root.path().join("build.txt"), "artifact").unwrap();
+    let group = create_group(app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let provider = seed_provider(
+        state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "call_rm",
+                "Bash",
+                json!({ "command": "rm build.txt" }),
+            )]),
+            text_body(follow_up),
+        ])
+        .await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        state,
+        &owner,
+        &group,
+        &provider,
+        "Cleaner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"bash": {"enabled": true}}}),
+    )
+    .await;
+
+    let events = stream_events(
+        app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "tidy up the workspace"}),
+    )
+    .await;
+
+    let thread_id: String = sqlx::query_scalar("SELECT id FROM threads WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    (root, token, thread_id, events)
+}
+
+#[tokio::test]
+async fn a_destructive_command_pauses_for_approval_instead_of_running_or_being_refused() {
+    let (app, state) = router_with_state_for_tests().await;
+    let (root, _token, thread_id, events) =
+        pause_on_shell_approval(&app, &state, "approval-pause@example.com", "Done.").await;
+
+    // The command did not run.
+    assert!(
+        root.path().join("build.txt").exists(),
+        "the gated command must not run before the user answers"
+    );
+
+    // The user was asked, with enough detail to decide.
+    let asked = payloads_of_kind(&events, StreamEventKind::ApprovalRequired);
+    assert_eq!(asked.len(), 1, "{events:#?}");
+    assert_eq!(asked[0]["tool_call_id"], "call_rm");
+    let request = &asked[0]["approval_request"];
+    assert_eq!(request["rule"], "delete-files");
+    assert_eq!(request["subject"], "rm build.txt");
+    assert!(request["capability"].as_str().unwrap().contains("delete"));
+    assert!(!request["reason"].as_str().unwrap().is_empty());
+
+    // The thread is paused on an interrupted message carrying the pending call
+    // with its arguments and no result, which is what makes replay possible.
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "paused");
+
+    let content_json: String = sqlx::query_scalar(
+        "SELECT content_json FROM messages WHERE thread_id = ? AND status = 'interrupted'",
+    )
+    .bind(&thread_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&content_json).unwrap();
+    let pending = &checkpoint["tool_calls"][0];
+    assert_eq!(pending["tool_call_id"], "call_rm");
+    assert_eq!(pending["status"], "approval_required");
+    assert_eq!(pending["args"]["command"], "rm build.txt");
+    assert!(
+        pending["result"].is_null(),
+        "a call awaiting approval has no result yet: {pending}"
+    );
+    assert_eq!(pending["approval_request"]["rule"], "delete-files");
+}
+
+#[tokio::test]
+async fn approving_replays_the_exact_paused_call() {
+    let (app, state) = router_with_state_for_tests().await;
+    let (root, token, thread_id, _) = pause_on_shell_approval(
+        &app,
+        &state,
+        "approval-approve@example.com",
+        "Removed the artifact.",
+    )
+    .await;
+
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({ "approval": { "tool_call_id": "call_rm", "approved": true } }),
+    )
+    .await;
+
+    // The approved command actually ran.
+    assert!(
+        !root.path().join("build.txt").exists(),
+        "approving should run the command the user was shown"
+    );
+    let results = payloads_of_kind(&resumed, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1, "{resumed:#?}");
+    assert_eq!(results[0]["tool_call_id"], "call_rm");
+    assert_eq!(results[0]["status"], "completed");
+
+    let message = payloads_of_kind(&resumed, StreamEventKind::AgentMessage);
+    assert_eq!(message[0]["content"], "Removed the artifact.");
+
+    // The decision is on record.
+    let (rule, approved, remembered): (String, i64, i64) =
+        sqlx::query_as("SELECT rule, approved, remembered FROM tool_approvals WHERE thread_id = ?")
+            .bind(&thread_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(rule, "delete-files");
+    assert_eq!(approved, 1);
+    assert_eq!(remembered, 0, "a one-time approval must not be remembered");
+}
+
+#[tokio::test]
+async fn declining_leaves_the_command_unrun_and_tells_the_model_not_to_retry() {
+    let (app, state) = router_with_state_for_tests().await;
+    let (root, token, thread_id, _) = pause_on_shell_approval(
+        &app,
+        &state,
+        "approval-decline@example.com",
+        "Understood, leaving it alone.",
+    )
+    .await;
+
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({
+            "approval": {
+                "tool_call_id": "call_rm",
+                "approved": false,
+                "note": "I need those artifacts"
+            }
+        }),
+    )
+    .await;
+
+    assert!(
+        root.path().join("build.txt").exists(),
+        "declining must leave the file alone"
+    );
+    let results = payloads_of_kind(&resumed, StreamEventKind::ToolCallResult);
+    assert_eq!(results[0]["status"], "failed");
+    let output = results[0]["output"].as_str().unwrap();
+    assert!(output.contains("declined"), "{output}");
+    assert!(output.contains("I need those artifacts"), "{output}");
+    assert!(
+        output.contains("Do not run it again"),
+        "the model must be told this was a decision, not a transient failure: {output}"
+    );
+
+    let (approved, remembered): (i64, i64) =
+        sqlx::query_as("SELECT approved, remembered FROM tool_approvals WHERE thread_id = ?")
+            .bind(&thread_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(approved, 0);
+    assert_eq!(
+        remembered, 0,
+        "a decline is never remembered: refusing one command must not refuse every later one"
+    );
+}
+
+#[tokio::test]
+async fn remembering_an_approval_stops_asking_for_the_same_rule_in_this_thread() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "approval-remember@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("first.txt"), "a").unwrap();
+    std::fs::write(root.path().join("second.txt"), "b").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![(
+                "call_one",
+                "Bash",
+                json!({"command": "rm first.txt"}),
+            )]),
+            // After the remembered approval the second deletion runs straight
+            // through, in the same resumed turn, without pausing again.
+            tool_body(vec![(
+                "call_two",
+                "Bash",
+                json!({"command": "rm second.txt"}),
+            )]),
+            text_body("Both removed."),
+        ])
+        .await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Cleaner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"bash": {"enabled": true}}}),
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "clean both files"}),
+    )
+    .await;
+    let thread_id: String = sqlx::query_scalar("SELECT id FROM threads WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({
+            "approval": { "tool_call_id": "call_one", "approved": true, "remember": true }
+        }),
+    )
+    .await;
+
+    assert!(!root.path().join("first.txt").exists());
+    assert!(
+        !root.path().join("second.txt").exists(),
+        "the remembered grant should cover the second deletion without asking again"
+    );
+    assert!(
+        payloads_of_kind(&resumed, StreamEventKind::ApprovalRequired).is_empty(),
+        "the same rule must not ask twice in one thread: {resumed:#?}"
+    );
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage)[0]["content"],
+        "Both removed."
+    );
+}
+
+#[tokio::test]
+async fn an_answered_approval_cannot_be_replayed_twice() {
+    let (app, state) = router_with_state_for_tests().await;
+    let (root, token, thread_id, _) = pause_on_shell_approval(
+        &app,
+        &state,
+        "approval-replay@example.com",
+        "Removed the artifact.",
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({ "approval": { "tool_call_id": "call_rm", "approved": true } }),
+    )
+    .await;
+    assert!(!root.path().join("build.txt").exists());
+
+    // Re-answering the same card must not run anything again. The thread is no
+    // longer paused, so the endpoint refuses outright.
+    std::fs::write(root.path().join("build.txt"), "recreated").unwrap();
+    let (status, _) = stream_text(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({ "approval": { "tool_call_id": "call_rm", "approved": true } }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        root.path().join("build.txt").exists(),
+        "a replayed approval must not run the command a second time"
+    );
 }

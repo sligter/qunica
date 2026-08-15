@@ -13,9 +13,11 @@ import { z } from 'zod'
 
 import { fetchJson } from '@/lib/api-v2/client'
 import {
+  approvalRequiredPayloadSchema,
   parseConversationUpdatedEvent,
   parseGroupTurnTrace,
   parseSchedulerStreamEvent,
+  todoUpdatePayloadSchema,
   waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
@@ -336,6 +338,7 @@ export function useSendMessageStream(
   const clearStreamingStreamDraft = useMessageStore((s) => s.clearStreamingStreamDraft)
   const finalizeStreamDraft = useMessageStore((s) => s.finalizeStreamDraft)
   const upsertStreamTool = useMessageStore((s) => s.upsertStreamTool)
+  const upsertStreamTodos = useMessageStore((s) => s.upsertStreamTodos)
   const upsertStreamExternalRun = useMessageStore((s) => s.upsertStreamExternalRun)
   const appendStreamNotice = useMessageStore((s) => s.appendStreamNotice)
   const applySchedulerEvent = useMessageStore((s) => s.applySchedulerEvent)
@@ -831,6 +834,42 @@ export function useSendMessageStream(
                 if (turnId) invalidateTurn(turnId)
                 return
               }
+              case 'approval_required': {
+                // A gated tool call stopped the turn. The card is a durable
+                // notice for the same reason the waiting one is: a reload
+                // mid-pause must not lose the only way to answer it.
+                const parsed = approvalRequiredPayloadSchema.safeParse(event.payload)
+                if (!parsed.success) return
+                const message = parsed.data.message ?? 'Approval required'
+                appendStreamNotice(storeId, streamId, {
+                  type: 'approval_required',
+                  agent_id: parsed.data.agent_id,
+                  display_name: agentDisplayName(
+                    parsed.data.agent_id,
+                    parsed.data.display_name,
+                  ),
+                  message,
+                  approval_request: {
+                    tool_call_id: parsed.data.tool_call_id,
+                    ...parsed.data.approval_request,
+                  },
+                })
+                const turnId = markStreamRunWaitingForUser(storeId, streamId)
+                if (turnId) invalidateTurn(turnId)
+                return
+              }
+              case 'todo_update': {
+                const parsed = todoUpdatePayloadSchema.safeParse(event.payload)
+                if (!parsed.success || !parsed.data.agent_id) return
+                upsertStreamTodos(
+                  storeId,
+                  streamId,
+                  parsed.data.agent_id,
+                  parsed.data.todos,
+                  agentDisplayName(parsed.data.agent_id, parsed.data.display_name),
+                )
+                return
+              }
               case 'warning': {
                 const message = messageFromPayload(event.payload, 'Stream warning')
                 pushWarning(storeId, message)
@@ -952,6 +991,7 @@ export function useSendMessageStream(
       token,
       onConversationUpdated,
       upsertStreamExternalRun,
+      upsertStreamTodos,
       upsertStreamTool,
     ],
   )

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import { conversationWorkspaceRootsQueryKey } from '@/hooks/useConversationWorkspaceFiles'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type { GroupAgentRead, GroupTopologyRole, GroupWorkspaceMode } from '@/types/api'
@@ -51,6 +52,11 @@ export function useSetGroupAgentWorkspaceMode() {
       }),
     onSuccess: (_data, { groupId }) => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+      // The mode decides whether the agent's own folder is a browsable root at
+      // all, so the file panel's root picker is stale until this refetches.
+      void qc.invalidateQueries({
+        queryKey: conversationWorkspaceRootsQueryKey('groups', groupId),
+      })
     },
   })
 }
