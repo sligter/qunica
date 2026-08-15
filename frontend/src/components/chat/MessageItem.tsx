@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
+import { Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
@@ -8,6 +9,7 @@ import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { MessageActions } from '@/components/chat/MessageActions'
 import { MessageAttachments } from '@/components/chat/MessageAttachments'
 import { PersistedTurnDetails } from '@/components/chat/PersistedTurnDetails'
+import { StreamStatusPill } from '@/components/chat/StreamStatus'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { formatTime } from '@/lib/format'
@@ -30,7 +32,7 @@ interface MessageItemProps {
   agentIsSystem?: boolean
 }
 
-export function MessageItem({
+export function MessageItemView({
   message,
   groupId,
   isStreaming,
@@ -49,6 +51,9 @@ export function MessageItem({
   )
   const currentUser = useAuthStore((s) => s.user)
   const isResuming = useMessageStore((s) => s.resumingMessageIds.has(message.id))
+  // A locally echoed message the server has not acknowledged yet. It renders
+  // like any other message, dimmed, so sending never blocks on the round trip.
+  const isPending = useMessageStore((s) => s.pendingMessageIds.has(message.id))
   const groupAgent = useMemo(() => {
     if (message.sender_type !== 'agent') return undefined
     return (agents ?? groupAgents.data)?.find((g) => g.agent_id === message.sender_id)
@@ -97,9 +102,11 @@ export function MessageItem({
   return (
     <div
       id={`message-${message.id}`}
+      data-copy-text={content}
       className={cn(
-        'group/message flex min-w-0 w-full gap-2 px-3 py-2',
+        'group/message flex min-w-0 w-full gap-2 px-3 py-2 transition-opacity',
         isUser ? 'flex-row-reverse' : 'flex-row',
+        isPending && 'opacity-70',
       )}
     >
       <AgentAvatar
@@ -114,8 +121,8 @@ export function MessageItem({
           isUser ? 'ml-auto max-w-[72%] items-end' : 'max-w-full items-start',
         )}
       >
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{senderName}</span>
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <span className="shrink-0 font-medium text-foreground">{senderName}</span>
           {workspaceModeKey ? (
             <button
               type="button"
@@ -126,12 +133,15 @@ export function MessageItem({
               {t(workspaceModeKey)}
             </button>
           ) : null}
-          {!showStreamingDot && !isInterrupted && <span>{time}</span>}
-          {showStreamingDot && (
-            <span className="inline-flex items-center gap-1 text-warning-foreground">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-              {t('messages.streaming')}
+          {!showStreamingDot && !isInterrupted && !isPending && <span>{time}</span>}
+          {isPending && (
+            <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              {t('messages.sending')}
             </span>
+          )}
+          {showStreamingDot && (
+            <StreamStatusPill status={{ phase: 'writing' }} className="min-w-0" />
           )}
           {isInterrupted && !isResuming && (
             <span className="inline-flex items-center gap-1 text-warning-foreground">
@@ -139,7 +149,7 @@ export function MessageItem({
               {t('messages.interrupted')}
             </span>
           )}
-          {message.content && !showStreamingDot && (
+          {message.content && !showStreamingDot && !isPending && (
             <MessageActions
               messageId={message.id}
               content={message.content}
@@ -194,3 +204,11 @@ export function MessageItem({
     </div>
   )
 }
+
+/**
+ * Memoized: every streamed token updates the message store, and an unmemoized
+ * row would re-render — and re-parse the markdown of — the whole backlog on
+ * each one. Message objects keep their identity in the store, so a row only
+ * re-renders when its own content or state actually changed.
+ */
+export const MessageItem = memo(MessageItemView)

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
@@ -48,7 +48,7 @@ async function renderAppLayout(
               <Route element={<AppLayout terminalTransport={terminalTransport} />}>
                 <Route
                   path="settings"
-                  element={<><div>Settings content</div><input aria-label="Settings input" /><Link to="/agents">Agents route</Link></>}
+                  element={<><div>Settings content</div><input aria-label="Settings input" /><article data-copy-text="Full agent reply">Full agent reply</article><Link to="/agents">Agents route</Link></>}
                 />
                 <Route path="agents" element={<div>Agents content</div>} />
               </Route>
@@ -99,6 +99,69 @@ describe('AppLayout', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /Select all/ }))
     expect(input.selectionStart).toBe(0)
     expect(input.selectionEnd).toBe(input.value.length)
+  })
+
+  it('offers copy actions on content that declares its own text', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    // jsdom ships no clipboard, so define one for the duration of the test.
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    await renderAppLayout()
+
+    const message = screen.getByText('Full agent reply')
+    fireEvent.contextMenu(message, { clientX: 20, clientY: 30 })
+
+    const menu = await screen.findByRole('menu', { name: 'Copy menu' })
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'CopyCtrl+C',
+      'Copy whole message',
+      'Select message text',
+    ])
+
+    // Copying takes the source the message published, not whatever the
+    // renderer laid out.
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy whole message' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('Full agent reply'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+
+    fireEvent.contextMenu(message, { clientX: 20, clientY: 30 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Select message text' }))
+    const selection = window.getSelection()
+    expect(selection?.rangeCount).toBe(1)
+    expect(selection?.getRangeAt(0).commonAncestorContainer).toBe(message)
+
+    // Right-clicking the selection copies the excerpt rather than the message.
+    fireEvent.contextMenu(message, { clientX: 20, clientY: 30 })
+    expect(await screen.findByRole('menuitem', { name: /Copy selection/ })).toBeVisible()
+  })
+
+  it('ignores a selection left behind somewhere else', async () => {
+    await renderAppLayout()
+    const elsewhere = screen.getByText('Settings content')
+    const range = document.createRange()
+    range.selectNodeContents(elsewhere)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    fireEvent.contextMenu(screen.getByText('Full agent reply'), { clientX: 20, clientY: 30 })
+
+    // The click landed outside the highlight, so "copy" means this message.
+    const menu = await screen.findByRole('menu', { name: 'Copy menu' })
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'CopyCtrl+C',
+      'Copy whole message',
+      'Select message text',
+    ])
+  })
+
+  it('shows no menu where there is nothing to copy', async () => {
+    await renderAppLayout()
+
+    fireEvent.contextMenu(screen.getByText('Settings content'), { clientX: 5, clientY: 5 })
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
   it('clips the app shell so nothing can grow the document', async () => {

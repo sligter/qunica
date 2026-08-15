@@ -238,6 +238,46 @@ describe('useSendMessageStream scheduler events', () => {
     expect(hook.result.current.activeStreamCount).toBe(1)
   })
 
+  it('echoes the message and opens its run before the server acknowledges it', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    let sendPromise!: Promise<void>
+    act(() => {
+      sendPromise = hook.result.current.send('hello')
+    })
+
+    // Nothing has come back from the server yet, but the conversation already
+    // shows the message and the turn that is starting.
+    const echoed = useMessageStore.getState().byGroup['group-1'] ?? []
+    expect(echoed.map((message) => message.content)).toEqual(['hello'])
+    expect(useMessageStore.getState().pendingMessageIds.has(echoed[0].id)).toBe(true)
+    const requestId = (mocks.streams[0]?.body as { client_request_id: string }).client_request_id
+    expect(useMessageStore.getState().streamRunsByGroup['group-1']?.[requestId]?.status).toBe(
+      'active',
+    )
+
+    emit(mocks.streams[0].handlers, {
+      stream_id: requestId,
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'user_message',
+      payload: { message_id: 'message-1', thread_id: 'thread-1', content: 'hello' },
+    })
+    await expect(sendPromise).resolves.toBeUndefined()
+
+    // The persisted row replaces the echo in place — no duplicate, and the run
+    // follows the message to its server id.
+    const state = useMessageStore.getState()
+    expect((state.byGroup['group-1'] ?? []).map((message) => message.id)).toEqual(['message-1'])
+    expect(state.pendingMessageIds.size).toBe(0)
+    expect(state.streamRunIdByUserMessageIdByGroup['group-1']).toEqual({
+      'message-1': requestId,
+    })
+    expect(state.streamRunsByGroup['group-1']?.[requestId]?.user_message_id).toBe('message-1')
+  })
+
   it('rejects send when the stream reports an error before acknowledgement', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useSendMessageStream('group-1'), {
@@ -259,7 +299,12 @@ describe('useSendMessageStream scheduler events', () => {
 
     await rejection
     expect(hook.result.current.error).toBe('persist failed')
+    // A message that never reached the conversation must not keep claiming it
+    // did: the echo is taken back with the rejection.
+    expect(useMessageStore.getState().byGroup['group-1'] ?? []).toEqual([])
+    expect(useMessageStore.getState().pendingMessageIds.size).toBe(0)
   })
+
 
   it('keeps send resolved when an agent error arrives after acknowledgement', async () => {
     const queryClient = new QueryClient()

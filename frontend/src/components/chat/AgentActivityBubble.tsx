@@ -3,6 +3,7 @@ import { Brain, ChevronRight, Terminal, Wrench } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import '@/i18n'
+import { ThinkingDots } from '@/components/chat/StreamStatus'
 import { cn } from '@/lib/utils'
 import type { ToolActivityStatus } from '@/stores/messageStore'
 
@@ -152,9 +153,7 @@ export function AgentActivityBubble({
         <Wrench className="h-3.5 w-3.5 shrink-0" />
         <span className="font-medium text-foreground">{t('tools.activity')}</span>
         <span className="min-w-0 truncate">{counts.join(' · ')}</span>
-        {active ? (
-          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warning-foreground" />
-        ) : null}
+        {active ? <ThinkingDots className="text-primary" /> : null}
         <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 transition-transform group-open/activity:rotate-90" />
       </summary>
       <div className="min-w-0 border-t border-border">
@@ -171,6 +170,7 @@ export function AgentActivityBubble({
               {reasoningSegments.map((segment, index) => (
                 <div
                   key={segment.id}
+                  data-copy-text={segment.content}
                   className={cn(
                     'whitespace-pre-wrap break-words px-2.5 py-2 text-xs leading-relaxed text-foreground',
                     index > 0 && 'border-t border-warning/70',

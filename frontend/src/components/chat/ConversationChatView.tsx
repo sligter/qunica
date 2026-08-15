@@ -50,12 +50,12 @@ export interface ConversationChatViewProps {
   onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
   disabledComposerReason?: string
   /**
-   * Models the composer may offer for a single message. Supplied by the page,
-   * which already knows the conversation's agent and provider; resolving it
-   * here would make this component fetch on behalf of every caller.
+   * Whether the model answering here accepts a reasoning-effort setting.
+   * Supplied by the page, which already knows the conversation's agent and
+   * provider; resolving it here would make this component fetch on behalf of
+   * every caller.
    */
-  models?: Array<{ id: string }>
-  defaultModel?: string
+  supportsReasoningEffort?: boolean
   /** Render non-user messages with the dedicated system Assistant identity. */
   agentIsSystem?: boolean
 }
@@ -115,8 +115,7 @@ export function ConversationChatView({
   capabilities,
   onConversationUpdated,
   disabledComposerReason,
-  models,
-  defaultModel,
+  supportsReasoningEffort,
   agentIsSystem,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
@@ -314,8 +313,7 @@ export function ConversationChatView({
               ) : null}
 
               <Composer
-                models={models}
-                defaultModel={defaultModel}
+                supportsReasoningEffort={supportsReasoningEffort}
                 key={`${scope}:${conversationId}:${threadId ?? 'no-thread'}:${workspaceId ?? 'no-workspace'}`}
                 conversationId={conversationId}
                 workspaceId={workspaceId}

@@ -181,12 +181,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .terminal-dock {
-    transition: none;
-  }
-}
-
 @keyframes startup-progress {
   0% {
     transform: translateX(-120%);
@@ -196,8 +190,119 @@
   }
 }
 
+/* Reply-status motion. Every phase indicator shares this vocabulary so a
+   conversation reads as one system rather than four unrelated blinks. */
+
+/* A wave through three dots: each one rises and brightens on its own beat. */
+@keyframes stream-dot {
+  0%,
+  68%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0) scale(0.82);
+  }
+  34% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1);
+  }
+}
+
+/* A highlight sweeping across a status pill — the "still live" cue that reads
+   at a glance without flashing. */
+@keyframes stream-sheen {
+  0% {
+    transform: translateX(-140%);
+  }
+  55%,
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+/* A slow breath on the phase icon, in place of a hard pulse. */
+@keyframes stream-breathe {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes stream-skeleton {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -180% 0;
+  }
+}
+
+/* The live reply bubble breathes along its accent edge. A trailing caret would
+   sit under the markdown body rather than after the text. */
+@keyframes stream-edge {
+  0%,
+  100% {
+    border-left-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  }
+  50% {
+    border-left-color: var(--color-primary);
+  }
+}
+
 @layer utilities {
   .animate-startup-progress {
     animation: startup-progress 1.4s ease-in-out infinite;
+  }
+
+  .animate-stream-dot {
+    animation: stream-dot 1.05s ease-in-out infinite;
+  }
+
+  .animate-stream-sheen {
+    animation: stream-sheen 2.1s ease-in-out infinite;
+  }
+
+  .animate-stream-breathe {
+    animation: stream-breathe 1.8s ease-in-out infinite;
+  }
+
+  .animate-stream-edge {
+    animation: stream-edge 1.7s ease-in-out infinite;
+  }
+
+  .stream-skeleton {
+    background-image: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-muted-foreground) 10%, transparent) 0%,
+      color-mix(in srgb, var(--color-muted-foreground) 24%, transparent) 45%,
+      color-mix(in srgb, var(--color-muted-foreground) 10%, transparent) 90%
+    );
+    background-size: 180% 100%;
+    animation: stream-skeleton 1.7s linear infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-dock {
+    transition: none;
+  }
+
+  /* Status stays legible without motion: the dots and skeleton settle at a
+     readable opacity rather than disappearing mid-keyframe. */
+  .animate-startup-progress,
+  .animate-stream-sheen,
+  .animate-stream-edge,
+  .stream-skeleton {
+    animation: none;
+  }
+
+  .animate-stream-dot,
+  .animate-stream-breathe {
+    animation: none;
+    opacity: 0.75;
   }
 }

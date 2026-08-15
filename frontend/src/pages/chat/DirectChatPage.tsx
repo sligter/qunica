@@ -16,13 +16,16 @@ export function DirectChatPage() {
   const { t } = useTranslation('chat')
   const chat = useDirectChat(chatId)
   const qc = useQueryClient()
-  // A direct chat has exactly one agent, so a per-message model is
-  // unambiguous. Group chats fan out and get no picker.
+  // Which model answers is the agent's own configuration, not a per-message
+  // choice, so the composer offers no model picker. How hard that model
+  // thinks is per-question — offered only when the model accepts the setting.
   const agent = useAgent(chat.data?.agent_id ?? undefined)
   const provider = useProvider(agent.data?.llm_provider_id ?? undefined)
-  const models = provider.data?.models?.map((model) => ({ id: model.id })) ?? []
-  const defaultModel =
+  const activeModel =
     (agent.data?.llm_config?.model as string | undefined) ?? provider.data?.default_model
+  const supportsReasoningEffort = Boolean(
+    provider.data?.models?.find((model) => model.id === activeModel)?.supports_reasoning_effort,
+  )
   useEffect(() => { if (!chat.data?.title) return; const old = document.title; document.title = `${chat.data.title} · AG Swarmer`; return () => { document.title = old } }, [chat.data?.title])
   const onUpdated = useCallback((payload: ConversationUpdatedPayload) => {
     if (!chatId || payload.conversation_id !== chatId) return
@@ -38,5 +41,5 @@ export function DirectChatPage() {
   const item = chat.data
   const agents: GroupAgentRead[] = item.agent_id && item.agent_name ? [{ id: `${item.id}:${item.agent_id}`, group_id: item.id, agent_id: item.agent_id, display_name: item.agent_name, role: null, topology_role: null, speaking_order: 1, response_mode: 'default', workspace_mode: 'group', share_group_workspace: true, context_usage: null, status: item.agent_status ?? 'deleted', joined_at: item.created_at }] : []
   const unavailable = !item.agent_id || item.agent_status !== 'active'
-  return <ConversationChatView key={`direct-chats:${item.id}`} conversationId={item.id} workspaceId={item.workspace_id} scope="direct-chats" agents={agents} title={<EditableDirectChatTitle chatId={item.id} title={item.title} />} subtitle={item.agent_name ?? t('direct.agentUnavailable')} models={models} defaultModel={defaultModel} capabilities={{ showAnnouncement: false, showManage: false, showTurnTrace: false, showWorkspace: true, allowMentions: false }} disabledComposerReason={unavailable ? t('direct.agentUnavailable') : undefined} onConversationUpdated={onUpdated} />
+  return <ConversationChatView key={`direct-chats:${item.id}`} conversationId={item.id} workspaceId={item.workspace_id} scope="direct-chats" agents={agents} title={<EditableDirectChatTitle chatId={item.id} title={item.title} />} subtitle={item.agent_name ?? t('direct.agentUnavailable')} supportsReasoningEffort={supportsReasoningEffort} capabilities={{ showAnnouncement: false, showManage: false, showTurnTrace: false, showWorkspace: true, allowMentions: false }} disabledComposerReason={unavailable ? t('direct.agentUnavailable') : undefined} onConversationUpdated={onUpdated} />
 }

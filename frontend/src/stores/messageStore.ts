@@ -247,6 +247,8 @@ interface MessageState {
   streamRunOrderByGroup: Record<string, string[]>
   activeSendsByGroup: Record<string, ActiveSend>
   resumingMessageIds: Set<string>
+  /** Locally echoed messages the server has not acknowledged yet. */
+  pendingMessageIds: Set<string>
   activeResumesByMessageId: Record<string, ActiveResume>
 
   setHistory: (groupId: string, messages: Message[]) => void
@@ -254,6 +256,22 @@ interface MessageState {
   clearGroupMessages: (groupId: string) => void
   removeMessage: (groupId: string, messageId: string) => void
   appendMessage: (groupId: string, message: Message) => void
+  /**
+   * Show a user message and open its run before the server answers.
+   *
+   * The composer used to sit disabled with the draft still in it until the
+   * `user_message` event came back — the whole round trip, which on the first
+   * message of a conversation also creates its thread and workspace. The echo
+   * carries a local id that `settleOptimisticUserMessage` swaps for the
+   * persisted one; `dropOptimisticUserMessage` takes it back if the send fails.
+   */
+  startOptimisticUserMessage: (groupId: string, streamId: string, message: Message) => void
+  settleOptimisticUserMessage: (
+    groupId: string,
+    optimisticId: string,
+    message: Message,
+  ) => void
+  dropOptimisticUserMessage: (groupId: string, optimisticId: string) => void
   patchInFlight: (groupId: string, agentId: string, delta: string, streamId?: string | null) => void
   finalizeInFlight: (groupId: string, message: Message) => void
   clearInFlight: (groupId: string) => void
@@ -733,6 +751,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   streamRunOrderByGroup: {},
   activeSendsByGroup: {},
   resumingMessageIds: new Set(),
+  pendingMessageIds: new Set(),
   activeResumesByMessageId: {},
 
   setHistory: (groupId, messages) =>
@@ -827,6 +846,74 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         [groupId]: [...(s.byGroup[groupId] ?? []), message],
       },
     })),
+
+  startOptimisticUserMessage: (groupId, streamId, message) => {
+    get().appendMessage(groupId, message)
+    get().startStreamRun(groupId, streamId, message)
+    set((s) => {
+      const pending = new Set(s.pendingMessageIds)
+      pending.add(message.id)
+      return { pendingMessageIds: pending }
+    })
+  },
+
+  settleOptimisticUserMessage: (groupId, optimisticId, message) =>
+    set((s) => {
+      const messages = s.byGroup[groupId] ?? []
+      const index = messages.findIndex((item) => item.id === optimisticId)
+      const replaced =
+        index === -1
+          ? [...messages, message]
+          : messages.map((item, itemIndex) => (itemIndex === index ? message : item))
+      // History may have refetched and already carry the persisted row; keep
+      // the echo's position and drop the duplicate rather than showing both.
+      const seen = new Set<string>()
+      const next: Message[] = []
+      for (const item of replaced) {
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        next.push(item)
+      }
+
+      const pending = new Set(s.pendingMessageIds)
+      pending.delete(optimisticId)
+
+      const runIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
+      const runId = runIdsByMessage[optimisticId]
+      const nextRunIdsByMessage = { ...runIdsByMessage }
+      delete nextRunIdsByMessage[optimisticId]
+      if (runId) nextRunIdsByMessage[message.id] = runId
+
+      const runs = s.streamRunsByGroup[groupId] ?? {}
+      const run = runId ? runs[runId] : undefined
+
+      return {
+        byGroup: { ...s.byGroup, [groupId]: next },
+        pendingMessageIds: pending,
+        streamRunIdByUserMessageIdByGroup: {
+          ...s.streamRunIdByUserMessageIdByGroup,
+          [groupId]: nextRunIdsByMessage,
+        },
+        ...(run && runId
+          ? {
+              streamRunsByGroup: {
+                ...s.streamRunsByGroup,
+                [groupId]: { ...runs, [runId]: { ...run, user_message_id: message.id } },
+              },
+            }
+          : {}),
+      }
+    }),
+
+  dropOptimisticUserMessage: (groupId, optimisticId) => {
+    if (!get().pendingMessageIds.has(optimisticId)) return
+    get().removeMessage(groupId, optimisticId)
+    set((s) => {
+      const pending = new Set(s.pendingMessageIds)
+      pending.delete(optimisticId)
+      return { pendingMessageIds: pending }
+    })
+  },
 
   patchInFlight: (groupId, agentId, delta, streamId = null) =>
     set((s) => {

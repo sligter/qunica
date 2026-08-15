@@ -67,11 +67,32 @@ afterEach(() => {
   useAuthStore.setState({ user: null })
   useMessageStore.setState({
     resumingMessageIds: new Set(),
+    pendingMessageIds: new Set(),
     activeResumesByMessageId: {},
   })
 })
 
 describe('MessageItem', () => {
+  it('publishes its source text for the copy menu', () => {
+    render(<MessageItem groupId="group-1" message={message({ content: '# Heading\n\nBody' })} />)
+
+    // The renderer lays out headings and links; a copy has to yield what the
+    // agent actually wrote, so the row carries the source itself.
+    expect(document.getElementById('message-message-1')).toHaveAttribute(
+      'data-copy-text',
+      '# Heading\n\nBody',
+    )
+  })
+
+  it('shows a locally echoed message as sending until the server acknowledges it', () => {
+    useMessageStore.setState({ pendingMessageIds: new Set(['message-1']) })
+    render(<MessageItem groupId="group-1" message={message({ sender_type: 'user' })} />)
+
+    expect(screen.getByText('Sending…')).toBeVisible()
+    // A time it does not have yet would be a lie, so the row shows none.
+    expect(screen.queryByText('10:00')).not.toBeInTheDocument()
+  })
+
   it('renders persisted reasoning and tools through one collapsed activity bubble', async () => {
     const user = userEvent.setup()
     render(

@@ -231,6 +231,40 @@ function buildUserMessage(
   }
 }
 
+/**
+ * The local echo shown while the server persists the message.
+ *
+ * Attachments stay empty: only their workspace paths are known here, and the
+ * acknowledgement that lands moments later carries the names, types and sizes
+ * the attachment list needs.
+ */
+function buildOptimisticUserMessage(
+  groupId: string,
+  requestId: string,
+  input: string | MessageSendInput,
+  threadId: string | undefined,
+  senderId: string | null,
+): Message {
+  return {
+    id: `local:${requestId}`,
+    group_id: groupId,
+    thread_id: threadId ?? null,
+    sender_type: 'user',
+    sender_id: senderId,
+    message_type: 'text',
+    content: (typeof input === 'string' ? input : input.content) ?? '',
+    attachments: [],
+    status: 'visible',
+    refs: null,
+    context_usage: null,
+    turn_id: null,
+    dispatch_id: null,
+    reply_to_message_id: null,
+    turn_summary: null,
+    created_at: nowIso(),
+  }
+}
+
 function buildAgentMessage(
   groupId: string,
   event: StreamEvent,
@@ -319,6 +353,9 @@ export function useSendMessageStream(
   const token = useAuthStore((s) => s.token)
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const appendMessage = useMessageStore((s) => s.appendMessage)
+  const startOptimisticUserMessage = useMessageStore((s) => s.startOptimisticUserMessage)
+  const settleOptimisticUserMessage = useMessageStore((s) => s.settleOptimisticUserMessage)
+  const dropOptimisticUserMessage = useMessageStore((s) => s.dropOptimisticUserMessage)
   const patchInFlight = useMessageStore((s) => s.patchInFlight)
   const finalizeInFlight = useMessageStore((s) => s.finalizeInFlight)
   const clearInFlight = useMessageStore((s) => s.clearInFlight)
@@ -367,6 +404,7 @@ export function useSendMessageStream(
   const pendingSendAcknowledgementsRef = useRef<Map<string, PendingSendAcknowledgement>>(
     new Map(),
   )
+  const optimisticMessageIdsRef = useRef<Map<string, string>>(new Map())
   const pendingCancellationRef = useRef<PendingCancellation | null>(null)
 
   const acknowledgeSend = useCallback((id: string) => {
@@ -377,6 +415,14 @@ export function useSendMessageStream(
   }, [])
 
   const rejectSendBeforeAcknowledgement = useCallback((id: string, error: unknown) => {
+    // Take the local echo back with the rejection: the message never reached
+    // the conversation, and leaving it on screen would claim otherwise.
+    const optimisticId = optimisticMessageIdsRef.current.get(id)
+    if (optimisticId) {
+      optimisticMessageIdsRef.current.delete(id)
+      const storeId = stateKey ?? groupId
+      if (storeId) dropOptimisticUserMessage(storeId, optimisticId)
+    }
     const acknowledgement = pendingSendAcknowledgementsRef.current.get(id)
     if (!acknowledgement) return
     pendingSendAcknowledgementsRef.current.delete(id)
@@ -384,7 +430,7 @@ export function useSendMessageStream(
       error,
       'Message stream ended before the user message was acknowledged',
     ))
-  }, [])
+  }, [dropOptimisticUserMessage, groupId, stateKey])
 
   const refreshActiveCount = useCallback(() => {
     setActiveStreamCount(streamsRef.current.size)
@@ -602,6 +648,17 @@ export function useSendMessageStream(
       setRetryExhausted(false)
       clearWarnings(storeId)
       clearToolActivity(storeId)
+      // The backend reuses `client_request_id` as the stream id, so the run can
+      // open here rather than waiting for the first event to name it.
+      const optimisticMessage = buildOptimisticUserMessage(
+        groupId,
+        id,
+        input,
+        threadId,
+        currentUserId,
+      )
+      optimisticMessageIdsRef.current.set(id, optimisticMessage.id)
+      startOptimisticUserMessage(storeId, id, optimisticMessage)
       const message = {
         ...(typeof input === 'string' ? { content: input, attachments: [] } : input),
         client_request_id: id,
@@ -661,7 +718,13 @@ export function useSendMessageStream(
                 const parsed = userMessagePayloadSchema.safeParse(event.payload)
                 if (!parsed.success) return
                 const msg = buildUserMessage(groupId, parsed.data, currentUserId)
-                appendMessage(storeId, msg)
+                const optimisticId = optimisticMessageIdsRef.current.get(id)
+                if (optimisticId) {
+                  optimisticMessageIdsRef.current.delete(id)
+                  settleOptimisticUserMessage(storeId, optimisticId, msg)
+                } else {
+                  appendMessage(storeId, msg)
+                }
                 startStreamRun(storeId, streamId, msg)
                 return
               }
@@ -984,7 +1047,9 @@ export function useSendMessageStream(
       scope,
       setActiveAgent,
       setStreamAgentContextUsage,
+      settleOptimisticUserMessage,
       stateKey,
+      startOptimisticUserMessage,
       startSend,
       startStreamRun,
       threadId,

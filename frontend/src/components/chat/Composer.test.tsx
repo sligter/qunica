@@ -126,69 +126,25 @@ describe('Composer', () => {
     await i18n.changeLanguage('en-US')
   })
 
-  it('sends the chosen model as a per-message override', async () => {
+  it('never offers a per-message model choice', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    render(
-      <Composer
-        onSend={onSend}
-        models={[{ id: 'gpt-4o-mini' }, { id: 'gpt-4o' }]}
-        defaultModel="gpt-4o-mini"
-      />,
-    )
+    render(<Composer onSend={onSend} supportsReasoningEffort />)
 
-    await user.click(screen.getByRole('button', { name: /gpt-4o-mini/i }))
-    await user.click(screen.getByRole('option', { name: 'gpt-4o' }))
+    // The model is the agent's configuration. Letting a message carry its own
+    // would silently split a conversation across two models.
+    expect(screen.queryByRole('listbox')).toBeNull()
     await user.type(screen.getByRole('textbox'), 'hello')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
 
-    await waitFor(() =>
-      expect(onSend).toHaveBeenCalledWith(
-        expect.objectContaining({ content: 'hello', model_override: 'gpt-4o' }),
-      ),
-    )
-  })
-
-  it('omits the override while the default model is selected', async () => {
-    const user = userEvent.setup()
-    const onSend = vi.fn()
-    render(
-      <Composer
-        onSend={onSend}
-        models={[{ id: 'gpt-4o-mini' }, { id: 'gpt-4o' }]}
-        defaultModel="gpt-4o-mini"
-      />,
-    )
-
-    await user.type(screen.getByRole('textbox'), 'hello')
-    await user.click(screen.getByRole('button', { name: 'Send message' }))
-
-    // Sending the configured model as an override would pin the message to
-    // whatever the agent happened to be set to at send time.
     await waitFor(() => expect(onSend).toHaveBeenCalled())
     expect(onSend.mock.calls[0][0]).not.toHaveProperty('model_override')
-  })
-
-  it('hides the model picker when there is nothing to choose between', async () => {
-    render(<Composer onSend={vi.fn()} models={[{ id: 'only-model' }]} defaultModel="only-model" />)
-    expect(screen.queryByRole('button', { name: /only-model/i })).toBeNull()
-
-    cleanup()
-    // No catalog at all — a group whose agents span several providers.
-    render(<Composer onSend={vi.fn()} />)
-    expect(screen.queryByRole('combobox')).toBeNull()
   })
 
   it('sends the chosen reasoning effort as a per-message override', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    render(
-      <Composer
-        onSend={onSend}
-        models={[{ id: 'o3', supports_reasoning_effort: true }]}
-        defaultModel="o3"
-      />,
-    )
+    render(<Composer onSend={onSend} supportsReasoningEffort />)
 
     await user.click(screen.getByRole('button', { name: /thinking/i }))
     await user.click(screen.getByRole('option', { name: 'High' }))
@@ -205,13 +161,7 @@ describe('Composer', () => {
   it('hides the effort control for a model that does not support it', async () => {
     // Sending the field to a model that rejects it turns a normal question
     // into a provider error.
-    render(
-      <Composer
-        onSend={vi.fn()}
-        models={[{ id: 'gpt-4o-mini' }, { id: 'gpt-4o' }]}
-        defaultModel="gpt-4o-mini"
-      />,
-    )
+    render(<Composer onSend={vi.fn()} />)
     expect(screen.queryByRole('button', { name: /thinking/i })).toBeNull()
   })
 
@@ -633,7 +583,7 @@ describe('Composer', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
-  it('clears only ready attachments after an async send succeeds', async () => {
+  it('clears ready attachments as soon as an async send starts', async () => {
     const user = userEvent.setup()
     let resolveSend!: () => void
     const onSend = vi.fn(() => new Promise<void>((resolve) => {
@@ -653,13 +603,16 @@ describe('Composer', () => {
     })
     await screen.findByText('guide.md')
 
+    // The composer empties on submit rather than on acknowledgement: the
+    // conversation already echoes the message, and holding the draft for the
+    // round trip is what made the first message of a chat feel frozen.
     await user.click(screen.getByRole('button', { name: 'Send message' }))
-    expect(screen.getByText('guide.md')).toBeVisible()
-    await act(async () => resolveSend())
     await waitFor(() => expect(screen.queryByText('guide.md')).not.toBeInTheDocument())
+    await act(async () => resolveSend())
+    expect(screen.queryByText('guide.md')).not.toBeInTheDocument()
   })
 
-  it('keeps ready attachments when an async send fails', async () => {
+  it('restores ready attachments when an async send fails', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn().mockRejectedValue(new Error('send failed'))
     mocks.getMetadata.mockResolvedValueOnce(workspaceMetadata('docs/guide.md'))

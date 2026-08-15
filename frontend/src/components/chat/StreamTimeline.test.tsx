@@ -46,6 +46,71 @@ afterEach(async () => {
 })
 
 describe('StreamTimeline activity rendering', () => {
+  it('names the phase an agent is in rather than only that it is busy', async () => {
+    await i18n.changeLanguage('en-US')
+    const agentStart = event({
+      id: 'agent-start:stream-1:agent-1',
+      stream_id: 'stream-1',
+      type: 'agent_start' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      index: 0,
+      total: 1,
+      created_at: '2026-07-16T10:00:01Z',
+    })
+    const reasoning = event({
+      id: 'reasoning-1',
+      stream_id: 'stream-1',
+      type: 'reasoning' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      content: 'Working through it.',
+      status: 'streaming' as const,
+      created_at: '2026-07-16T10:00:02Z',
+    })
+    const tool = event({
+      id: 'tool-1',
+      stream_id: 'stream-1',
+      type: 'tool' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      tool_call_id: 'call-1',
+      tool_name: 'Read',
+      status: 'started' as const,
+      created_at: '2026-07-16T10:00:03Z',
+    })
+    const draft = event({
+      id: 'draft-1',
+      stream_id: 'stream-1',
+      type: 'response_draft' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      content: 'Here is what I found',
+      status: 'streaming' as const,
+      created_at: '2026-07-16T10:00:04Z',
+    })
+
+    // Nothing has happened past the dispatch yet.
+    const { rerender } = render(<StreamTimeline run={run([agentStart], 'active')} />)
+    expect(screen.getByText('Getting ready')).toBeVisible()
+
+    rerender(<StreamTimeline run={run([agentStart, reasoning], 'active')} />)
+    expect(screen.getByText('Thinking')).toBeVisible()
+
+    // The newest event wins: an agent that reasoned and is now in a tool call
+    // reports the tool by name rather than replaying its history.
+    rerender(<StreamTimeline run={run([agentStart, reasoning, tool], 'active')} />)
+    expect(screen.getByText('Running Read')).toBeVisible()
+
+    rerender(<StreamTimeline run={run([agentStart, reasoning, tool, draft], 'active')} />)
+    expect(screen.getByText('Writing reply')).toBeVisible()
+
+    // A finished run reports a time, never a phase.
+    rerender(<StreamTimeline run={run([agentStart, reasoning, tool, draft], 'completed')} />)
+    expect(screen.queryByText('Writing reply')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
   it('shows only the newest checklist an agent wrote', () => {
     const first = event({
       id: 'todo:stream-1:agent-1',

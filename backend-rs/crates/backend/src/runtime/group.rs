@@ -49,8 +49,9 @@ use crate::acp::{
     AcpRunRequest,
 };
 use crate::llm::{
-    build_provider, model_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest,
-    LlmProvider, ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall, ToolDefinition,
+    build_provider, effort_from_config, model_from_config, vision_enabled, ChatDelta, ChatMessage,
+    ChatRequest, LlmProvider, ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall,
+    ToolDefinition,
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
@@ -3036,7 +3037,11 @@ async fn run_agent_turn(
             reasoning_passback: provider_cfg.reasoning_passback,
             include_empty_tools: false,
             tools: invocation.tools.clone(),
-            reasoning_effort: ctx.effort_override,
+            // A per-message pick wins; otherwise the agent's own thinking
+            // level applies, which is the only place it reaches the provider.
+            reasoning_effort: ctx
+                .effort_override
+                .or_else(|| effort_from_config(agent.model_config_json.as_deref())),
         };
         let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
             Ok(deltas) => deltas,

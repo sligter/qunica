@@ -87,10 +87,13 @@ export function AssistantDock() {
 
   const assistant = useAssistant()
   const [showSettings, setShowSettings] = useState(false)
-  // The dock is a single-agent conversation, so a per-message model is
-  // unambiguous here too.
+  // The Assistant's model is set in its own settings panel, not per message.
+  // Only how hard it thinks stays a per-question choice.
   const provider = useProvider(assistant.data?.provider_id ?? undefined)
-  const models = provider.data?.models?.map((model) => ({ id: model.id })) ?? []
+  const activeModel = assistant.data?.model ?? provider.data?.default_model
+  const supportsReasoningEffort = Boolean(
+    provider.data?.models?.find((model) => model.id === activeModel)?.supports_reasoning_effort,
+  )
   const expanded = !placement.collapsed
 
   const collapse = useCallback(() => {
@@ -274,8 +277,7 @@ export function AssistantDock() {
           <ConversationChatView
             conversationId={assistant.data.chat_id}
             workspaceId={null}
-            models={models}
-            defaultModel={provider.data?.default_model}
+            supportsReasoningEffort={supportsReasoningEffort}
             scope="direct-chats"
             agents={[]}
             agentIsSystem

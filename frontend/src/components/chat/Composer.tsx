@@ -77,13 +77,11 @@ interface ComposerProps {
   allowMentions?: boolean
   disabledReason?: string
   /**
-   * Models selectable for this message. Empty or single-entry hides the
-   * picker: a group whose agents span several providers has no one catalog to
-   * offer, and one model is not a choice.
+   * Whether the model answering here accepts a reasoning-effort setting.
+   * Which model that is stays the agent's own configuration — only how hard
+   * it thinks is a per-question choice.
    */
-  models?: Array<{ id: string; supports_reasoning_effort?: boolean }>
-  /** The model used when the user has not picked one. */
-  defaultModel?: string
+  supportsReasoningEffort?: boolean
 }
 
 /** Reasoning depth, matching the backend's three levels. */
@@ -184,8 +182,7 @@ export function Composer({
   groupId,
   allowMentions = true,
   disabledReason,
-  models = [],
-  defaultModel,
+  supportsReasoningEffort = false,
 }: ComposerProps) {
   const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
@@ -198,16 +195,12 @@ export function Composer({
   const [showMention, setShowMention] = useState(false)
   // null means "whatever the agent is configured with"; only an explicit pick
   // becomes an override on the wire.
-  const [modelOverride, setModelOverride] = useState<string | null>(null)
-  const [showModels, setShowModels] = useState(false)
-  const selectedModel = modelOverride ?? defaultModel ?? models[0]?.id ?? ''
   const [effortOverride, setEffortOverride] = useState<EffortLevel | null>(null)
   const [showEfforts, setShowEfforts] = useState(false)
-  // Only offered when the selected model advertises support. Sending the field
-  // to a model that rejects it turns a normal question into a provider error.
-  const effortSupported = Boolean(
-    models.find((model) => model.id === selectedModel)?.supports_reasoning_effort,
-  )
+  // Only offered when the answering model advertises support. Sending the
+  // field to a model that rejects it turns a normal question into a provider
+  // error.
+  const effortSupported = supportsReasoningEffort
   const [mentionStart, setMentionStart] = useState(-1)
   const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -440,23 +433,34 @@ export function Composer({
     if (!content && ready.length === 0) return
 
     const sentIds = new Set(ready.map((attachment) => attachment.localId))
-    const sentDraftRevision = draftRevisionRef.current
+    const sent = attachmentsRef.current.filter((attachment) => sentIds.has(attachment.localId))
+    // Empty the composer now rather than when the server answers. The message
+    // is already echoed in the conversation, and holding the draft for the
+    // round trip reads as a freeze — worst on the first message of a
+    // conversation, which also creates its thread and workspace.
     setIsSending(true)
+    updateValue('')
+    updateAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.localId)))
+    setShowMention(false)
+    const clearedDraftRevision = draftRevisionRef.current
     try {
       await onSend({
         content,
         attachments: ready.map((attachment) => ({ path: attachment.path })),
-        // Omitted unless the user picked a different model. Always sending the
-        // current default would pin the message to whatever the agent happened
-        // to be set to at send time.
-        ...(modelOverride ? { model_override: modelOverride } : {}),
+        // Omitted unless the user picked a depth. Which model answers is the
+        // agent's configuration, so no model ever travels with a message.
         ...(effortOverride && effortSupported ? { effort_override: effortOverride } : {}),
       })
-      if (draftRevisionRef.current === sentDraftRevision) updateValue('')
-      updateAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.localId)))
-      setShowMention(false)
     } catch {
-      // Keep the draft and ready attachments intact so the user can retry.
+      // The send never reached the conversation: put the draft back so it can
+      // be retried, unless the user has already typed something newer.
+      if (draftRevisionRef.current === clearedDraftRevision) updateValue(content)
+      updateAttachments((current) => {
+        const restored = sent.filter(
+          (attachment) => !current.some((item) => item.localId === attachment.localId),
+        )
+        return restored.length > 0 ? [...restored, ...current] : current
+      })
     } finally {
       setIsSending(false)
     }
@@ -869,50 +873,6 @@ export function Composer({
                           }}
                         >
                           {t(`composer.effort.${level}`)}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                ) : null}
-              </div>
-            ) : null}
-            {models.length > 1 ? (
-              <div className="relative shrink-0">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 max-w-40 gap-1 px-2 text-2xs text-muted-foreground"
-                  onClick={() => setShowModels((open) => !open)}
-                  aria-haspopup="listbox"
-                  aria-expanded={showModels}
-                >
-                  <span className="truncate">{selectedModel}</span>
-                  <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
-                </Button>
-                {showModels ? (
-                  <>
-                    <div
-                      className="fixed inset-0 z-40 cursor-default"
-                      onClick={() => setShowModels(false)}
-                    />
-                    <div
-                      role="listbox"
-                      className="absolute bottom-full right-0 z-50 mb-2 max-h-48 w-56 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md"
-                    >
-                      {models.map((model) => (
-                        <button
-                          key={model.id}
-                          type="button"
-                          role="option"
-                          aria-selected={model.id === selectedModel}
-                          className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-                          onClick={() => {
-                            setModelOverride(model.id === defaultModel ? null : model.id)
-                            setShowModels(false)
-                          }}
-                        >
-                          <span className="truncate">{model.id}</span>
                         </button>
                       ))}
                     </div>

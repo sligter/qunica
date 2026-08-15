@@ -18,16 +18,36 @@ export interface AppLayoutProps {
 
 type TextField = HTMLInputElement | HTMLTextAreaElement
 
-type TextMenuState = {
-  field: TextField
-  x: number
-  y: number
-  start: number
-  end: number
-  direction: 'forward' | 'backward' | 'none'
-}
+/** Right-clicking a text field offers editing; anywhere else offers copying. */
+type MenuState =
+  | {
+      kind: 'field'
+      x: number
+      y: number
+      field: TextField
+      start: number
+      end: number
+      direction: 'forward' | 'backward' | 'none'
+    }
+  | {
+      kind: 'content'
+      x: number
+      y: number
+      /** Nearest element that declared copyable text, when there is one. */
+      node: HTMLElement | null
+      text: string
+      /** What was selected when the menu opened, captured before focus moves. */
+      selection: string
+    }
+
+type FieldAction = 'cut' | 'copy' | 'paste' | 'pastePlain' | 'selectAll'
+type ContentAction = 'copy' | 'copyAll' | 'selectAll'
 
 const TEXT_INPUT_TYPES = new Set(['email', 'password', 'search', 'tel', 'text', 'url'])
+
+const MENU_WIDTH = 232
+const MENU_ITEM_HEIGHT = 36
+const MENU_PADDING = 12
 
 function textFieldFromTarget(target: EventTarget | null): TextField | null {
   if (!(target instanceof Element)) return null
@@ -36,7 +56,49 @@ function textFieldFromTarget(target: EventTarget | null): TextField | null {
   return field instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(field.type) ? field : null
 }
 
-function replaceSelection(menu: TextMenuState, text: string, inputType: string) {
+/**
+ * The nearest ancestor that published its own plain-text source. Messages carry
+ * it so "copy message" yields the markdown the agent wrote rather than whatever
+ * the renderer happened to lay out.
+ */
+function copyableFromTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null
+  const node = target.closest('[data-copy-text]')
+  return node instanceof HTMLElement ? node : null
+}
+
+/**
+ * Highlighted text, but only when the click landed in it. A selection left
+ * behind in another message must not quietly become what "copy" yields.
+ */
+function selectionAt(target: EventTarget | null): string {
+  const selection = window.getSelection()
+  const text = selection?.toString() ?? ''
+  if (!text || !selection || selection.rangeCount === 0) return ''
+  if (!(target instanceof Node)) return ''
+  const container = selection.getRangeAt(0).commonAncestorContainer
+  return container.contains(target) || target.contains(container) ? text : ''
+}
+
+function selectNodeContents(node: HTMLElement): void {
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  range.selectNodeContents(node)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    document.execCommand('copy')
+  }
+}
+
+function replaceSelection(menu: Extract<MenuState, { kind: 'field' }>, text: string, inputType: string) {
   const { field, start, end } = menu
   const value = `${field.value.slice(0, start)}${text}${field.value.slice(end)}`
   const prototype = field instanceof HTMLTextAreaElement
@@ -55,19 +117,19 @@ function replaceSelection(menu: TextMenuState, text: string, inputType: string) 
 export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const { t } = useTranslation('common')
   const systemSettings = useSystemSettings()
-  const [textMenu, setTextMenu] = useState<TextMenuState | null>(null)
+  const [menu, setMenu] = useState<MenuState | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!textMenu) return
+    if (!menu) return
     const closeOutside = (event: PointerEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setTextMenu(null)
+      if (!menuRef.current?.contains(event.target as Node)) setMenu(null)
     }
-    const close = () => setTextMenu(null)
+    const close = () => setMenu(null)
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      setTextMenu(null)
-      textMenu.field.focus()
+      setMenu(null)
+      if (menu.kind === 'field') menu.field.focus()
     }
     document.addEventListener('pointerdown', closeOutside)
     document.addEventListener('keydown', closeOnEscape)
@@ -79,19 +141,16 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
       window.removeEventListener('blur', close)
       window.removeEventListener('resize', close)
     }
-  }, [textMenu])
+  }, [menu])
 
-  const restoreSelection = (menu: TextMenuState) => {
-    menu.field.focus()
-    menu.field.setSelectionRange(menu.start, menu.end, menu.direction)
+  const restoreSelection = (state: Extract<MenuState, { kind: 'field' }>) => {
+    state.field.focus()
+    state.field.setSelectionRange(state.start, state.end, state.direction)
   }
 
-  const runTextAction = async (
-    action: 'cut' | 'copy' | 'paste' | 'pastePlain' | 'selectAll',
-  ) => {
-    const menu = textMenu
-    if (!menu || !menu.field.isConnected) return
-    setTextMenu(null)
+  const runFieldAction = async (action: FieldAction) => {
+    if (menu?.kind !== 'field' || !menu.field.isConnected) return
+    setMenu(null)
     restoreSelection(menu)
 
     if (action === 'selectAll') {
@@ -116,31 +175,111 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
     }
   }
 
+  const runContentAction = async (action: ContentAction) => {
+    if (menu?.kind !== 'content') return
+    const { node, text, selection } = menu
+    setMenu(null)
+
+    if (action === 'selectAll') {
+      if (node?.isConnected) selectNodeContents(node)
+      return
+    }
+    // Plain "copy" honours a highlighted excerpt; "copy all" always takes the
+    // whole message, which is why both are offered rather than one guessing.
+    await writeClipboard(action === 'copy' ? selection || text : text)
+  }
+
+  const openMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const clamp = (items: number) => ({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 8)),
+      y: Math.max(
+        8,
+        Math.min(event.clientY, window.innerHeight - (items * MENU_ITEM_HEIGHT + MENU_PADDING) - 8),
+      ),
+    })
+
+    const field = textFieldFromTarget(event.target)
+    if (field) {
+      const start = field.selectionStart ?? 0
+      const end = field.selectionEnd ?? start
+      setMenu({
+        kind: 'field',
+        field,
+        start,
+        end,
+        direction: field.selectionDirection ?? 'none',
+        ...clamp(5),
+      })
+      return
+    }
+
+    // Read the selection before the menu takes focus — clicking the menu would
+    // otherwise collapse it and copy nothing.
+    const selection = selectionAt(event.target)
+    const node = copyableFromTarget(event.target)
+    const text = node?.dataset.copyText ?? ''
+    if (!selection && !text) {
+      setMenu(null)
+      return
+    }
+    setMenu({ kind: 'content', node, text, selection, ...clamp(node ? 3 : 1) })
+  }
+
+  const menuItems: Array<{ key: string; label: string; shortcut: string; disabled: boolean; run: () => void }> =
+    menu === null
+      ? []
+      : menu.kind === 'field'
+        ? ([
+            ['cut', t('textMenu.cut'), 'Ctrl+X'],
+            ['copy', t('textMenu.copy'), 'Ctrl+C'],
+            ['paste', t('textMenu.paste'), 'Ctrl+V'],
+            ['pastePlain', t('textMenu.pastePlain'), ''],
+            ['selectAll', t('textMenu.selectAll'), 'Ctrl+A'],
+          ] as const).map(([action, label, shortcut]) => {
+            const needsSelection = action === 'cut' || action === 'copy'
+            const changesValue = action === 'cut' || action === 'paste' || action === 'pastePlain'
+            return {
+              key: action,
+              label,
+              shortcut,
+              disabled:
+                (needsSelection && menu.start === menu.end) ||
+                (changesValue && (menu.field.disabled || menu.field.readOnly)),
+              run: () => void runFieldAction(action),
+            }
+          })
+        : [
+            {
+              key: 'copy',
+              label: menu.selection ? t('textMenu.copySelection') : t('textMenu.copy'),
+              shortcut: 'Ctrl+C',
+              disabled: !menu.selection && !menu.text,
+              run: () => void runContentAction('copy'),
+            },
+            ...(menu.node
+              ? [
+                  {
+                    key: 'copyAll',
+                    label: t('textMenu.copyMessage'),
+                    shortcut: '',
+                    disabled: !menu.text,
+                    run: () => void runContentAction('copyAll'),
+                  },
+                  {
+                    key: 'selectAll',
+                    label: t('textMenu.selectMessage'),
+                    shortcut: '',
+                    disabled: false,
+                    run: () => void runContentAction('selectAll'),
+                  },
+                ]
+              : []),
+          ]
+
   return (
     <TerminalRuntimeProvider transport={terminalTransport}>
-      <div
-        className="flex h-full min-h-0 overflow-hidden bg-background"
-        onContextMenu={(event) => {
-          event.preventDefault()
-          const field = textFieldFromTarget(event.target)
-          if (!field) {
-            setTextMenu(null)
-            return
-          }
-          const start = field.selectionStart ?? 0
-          const end = field.selectionEnd ?? start
-          const menuWidth = 232
-          const menuHeight = 188
-          setTextMenu({
-            field,
-            start,
-            end,
-            direction: field.selectionDirection ?? 'none',
-            x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
-            y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
-          })
-        }}
-      >
+      <div className="flex h-full min-h-0 overflow-hidden bg-background" onContextMenu={openMenu}>
         <AppSidebar />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 overflow-hidden">
@@ -157,41 +296,29 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         {!systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false ? (
           <AssistantDock />
         ) : null}
-        {textMenu ? (
+        {menu ? (
           <div
             ref={menuRef}
             role="menu"
-            aria-label={t('textMenu.label')}
+            aria-label={menu.kind === 'field' ? t('textMenu.label') : t('textMenu.contentLabel')}
             className="fixed z-[100] w-56 rounded-xl border border-border/70 bg-popover p-1.5 text-popover-foreground shadow-xl"
-            style={{ left: textMenu.x, top: textMenu.y }}
+            style={{ left: menu.x, top: menu.y }}
           >
-            {([
-              ['cut', t('textMenu.cut'), 'Ctrl+X'],
-              ['copy', t('textMenu.copy'), 'Ctrl+C'],
-              ['paste', t('textMenu.paste'), 'Ctrl+V'],
-              ['pastePlain', t('textMenu.pastePlain'), ''],
-              ['selectAll', t('textMenu.selectAll'), 'Ctrl+A'],
-            ] as const).map(([action, label, shortcut]) => {
-              const needsSelection = action === 'cut' || action === 'copy'
-              const changesValue = action === 'cut' || action === 'paste' || action === 'pastePlain'
-              const disabled = (needsSelection && textMenu.start === textMenu.end)
-                || (changesValue && (textMenu.field.disabled || textMenu.field.readOnly))
-              return (
-                <button
-                  key={action}
-                  type="button"
-                  role="menuitem"
-                  disabled={disabled}
-                  className="flex h-9 w-full items-center justify-between rounded-lg px-3 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-40"
-                  onClick={() => void runTextAction(action)}
-                >
-                  <span>{label}</span>
-                  {shortcut ? (
-                    <span className="ml-8 text-xs text-muted-foreground">{shortcut}</span>
-                  ) : null}
-                </button>
-              )
-            })}
+            {menuItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                className="flex h-9 w-full items-center justify-between rounded-lg px-3 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-40"
+                onClick={item.run}
+              >
+                <span>{item.label}</span>
+                {item.shortcut ? (
+                  <span className="ml-8 text-xs text-muted-foreground">{item.shortcut}</span>
+                ) : null}
+              </button>
+            ))}
           </div>
         ) : null}
       </div>

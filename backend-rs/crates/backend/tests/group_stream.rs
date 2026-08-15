@@ -8606,6 +8606,139 @@ async fn a_model_override_the_provider_does_not_list_is_rejected_before_the_turn
     assert!(captured.lock().await.is_empty());
 }
 
+#[tokio::test]
+async fn the_agents_configured_thinking_level_reaches_the_provider_request() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "agent-effort@example.com").await;
+    let owner = owner_id(&state, "agent-effort@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(&state, &agent, json!({"reasoning_effort": "high"})).await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    // Without this the thinking level in the agent form is a setting that
+    // changes nothing about the request it configures.
+    let requests = captured.lock().await;
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+}
+
+#[tokio::test]
+async fn an_xhigh_thinking_level_lands_on_the_deepest_level_this_abstraction_has() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "agent-xhigh@example.com").await;
+    let owner = owner_id(&state, "agent-xhigh@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    // `xhigh` exists for ACP runtimes only. Dropping it as unrecognized would
+    // turn the deepest setting into no thinking at all.
+    set_agent_model_config(&state, &agent, json!({"reasoning_effort": "xhigh"})).await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    let requests = captured.lock().await;
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+}
+
+#[tokio::test]
+async fn a_per_message_effort_override_wins_over_the_agents_thinking_level() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "effort-override@example.com").await;
+    let owner = owner_id(&state, "effort-override@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(&state, &agent, json!({"reasoning_effort": "low"})).await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi", "effort_override": "high"}),
+    )
+    .await;
+
+    let requests = captured.lock().await;
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+}
+
+#[tokio::test]
+async fn an_agent_left_on_the_default_thinking_level_omits_the_field() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "effort-default@example.com").await;
+    let owner = owner_id(&state, "effort-default@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    // Sending the key to a model that rejects it turns a normal question into
+    // a provider error.
+    let requests = captured.lock().await;
+    assert!(requests[0].get("reasoning_effort").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Tool-call approval
 // ---------------------------------------------------------------------------

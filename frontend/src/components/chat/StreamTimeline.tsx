@@ -8,6 +8,11 @@ import {
   type ActivityReasoningSegment,
   type ActivityToolItem,
 } from '@/components/chat/AgentActivityBubble'
+import {
+  StreamSkeleton,
+  StreamStatusPill,
+  type StreamStatus,
+} from '@/components/chat/StreamStatus'
 import { AssistantApprovalCard } from '@/components/assistant/AssistantApprovalCard'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
@@ -60,29 +65,18 @@ function shouldRenderInputRequest(
   return true
 }
 
-function WaitingHint({ label }: { label: string }) {
-  return (
-    <div className="inline-flex w-fit items-center gap-2 rounded-md border border-warning bg-warning px-2.5 py-1.5 text-xs text-warning-foreground">
-      <span className="inline-flex items-center gap-0.5" aria-hidden="true">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground [animation-delay:140ms]" />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground [animation-delay:280ms]" />
-      </span>
-      <span>{label}</span>
-    </div>
-  )
-}
-
 function TextPart({
   event,
   groupId,
   onSubmitHumanInput,
   renderedInputRequests,
+  streaming = false,
 }: {
   event: StreamResponseDraftEvent | { content: string; display_name: string }
   groupId: string
   onSubmitHumanInput?: (content: string) => void
   renderedInputRequests: Set<string>
+  streaming?: boolean
 }) {
   const content = event.content
   const inputRequest = humanInputRequestFromText(content)
@@ -97,7 +91,15 @@ function TextPart({
     )
   }
   return (
-    <div className="w-fit max-w-full min-w-0 rounded-md border border-l-4 border-border border-l-primary/60 bg-card px-3 py-2 text-foreground shadow-sm">
+    <div
+      data-copy-text={content}
+      className={cn(
+        'w-fit max-w-full min-w-0 rounded-md border border-l-4 border-border border-l-primary/60 bg-card px-3 py-2 text-foreground shadow-sm',
+        // A breathing edge rather than a trailing caret: the markdown body is a
+        // block, so a caret after it would blink on its own line below the text.
+        streaming && 'animate-stream-edge',
+      )}
+    >
       <MarkdownMessage content={content || ' '} groupId={groupId} />
     </div>
   )
@@ -282,20 +284,43 @@ function buildBlocks(events: StreamTimelineEvent[], fallbackDisplayName: string)
   return blocks
 }
 
-function blockIsStreaming(block: AgentBlock): boolean {
-  return block.events.some(
-    (event) =>
-      (event.type === 'reasoning' && event.status === 'streaming') ||
-      (event.type === 'response_draft' && event.status === 'streaming') ||
-      (event.type === 'tool' && event.status === 'started') ||
-      (event.type === 'external_run' &&
-        (event.status === 'running' ||
-          (event.status === undefined && event.exit_code === undefined))),
-  )
+function externalRunIsLive(event: StreamExternalRunEvent): boolean {
+  return event.status === 'running' || (event.status === undefined && event.exit_code === undefined)
 }
 
 function blockIsWaiting(block: AgentBlock): boolean {
   return block.events.every((event) => event.type === 'agent_start')
+}
+
+/**
+ * What this agent is doing right now, or null once nothing in the block is in
+ * flight. Read from the newest event backwards: an agent that reasoned, called
+ * a tool and is now writing should say "writing", not replay its history.
+ */
+function blockStatus(block: AgentBlock): StreamStatus | null {
+  if (blockIsWaiting(block)) {
+    return { phase: 'preparing', since: block.events[0]?.created_at ?? block.lastAt }
+  }
+  for (let index = block.events.length - 1; index >= 0; index -= 1) {
+    const event = block.events[index]
+    const since = event.created_at
+    if (event.type === 'response_draft' && event.status === 'streaming') {
+      return { phase: 'writing', since }
+    }
+    if (event.type === 'reasoning' && event.status === 'streaming') {
+      return { phase: 'thinking', since }
+    }
+    if (event.type === 'tool' && event.status === 'started') {
+      return { phase: 'tool', detail: event.tool_name, since }
+    }
+    if (event.type === 'external_run' && externalRunIsLive(event)) {
+      return { phase: 'tool', detail: event.adapter, since }
+    }
+    if (event.type === 'waiting_for_user' || event.type === 'approval_required') {
+      return { phase: 'waiting', since }
+    }
+  }
+  return null
 }
 
 function isActivityEvent(
@@ -351,8 +376,8 @@ function AgentBlockView({
   // error, cancellation) leaves its final reasoning/tool events on `streaming`
   // and `started`, and those would otherwise pin the bubble to "streaming".
   const live = runStatus === 'active'
-  const waiting = live && blockIsWaiting(block)
-  const streaming = waiting || (live && blockIsStreaming(block))
+  const status = live ? blockStatus(block) : null
+  const preparing = status?.phase === 'preparing'
   const reasoning: ActivityReasoningSegment[] = block.events.flatMap((event) =>
     event.type === 'reasoning'
       ? [
@@ -436,9 +461,7 @@ function AgentBlockView({
       (event) =>
         (event.type === 'reasoning' && event.status === 'streaming') ||
         (event.type === 'tool' && event.status === 'started') ||
-        (event.type === 'external_run' &&
-          (event.status === 'running' ||
-            (event.status === undefined && event.exit_code === undefined))),
+        (event.type === 'external_run' && externalRunIsLive(event)),
     )
   // The checklist renders as its own block below the activity bubble, so it
   // must not also fall through to the generic notice renderer.
@@ -456,6 +479,7 @@ function AgentBlockView({
           groupId={groupId}
           onSubmitHumanInput={onSubmitHumanInput}
           renderedInputRequests={renderedInputRequests}
+          streaming={live && event.type === 'response_draft' && event.status === 'streaming'}
         />
       )
     }
@@ -485,22 +509,19 @@ function AgentBlockView({
         contextUsage={block.contextUsage ?? fallbackUsage}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{block.displayName}</span>
-          {streaming ? (
-            <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-              {t('stream.streaming')}
-            </span>
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <span className="shrink-0 font-medium text-foreground">{block.displayName}</span>
+          {status ? (
+            <StreamStatusPill status={status} className="min-w-0" />
           ) : (
             <span>{formatTime(block.lastAt, language)}</span>
           )}
         </div>
         <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
-          {waiting ? <WaitingHint label={t('stream.preparing')} /> : null}
           <AgentActivityBubble reasoning={reasoning} tools={tools} active={activityActive} />
           <TodoChecklist todos={todos} />
           {visibleEvents.map(renderEvent)}
+          {preparing ? <StreamSkeleton /> : null}
           {pendingActions.map(({ id, action }) => (
             <AssistantApprovalCard key={id} action={action} />
           ))}
@@ -541,14 +562,15 @@ export function StreamTimeline({
           className="mt-0.5"
         />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{t('stream.assistant')}</span>
-            <span className="inline-flex items-center gap-1 rounded-[3px] border border-warning bg-warning px-1.5 py-0.5 text-[10px] text-warning-foreground">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-foreground" />
-              {t('stream.running')}
-            </span>
+          <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span className="shrink-0 font-medium text-foreground">{t('stream.assistant')}</span>
+            <StreamStatusPill
+              status={{ phase: 'preparing', since: run.created_at }}
+              label={t('stream.waitingAgents')}
+              className="min-w-0"
+            />
           </div>
-          <WaitingHint label={t('stream.waitingAgents')} />
+          <StreamSkeleton />
         </div>
       </div>
     )
