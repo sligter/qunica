@@ -501,7 +501,9 @@ describe('Composer', () => {
       file,
     )
     await screen.findByText('notes.txt')
-    expect(mocks.uploadHook).toHaveBeenCalledWith('direct-chats', 'chat-1')
+    expect(mocks.uploadHook).toHaveBeenCalledWith('direct-chats', 'chat-1', null, {
+      uniqueName: true,
+    })
     expect(mocks.upload).toHaveBeenCalledWith(file)
 
     await user.click(screen.getByRole('button', { name: 'Send message' }))

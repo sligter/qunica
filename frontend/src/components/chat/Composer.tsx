@@ -215,7 +215,14 @@ export function Composer({
     ? Boolean(resolvedConversationId)
     : Boolean(workspaceId)
   const isDisabled = Boolean(disabledReason)
-  const uploadWorkspaceFile = useUploadConversationWorkspaceFile(scope, resolvedConversationId)
+  // Attachments here are named by whatever produced them — a pasted screenshot
+  // is always `image.png` — so the second one must not collide with the first.
+  const uploadWorkspaceFile = useUploadConversationWorkspaceFile(
+    scope,
+    resolvedConversationId,
+    null,
+    { uniqueName: true },
+  )
 
   const updateValue = useCallback((next: string) => {
     draftRevisionRef.current += 1

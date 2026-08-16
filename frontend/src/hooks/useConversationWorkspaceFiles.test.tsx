@@ -373,6 +373,23 @@ describe('conversation workspace file client', () => {
     )
   })
 
+  it('asks the server for a free name when the caller cannot choose one', async () => {
+    const client = testClient()
+    mockedFetchFormData.mockResolvedValueOnce({ ...fileFixture, path: 'uploads/image (1).png' })
+    const { result } = renderHook(
+      () => useUploadConversationWorkspaceFile('groups', 'group-1', 'agent-7', {
+        uniqueName: true,
+      }),
+      { wrapper: wrapper(client) },
+    )
+    await act(async () => {
+      await result.current.mutateAsync(new File(['png'], 'image.png', { type: 'image/png' }))
+    })
+    expect(mockedFetchFormData.mock.calls[0]?.[0]).toBe(
+      '/groups/group-1/workspace-files/upload?agent_id=agent-7&unique_name=true',
+    )
+  })
+
   it('sends batch file actions to either conversation scope and refreshes file and Git state', async () => {
     mockedFetchJson.mockResolvedValue(undefined)
     const client = testClient()

@@ -73,11 +73,13 @@ function workspaceQuery(
   path: string | undefined,
   agentId: WorkspaceAgentScope,
   showHidden = false,
+  uniqueName = false,
 ): string {
   const parts: string[] = []
   if (path !== undefined) parts.push(`path=${encodeURIComponent(path)}`)
   if (agentId) parts.push(`agent_id=${encodeURIComponent(agentId)}`)
   if (showHidden) parts.push('show_hidden=true')
+  if (uniqueName) parts.push('unique_name=true')
   return parts.length > 0 ? `?${parts.join('&')}` : ''
 }
 
@@ -96,9 +98,10 @@ function conversationWorkspaceFileEndpoint(
   path?: string,
   agentId?: WorkspaceAgentScope,
   showHidden?: boolean,
+  uniqueName?: boolean,
 ): string {
   const suffix = endpoint ? `/${endpoint}` : ''
-  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId, showHidden)}`
+  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId, showHidden, uniqueName)}`
 }
 
 export function conversationWorkspaceRootsApiPath(
@@ -470,10 +473,21 @@ export function useSaveConversationWorkspaceFileText(
   })
 }
 
+export interface UploadConversationWorkspaceFileOptions {
+  /**
+   * Let the server pick a free name (`image (1).png`) when the upload folder
+   * already holds that filename. Callers whose names are generated rather than
+   * chosen — pasted screenshots all arrive as `image.png` — need this, or the
+   * second one fails the conflict check with nothing the user can do about it.
+   */
+  uniqueName?: boolean
+}
+
 export function useUploadConversationWorkspaceFile(
   scope: ConversationScope,
   conversationId: string | undefined,
   agentId: WorkspaceAgentScope = null,
+  { uniqueName = false }: UploadConversationWorkspaceFileOptions = {},
 ) {
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
@@ -488,6 +502,8 @@ export function useUploadConversationWorkspaceFile(
           'upload',
           undefined,
           agentId,
+          undefined,
+          uniqueName,
         ),
         formData,
         { token },
