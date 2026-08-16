@@ -2,6 +2,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ag_swarmer_backend::tools::{shell_for, ResolvedShell, ShellDialect, ShellPreference};
+
 use super::protocol::TerminalCommandError;
 
 #[derive(Debug, Clone)]
@@ -76,8 +78,55 @@ fn without_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
     PathBuf::from(OsString::from_wide(&normalized))
 }
 
-pub fn resolve_default_shell() -> Result<ShellSpec, TerminalCommandError> {
+/// The shell a new terminal tab starts, honouring the account's preference.
+///
+/// The preference is resolved by the same code the agent shell tool uses, so a
+/// tab and a tool call on one machine cannot end up in different interpreters.
+/// A preference this host cannot satisfy falls back to the terminal's own
+/// default, which — unlike the tool's — starts from `$SHELL`.
+pub fn resolve_default_shell(
+    preference: ShellPreference,
+) -> Result<ShellSpec, TerminalCommandError> {
+    if let Some(spec) = preferred_shell(preference, cfg!(windows)) {
+        return Ok(spec);
+    }
     resolve_shell_with(cfg!(windows), std::env::var_os("SHELL"), locate_on_path)
+}
+
+/// The account's chosen interpreter, when this host actually has it.
+///
+/// The shared resolver falls back to the host probe order when the choice is not
+/// installed. That fallback is right for the agent tool and wrong here, so a
+/// resolution that did not produce the requested dialect is discarded and the
+/// caller takes the terminal's own default instead.
+fn preferred_shell(preference: ShellPreference, windows: bool) -> Option<ShellSpec> {
+    let requested = match preference {
+        ShellPreference::Auto => return None,
+        ShellPreference::PowerShell => ShellDialect::PowerShell,
+        ShellPreference::Bash => ShellDialect::Posix,
+        ShellPreference::Cmd => ShellDialect::Cmd,
+    };
+    let resolved = shell_for(preference);
+    (resolved.dialect == requested).then(|| ShellSpec {
+        program: resolved.program.clone(),
+        display_name: display_name(resolved, windows),
+    })
+}
+
+fn display_name(shell: &ResolvedShell, windows: bool) -> String {
+    match shell.dialect {
+        ShellDialect::PowerShell => "PowerShell".to_string(),
+        ShellDialect::Cmd => "Command Prompt".to_string(),
+        // A POSIX shell on Windows is Git for Windows' bash, and calling it
+        // "bash" in the tab strip would hide which one is running.
+        ShellDialect::Posix if windows => "Git Bash".to_string(),
+        ShellDialect::Posix => shell
+            .program
+            .file_stem()
+            .unwrap_or(shell.program.as_os_str())
+            .to_string_lossy()
+            .into_owned(),
+    }
 }
 
 pub(crate) fn resolve_shell_with(

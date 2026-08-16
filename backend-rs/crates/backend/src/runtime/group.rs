@@ -5341,6 +5341,12 @@ async fn build_invocation_context(
     } else {
         None
     };
+    // The shell is resolved for every invocation, not only when the shell tool
+    // is enabled: the runtime-environment section of the system prompt names the
+    // interpreter regardless, and it must name the one that would actually run.
+    let shell_preference = crate::api::system_settings::shell_preference(pool, &agent.owner_id)
+        .await
+        .unwrap_or_default();
     let executor = ToolExecutor::new_with_mounts(
         workspaces.primary.clone(),
         workspaces.mounts(),
@@ -5349,6 +5355,7 @@ async fn build_invocation_context(
     .map_err(|err| anyhow::anyhow!(err.model_safe_message()))?
     .with_web_search(web_search)
     .with_media_generation(media_generation)
+    .with_shell_preference(shell_preference)
     .with_mcp(services.mcp.clone(), mcp);
 
     // Only the built-in Assistant gets a context, so the app-control tools stay
@@ -5389,7 +5396,7 @@ async fn build_invocation_context(
 
     let mut tools = enabled_tools
         .iter()
-        .flat_map(|name| tool_definitions_for(name))
+        .flat_map(|name| tool_definitions_for(name, executor.shell().dialect))
         .collect::<Vec<_>>();
     tools.extend(
         executor
@@ -5697,11 +5704,12 @@ async fn build_agent_system_prompt(
 
 /// Describe the host that executes provider-native tools for this turn.
 ///
-/// The shell line names the resolved interpreter and its dialect rather than a
-/// guess from `cfg!(windows)`. A prompt that claimed `cmd.exe` while a tool
-/// called `Bash` ran PowerShell gave the model two wrong answers at once.
+/// The shell line names the interpreter this invocation resolved — the account's
+/// preference included — rather than a guess from `cfg!(windows)`. A prompt that
+/// claimed `cmd.exe` while a tool called `Bash` ran PowerShell gave the model two
+/// wrong answers at once.
 fn render_runtime_environment(executor: &ToolExecutor) -> String {
-    let shell = crate::tools::process_shell();
+    let shell = executor.shell();
     let cwd = executor
         .workspace_root()
         .map(|path| path.to_string_lossy().into_owned())
@@ -6165,14 +6173,14 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
 /// Provider-facing definitions for one configured tool name.
 ///
 /// Every name maps to exactly one definition except the shell: enabling `bash`
-/// yields the resolved host shell under its own dialect's name, plus the three
-/// job tools that make a long-running command usable. Configuration still
-/// stores `Bash`, so no agent has to be migrated for the host to run PowerShell.
-fn tool_definitions_for(name: &str) -> Vec<ToolDefinition> {
+/// yields the interpreter this invocation resolved under its own dialect's name,
+/// plus the three job tools that make a long-running command usable.
+/// Configuration still stores `Bash`, so no agent has to be migrated for the
+/// host to run PowerShell — or for an account to switch itself to Git Bash.
+fn tool_definitions_for(name: &str, dialect: crate::tools::ShellDialect) -> Vec<ToolDefinition> {
     if name != "Bash" {
         return tool_definition(name).into_iter().collect();
     }
-    let dialect = crate::tools::process_shell().dialect;
     ["ShellOutput", "ShellKill", "ShellJobs"]
         .into_iter()
         .filter_map(tool_definition)
@@ -7136,12 +7144,12 @@ mod tests {
     }
 
     #[test]
-    fn runtime_environment_section_matches_host() {
+    fn runtime_environment_section_matches_the_executors_shell() {
         let root = tempfile::tempdir().unwrap();
         let executor = ToolExecutor::new(Some(root.path().to_path_buf())).unwrap();
 
         let section = render_runtime_environment(&executor);
-        let shell = crate::tools::process_shell();
+        let shell = executor.shell();
 
         assert!(section.contains(&format!("- operating_system: {}", std::env::consts::OS)));
         assert!(section.contains(&format!("- architecture: {}", std::env::consts::ARCH)));
@@ -7163,12 +7171,42 @@ mod tests {
     }
 
     #[test]
-    fn enabling_bash_advertises_the_host_shell_and_its_job_tools() {
-        let names: Vec<String> = tool_definitions_for("Bash")
+    fn an_account_shell_preference_reaches_the_prompt_and_the_tool_name() {
+        let root = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(Some(root.path().to_path_buf()))
+            .unwrap()
+            .with_shell_preference(crate::tools::ShellPreference::Cmd);
+        let shell = executor.shell();
+
+        // Only a Windows host has `cmd.exe` to honour the preference with, so
+        // the assertion is the invariant that holds on either platform: what the
+        // prompt says, what the tool is called, and what will parse the command
+        // are all the one resolved shell.
+        let section = render_runtime_environment(&executor);
+        assert!(
+            section.contains(&format!("- shell_tool: {}", shell.dialect.tool_name())),
+            "{section}"
+        );
+        let names: Vec<String> = tool_definitions_for("Bash", shell.dialect)
             .into_iter()
             .map(|tool| tool.name)
             .collect();
+        assert!(
+            names.contains(&shell.dialect.tool_name().to_string()),
+            "{names:?}"
+        );
+        if cfg!(windows) {
+            assert_eq!(shell.dialect, crate::tools::ShellDialect::Cmd);
+        }
+    }
+
+    #[test]
+    fn enabling_bash_advertises_the_host_shell_and_its_job_tools() {
         let dialect = crate::tools::process_shell().dialect;
+        let names: Vec<String> = tool_definitions_for("Bash", dialect)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
 
         assert!(
             names.contains(&dialect.tool_name().to_string()),
@@ -7179,8 +7217,8 @@ mod tests {
         }
 
         // Every other configured name still maps to exactly one definition.
-        assert_eq!(tool_definitions_for("Read").len(), 1);
-        assert!(tool_definitions_for("NotATool").is_empty());
+        assert_eq!(tool_definitions_for("Read", dialect).len(), 1);
+        assert!(tool_definitions_for("NotATool", dialect).is_empty());
     }
 
     #[test]

@@ -9,6 +9,8 @@ use super::protocol::{
 };
 use super::shell::{resolve_default_shell, validate_launch_directory, ShellSpec};
 
+use ag_swarmer_backend::tools::ShellPreference;
+
 pub trait EventSink: Send + Sync {
     fn send(&self, event: TerminalEvent) -> Result<(), TerminalCommandError>;
 }
@@ -162,7 +164,15 @@ impl TerminalManager {
         validate_dimensions(request.cols, request.rows)?;
 
         let launch_directory = validate_launch_directory(Path::new(&request.cwd))?;
-        let shell = resolve_default_shell()?;
+        // An unknown preference reads as `auto` rather than failing the tab: a
+        // settings value this build does not know is not a reason to leave the
+        // user without a terminal.
+        let preference = request
+            .shell
+            .as_deref()
+            .and_then(ShellPreference::parse)
+            .unwrap_or_default();
+        let shell = resolve_default_shell(preference)?;
         let canonical_cwd = launch_directory.to_string_lossy().into_owned();
         let spawn_request = CreateTerminalRequest {
             cwd: canonical_cwd.clone(),
@@ -767,6 +777,7 @@ mod tests {
                 .into_owned(),
             cols: 80,
             rows: 24,
+            shell: None,
         }
     }
 

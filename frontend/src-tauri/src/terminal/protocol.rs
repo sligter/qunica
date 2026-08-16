@@ -7,6 +7,12 @@ pub struct CreateTerminalRequest {
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
+    /// The account's shell preference (`auto`, `powershell`, `bash`, `cmd`).
+    ///
+    /// Absent on a request from an older client, and from any caller that has
+    /// not loaded system settings yet, which both read as `auto`.
+    #[serde(default)]
+    pub shell: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,10 +71,22 @@ mod tests {
             "conversationId": "conversation-1",
             "cwd": "/workspace",
             "cols": 120,
-            "rows": 40
+            "rows": 40,
+            "shell": "bash"
         }))
         .expect("request should deserialize");
         assert_eq!(request.conversation_id, "conversation-1");
+        assert_eq!(request.shell.as_deref(), Some("bash"));
+
+        // A client that predates the shell preference still creates terminals.
+        let without_shell: CreateTerminalRequest = serde_json::from_value(json!({
+            "conversationId": "conversation-1",
+            "cwd": "/workspace",
+            "cols": 120,
+            "rows": 40
+        }))
+        .expect("request without a shell should deserialize");
+        assert_eq!(without_shell.shell, None);
 
         let descriptor = TerminalDescriptor {
             session_id: "session-1".to_string(),

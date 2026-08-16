@@ -278,7 +278,10 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
           ]
 
   return (
-    <TerminalRuntimeProvider transport={terminalTransport}>
+    <TerminalRuntimeProvider
+      transport={terminalTransport}
+      shell={systemSettings.data?.shell_preference}
+    >
       <div className="flex h-full min-h-0 overflow-hidden bg-background" onContextMenu={openMenu}>
         <AppSidebar />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -301,7 +304,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
             ref={menuRef}
             role="menu"
             aria-label={menu.kind === 'field' ? t('textMenu.label') : t('textMenu.contentLabel')}
-            className="fixed z-[100] w-56 rounded-xl border border-border/70 bg-popover p-1.5 text-popover-foreground shadow-xl"
+            className="fixed z-[100] w-56 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg"
             style={{ left: menu.x, top: menu.y }}
           >
             {menuItems.map((item) => (

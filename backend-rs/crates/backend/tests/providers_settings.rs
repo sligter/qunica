@@ -1181,6 +1181,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(defaults["assistant_enabled"], true);
     assert_eq!(defaults["assistant_auto_approve"], false);
     assert_eq!(defaults["group_workspace_root"], Value::Null);
+    assert_eq!(defaults["shell_preference"], "auto");
     assert_eq!(defaults["web_search_provider"], "tavily");
     assert_eq!(defaults["tavily_api_key_configured"], false);
     assert_eq!(
@@ -1224,6 +1225,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
                 "assistant_enabled": false,
                 "assistant_auto_approve": true,
                 "group_workspace_root": raw_root,
+                "shell_preference": "Git Bash",
                 "web_search_provider": "tavily",
                 "tavily_api_key": "tvly-secret-value",
                 "tavily_search_url": "https://search.example.test/query",
@@ -1250,6 +1252,9 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(updated["group_workspace_root"], expected_root);
     assert_eq!(updated["tavily_api_key_configured"], true);
     assert!(!updated.to_string().contains("tvly-secret-value"));
+    // A name a person might type is stored in its canonical form, so the
+    // resolver never has to guess what an account meant.
+    assert_eq!(updated["shell_preference"], "bash");
     assert_eq!(
         updated["tavily_search_url"],
         "https://search.example.test/query"
@@ -1271,6 +1276,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(fetched["assistant_auto_approve"], true);
     assert_eq!(fetched["tavily_api_key_configured"], true);
     assert_eq!(fetched["tavily_search_depth"], "advanced");
+    assert_eq!(fetched["shell_preference"], "bash");
     assert!(!fetched.to_string().contains("tvly-secret-value"));
     assert_eq!(fetched["media_api_key_configured"], true);
     assert!(!fetched.to_string().contains("media-secret-value"));
@@ -1292,6 +1298,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
                 "tavily_search_depth": Value::Null,
                 "tavily_include_answer": Value::Null,
                 "tavily_include_raw_content": Value::Null,
+                "shell_preference": Value::Null,
                 "media_base_url": Value::Null,
                 "media_api_key": Value::Null,
                 "image_generation_model": Value::Null,
@@ -1313,6 +1320,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(reset["tavily_search_url"], "https://api.tavily.com/search");
     assert_eq!(reset["tavily_max_results"], 5);
     assert_eq!(reset["tavily_search_depth"], "basic");
+    assert_eq!(reset["shell_preference"], "auto");
     assert_eq!(reset["tavily_include_answer"], true);
     assert_eq!(reset["tavily_include_raw_content"], false);
     assert_eq!(reset["media_base_url"], "https://api.openai.com");
@@ -1428,6 +1436,7 @@ async fn providers_settings_system_settings_validation_rejects_invalid_values() 
         json!({"appearance": "sepia"}),
         json!({"web_search_provider": "other"}),
         json!({"tavily_search_depth": "deep"}),
+        json!({"shell_preference": "fish"}),
         json!({"tavily_max_results": 0}),
         json!({"tavily_max_results": 21}),
         json!({"tavily_search_url": "ftp://example.test/search"}),

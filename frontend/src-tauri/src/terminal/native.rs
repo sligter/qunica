@@ -1012,6 +1012,7 @@ mod tests {
             CreateTerminalRequest, TerminalCommandError, TerminalEvent,
         };
         use crate::terminal::shell::resolve_default_shell;
+        use ag_swarmer_backend::tools::ShellPreference;
 
         #[derive(Default)]
         struct RecordingState {
@@ -1092,13 +1093,15 @@ mod tests {
             let temp = std::env::temp_dir()
                 .join(format!("ag-swarmer-terminal-smoke-{}", std::process::id()));
             std::fs::create_dir_all(&temp).expect("create smoke-test directory");
-            let shell = resolve_default_shell().expect("PowerShell should resolve");
+            let shell = resolve_default_shell(ShellPreference::Auto)
+                .expect("PowerShell should resolve");
             assert_eq!(shell.display_name, "PowerShell");
             let request = CreateTerminalRequest {
                 conversation_id: "smoke-test".to_string(),
                 cwd: temp.to_string_lossy().into_owned(),
                 cols: 80,
                 rows: 24,
+                shell: None,
             };
             let sink = Arc::new(RecordingSink::default());
             let handle = NativePtySpawner

@@ -29,7 +29,7 @@ pub use approval::{ApprovalDecision, ApprovalGrants, ApprovalRequest};
 pub use executor::{McpMount, ToolExecutor};
 pub(crate) use media::MediaGenerationConfig;
 pub use path_safety::resolve_workspace_path;
-pub use shell::resolve::{process_shell, ShellDialect};
+pub use shell::resolve::{process_shell, shell_for, ResolvedShell, ShellDialect, ShellPreference};
 pub use todo::{TodoItem, TodoStatus};
 pub(crate) use web_search::TavilySearchConfig;
 pub use workspace::{

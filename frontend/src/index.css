@@ -15,6 +15,11 @@
   --color-accent-foreground: hsl(30 10% 18%);
   --color-card: hsl(45 30% 98.5%);
   --color-card-hover: hsl(45 25% 94%);
+  /* Floating surfaces — menus, dropdowns. One step above --color-card so a
+     popover opened over a card still reads as detached from it. Must stay
+     fully opaque: these overlay live content. */
+  --color-popover: hsl(45 30% 99.5%);
+  --color-popover-foreground: hsl(30 10% 15%);
   --color-border: hsl(40 18% 86%);
   --color-input: hsl(40 18% 86%);
   --color-ring: hsl(15 55% 50%);
@@ -87,6 +92,10 @@
     --color-accent-foreground: hsl(40 20% 92%);
     --color-card: hsl(30 8% 15%);
     --color-card-hover: hsl(30 8% 19%);
+    /* Above --color-card (15%), below --color-accent (22%) so the hover state
+       of a menu item still separates from the menu's own surface. */
+    --color-popover: hsl(30 8% 18%);
+    --color-popover-foreground: hsl(40 20% 92%);
     --color-border: hsl(30 8% 24%);
     --color-input: hsl(30 8% 24%);
     --color-ring: hsl(17 60% 58%);

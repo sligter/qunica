@@ -662,6 +662,8 @@ export interface GroupThread {
 export type WebSearchProvider = 'tavily'
 export type TavilySearchDepth = 'basic' | 'advanced'
 export type Appearance = 'light' | 'dark' | 'system'
+/** Which interpreter the app starts for shell tools and integrated terminals. */
+export type ShellPreference = 'auto' | 'powershell' | 'bash' | 'cmd'
 export type Language = 'zh-CN' | 'en-US'
 
 export interface SystemSettingsRead {
@@ -672,6 +674,7 @@ export interface SystemSettingsRead {
   assistant_enabled: boolean
   assistant_auto_approve: boolean
   group_workspace_root: string | null
+  shell_preference: ShellPreference
   web_search_provider: WebSearchProvider
   tavily_api_key_configured: boolean
   tavily_search_url: string
@@ -697,6 +700,7 @@ export interface SystemSettingsUpdate {
   assistant_enabled?: boolean | null
   assistant_auto_approve?: boolean | null
   group_workspace_root?: string | null
+  shell_preference?: ShellPreference | null
   web_search_provider?: WebSearchProvider | null
   tavily_api_key?: string | null
   tavily_search_url?: string | null

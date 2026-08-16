@@ -9,7 +9,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
-use crate::tools::{MediaGenerationConfig, TavilySearchConfig};
+use crate::tools::{MediaGenerationConfig, ShellPreference, TavilySearchConfig};
 
 const DEFAULT_WEB_SEARCH_PROVIDER: &str = "tavily";
 const DEFAULT_TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
@@ -24,7 +24,7 @@ const DEFAULT_APPEARANCE: &str = "system";
 const DEFAULT_LANGUAGE: &str = "en-US";
 
 const SETTINGS_COLUMNS: &str =
-    "id, owner_id, appearance, language, assistant_enabled, assistant_auto_approve, group_workspace_root, web_search_provider, \
+    "id, owner_id, appearance, language, assistant_enabled, assistant_auto_approve, group_workspace_root, shell_preference, web_search_provider, \
      tavily_api_key, tavily_search_url, tavily_max_results, tavily_search_depth, \
      tavily_include_answer, tavily_include_raw_content, media_base_url, media_api_key, \
      image_generation_model, image_generation_endpoint, video_generation_model, \
@@ -42,6 +42,8 @@ pub struct UpdateRequest {
     assistant_auto_approve: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     group_workspace_root: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    shell_preference: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     web_search_provider: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -83,6 +85,7 @@ pub struct SettingsResponse {
     assistant_enabled: bool,
     assistant_auto_approve: bool,
     group_workspace_root: Option<String>,
+    shell_preference: String,
     web_search_provider: String,
     tavily_api_key_configured: bool,
     tavily_search_url: String,
@@ -111,6 +114,7 @@ struct SettingsRow {
     assistant_enabled: i64,
     assistant_auto_approve: i64,
     group_workspace_root: Option<String>,
+    shell_preference: String,
     web_search_provider: String,
     tavily_api_key: Option<String>,
     tavily_search_url: String,
@@ -140,6 +144,7 @@ impl From<SettingsRow> for SettingsResponse {
             assistant_enabled: row.assistant_enabled != 0,
             assistant_auto_approve: row.assistant_auto_approve != 0,
             group_workspace_root: row.group_workspace_root,
+            shell_preference: row.shell_preference,
             web_search_provider: row.web_search_provider,
             tavily_api_key_configured: row
                 .tavily_api_key
@@ -190,6 +195,19 @@ pub(crate) async fn tavily_search_config(
         include_answer: row.tavily_include_answer != 0,
         include_raw_content: row.tavily_include_raw_content != 0,
     }))
+}
+
+/// The interpreter this account wants its shells started with.
+///
+/// A row that predates the setting, or holds a value this build no longer
+/// recognises, reads as [`ShellPreference::Auto`]: the shell tool keeps working
+/// under the host's own probe order rather than failing over a settings value.
+pub(crate) async fn shell_preference(
+    pool: &SqlitePool,
+    owner_id: &str,
+) -> Result<ShellPreference, ApiError> {
+    let row = get_or_create(pool, owner_id).await?;
+    Ok(ShellPreference::parse(&row.shell_preference).unwrap_or_default())
 }
 
 pub(crate) async fn media_generation_config(
@@ -254,6 +272,10 @@ pub async fn update(
     let group_workspace_root = match body.group_workspace_root {
         Some(ref value) => normalize_root(value.as_deref())?,
         None => existing.group_workspace_root.clone(),
+    };
+    let shell_preference = match body.shell_preference {
+        Some(ref value) => normalize_shell_preference(value.as_deref())?,
+        None => existing.shell_preference.clone(),
     };
     let web_search_provider = match body.web_search_provider {
         Some(ref value) => normalize_provider(value.as_deref())?,
@@ -341,7 +363,7 @@ pub async fn update(
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE system_settings SET \
-         appearance = ?, language = ?, assistant_enabled = ?, assistant_auto_approve = ?, group_workspace_root = ?, web_search_provider = ?, tavily_api_key = ?, \
+         appearance = ?, language = ?, assistant_enabled = ?, assistant_auto_approve = ?, group_workspace_root = ?, shell_preference = ?, web_search_provider = ?, tavily_api_key = ?, \
          tavily_search_url = ?, tavily_max_results = ?, tavily_search_depth = ?, \
          tavily_include_answer = ?, tavily_include_raw_content = ?, media_base_url = ?, media_api_key = ?, \
          image_generation_model = ?, image_generation_endpoint = ?, video_generation_model = ?, \
@@ -353,6 +375,7 @@ pub async fn update(
     .bind(if assistant_enabled { 1_i64 } else { 0_i64 })
     .bind(if assistant_auto_approve { 1_i64 } else { 0_i64 })
     .bind(&group_workspace_root)
+    .bind(&shell_preference)
     .bind(&web_search_provider)
     .bind(&tavily_api_key)
     .bind(&tavily_search_url)
@@ -442,6 +465,21 @@ fn normalize_root(raw: Option<&str>) -> Result<Option<String>, ApiError> {
         ));
     }
     Ok(Some(canonical.to_string_lossy().into_owned()))
+}
+
+/// Accept the interpreter names the settings UI offers, plus the aliases a
+/// person might type for the same shell, and store the canonical value.
+fn normalize_shell_preference(raw: Option<&str>) -> Result<String, ApiError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(ShellPreference::default().as_str().to_string());
+    };
+    ShellPreference::parse(value)
+        .map(|preference| preference.as_str().to_string())
+        .ok_or_else(|| {
+            ApiError::invalid_input(
+                "shell_preference must be 'auto', 'powershell', 'bash', or 'cmd'",
+            )
+        })
 }
 
 fn normalize_appearance(raw: Option<&str>) -> Result<String, ApiError> {

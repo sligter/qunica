@@ -26,6 +26,7 @@ import {
   type TerminalTransport,
 } from '@/terminal/transport'
 import type { TerminalConversationTarget, TerminalEvent } from '@/terminal/types'
+import type { ShellPreference } from '@/types/api'
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
@@ -88,6 +89,11 @@ interface Registration {
 
 export interface TerminalRuntimeProviderProps extends PropsWithChildren {
   transport?: TerminalTransport
+  /**
+   * The account's shell preference, applied to sessions started from now on.
+   * A running tab keeps the shell it was started with until it is restarted.
+   */
+  shell?: ShellPreference
 }
 
 const TerminalRuntimeContext = createContext<TerminalRuntimeContextValue | null>(null)
@@ -191,6 +197,7 @@ function firstFailure(results: PromiseSettledResult<void>[]): unknown | undefine
 export function TerminalRuntimeProvider({
   children,
   transport: injectedTransport,
+  shell,
 }: TerminalRuntimeProviderProps) {
   const transportRef = useRef<TerminalTransport | null>(null)
   if (transportRef.current === null) {
@@ -201,6 +208,10 @@ export function TerminalRuntimeProvider({
     )
   }
   const transport = transportRef.current
+  // Mirrored into a ref so a settings change reaches the next session without
+  // rebuilding the start/restart callbacks the running tabs are bound to.
+  const shellRef = useRef(shell)
+  shellRef.current = shell
 
   const initialMetadataRef = useRef<TerminalMetadataStore | null>(null)
   if (initialMetadataRef.current === null) {
@@ -395,6 +406,7 @@ export function TerminalRuntimeProvider({
             cwd: requestedCwd,
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
+            shell: shellRef.current,
           },
           onEvent,
         )

@@ -1,3 +1,5 @@
+import type { ShellPreference } from '@/types/api'
+
 export type TerminalConversationTarget =
   | { conversationId: string; availability: 'ready'; cwd: string }
   | { conversationId: string; availability: 'loading' }
@@ -11,6 +13,8 @@ export interface CreateTerminalRequest {
   cwd: string
   cols: number
   rows: number
+  /** Which interpreter to start; omitted means the host default. */
+  shell?: ShellPreference
 }
 
 export interface TerminalDescriptor {

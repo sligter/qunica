@@ -19,6 +19,7 @@ const settings: SystemSettingsRead = {
   assistant_enabled: true,
   assistant_auto_approve: false,
   group_workspace_root: null,
+  shell_preference: 'auto',
   web_search_provider: 'tavily',
   tavily_api_key_configured: false,
   tavily_search_url: 'https://api.tavily.com/search',
@@ -132,5 +133,36 @@ describe('SystemSettingsPage preferences', () => {
     expect(patchInit.method).toBe('PATCH')
     expect(JSON.parse(String(patchInit.body))).toEqual({ assistant_enabled: false })
     await waitFor(() => expect(toggle).not.toBeChecked())
+  })
+
+  it('saves the integrated terminal shell and rolls back after a failed save', async () => {
+    useAuthStore.setState({ token: 'token' })
+    let rejectPatch!: (reason?: unknown) => void
+    const patchResponse = new Promise<Response>((_resolve, reject) => {
+      rejectPatch = reject
+    })
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(settings))
+      .mockReturnValueOnce(patchResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+
+    await renderSettingsPage()
+
+    const select = await screen.findByLabelText('Integrated terminal shell')
+    await waitFor(() => expect(select).toBeEnabled())
+    expect(select).toHaveValue('auto')
+    await user.selectOptions(select, 'bash')
+
+    const [, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(patchInit.method).toBe('PATCH')
+    expect(JSON.parse(String(patchInit.body))).toEqual({ shell_preference: 'bash' })
+
+    // A failed save must not leave the UI claiming a shell the backend never
+    // stored: the next terminal would start under the old one.
+    rejectPatch(new Error('offline'))
+    await waitFor(() => expect(select).toHaveValue('auto'))
+    expect(screen.getByRole('alert')).toBeVisible()
   })
 })

@@ -36,7 +36,7 @@ use crate::process::spawn_process_tree;
 use self::{
     decode::decode_output,
     policy::CommandVerdict,
-    resolve::{process_shell, ResolvedShell, ShellDialect},
+    resolve::{ResolvedShell, ShellDialect},
 };
 
 use super::{controlled, ApprovalGrants, ApprovalRequest, ToolError, ToolResult};
@@ -59,12 +59,17 @@ pub const MAX_COMMAND_CHARS: usize = 8_000;
 /// Workspace-relative directory holding spilled shell output.
 pub const SPILL_DIR: &str = ".ag-swarmer/shell";
 
-/// Run `command` in `root`.
+/// Run `command` in `root` under `shell`.
 ///
 /// With `run_in_background`, the command is registered as a [`jobs::Job`] and the
 /// call returns its id immediately; otherwise it runs to completion or to
 /// `timeout_seconds`, whichever comes first. A timeout terminates the whole
 /// process tree, not just the shell, and still reports whatever was produced.
+///
+/// `shell` arrives from the caller rather than being read from a process-wide
+/// value here: the account's shell preference decides the tool name and dialect
+/// guidance the model was given for this turn, and the interpreter that parses
+/// the command has to be the same one.
 ///
 /// `grants` holds the policy rules the user has already approved for this
 /// thread. A command the policy wants a decision on returns
@@ -72,6 +77,7 @@ pub const SPILL_DIR: &str = ".ag-swarmer/shell";
 /// not only in the runtime, so a caller that forgets to supply grants fails
 /// closed instead of silently running unapproved work.
 pub async fn run_shell(
+    shell: &ResolvedShell,
     root: &Path,
     command: &str,
     timeout_seconds: u64,
@@ -90,7 +96,6 @@ pub async fn run_shell(
         )));
     }
 
-    let shell = process_shell();
     match policy::review(command, shell.dialect, root, &|rule| grants.contains(rule)) {
         CommandVerdict::Allow => {}
         CommandVerdict::Deny { reason } => return Err(ToolError::invalid(reason)),
@@ -493,6 +498,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(run_shell(
+                resolve::process_shell(),
                 root.path(),
                 &command,
                 5,

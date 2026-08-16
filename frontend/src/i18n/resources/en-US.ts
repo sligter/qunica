@@ -603,6 +603,18 @@ export const enUS = {
       enabled: 'Enable assistant',
       enabledDescription: 'Show the assistant launcher in the bottom-right corner. Saved instantly.',
     },
+    shell: {
+      title: 'Shell',
+      integratedShell: 'Integrated terminal shell',
+      description:
+        "Applies to shells started from now on. Agents' shell tool and new terminal tabs use this interpreter; Auto prefers PowerShell on Windows and falls back to cmd.exe, and a choice that is not installed falls back the same way.",
+      options: {
+        auto: 'Auto',
+        powershell: 'PowerShell',
+        bash: 'Git Bash',
+        cmd: 'CMD',
+      },
+    },
     workspaceRoot: {
       title: 'Group workspace root',
       directory: 'Local directory',

@@ -528,6 +528,18 @@ export const zhCN: TranslationShape<typeof enUS> = {
       enabled: '启用助手',
       enabledDescription: '在应用右下角显示助手入口。更改会立即保存。',
     },
+    shell: {
+      title: 'Shell',
+      integratedShell: '集成终端 Shell',
+      description:
+        '对此后启动的 Shell 生效。Agent 的 Shell 工具与新建终端标签页都使用此解释器；自动选择在 Windows 上优先 PowerShell，找不到时回退 cmd.exe，所选解释器未安装时同样回退。',
+      options: {
+        auto: '自动选择',
+        powershell: 'PowerShell',
+        bash: 'Git Bash',
+        cmd: 'CMD',
+      },
+    },
     workspaceRoot: {
       title: '群组工作区根目录',
       directory: '本地目录',

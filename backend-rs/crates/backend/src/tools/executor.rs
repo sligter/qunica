@@ -19,9 +19,14 @@ use crate::mcp::{is_mcp_tool_name, McpManager, McpServerConfig, McpToolBinding};
 
 use super::{
     app_control::{read as app_read, write as app_write, AppControlContext},
-    controlled, http, media, shell, web_search, ApprovalGrants, FileEdit, MediaGenerationConfig,
-    MountedSkill, TavilySearchConfig, ToolError, ToolResult, ToolStatus, WorkspaceMount,
-    WorkspaceTools, MAX_GLOB_RESULTS, MAX_GREP_RESULTS, MAX_READ_LINES,
+    controlled, http, media,
+    shell::{
+        self,
+        resolve::{process_shell, shell_for, ResolvedShell, ShellPreference},
+    },
+    web_search, ApprovalGrants, FileEdit, MediaGenerationConfig, MountedSkill, TavilySearchConfig,
+    ToolError, ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS,
+    MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
 /// The MCP tools mounted into an executor, with the servers needed to call them.
@@ -129,6 +134,9 @@ pub struct ToolExecutor {
     /// Policy rules the user has approved for this thread. Empty by default, so
     /// a caller that never wires approvals through still gets the gate.
     approvals: ApprovalGrants,
+    /// The interpreter shell commands run under. Defaults to whatever the host
+    /// offers, and follows the account's preference once one is bound.
+    shell: &'static ResolvedShell,
 }
 
 // `McpManager` holds live connections and so cannot derive `Debug`; the rest of
@@ -147,6 +155,7 @@ impl std::fmt::Debug for ToolExecutor {
             .field("mcp_connected", &self.mcp_manager.is_some())
             .field("app_control", &self.app_control.is_some())
             .field("approvals", &self.approvals)
+            .field("shell", &self.shell.program)
             .finish()
     }
 }
@@ -188,6 +197,7 @@ impl ToolExecutor {
             mcp_manager: None,
             app_control: None,
             approvals: ApprovalGrants::default(),
+            shell: process_shell(),
         })
     }
 
@@ -207,6 +217,7 @@ impl ToolExecutor {
             mcp_manager: None,
             app_control: None,
             approvals: ApprovalGrants::default(),
+            shell: process_shell(),
         }
     }
 
@@ -233,6 +244,23 @@ impl ToolExecutor {
     /// The approvals this executor runs with.
     pub fn approvals(&self) -> &ApprovalGrants {
         &self.approvals
+    }
+
+    /// Run shell commands under the interpreter this account asked for.
+    ///
+    /// Binding the resolved shell to the invocation — rather than reading a
+    /// process-wide value at the point of each call — is what keeps the tool
+    /// name offered to the model, the dialect its guidance teaches, and the
+    /// interpreter that finally parses the command from drifting apart within a
+    /// turn: all three read the same [`ResolvedShell`].
+    pub fn with_shell_preference(mut self, preference: ShellPreference) -> Self {
+        self.shell = shell_for(preference);
+        self
+    }
+
+    /// The interpreter this executor runs shell commands under.
+    pub fn shell(&self) -> &'static ResolvedShell {
+        self.shell
     }
 
     /// Grant the app-control tools, scoped to one owner and conversation.
@@ -467,6 +495,7 @@ impl ToolExecutor {
                 );
                 let run_in_background = arg_bool(&args, "run_in_background", false);
                 shell::run_shell(
+                    self.shell,
                     workspace.root(),
                     &command,
                     timeout_seconds,

@@ -19,6 +19,7 @@ const settings: SystemSettingsRead = {
   assistant_enabled: true,
   assistant_auto_approve: false,
   group_workspace_root: null,
+  shell_preference: 'auto',
   web_search_provider: 'tavily',
   tavily_api_key_configured: false,
   tavily_search_url: 'https://api.tavily.com/search',

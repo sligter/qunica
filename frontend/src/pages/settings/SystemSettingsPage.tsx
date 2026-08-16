@@ -15,6 +15,7 @@ import { writeLanguageMirror } from '@/i18n'
 import type {
   Appearance,
   Language,
+  ShellPreference,
   SystemSettingsUpdate,
   TavilySearchDepth,
 } from '@/types/api'
@@ -29,6 +30,7 @@ import {
 const PICKER_SCOPE = 'group-workspace-root'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
 const LANGUAGE_OPTIONS: Language[] = ['zh-CN', 'en-US']
+const SHELL_OPTIONS: ShellPreference[] = ['auto', 'powershell', 'bash', 'cmd']
 
 export function SystemSettingsPage() {
   const { t, i18n } = useTranslation('settings')
@@ -40,6 +42,7 @@ export function SystemSettingsPage() {
   const [language, setLanguage] = useState<Language>('en-US')
   const [assistantEnabled, setAssistantEnabled] = useState(true)
   const [root, setRoot] = useState('')
+  const [shellPreference, setShellPreference] = useState<ShellPreference>('auto')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [tavilySearchUrl, setTavilySearchUrl] = useState('')
   const [tavilyMaxResults, setTavilyMaxResults] = useState(5)
@@ -52,6 +55,7 @@ export function SystemSettingsPage() {
   const [appearanceError, setAppearanceError] = useState<string | null>(null)
   const [languageError, setLanguageError] = useState<string | null>(null)
   const [assistantError, setAssistantError] = useState<string | null>(null)
+  const [shellError, setShellError] = useState<string | null>(null)
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
@@ -60,6 +64,7 @@ export function SystemSettingsPage() {
   const serverLanguage = settings.data?.language
   const serverAssistantEnabled = settings.data?.assistant_enabled
   const serverRoot = settings.data?.group_workspace_root ?? ''
+  const serverShellPreference = settings.data?.shell_preference
   const serverTavilyUrl = settings.data?.tavily_search_url ?? 'https://api.tavily.com/search'
   const serverTavilyMaxResults = settings.data?.tavily_max_results ?? 5
   const serverTavilyDepth = settings.data?.tavily_search_depth ?? 'basic'
@@ -78,6 +83,9 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (loaded) setRoot(serverRoot)
   }, [loaded, serverRoot])
+  useEffect(() => {
+    if (serverShellPreference !== undefined) setShellPreference(serverShellPreference)
+  }, [serverShellPreference])
   useEffect(() => {
     if (loaded) setTavilySearchUrl(serverTavilyUrl)
   }, [loaded, serverTavilyUrl])
@@ -146,6 +154,20 @@ export function SystemSettingsPage() {
   const onRootChange = (next: string) => {
     setRoot(next)
     saveRememberedPrefix(PICKER_SCOPE, next)
+  }
+
+  const onShellPreferenceChange = async (value: string) => {
+    const next = SHELL_OPTIONS.find((option) => option === value)
+    if (next === undefined || next === shellPreference || update.isPending) return
+    const previous = shellPreference
+    setShellPreference(next)
+    setShellError(null)
+    try {
+      await update.mutateAsync({ shell_preference: next })
+    } catch (err) {
+      setShellPreference(previous)
+      setShellError(errorMessage(err, t('errors.network')))
+    }
   }
 
   const applyPick = (folderName: string, absolutePath?: string) => {
@@ -358,6 +380,33 @@ export function SystemSettingsPage() {
           {assistantError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
               {assistantError}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        <SettingsSection title={t('shell.title')}>
+          <SettingsRow
+            label={t('shell.integratedShell')}
+            description={t('shell.description')}
+            htmlFor="ss-shell-preference"
+          >
+            <select
+              id="ss-shell-preference"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              value={shellPreference}
+              disabled={settings.isLoading || update.isPending}
+              onChange={(event) => void onShellPreferenceChange(event.target.value)}
+            >
+              {SHELL_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {t(`shell.options.${option}`)}
+                </option>
+              ))}
+            </select>
+          </SettingsRow>
+          {shellError ? (
+            <p className="py-2 text-sm text-destructive" role="alert">
+              {shellError}
             </p>
           ) : null}
         </SettingsSection>
