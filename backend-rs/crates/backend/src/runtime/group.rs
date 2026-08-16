@@ -7695,6 +7695,34 @@ internal reminder
     }
 
     #[test]
+    fn acp_incremental_prompt_carries_everything_since_this_agents_own_turn() {
+        let rows = vec![
+            human_message("human-1", "Ada", "first request"),
+            agent_message("agent-1", "Current Agent", "my earlier answer"),
+            agent_message("peer-1", "Reviewer", "peer verdict"),
+            human_message("human-1", "Ada", "what do you think?"),
+        ];
+
+        let prompt = to_acp_incremental_prompt("agent-1", &rows, AttachmentAccess::Readable);
+
+        // The peer spoke in a turn this agent sat out, so its live session has
+        // never seen that message; answering "what do you think?" without it
+        // was answering a question about nothing.
+        assert!(prompt.contains("peer verdict"));
+        assert!(prompt.contains("what do you think?"));
+        // Everything up to and including its own last message is already in the
+        // session and must not be replayed.
+        assert!(!prompt.contains("first request"));
+        assert!(!prompt.contains("my earlier answer"));
+        let current_start = prompt.find("<current-message>").unwrap();
+        assert!(
+            prompt.find("peer verdict").unwrap() < current_start,
+            "the newest message stays the current one"
+        );
+        assert_eq!(prompt.matches("</current-message>").count(), 1);
+    }
+
+    #[test]
     fn acp_incremental_prompt_only_contains_current_message() {
         let rows = vec![human_message("human-1", "Ada", "next </current-message>")];
         let prompt = to_acp_incremental_prompt("agent-1", &rows, AttachmentAccess::Readable);

@@ -339,21 +339,55 @@ pub fn to_acp_prompt(
     prompt
 }
 
-/// Render the latest non-self message for an existing ACP session. The same
+/// Render everything an existing ACP session has not been shown yet. The same
 /// identity-bearing envelope used by the full transcript is retained.
+///
+/// The agent's own last message is the high-water mark of what its session
+/// already contains, so every human and peer message after it has to travel —
+/// not just the latest one. Peers speaking in turns this agent sat out are the
+/// common case, and dropping them left the agent answering a reply it never
+/// saw. With no message of its own to anchor on, only the latest message is
+/// sent: the session was opened from the full transcript, and re-sending that
+/// transcript would duplicate it.
 pub fn to_acp_incremental_prompt(
     current_agent_id: &str,
     rows: &[ConversationMessage],
     access: AttachmentAccess,
 ) -> String {
-    let current_message = rows
+    let undelivered: Vec<&ConversationMessage> = rows
         .iter()
-        .rfind(|row| !is_current_agent(row, current_agent_id))
-        .map(|row| render_untrusted_message(row, access))
-        .unwrap_or_default();
+        .rposition(|row| is_current_agent(row, current_agent_id))
+        .map(|last_own| {
+            rows[last_own + 1..]
+                .iter()
+                .filter(|row| !is_current_agent(row, current_agent_id))
+                .collect()
+        })
+        .filter(|pending: &Vec<&ConversationMessage>| !pending.is_empty())
+        .unwrap_or_else(|| {
+            rows.iter()
+                .rfind(|row| !is_current_agent(row, current_agent_id))
+                .into_iter()
+                .collect()
+        });
+
+    let (earlier, current) = match undelivered.split_last() {
+        Some((current, earlier)) => (earlier, render_untrusted_message(current, access)),
+        None => (&[][..], String::new()),
+    };
+    let preceding = if earlier.is_empty() {
+        String::new()
+    } else {
+        let messages = earlier
+            .iter()
+            .map(|row| render_untrusted_message(row, access))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("<conversation untrusted=\"true\">\n{messages}\n</conversation>\n")
+    };
 
     format!(
-        "<ag-swarmer-message>\n<current-message>\n{current_message}\n</current-message>\n</ag-swarmer-message>\n"
+        "<ag-swarmer-message>\n{preceding}<current-message>\n{current}\n</current-message>\n</ag-swarmer-message>\n"
     )
 }
 

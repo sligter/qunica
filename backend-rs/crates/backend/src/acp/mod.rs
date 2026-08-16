@@ -18,6 +18,7 @@ pub mod config;
 pub mod dsh;
 pub mod process;
 pub mod protocol;
+mod session_store;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
@@ -55,10 +56,11 @@ pub use process::{
     Tail, ACP_AGENT_ENV_FLAG, MAX_TAIL_CHARS,
 };
 use protocol::{
-    AcpConnection, ProtocolError, METHOD_INITIALIZE, METHOD_SESSION_CANCEL, METHOD_SESSION_NEW,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_SET_CONFIG_OPTION, METHOD_SESSION_SET_MODE,
-    METHOD_SESSION_SET_MODEL, PROTOCOL_VERSION,
+    AcpConnection, ProtocolError, METHOD_INITIALIZE, METHOD_SESSION_CANCEL, METHOD_SESSION_LOAD,
+    METHOD_SESSION_NEW, METHOD_SESSION_PROMPT, METHOD_SESSION_SET_CONFIG_OPTION,
+    METHOD_SESSION_SET_MODE, METHOD_SESSION_SET_MODEL, PROTOCOL_VERSION,
 };
+use session_store::AcpSessionStore;
 
 /// How long to wait for a child to exit (cleanly or after a kill) before
 /// abandoning the wait and reporting no exit code.
@@ -303,6 +305,7 @@ pub async fn run_acp_agent_stream(
 
     let task = DriveTask {
         audit,
+        pool,
         run_id: run_id.clone(),
         owner_id: request.owner_id,
         group_id: request.group_id,
@@ -357,6 +360,7 @@ struct TurnOutcome {
 /// All state the background driver task owns.
 struct DriveTask {
     audit: AcpRunAudit,
+    pool: SqlitePool,
     run_id: String,
     owner_id: String,
     group_id: Option<String>,
@@ -381,6 +385,7 @@ struct DriveTask {
 async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
     let DriveTask {
         audit,
+        pool,
         run_id,
         owner_id,
         group_id,
@@ -403,12 +408,22 @@ async fn drive_run(task: DriveTask) -> Result<(), AcpRunJoinError> {
 
     let reuse_key = reusable_session_key(group_id.as_deref(), thread_id.as_deref(), &agent_id);
     let mut outcome = if let Some(key) = reuse_key {
+        let store = AcpSessionStore::new(
+            pool,
+            key.thread_id.clone(),
+            agent_id.clone(),
+            owner_id.clone(),
+            cwd.to_string_lossy().to_string(),
+            config_hash(&config),
+            context_hash.clone(),
+        );
         run_reusable_turn(ReusableTurn {
             key,
             owner_id,
             agent_id: agent_id.clone(),
             config: config.clone(),
             cwd: cwd.clone(),
+            store,
             full_prompt: prompt,
             full_prompt_images: prompt_images,
             full_prompt_has_image_attachments: prompt_has_image_attachments,
@@ -554,6 +569,8 @@ struct ReusableTurn {
     agent_id: String,
     config: AcpRuntimeConfig,
     cwd: PathBuf,
+    /// Where the agent's `sessionId` is kept so a restart can reopen it.
+    store: AcpSessionStore,
     full_prompt: String,
     full_prompt_images: Vec<AcpImage>,
     full_prompt_has_image_attachments: bool,
@@ -612,6 +629,29 @@ pub async fn shutdown_reusable_acp_sessions() {
     }
 }
 
+/// Terminate the reusable in-process ACP session of one conversation agent.
+///
+/// The agent's stored session id is left alone: dropping the live child is
+/// what a restart does, and the next turn is expected to reopen the session
+/// rather than start over.
+pub async fn shutdown_reusable_acp_session(group_id: &str, thread_id: &str, agent_id: &str) {
+    let key = ReusableSessionKey {
+        group_id: group_id.to_string(),
+        thread_id: thread_id.to_string(),
+        agent_id: agent_id.to_string(),
+    };
+    let slot = {
+        let mut sessions = session_manager().sessions.lock().await;
+        sessions.remove(&key)
+    };
+    let Some(slot) = slot else { return };
+    let mut managed = slot.lock().await;
+    if let Some(mut live) = managed.session.take() {
+        let _ = terminate_live_session(&mut live).await;
+    }
+    managed.initialized = false;
+}
+
 struct ManagedAcpSession {
     session: Option<LiveAcpSession>,
     signature: Option<SessionSignature>,
@@ -633,7 +673,7 @@ struct SessionSignature {
     owner_id: String,
     agent_id: String,
     cwd: PathBuf,
-    config_hash: u64,
+    config_hash: String,
     context_hash: Option<String>,
 }
 
@@ -645,16 +685,22 @@ impl SessionSignature {
         config: &AcpRuntimeConfig,
         context_hash: Option<String>,
     ) -> Self {
-        let mut hasher = DefaultHasher::new();
-        config.hash(&mut hasher);
         Self {
             owner_id,
             agent_id,
             cwd,
-            config_hash: hasher.finish(),
+            config_hash: config_hash(config),
             context_hash,
         }
     }
+}
+
+/// A stable digest of the runtime config, so an in-memory session and a stored
+/// session id agree on what "the same configuration" means.
+fn config_hash(config: &AcpRuntimeConfig) -> String {
+    let mut hasher = DefaultHasher::new();
+    config.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
@@ -691,6 +737,14 @@ async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
 
     let was_initialized = managed.initialized;
     let cwd_string = turn.cwd.to_string_lossy().to_string();
+    // Only asked when this process has no live session for the key: that is
+    // the restart case, and the one turn where an agent-side session may be
+    // waiting to be reopened.
+    let resumable = if was_initialized {
+        None
+    } else {
+        turn.store.resumable().await
+    };
     let (prompt, prompt_images, prompt_has_image_attachments) = if was_initialized {
         (
             turn.incremental_prompt
@@ -722,13 +776,22 @@ async fn run_reusable_turn(turn: ReusableTurn) -> TurnOutcome {
             )
             .await
         } else {
-            drive_new_session_prompt(
-                session.conn(),
-                &cwd_string,
-                prompt,
-                prompt_images,
-                prompt_has_image_attachments,
-                &turn.config,
+            drive_first_session_prompt(
+                FirstPrompt {
+                    conn: session.conn(),
+                    cwd: &cwd_string,
+                    resumable,
+                    prompt,
+                    prompt_images,
+                    prompt_has_image_attachments,
+                    incremental_prompt: turn.incremental_prompt.as_deref(),
+                    incremental_prompt_images: turn.incremental_prompt_images.as_slice(),
+                    incremental_prompt_has_image_attachments: turn
+                        .incremental_prompt_has_image_attachments,
+                    config: &turn.config,
+                    store: &turn.store,
+                    events_tx: &turn.events_tx,
+                },
                 &turn.cancelled,
                 &turn.notify,
             )
@@ -982,18 +1045,16 @@ async fn wait_for_cancel(cancelled: &Arc<AtomicBool>, notify: &Arc<Notify>) {
     }
 }
 
-/// Run the ACP request sequence: `initialize` → `session/new` → session
-/// settings → `session/prompt`, returning the prompt outcome. `session/update`
-/// notifications are mapped to events by the connection's reader task while
-/// this awaits the prompt response.
-async fn new_session_prompt(
-    conn: &AcpConnection,
-    cwd: &str,
-    prompt: &str,
-    prompt_images: &[AcpImage],
-    prompt_has_image_attachments: bool,
-    config: &AcpRuntimeConfig,
-) -> Result<PromptOutcome, ProtocolError> {
+/// What the agent said it can do, read from its `initialize` response.
+struct AgentCapabilities {
+    /// Native `image` content blocks are accepted on a prompt.
+    prompt_images: bool,
+    /// A previously issued session id can be reopened with `session/load`.
+    load_session: bool,
+}
+
+/// Perform the ACP `initialize` handshake and read the agent's capabilities.
+async fn initialize_session(conn: &AcpConnection) -> Result<AgentCapabilities, ProtocolError> {
     let initialization = conn
         .request(
             METHOD_INITIALIZE,
@@ -1004,13 +1065,27 @@ async fn new_session_prompt(
             }),
         )
         .await?;
-    let supports_prompt_images = initialization
-        .get("agentCapabilities")
-        .and_then(|capabilities| capabilities.get("promptCapabilities"))
-        .and_then(|capabilities| capabilities.get("image"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let capabilities = initialization.get("agentCapabilities");
+    Ok(AgentCapabilities {
+        prompt_images: capabilities
+            .and_then(|capabilities| capabilities.get("promptCapabilities"))
+            .and_then(|capabilities| capabilities.get("image"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        load_session: capabilities
+            .and_then(|capabilities| capabilities.get("loadSession"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
 
+/// Open a fresh session and apply the configured settings, returning its id.
+async fn open_new_session(
+    conn: &AcpConnection,
+    cwd: &str,
+    config: &AcpRuntimeConfig,
+    store: Option<&AcpSessionStore>,
+) -> Result<String, ProtocolError> {
     let mut new_params = json!({ "cwd": cwd, "mcpServers": [] });
     if let Some(meta) = new_session_meta(config) {
         new_params["_meta"] = meta;
@@ -1021,9 +1096,53 @@ async fn new_session_prompt(
         .and_then(Value::as_str)
         .ok_or_else(|| ProtocolError::Malformed("session/new returned no sessionId".to_string()))?
         .to_string();
+    // Stored the moment it exists rather than at the end of the turn: a crash
+    // part-way through a long turn is exactly the case resuming is for, and the
+    // agent has already begun writing that session's own history.
+    if let Some(store) = store {
+        store.remember(&session_id).await;
+    }
 
     apply_session_settings(conn, &session_id, config).await?;
+    Ok(session_id)
+}
 
+/// Reopen a session the agent still holds, then re-apply the configured
+/// settings to it.
+///
+/// A load replays the entire session back as `session/update` notifications, so
+/// the turn's event sink is detached across the call — streaming it would
+/// replay the whole conversation as if the agent were saying it all again. The
+/// reader routes lines in wire order, so every replayed update is handled
+/// before the response that restores the sink.
+async fn load_stored_session(
+    conn: &AcpConnection,
+    cwd: &str,
+    session_id: &str,
+    config: &AcpRuntimeConfig,
+    events_tx: &mpsc::UnboundedSender<AcpAgentEvent>,
+) -> Result<(), ProtocolError> {
+    let mut load_params = json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": [] });
+    if let Some(meta) = new_session_meta(config) {
+        load_params["_meta"] = meta;
+    }
+    conn.clear_events_tx().await;
+    let loaded = conn.request(METHOD_SESSION_LOAD, load_params).await;
+    conn.set_events_tx(events_tx.clone()).await;
+    loaded?;
+
+    apply_session_settings(conn, session_id, config).await
+}
+
+/// Send one `session/prompt` and return its stop reason.
+async fn send_prompt(
+    conn: &AcpConnection,
+    session_id: &str,
+    prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
+    supports_prompt_images: bool,
+) -> Result<String, ProtocolError> {
     let response = conn
         .request(
             METHOD_SESSION_PROMPT,
@@ -1045,16 +1164,156 @@ async fn new_session_prompt(
             }),
         )
         .await?;
-    let stop_reason = response
+    Ok(response
         .get("stopReason")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_string();
+        .to_string())
+}
+
+/// Run the ACP request sequence: `initialize` → `session/new` → session
+/// settings → `session/prompt`, returning the prompt outcome. `session/update`
+/// notifications are mapped to events by the connection's reader task while
+/// this awaits the prompt response.
+async fn new_session_prompt(
+    conn: &AcpConnection,
+    cwd: &str,
+    prompt: &str,
+    prompt_images: &[AcpImage],
+    prompt_has_image_attachments: bool,
+    config: &AcpRuntimeConfig,
+) -> Result<PromptOutcome, ProtocolError> {
+    let capabilities = initialize_session(conn).await?;
+    let session_id = open_new_session(conn, cwd, config, None).await?;
+    let stop_reason = send_prompt(
+        conn,
+        &session_id,
+        prompt,
+        prompt_images,
+        prompt_has_image_attachments,
+        capabilities.prompt_images,
+    )
+    .await?;
     Ok(PromptOutcome {
         stop_reason,
         session_id: Some(session_id),
-        supports_prompt_images,
+        supports_prompt_images: capabilities.prompt_images,
     })
+}
+
+/// Everything the first prompt of a freshly launched agent process needs.
+struct FirstPrompt<'a> {
+    conn: &'a AcpConnection,
+    cwd: &'a str,
+    /// The session id stored for this conversation, if any.
+    resumable: Option<String>,
+    /// The full-context prompt, used whenever a session is started from scratch.
+    prompt: &'a str,
+    prompt_images: &'a [AcpImage],
+    prompt_has_image_attachments: bool,
+    /// The since-last-turn prompt, used when the stored session is reopened.
+    incremental_prompt: Option<&'a str>,
+    incremental_prompt_images: &'a [AcpImage],
+    incremental_prompt_has_image_attachments: bool,
+    config: &'a AcpRuntimeConfig,
+    store: &'a AcpSessionStore,
+    events_tx: &'a mpsc::UnboundedSender<AcpAgentEvent>,
+}
+
+/// Drive the first prompt of a newly launched agent process, reopening the
+/// conversation's stored session when the agent supports it.
+///
+/// Resuming is what carries an agent's own context across a restart: the host
+/// transcript can replay what was *said*, but not the files the agent read, its
+/// tool results, or its reasoning. When there is nothing to resume — no stored
+/// session, a runtime without `loadSession`, or a load the agent refuses — this
+/// falls back to a new session with the full transcript, which is what every
+/// first turn did before.
+async fn first_session_prompt(request: FirstPrompt<'_>) -> Result<PromptOutcome, ProtocolError> {
+    let capabilities = initialize_session(request.conn).await?;
+
+    if let Some(session_id) = request.resumable.filter(|_| capabilities.load_session) {
+        match load_stored_session(
+            request.conn,
+            request.cwd,
+            &session_id,
+            request.config,
+            request.events_tx,
+        )
+        .await
+        {
+            Ok(()) => {
+                let stop_reason = send_prompt(
+                    request.conn,
+                    &session_id,
+                    request.incremental_prompt.unwrap_or(request.prompt),
+                    request.incremental_prompt_images,
+                    request.incremental_prompt_has_image_attachments,
+                    capabilities.prompt_images,
+                )
+                .await;
+                return match stop_reason {
+                    Ok(stop_reason) => Ok(PromptOutcome {
+                        stop_reason,
+                        session_id: Some(session_id),
+                        supports_prompt_images: capabilities.prompt_images,
+                    }),
+                    Err(err) => {
+                        // The load was accepted but the session cannot be
+                        // prompted. Retrying it next turn would fail the same
+                        // way, so give up on the id rather than wedge the
+                        // conversation.
+                        request.store.forget().await;
+                        Err(err)
+                    }
+                };
+            }
+            Err(err) => {
+                request.store.forget().await;
+                warn_session_not_resumed(request.conn, &err).await;
+            }
+        }
+    }
+
+    let session_id = open_new_session(
+        request.conn,
+        request.cwd,
+        request.config,
+        Some(request.store),
+    )
+    .await?;
+    let stop_reason = send_prompt(
+        request.conn,
+        &session_id,
+        request.prompt,
+        request.prompt_images,
+        request.prompt_has_image_attachments,
+        capabilities.prompt_images,
+    )
+    .await?;
+    Ok(PromptOutcome {
+        stop_reason,
+        session_id: Some(session_id),
+        supports_prompt_images: capabilities.prompt_images,
+    })
+}
+
+/// Tell the user their agent came back without its own memory of the work.
+///
+/// The turn still answers — the transcript was re-sent — but the agent has lost
+/// the files it read and the results it collected, and silently pretending
+/// otherwise is how "why did it forget everything?" happens.
+async fn warn_session_not_resumed(conn: &AcpConnection, err: &ProtocolError) {
+    conn.emit_event(AcpAgentEvent::new(
+        AcpEventKind::Warning,
+        json!({
+            "message": "The previous ACP session could not be reopened, so this agent starts from the conversation transcript without its earlier working context.",
+            "code": "acp_session_resume_failed",
+            "setting": "session",
+            "value": err.to_string(),
+        }),
+    ))
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1079,6 +1338,29 @@ async fn drive_existing_session_prompt(
         supports_prompt_images,
     );
     let session = timeout(Duration::from_secs(config.timeout_seconds), session);
+    tokio::pin!(session);
+    tokio::select! {
+        biased;
+        _ = cancel_fut => Phase::Cancelled,
+        result = &mut session => match result {
+            Ok(inner) => Phase::Done(inner),
+            Err(_elapsed) => Phase::TimedOut,
+        },
+    }
+}
+
+/// Drive [`first_session_prompt`] under the turn timeout and cancellation.
+async fn drive_first_session_prompt(
+    request: FirstPrompt<'_>,
+    cancelled: &Arc<AtomicBool>,
+    notify: &Arc<Notify>,
+) -> Phase {
+    let timeout_seconds = request.config.timeout_seconds;
+    let cancel_fut = wait_for_cancel(cancelled, notify);
+    let session = timeout(
+        Duration::from_secs(timeout_seconds),
+        first_session_prompt(request),
+    );
     tokio::pin!(session);
     tokio::select! {
         biased;
@@ -1130,32 +1412,15 @@ async fn prompt_existing_session(
     prompt_has_image_attachments: bool,
     supports_prompt_images: bool,
 ) -> Result<PromptOutcome, ProtocolError> {
-    let response = conn
-        .request(
-            METHOD_SESSION_PROMPT,
-            json!({
-                "sessionId": session_id,
-                "prompt": acp_prompt_blocks(
-                    &prompt_with_image_evidence_rules(
-                        prompt,
-                        prompt_has_image_attachments,
-                        supports_prompt_images && !prompt_images.is_empty(),
-                    ),
-                    if supports_prompt_images {
-                        prompt_images
-                    } else {
-                        &[]
-                    },
-                ),
-                "messageId": Uuid::new_v4().to_string(),
-            }),
-        )
-        .await?;
-    let stop_reason = response
-        .get("stopReason")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    let stop_reason = send_prompt(
+        conn,
+        session_id,
+        prompt,
+        prompt_images,
+        prompt_has_image_attachments,
+        supports_prompt_images,
+    )
+    .await?;
     Ok(PromptOutcome {
         stop_reason,
         session_id: None,

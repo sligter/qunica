@@ -9,9 +9,10 @@
 
 use ag_swarmer_backend::acp::{
     normalize_acp_runtime, probe_acp_runtime_capabilities, run_acp_agent_stream,
-    shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpEventKind, AcpImage,
-    AcpRunAudit, AcpRunContext, AcpRunRequest, AcpRuntimeConfig, AcpRuntimeProfile,
-    PermissionPolicy, BLOCKED_ENV_KEYS, DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
+    shutdown_reusable_acp_session, shutdown_reusable_acp_sessions, AcpCapabilityError,
+    AcpConfigValue, AcpEventKind, AcpImage, AcpRunAudit, AcpRunContext, AcpRunRequest,
+    AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy, BLOCKED_ENV_KEYS,
+    DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
 };
 use ag_swarmer_backend::db::Db;
 use serde_json::{json, Value};
@@ -1074,6 +1075,188 @@ async fn acp_lifecycle_reuses_keyed_session_and_sends_incremental_prompt() {
     shutdown_reusable_acp_sessions().await;
 }
 
+/// A turn against a live agent process, returning its streamed text and any
+/// warnings raised about the session itself.
+async fn run_and_collect_turn(pool: SqlitePool, request: AcpRunRequest) -> (String, Vec<Value>) {
+    let mut run = run_acp_agent_stream(pool, request)
+        .await
+        .expect("run starts");
+    let mut tokens = String::new();
+    let mut warnings = Vec::new();
+    let mut terminal_status = None;
+    while let Some(event) = run.next_event().await {
+        match event.kind {
+            AcpEventKind::Token => tokens.push_str(event.data.as_str().unwrap_or_default()),
+            AcpEventKind::Warning => warnings.push(event.data.clone()),
+            AcpEventKind::Run => {
+                terminal_status = event.data["status"].as_str().map(str::to_string)
+            }
+            _ => {}
+        }
+    }
+    run.join().await.expect("run joins");
+    assert_eq!(terminal_status.as_deref(), Some("completed"));
+    (tokens, warnings)
+}
+
+/// The session id stored for a conversation's agent, if any.
+async fn stored_session_id(pool: &SqlitePool, thread_id: &str, agent_id: &str) -> Option<String> {
+    sqlx::query_as::<_, (String,)>(
+        "SELECT session_id FROM acp_sessions WHERE thread_id = ? AND agent_id = ?",
+    )
+    .bind(thread_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .expect("read stored ACP session")
+    .map(|(session_id,)| session_id)
+}
+
+/// One conversation's ACP agent, so successive turns of a resume test address
+/// the same session key.
+struct ResumedConversation<'a> {
+    owner_id: &'a str,
+    agent_id: &'a str,
+    group_id: &'a str,
+    thread_id: &'a str,
+    config: &'a AcpRuntimeConfig,
+    cwd: &'a std::path::Path,
+}
+
+impl ResumedConversation<'_> {
+    fn turn(&self, full_prompt: &str, incremental_prompt: &str) -> AcpRunRequest {
+        AcpRunRequest {
+            owner_id: self.owner_id.to_string(),
+            group_id: Some(self.group_id.to_string()),
+            agent_id: self.agent_id.to_string(),
+            thread_id: Some(self.thread_id.to_string()),
+            config: self.config.clone(),
+            cwd: self.cwd.to_path_buf(),
+            prompt: full_prompt.to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
+            incremental_prompt: Some(incremental_prompt.to_string()),
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: Some("ctx-a".to_string()),
+        }
+    }
+
+    /// Drop the live child and everything the process knew about the session,
+    /// exactly as closing and reopening the app does.
+    async fn restart(&self) {
+        shutdown_reusable_acp_session(self.group_id, self.thread_id, self.agent_id).await;
+    }
+}
+
+#[tokio::test]
+async fn acp_lifecycle_reopens_the_stored_session_after_a_restart() {
+    let (pool, owner_id, agent_id, group_id, thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config("resume", "custom", json!({ "timeout_seconds": 30 }));
+    let conversation = ResumedConversation {
+        owner_id: &owner_id,
+        agent_id: &agent_id,
+        group_id: &group_id,
+        thread_id: &thread_id,
+        config: &config,
+        cwd: cwd.path(),
+    };
+
+    let (first, _) = run_and_collect_turn(
+        pool.clone(),
+        conversation.turn("FULL_CONTEXT_ONE", "INCREMENT_ONE"),
+    )
+    .await;
+    assert_eq!(
+        stored_session_id(&pool, &thread_id, &agent_id)
+            .await
+            .as_deref(),
+        Some("sess-fake"),
+        "the session id is stored as soon as the agent issues it"
+    );
+
+    conversation.restart().await;
+
+    let (second, warnings) = run_and_collect_turn(
+        pool.clone(),
+        conversation.turn("FULL_CONTEXT_TWO", "INCREMENT_TWO"),
+    )
+    .await;
+
+    let first_payload: Value = serde_json::from_str(&first).expect("first token json");
+    let second_payload: Value = serde_json::from_str(&second).expect("second token json");
+    assert_eq!(first_payload["new_count"], json!(1));
+    assert_eq!(first_payload["load_count"], json!(0));
+    assert_eq!(first_payload["prompt"], json!("FULL_CONTEXT_ONE"));
+    // The relaunched agent reopens the same session and is told only what has
+    // happened since, rather than being handed the transcript as a stranger.
+    assert_eq!(second_payload["new_count"], json!(0));
+    assert_eq!(second_payload["load_count"], json!(1));
+    assert_eq!(second_payload["session_id"], json!("sess-fake"));
+    assert_eq!(second_payload["prompt"], json!("INCREMENT_TWO"));
+    // A load replays the whole session back at the client; replaying it into
+    // the turn would look like the agent saying it all over again.
+    assert!(
+        !second.contains("REPLAYED_HISTORY"),
+        "history replayed by the load must not stream into the turn: {second}"
+    );
+    assert!(warnings.is_empty(), "a clean resume warns about nothing");
+    conversation.restart().await;
+}
+
+#[tokio::test]
+async fn acp_lifecycle_starts_fresh_when_the_stored_session_is_refused() {
+    let (pool, owner_id, agent_id, group_id, thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let config = fake_child_config("resume_refused", "custom", json!({ "timeout_seconds": 30 }));
+    let conversation = ResumedConversation {
+        owner_id: &owner_id,
+        agent_id: &agent_id,
+        group_id: &group_id,
+        thread_id: &thread_id,
+        config: &config,
+        cwd: cwd.path(),
+    };
+
+    run_and_collect_turn(
+        pool.clone(),
+        conversation.turn("FULL_CONTEXT_ONE", "INCREMENT_ONE"),
+    )
+    .await;
+    conversation.restart().await;
+
+    let (second, warnings) = run_and_collect_turn(
+        pool.clone(),
+        conversation.turn("FULL_CONTEXT_TWO", "INCREMENT_TWO"),
+    )
+    .await;
+
+    let payload: Value = serde_json::from_str(&second).expect("second token json");
+    // The agent refused the session it once issued, so the turn falls back to
+    // the full transcript instead of failing.
+    assert_eq!(payload["load_count"], json!(1));
+    assert_eq!(payload["new_count"], json!(1));
+    assert_eq!(payload["prompt"], json!("FULL_CONTEXT_TWO"));
+    assert_eq!(
+        warnings
+            .iter()
+            .filter_map(|warning| warning["code"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["acp_session_resume_failed"],
+        "the user is told the agent came back without its earlier working context"
+    );
+    // The dead id is not retried on every later turn.
+    assert_eq!(
+        stored_session_id(&pool, &thread_id, &agent_id)
+            .await
+            .as_deref(),
+        Some("sess-fake"),
+        "the fresh session replaces the refused one"
+    );
+    conversation.restart().await;
+}
+
 #[tokio::test]
 async fn acp_lifecycle_sends_images_as_standard_prompt_blocks() {
     let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
@@ -1681,6 +1864,8 @@ fn run_fake_child(mode: &str) {
     let mut applied: Vec<Value> = Vec::new();
     let mut new_count = 0;
     let mut prompt_count = 0;
+    let mut load_count = 0;
+    let mut loaded_session_id = String::new();
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -1713,6 +1898,16 @@ fn run_fake_child(mode: &str) {
                         json!({
                             "protocolVersion": 1,
                             "agentCapabilities": { "promptCapabilities": { "image": true } },
+                        }),
+                    ),
+                ),
+                "resume" | "resume_refused" => write_line(
+                    &stdout,
+                    &rpc_result(
+                        &id,
+                        json!({
+                            "protocolVersion": 1,
+                            "agentCapabilities": { "loadSession": true },
                         }),
                     ),
                 ),
@@ -1767,6 +1962,28 @@ fn run_fake_child(mode: &str) {
                         })),
                     );
                 }
+            }
+            "session/load" => {
+                load_count += 1;
+                loaded_session_id = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if mode == "resume_refused" {
+                    write_line(&stdout, &rpc_error(&id, -32603, "unknown session"));
+                    continue;
+                }
+                // A real agent replays the loaded session's history back at the
+                // client before answering the load.
+                write_line(
+                    &stdout,
+                    &session_update(json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": { "type": "text", "text": "REPLAYED_HISTORY" },
+                    })),
+                );
+                write_line(&stdout, &rpc_result(&id, json!({})));
             }
             "session/set_model" | "session/set_mode" => {
                 if mode == "settings"
@@ -1911,7 +2128,7 @@ fn run_fake_child(mode: &str) {
                         &rpc_result(&id, json!({ "stopReason": "end_turn" })),
                     );
                 }
-                "reuse" => {
+                "reuse" | "resume" | "resume_refused" => {
                     prompt_count += 1;
                     let prompt = params
                         .get("prompt")
@@ -1923,6 +2140,8 @@ fn run_fake_child(mode: &str) {
                     let summary = json!({
                         "new_count": new_count,
                         "prompt_count": prompt_count,
+                        "load_count": load_count,
+                        "session_id": loaded_session_id,
                         "prompt": prompt,
                     })
                     .to_string();

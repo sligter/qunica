@@ -65,6 +65,8 @@ pub const MAX_METADATA_CHARS: usize = 1_000;
 pub const METHOD_INITIALIZE: &str = "initialize";
 /// `session/new` request method.
 pub const METHOD_SESSION_NEW: &str = "session/new";
+/// `session/load` request method (reopen a session the agent already stores).
+pub const METHOD_SESSION_LOAD: &str = "session/load";
 /// `session/set_model` request method.
 pub const METHOD_SESSION_SET_MODEL: &str = "session/set_model";
 /// `session/set_mode` request method.
