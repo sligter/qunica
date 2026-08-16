@@ -352,6 +352,17 @@ interface MessageState {
     toolCallId: string,
     outcome: 'approved' | 'declined',
   ) => void
+  /**
+   * Whether a live timeline is already offering a card for this call.
+   *
+   * The same pause is reachable two ways — the `approval_required` notice while
+   * the stream is up, and the checkpoint on the message once history reloads.
+   * Both would render, so the persisted one stands down while the live one is
+   * on screen. Searched across every conversation because the notice is filed
+   * under the run's state id, which is not always the one the message is read
+   * through.
+   */
+  hasStreamApprovalNotice: (toolCallId: string) => boolean
   markStreamRunDone: (groupId: string, streamId: string) => void
   markStreamRunError: (groupId: string, streamId: string, message: string) => void
   markStreamRunCancelled: (groupId: string, streamIds?: string[]) => void
@@ -1543,6 +1554,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         streamRunsByGroup: { ...s.streamRunsByGroup, [groupId]: nextRuns },
       }
     }),
+
+  hasStreamApprovalNotice: (toolCallId) =>
+    Object.values(get().streamRunsByGroup).some((runs) =>
+      Object.values(runs).some((run) =>
+        run.events.some(
+          (event) =>
+            event.type === 'approval_required' &&
+            event.approval_request?.tool_call_id === toolCallId,
+        ),
+      ),
+    ),
 
   applySchedulerEvent: (groupId, streamId, update) => {
     if (update.stream_id !== streamId) return false

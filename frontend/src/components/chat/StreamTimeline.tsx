@@ -37,6 +37,7 @@ import type {
   StreamToolEvent,
 } from '@/stores/messageStore'
 import { ToolApprovalPrompt } from '@/components/chat/ToolApprovalPrompt'
+import type { ConversationScope } from '@/hooks/useGroupMessages'
 import type { ContextUsage, GroupAgentRead, TodoItem } from '@/types/api'
 
 interface StreamTimelineProps {
@@ -44,8 +45,9 @@ interface StreamTimelineProps {
   groupId?: string
   agents?: GroupAgentRead[]
   onSubmitHumanInput?: (content: string) => void
-  /** Thread the approval card resumes; absent for a non-threaded conversation. */
-  threadId?: string
+  /** The store bucket this conversation is read through. */
+  stateId?: string
+  scope?: ConversationScope
   agentIsSystem?: boolean
 }
 
@@ -134,13 +136,15 @@ function AgentNotice({
   event,
   onSubmitHumanInput,
   groupId,
-  threadId,
+  stateId,
+  scope,
   renderedInputRequests,
 }: {
   event: StreamNoticeEvent
   onSubmitHumanInput?: (content: string) => void
   groupId: string
-  threadId?: string
+  stateId?: string
+  scope?: ConversationScope
   renderedInputRequests: Set<string>
 }) {
   const { t } = useTranslation('chat')
@@ -158,7 +162,8 @@ function AgentNotice({
     return (
       <ToolApprovalPrompt
         groupId={groupId}
-        threadId={threadId}
+        stateId={stateId}
+        scope={scope}
         request={event.approval_request}
         resolved={event.approval_resolved}
       />
@@ -357,7 +362,8 @@ function AgentBlockView({
   fallbackUsage,
   agentIsSystem,
   onSubmitHumanInput,
-  threadId,
+  stateId,
+  scope,
   renderedInputRequests,
 }: {
   block: AgentBlock
@@ -366,7 +372,8 @@ function AgentBlockView({
   fallbackUsage: ContextUsage | null
   agentIsSystem?: boolean
   onSubmitHumanInput?: (content: string) => void
-  threadId?: string
+  stateId?: string
+  scope?: ConversationScope
   renderedInputRequests: Set<string>
 }) {
   const { t, i18n } = useTranslation('chat')
@@ -494,7 +501,8 @@ function AgentBlockView({
         event={event}
         onSubmitHumanInput={onSubmitHumanInput}
         groupId={groupId}
-        threadId={threadId}
+        stateId={stateId}
+        scope={scope}
         renderedInputRequests={renderedInputRequests}
       />
     )
@@ -536,7 +544,8 @@ export function StreamTimeline({
   groupId = run.group_id,
   agents,
   onSubmitHumanInput,
-  threadId,
+  stateId,
+  scope,
   agentIsSystem,
 }: StreamTimelineProps) {
   const { t } = useTranslation('chat')
@@ -587,7 +596,8 @@ export function StreamTimeline({
               <div key={`${block.event.id}-${index}`} className="px-4 py-1">
                 <ToolApprovalPrompt
                   groupId={groupId}
-                  threadId={threadId}
+                  stateId={stateId}
+                  scope={scope}
                   request={block.event.approval_request}
                   resolved={block.event.approval_resolved}
                 />
@@ -613,7 +623,8 @@ export function StreamTimeline({
             fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
             agentIsSystem={agentIsSystem}
             onSubmitHumanInput={onSubmitHumanInput}
-            threadId={threadId}
+            stateId={stateId}
+            scope={scope}
             renderedInputRequests={renderedInputRequests}
           />
         )

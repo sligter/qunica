@@ -50,6 +50,12 @@ pub struct ConversationMessage {
     pub reply_to_message_id: Option<String>,
     pub attachments: Vec<ConversationAttachment>,
     pub tool_calls: Vec<ConversationToolCall>,
+    /// Thinking blocks this agent turn produced, in order.
+    ///
+    /// Replayed only into the agent's own history, and only reaches a provider
+    /// that asked for its reasoning back. Peers and humans never see it: it is
+    /// the model's private working, not part of the transcript.
+    pub reasoning: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -161,6 +167,11 @@ impl From<ConversationRow> for ConversationMessage {
             } else {
                 Vec::new()
             },
+            reasoning: if is_agent {
+                reasoning_from_content_json(row.content_json.as_deref())
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -188,6 +199,18 @@ fn tool_calls_from_content_json(content_json: Option<&str>) -> Vec<ConversationT
     content_json
         .and_then(|raw| serde_json::from_str::<AgentPayload>(raw).ok())
         .map(|payload| payload.tool_calls)
+        .unwrap_or_default()
+}
+
+fn reasoning_from_content_json(content_json: Option<&str>) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct ReasoningPayload {
+        #[serde(default)]
+        reasoning: Vec<String>,
+    }
+    content_json
+        .and_then(|raw| serde_json::from_str::<ReasoningPayload>(raw).ok())
+        .map(|payload| payload.reasoning)
         .unwrap_or_default()
 }
 
@@ -244,13 +267,20 @@ pub fn to_llm_messages(
                     })
                     .collect();
                 if !completed_calls.is_empty() {
-                    messages.push(ChatMessage::assistant_tool_calls(
-                        "",
-                        completed_calls
-                            .iter()
-                            .map(|(call, _)| call.clone())
-                            .collect(),
-                    ));
+                    // The thinking rides on the tool-call message rather than
+                    // the trailing text one: that is the message a provider in
+                    // thinking mode validates, and it is where the reasoning
+                    // belonged in the first place.
+                    messages.push(
+                        ChatMessage::assistant_tool_calls(
+                            "",
+                            completed_calls
+                                .iter()
+                                .map(|(call, _)| call.clone())
+                                .collect(),
+                        )
+                        .with_reasoning(row.reasoning.join("\n")),
+                    );
                     messages.extend(completed_calls.into_iter().map(|(call, result)| {
                         ChatMessage::tool_result(call.id, call.name, result)
                     }));
@@ -447,4 +477,96 @@ fn escape_xml(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent_row(content_json: Option<&str>) -> ConversationMessage {
+        ConversationRow {
+            id: "m1".to_string(),
+            sender_type: "agent".to_string(),
+            sender_id: Some("agent-1".to_string()),
+            content: Some("done".to_string()),
+            agent_name: Some("Helper".to_string()),
+            group_agent_display_name: None,
+            human_display_name: None,
+            turn_id: None,
+            dispatch_id: None,
+            reply_to_message_id: None,
+            content_json: content_json.map(str::to_string),
+        }
+        .into()
+    }
+
+    fn turn_json() -> &'static str {
+        r#"{
+            "schema_version": 1,
+            "reasoning": ["first I check the file", "then I read it"],
+            "tool_calls": [{
+                "tool_call_id": "call_1",
+                "tool_name": "Read",
+                "status": "completed",
+                "args": {"file_path": "note.txt"},
+                "result": "file body"
+            }]
+        }"#
+    }
+
+    #[test]
+    fn a_rehydrated_tool_call_carries_the_thinking_that_produced_it() {
+        let rows = vec![agent_row(Some(turn_json()))];
+
+        let messages = to_llm_messages("sys", "agent-1", &rows, AttachmentAccess::Readable);
+
+        let assistant = messages
+            .iter()
+            .find(|message| !message.tool_calls.is_empty())
+            .expect("the completed call is replayed as an assistant message");
+        // Without this, resuming a paused turn rebuilds the tool-calling message
+        // from the transcript with its reasoning dropped, and a provider in
+        // thinking mode rejects the continuation outright.
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("first I check the file\nthen I read it")
+        );
+        assert!(
+            messages
+                .iter()
+                .filter(|message| message.reasoning_content.is_some())
+                .count()
+                == 1,
+            "reasoning belongs to the one message that made the call"
+        );
+    }
+
+    #[test]
+    fn a_turn_with_no_recorded_reasoning_attaches_none() {
+        let rows = vec![agent_row(Some(
+            r#"{"schema_version":1,"tool_calls":[{"tool_call_id":"c","tool_name":"Read","status":"completed","args":{},"result":"x"}]}"#,
+        ))];
+
+        let messages = to_llm_messages("sys", "agent-1", &rows, AttachmentAccess::Readable);
+
+        let assistant = messages
+            .iter()
+            .find(|message| !message.tool_calls.is_empty())
+            .expect("the completed call is replayed");
+        assert_eq!(assistant.reasoning_content, None);
+    }
+
+    #[test]
+    fn a_peers_reasoning_never_leaks_into_this_agents_history() {
+        let rows = vec![agent_row(Some(turn_json()))];
+
+        // Same rows, read by a different agent: the turn is someone else's, so
+        // it renders as an untrusted conversation message with no thinking.
+        let messages = to_llm_messages("sys", "agent-2", &rows, AttachmentAccess::Readable);
+
+        assert!(messages
+            .iter()
+            .all(|message| message.reasoning_content.is_none()));
+        assert!(messages.iter().all(|message| message.tool_calls.is_empty()));
+    }
 }

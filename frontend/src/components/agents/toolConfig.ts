@@ -25,6 +25,7 @@ export function createDefaultToolConfig(
     // MCP servers are opt-in per agent: an agent that was never told to use one
     // must not silently gain tools when the owner configures a server.
     mcp_servers: mcpServers,
+    bypass_approvals: false,
   }
 }
 
@@ -55,5 +56,8 @@ export function mergeToolConfig(
     ),
     assistant_agents: assistantSelections,
     mcp_servers: mcpSelections,
+    // Carried through rather than re-derived from the catalog: this is the
+    // owner's standing answer about the agent, not something a tool list knows.
+    bypass_approvals: current.bypass_approvals ?? false,
   }
 }

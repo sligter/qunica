@@ -31,12 +31,21 @@ impl OpenAiCompatibleProvider {
     }
 }
 
-fn to_messages(messages: &[ChatMessage]) -> Vec<Value> {
+/// Render the message list for the wire.
+///
+/// `reasoning_passback` decides whether an assistant message carries the
+/// thinking that produced it back to the provider. It is a per-model setting
+/// because the two camps disagree outright: DeepSeek's own `deepseek-reasoner`
+/// rejects a request that echoes `reasoning_content`, while several gateways
+/// running a model in thinking mode reject one that omits it ("The
+/// `reasoning_content` in the thinking mode must be passed back to the API").
+/// There is no value that satisfies both, so the operator picks per model.
+fn to_messages(messages: &[ChatMessage], reasoning_passback: bool) -> Vec<Value> {
     messages
         .iter()
         .map(|message| {
             if !message.tool_calls.is_empty() {
-                return json!({
+                let mut value = json!({
                     "role": "assistant",
                     "content": message.content,
                     "tool_calls": message.tool_calls.iter().map(|call| {
@@ -50,6 +59,8 @@ fn to_messages(messages: &[ChatMessage]) -> Vec<Value> {
                         })
                     }).collect::<Vec<_>>(),
                 });
+                attach_reasoning(&mut value, message, reasoning_passback);
+                return value;
             }
             if message.role == "tool" {
                 return json!({
@@ -70,12 +81,32 @@ fn to_messages(messages: &[ChatMessage]) -> Vec<Value> {
                     "content": openai_content_parts(&message.parts),
                 });
             }
-            json!({
+            let mut value = json!({
                 "role": message.role,
                 "content": message.content,
-            })
+            });
+            attach_reasoning(&mut value, message, reasoning_passback);
+            value
         })
         .collect()
+}
+
+/// Add `reasoning_content` to an assistant message when the model asked for it
+/// back and there is any to send.
+fn attach_reasoning(value: &mut Value, message: &ChatMessage, reasoning_passback: bool) {
+    if !reasoning_passback || message.role != "assistant" {
+        return;
+    }
+    let Some(reasoning) = message
+        .reasoning_content
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return;
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert("reasoning_content".to_string(), json!(reasoning));
+    }
 }
 
 fn openai_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
@@ -186,7 +217,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut body = json!({
             "model": request.model,
-            "messages": to_messages(&request.messages),
+            "messages": to_messages(&request.messages, request.reasoning_passback),
             "stream": true,
             "stream_options": { "include_usage": true },
         });

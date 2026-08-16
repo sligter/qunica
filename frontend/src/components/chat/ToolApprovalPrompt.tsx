@@ -1,15 +1,17 @@
 import { useTranslation } from 'react-i18next'
 
 import { ToolApprovalCard } from '@/components/chat/ToolApprovalCard'
-import { conversationStateKey } from '@/hooks/useGroupMessages'
 import { useResumeStream } from '@/hooks/useResumeStream'
 import { useMessageStore, type StreamApprovalRequest } from '@/stores/messageStore'
+import type { ConversationScope } from '@/hooks/useGroupMessages'
 
 interface ToolApprovalPromptProps {
   groupId: string
-  threadId?: string
+  /** The store bucket this conversation is read through. */
+  stateId?: string
   request: StreamApprovalRequest
   resolved?: 'approved' | 'declined'
+  scope?: ConversationScope
 }
 
 /**
@@ -25,12 +27,12 @@ interface ToolApprovalPromptProps {
  */
 export function ToolApprovalPrompt({
   groupId,
-  threadId,
+  stateId,
   request,
   resolved,
+  scope = 'groups',
 }: ToolApprovalPromptProps) {
   const { t } = useTranslation('chat')
-  const stateId = conversationStateKey(groupId, threadId)
   const messageId = useMessageStore((state) => {
     const messages = stateId ? state.byGroup?.[stateId] : undefined
     if (!messages) return undefined
@@ -39,7 +41,7 @@ export function ToolApprovalPrompt({
     }
     return undefined
   })
-  const { resume, isStreaming, error } = useResumeStream(groupId, threadId, messageId)
+  const { resume, isStreaming, error } = useResumeStream(groupId, stateId, messageId, scope)
 
   return (
     <div className="min-w-0">

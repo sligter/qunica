@@ -280,7 +280,6 @@ export function ConversationChatView({
                 isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
                 onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}
                 onSubmitHumanInput={submitHumanInput}
-                threadId={threadId}
                 onViewTurnTrace={capabilities.showTurnTrace ? openTurnTrace : undefined}
                 scope={scope}
                 agents={agents}

@@ -25,6 +25,8 @@ import type { ConversationScope } from '@/hooks/useGroupMessages'
 interface MessageItemProps {
   message: Message
   groupId: string
+  /** The store bucket this conversation is read through. */
+  stateId?: string
   isStreaming?: boolean
   onSubmitHumanInput?: (content: string) => void
   scope?: ConversationScope
@@ -35,6 +37,7 @@ interface MessageItemProps {
 export function MessageItemView({
   message,
   groupId,
+  stateId = groupId,
   isStreaming,
   onSubmitHumanInput,
   scope = 'groups',
@@ -196,8 +199,10 @@ export function MessageItemView({
         {(isInterrupted || isResuming) && message.thread_id && (
           <InterruptedMessageActions
             groupId={groupId}
-            threadId={message.thread_id}
+            stateId={stateId}
             messageId={message.id}
+            toolCalls={message.tool_calls}
+            scope={scope}
           />
         )}
       </div>

@@ -16,15 +16,21 @@ use serde::{Deserialize, Serialize};
 /// A user who approves deleting a build directory has authorised the capability,
 /// and re-asking for the next `rm` in the same thread would be nagging rather
 /// than consent. The grant does not outlive the thread.
+///
+/// [`ApprovalGrants::bypass_all`] is the separate, blunter thing: an agent the
+/// owner has explicitly put in unattended mode, where nothing is asked and
+/// nothing is refused.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApprovalGrants {
     rules: HashSet<String>,
+    bypass_all: bool,
 }
 
 impl ApprovalGrants {
     pub fn new(rules: impl IntoIterator<Item = String>) -> Self {
         Self {
             rules: rules.into_iter().collect(),
+            bypass_all: false,
         }
     }
 
@@ -32,12 +38,30 @@ impl ApprovalGrants {
         self.rules.insert(rule.into());
     }
 
-    pub fn contains(&self, rule: &str) -> bool {
-        self.rules.contains(rule)
+    /// Turn off every guard for this agent: nothing pauses for approval, and the
+    /// rules that normally refuse outright stop refusing.
+    ///
+    /// Only an agent whose owner switched it into unattended mode gets this. It
+    /// is deliberately one flag rather than a per-rule list — a partial bypass
+    /// reads as safer than it is, and the thing being expressed here is "I am
+    /// not going to be at the keyboard", not "these five verbs are fine".
+    pub fn set_bypass_all(&mut self, bypass_all: bool) {
+        self.bypass_all = bypass_all;
     }
 
+    /// Whether this agent runs with every approval gate off.
+    pub fn bypass_all(&self) -> bool {
+        self.bypass_all
+    }
+
+    pub fn contains(&self, rule: &str) -> bool {
+        self.bypass_all || self.rules.contains(rule)
+    }
+
+    /// True when nothing at all has been authorised — no remembered rule and no
+    /// blanket bypass.
     pub fn is_empty(&self) -> bool {
-        self.rules.is_empty()
+        !self.bypass_all && self.rules.is_empty()
     }
 }
 
@@ -98,6 +122,19 @@ mod tests {
         grants.grant("delete-files");
         assert!(grants.contains("delete-files"));
         assert!(!grants.contains("git-force-push"));
+    }
+
+    #[test]
+    fn a_bypass_covers_every_rule_including_ones_never_granted() {
+        let mut grants = ApprovalGrants::default();
+        grants.set_bypass_all(true);
+        assert!(grants.bypass_all());
+        assert!(grants.contains("delete-files"));
+        assert!(grants.contains("anything-at-all"));
+        assert!(
+            !grants.is_empty(),
+            "a bypass has authorised everything, which is the opposite of empty"
+        );
     }
 
     #[test]

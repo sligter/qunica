@@ -385,6 +385,70 @@ async fn llm_contract_openai_serializes_tool_continuation_messages() {
 }
 
 #[tokio::test]
+async fn llm_contract_openai_sends_reasoning_back_only_when_the_model_asks_for_it() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    let mut off = continuation_request();
+    off.messages[2] = off.messages[2]
+        .clone()
+        .with_reasoning("weighing the options");
+    let _ = collect(provider.stream(off.clone()).await.unwrap()).await;
+
+    let mut on = off;
+    on.reasoning_passback = true;
+    let _ = collect(provider.stream(on).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    // Off is the default because DeepSeek's own `deepseek-reasoner` rejects a
+    // request that echoes reasoning back.
+    assert!(
+        captured[0]["messages"][2]
+            .get("reasoning_content")
+            .is_none(),
+        "{}",
+        captured[0]["messages"][2]
+    );
+    // On is what a gateway running the model in thinking mode demands: without
+    // this the tool-calling turn comes back as HTTP 400.
+    assert_eq!(
+        captured[1]["messages"][2]["reasoning_content"],
+        "weighing the options"
+    );
+    assert_eq!(
+        captured[1]["messages"][2]["tool_calls"][0]["id"], "call_1",
+        "the reasoning rides alongside the tool call, not instead of it"
+    );
+    assert!(
+        captured[1]["messages"][3]
+            .get("reasoning_content")
+            .is_none(),
+        "a tool result has no reasoning of its own: {}",
+        captured[1]["messages"][3]
+    );
+}
+
+#[tokio::test]
+async fn llm_contract_openai_omits_blank_reasoning_even_with_passback_on() {
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let mut request = continuation_request();
+    request.reasoning_passback = true;
+    request.messages[2] = request.messages[2].clone().with_reasoning("   ");
+
+    let _ = collect(provider.stream(request).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert!(
+        captured[0]["messages"][2]
+            .get("reasoning_content")
+            .is_none(),
+        "an empty reasoning field is worse than no field: {}",
+        captured[0]["messages"][2]
+    );
+}
+
+#[tokio::test]
 async fn llm_contract_openai_omits_absent_temperature() {
     let (url, captures) = capture_server("data: [DONE]\n").await;
     let provider = OpenAiCompatibleProvider::new(url, "test-key");

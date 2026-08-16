@@ -36,6 +36,16 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// The thinking that produced this assistant message, when the model
+    /// surfaced any.
+    ///
+    /// Kept beside the content rather than folded into it: a provider in
+    /// thinking mode treats reasoning as its own field, and some require the
+    /// reasoning behind a tool call to travel back with the call on the next
+    /// turn. Whether it is actually sent is the provider's decision — see the
+    /// per-model `reasoning_passback` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -47,7 +57,19 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
+    }
+
+    /// Attach the reasoning that produced this message. Blank text is dropped:
+    /// an empty `reasoning_content` is not something a provider wants back.
+    #[must_use]
+    pub fn with_reasoning(mut self, reasoning: impl Into<String>) -> Self {
+        let reasoning = reasoning.into();
+        if !reasoning.trim().is_empty() {
+            self.reasoning_content = Some(reasoning);
+        }
+        self
     }
 
     pub fn with_parts(role: impl Into<String>, parts: Vec<ChatContentPart>) -> Self {
@@ -65,6 +87,7 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
     }
 
@@ -76,6 +99,7 @@ impl ChatMessage {
             tool_calls,
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
     }
 
@@ -91,6 +115,7 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
+            reasoning_content: None,
         }
     }
 }

@@ -9063,3 +9063,158 @@ async fn an_answered_approval_cannot_be_replayed_twice() {
         "a replayed approval must not run the command a second time"
     );
 }
+
+#[tokio::test]
+async fn history_carries_the_pending_question_so_a_reload_can_still_answer_it() {
+    let (app, state) = router_with_state_for_tests().await;
+    let (_root, token, thread_id, _) =
+        pause_on_shell_approval(&app, &state, "approval-history@example.com", "Done.").await;
+    let group: String = sqlx::query_scalar("SELECT group_id FROM threads WHERE id = ?")
+        .bind(&thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+
+    // The live `approval_required` event dies with its stream. If the checkpoint
+    // read back over history does not carry the request, a restart leaves the
+    // pause unanswerable and the only way forward is to ask the model to propose
+    // the same command again.
+    let (status, body) = send(
+        &app,
+        authed_empty("GET", &format!("/api/v2/groups/{group}/messages"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let interrupted = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["status"] == "interrupted")
+        .expect("the paused turn is readable from history");
+    let pending = interrupted["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|call| call["status"] == "approval_required")
+        .expect("history keeps the call the turn stopped on");
+    assert_eq!(pending["tool_call_id"], "call_rm");
+    assert!(pending["result_summary"].is_null());
+    assert_eq!(pending["approval_request"]["rule"], "delete-files");
+    assert_eq!(pending["approval_request"]["subject"], "rm build.txt");
+    // The card names the call the model made, which is not always the host's
+    // own dialect name — every shell alias routes to the same implementation.
+    assert_eq!(pending["approval_request"]["tool_name"], "Bash");
+    assert_eq!(pending["tool_name"], "Bash");
+    assert!(!pending["approval_request"]["capability"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert!(!pending["approval_request"]["reason"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_resume_that_stops_at_a_second_gate_asks_again_instead_of_failing() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "approval-second-gate@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("build.txt"), "artifact").unwrap();
+    std::fs::write(root.path().join("cache.txt"), "artifact").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![
+            tool_body(vec![("call_one", "Bash", json!({"command": "rm build.txt"}))]),
+            // The plain continuation reaches for another deletion, so the
+            // resumed turn hits the same gate a second time.
+            tool_body(vec![("call_two", "Bash", json!({"command": "rm cache.txt"}))]),
+            text_body("All tidy."),
+        ])
+        .await,
+    )
+    .await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Cleaner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"bash": {"enabled": true}}}),
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "tidy up the workspace"}),
+    )
+    .await;
+    let thread_id: String = sqlx::query_scalar("SELECT id FROM threads WHERE group_id = ?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread_id}/resume"),
+        &token,
+        json!({}),
+    )
+    .await;
+
+    // Stopping to ask a second time is the turn working, not the turn breaking.
+    // Reporting it as an error is what made the client show the continuation as
+    // interrupted the moment the user pressed continue.
+    assert!(
+        payloads_of_kind(&resumed, StreamEventKind::Error).is_empty(),
+        "a second approval gate must not end the resume as a failure: {resumed:#?}"
+    );
+    let asked = payloads_of_kind(&resumed, StreamEventKind::ApprovalRequired);
+    assert_eq!(asked.len(), 1, "{resumed:#?}");
+    assert_eq!(asked[0]["tool_call_id"], "call_two");
+    assert_eq!(asked[0]["approval_request"]["subject"], "rm cache.txt");
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::Done).len(),
+        1,
+        "the stream still closes cleanly: {resumed:#?}"
+    );
+
+    // Neither gated command ran: the first was never answered, the second is
+    // the one now being asked about.
+    assert!(root.path().join("build.txt").exists());
+    assert!(root.path().join("cache.txt").exists());
+
+    // And the thread is left exactly where the second card can be answered.
+    let thread_status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(&thread_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(thread_status, "paused");
+    let content_json: String = sqlx::query_scalar(
+        "SELECT content_json FROM messages WHERE thread_id = ? AND status = 'interrupted'",
+    )
+    .bind(&thread_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&content_json).unwrap();
+    let pending = checkpoint["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|call| call["tool_call_id"] == "call_two")
+        .expect("the newly gated call is checkpointed for replay");
+    assert_eq!(pending["status"], "approval_required");
+    assert!(pending["result"].is_null());
+    assert_eq!(pending["approval_request"]["rule"], "delete-files");
+}

@@ -2396,6 +2396,16 @@ async fn run_resume_inner(
     };
     let execution = match run_agent_turn(services, ctx, &agent, &group, 0, None, None).await {
         Ok(AgentRunResult::Private(execution)) => execution,
+        // The continuation ran on and stopped at a *second* gate — another tool
+        // call needing an answer. `pause_for_approval` has already re-checkpointed
+        // the message and sent the card, so the thread is paused on a state the
+        // user can act on. Closing the stream is the whole job here: reporting a
+        // failure instead would tell the user the resume broke, when what it
+        // actually did was stop and ask.
+        Ok(AgentRunResult::WaitingForUser) => {
+            let _ = ctx.emit_done().await;
+            return Ok(TurnOutcome::WaitingForUser);
+        }
         Ok(_) => return fail_resume(ctx, "agent did not produce a resumable response").await,
         Err(StepErr::Cancelled) => {
             let _ = ctx
@@ -2621,6 +2631,20 @@ impl TurnData {
         } else if let Some(last) = self.reasoning.last_mut() {
             last.push_str(text);
         }
+    }
+
+    /// The most recent thinking block this turn produced.
+    ///
+    /// Segments are split whenever visible text or a tool call interrupts the
+    /// thinking, so the last one is what the model was reasoning about
+    /// immediately before the call it is now paused on — the block a provider
+    /// in thinking mode wants back with that call.
+    fn latest_reasoning(&self) -> Option<&str> {
+        self.reasoning
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .find(|segment| !segment.trim().is_empty())
     }
 
     fn record_tool_start(
@@ -3092,6 +3116,11 @@ async fn run_agent_turn(
         };
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
+        // This round's thinking, kept apart from `turn.reasoning` (which spans
+        // the whole turn) so the assistant message carries back exactly the
+        // reasoning that produced *its* tool calls. Providers running in
+        // thinking mode reject a tool-call message that arrives without it.
+        let mut round_reasoning = String::new();
         // A reasoning delta starts a new segment when the previous delta was not
         // reasoning (so token/tool interleaving splits reasoning blocks).
         let mut last_was_reasoning = false;
@@ -3150,6 +3179,7 @@ async fn run_agent_turn(
                     last_was_response = false;
                     turn.push_reasoning(&text, !last_was_reasoning);
                     last_was_reasoning = true;
+                    round_reasoning.push_str(&text);
                     if let Err(err) = ctx
                         .emit(
                             StreamEventKind::Reasoning,
@@ -3266,20 +3296,20 @@ async fn run_agent_turn(
             match outcome {
                 AgentAsToolOutcome::Terminal(result) => return Ok(result),
                 AgentAsToolOutcome::Continue(result) => {
-                    messages.push(ChatMessage::assistant_tool_calls(
-                        round_content,
-                        vec![call.clone()],
-                    ));
+                    messages.push(
+                        ChatMessage::assistant_tool_calls(round_content, vec![call.clone()])
+                            .with_reasoning(round_reasoning),
+                    );
                     messages.push(ChatMessage::tool_result(call.id, call.name, result));
                     continue;
                 }
             }
         }
 
-        messages.push(ChatMessage::assistant_tool_calls(
-            round_content,
-            tool_calls.clone(),
-        ));
+        messages.push(
+            ChatMessage::assistant_tool_calls(round_content, tool_calls.clone())
+                .with_reasoning(round_reasoning),
+        );
 
         let mut wait_for_user: Option<Value> = None;
         let mut pending_approval: Option<(ToolCall, ApprovalRequest)> = None;
@@ -3511,7 +3541,11 @@ async fn replay_approved_call(
         format!("status: {:?}\n{}", result.status, result.output),
     );
     Ok(Some([
-        ChatMessage::assistant_tool_calls("", vec![call]),
+        // The replayed call is presented as the model made it, thinking
+        // included: a provider in thinking mode rejects a tool-call message
+        // whose reasoning went missing across the pause.
+        ChatMessage::assistant_tool_calls("", vec![call])
+            .with_reasoning(turn.latest_reasoning().unwrap_or_default()),
         tool_message,
     ]))
 }
@@ -5392,6 +5426,9 @@ async fn build_invocation_context(
             }
         }
     }
+    // An agent its owner put in unattended mode carries the bypass in instead of
+    // collecting grants one card at a time.
+    approvals.set_bypass_all(bypass_approvals(agent.tool_config_json.as_deref()));
     let executor = executor.with_approvals(approvals);
 
     let mut tools = enabled_tools
@@ -6137,6 +6174,18 @@ fn enabled_tool_names(raw: Option<&str>) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// Whether this agent runs unattended: every approval gate off, including the
+/// rules that normally refuse outright.
+///
+/// Absent means off, and it stays off for every agent that predates the setting.
+/// There is no inheritance and no partial form — an agent either has it or it
+/// does not, so a config that never mentions it cannot end up with it.
+fn bypass_approvals(raw: Option<&str>) -> bool {
+    raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("bypass_approvals").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 fn builtin_tool_name(id: &str) -> Option<&'static str> {
@@ -7298,6 +7347,25 @@ mod tests {
     }
 
     #[test]
+    fn unattended_mode_is_off_for_every_agent_that_does_not_ask_for_it() {
+        // The absent cases matter more than the present one: an agent created
+        // before the setting existed, or one whose config failed to parse, must
+        // not end up running with every guard off.
+        assert!(!bypass_approvals(None));
+        assert!(!bypass_approvals(Some(
+            r#"{"tools":{"bash":{"enabled":true}}}"#
+        )));
+        assert!(!bypass_approvals(Some("not json at all")));
+        assert!(!bypass_approvals(Some(r#"{"bypass_approvals":false}"#)));
+        // A non-boolean is not a yes.
+        assert!(!bypass_approvals(Some(r#"{"bypass_approvals":"true"}"#)));
+
+        assert!(bypass_approvals(Some(
+            r#"{"tools":{"bash":{"enabled":true}},"bypass_approvals":true}"#
+        )));
+    }
+
+    #[test]
     fn mcp_tool_definitions_name_their_server() {
         let binding = McpToolBinding {
             exposed_name: "mcp__github__create_issue".to_string(),
@@ -7473,6 +7541,7 @@ mod tests {
             reply_to_message_id: None,
             attachments: Vec::new(),
             tool_calls: Vec::new(),
+            reasoning: Vec::new(),
         }
     }
 
@@ -7489,6 +7558,7 @@ mod tests {
             reply_to_message_id: None,
             attachments: Vec::new(),
             tool_calls: Vec::new(),
+            reasoning: Vec::new(),
         }
     }
 

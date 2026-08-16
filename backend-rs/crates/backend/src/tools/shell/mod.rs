@@ -75,9 +75,16 @@ pub const SPILL_DIR: &str = ".ag-swarmer/shell";
 /// thread. A command the policy wants a decision on returns
 /// [`ToolStatus::ApprovalRequired`] rather than running — the gate lives here,
 /// not only in the runtime, so a caller that forgets to supply grants fails
-/// closed instead of silently running unapproved work.
+/// closed instead of silently running unapproved work. Grants carrying
+/// [`ApprovalGrants::bypass_all`] skip the review outright.
+///
+/// `tool_name` is the name the model actually called, which is not always the
+/// dialect's own name: every shell alias routes here, so a model that reaches
+/// for `Bash` on a PowerShell host would otherwise be shown an approval card
+/// naming a tool it never called, next to an activity row naming the one it did.
 pub async fn run_shell(
     shell: &ResolvedShell,
+    tool_name: &str,
     root: &Path,
     command: &str,
     timeout_seconds: u64,
@@ -96,21 +103,27 @@ pub async fn run_shell(
         )));
     }
 
-    match policy::review(command, shell.dialect, root, &|rule| grants.contains(rule)) {
-        CommandVerdict::Allow => {}
-        CommandVerdict::Deny { reason } => return Err(ToolError::invalid(reason)),
-        CommandVerdict::Ask {
-            rule,
-            capability,
-            detail,
-        } => {
-            return Ok(controlled::approval_required(ApprovalRequest {
-                rule: rule.to_string(),
-                capability: capability.to_string(),
-                reason: detail,
-                tool_name: shell.dialect.tool_name().to_string(),
-                subject: command.to_string(),
-            }))
+    // An agent in unattended mode skips the review entirely, `Deny` rules
+    // included. That is the whole point of the mode and it is not a subtle
+    // setting: formatting a volume or powering off the host will run. It is
+    // reachable only by an owner who switched this agent into it.
+    if !grants.bypass_all() {
+        match policy::review(command, shell.dialect, root, &|rule| grants.contains(rule)) {
+            CommandVerdict::Allow => {}
+            CommandVerdict::Deny { reason } => return Err(ToolError::invalid(reason)),
+            CommandVerdict::Ask {
+                rule,
+                capability,
+                detail,
+            } => {
+                return Ok(controlled::approval_required(ApprovalRequest {
+                    rule: rule.to_string(),
+                    capability: capability.to_string(),
+                    reason: detail,
+                    tool_name: tool_name.to_string(),
+                    subject: command.to_string(),
+                }))
+            }
         }
     }
 
@@ -427,6 +440,7 @@ async fn write_spill(root: &Path, spill_path: &str, output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ToolStatus;
 
     #[test]
     fn powershell_scripts_are_encoded_as_utf16_base64() {
@@ -499,6 +513,7 @@ mod tests {
             .unwrap()
             .block_on(run_shell(
                 resolve::process_shell(),
+                "Shell",
                 root.path(),
                 &command,
                 5,
@@ -510,6 +525,132 @@ mod tests {
             error.model_safe_message().contains("script file"),
             "{}",
             error.model_safe_message()
+        );
+    }
+
+    /// Run a real deletion of `victim.txt` inside a throwaway root and report
+    /// what the tool did about it. Bare `rm <file>` is the one destructive form
+    /// both a POSIX shell and PowerShell (where `rm` aliases `Remove-Item`)
+    /// spell the same way, so the test exercises the host's actual interpreter.
+    async fn delete_a_file(grants: &ApprovalGrants) -> (ToolResult, bool) {
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim.txt");
+        std::fs::write(&victim, "keep me").unwrap();
+
+        let result = run_shell(
+            resolve::process_shell(),
+            "Shell",
+            root.path(),
+            "rm victim.txt",
+            30,
+            false,
+            grants,
+        )
+        .await
+        .unwrap();
+
+        (result, victim.exists())
+    }
+
+    #[tokio::test]
+    async fn without_a_bypass_a_destructive_command_pauses_instead_of_running() {
+        let (result, survived) = delete_a_file(&ApprovalGrants::default()).await;
+
+        assert_eq!(result.status, ToolStatus::ApprovalRequired);
+        assert!(survived, "the file must still be there while we wait");
+    }
+
+    #[tokio::test]
+    async fn the_card_names_the_call_the_model_made_not_the_hosts_dialect() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("victim.txt"), "keep me").unwrap();
+
+        // Every shell alias routes here, so a model can reach a PowerShell host
+        // through `Bash`. Naming the dialect instead of the call would put one
+        // tool on the approval card and another on the activity row beside it,
+        // for the same command.
+        let result = run_shell(
+            resolve::process_shell(),
+            "Bash",
+            root.path(),
+            "rm victim.txt",
+            30,
+            false,
+            &ApprovalGrants::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.status, ToolStatus::ApprovalRequired);
+        let payload: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["approval_request"]["tool_name"], "Bash");
+        assert!(root.path().join("victim.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_bypass_runs_the_destructive_command_without_asking() {
+        let mut grants = ApprovalGrants::default();
+        grants.set_bypass_all(true);
+
+        let (result, survived) = delete_a_file(&grants).await;
+
+        assert_ne!(
+            result.status,
+            ToolStatus::ApprovalRequired,
+            "unattended mode asks nobody: {}",
+            result.output
+        );
+        assert!(!survived, "the deletion should have happened for real");
+    }
+
+    #[test]
+    fn a_bypass_also_stops_the_policy_refusing_outright() {
+        let root = tempfile::tempdir().unwrap();
+        let mut grants = ApprovalGrants::default();
+        grants.set_bypass_all(true);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // `dd of=` is a `Deny` rule — normally refused with no approval offered.
+        // Unattended mode is exactly as blunt as it sounds, so the command is
+        // handed to the shell instead. `dd` is absent on the hosts this runs on,
+        // which is what makes the assertion safe to write: reaching the shell at
+        // all is the whole finding.
+        let denied = runtime
+            .block_on(run_shell(
+                resolve::process_shell(),
+                "Shell",
+                root.path(),
+                "dd if=/dev/zero of=probe.bin count=0",
+                30,
+                false,
+                &ApprovalGrants::default(),
+            ))
+            .unwrap_err();
+        assert!(
+            denied.model_safe_message().contains("blocked"),
+            "{}",
+            denied.model_safe_message()
+        );
+
+        let bypassed = runtime
+            .block_on(run_shell(
+                resolve::process_shell(),
+                "Shell",
+                root.path(),
+                "dd if=/dev/zero of=probe.bin count=0",
+                30,
+                false,
+                &grants,
+            ))
+            .expect("the policy no longer refuses");
+        assert_ne!(bypassed.status, ToolStatus::ApprovalRequired);
+        assert!(
+            bypassed.output.contains("exit_code="),
+            "the command reached the shell: {}",
+            bypassed.output
         );
     }
 }

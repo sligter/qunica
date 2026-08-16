@@ -10,7 +10,11 @@ import { useMessageStore } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
-  streams: [] as Array<{ handlers: ApiV2SseHandlers; abort: ReturnType<typeof vi.fn> }>,
+  streams: [] as Array<{
+    url: string
+    handlers: ApiV2SseHandlers
+    abort: ReturnType<typeof vi.fn>
+  }>,
   fetchJson: vi.fn(),
 }))
 
@@ -20,9 +24,9 @@ vi.mock('@/lib/api-v2/client', async (importOriginal) => {
 })
 
 vi.mock('@/lib/api-v2/sse', () => ({
-  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers }) => {
+  openApiV2SseStream: (options: { url: string; handlers: ApiV2SseHandlers }) => {
     const abort = vi.fn()
-    mocks.streams.push({ handlers: options.handlers, abort })
+    mocks.streams.push({ url: options.url, handlers: options.handlers, abort })
     return { abort } as unknown as AbortController
   },
 }))
@@ -486,6 +490,125 @@ describe('useResumeStream scheduler events', () => {
       'trigger-1',
       'message-1',
     ])
+  })
+
+  it('shows the card when a resume stops at a fresh approval gate', () => {
+    useMessageStore.getState().setHistory('thread-1', [triggerMessage, interruptedMessage])
+    const queryClient = new QueryClient()
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'thread-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+    // A plain continuation emits no scheduler events, so this run has nothing
+    // but the card itself to hang on to.
+    emit(stream.handlers, {
+      stream_id: 'stream-resumed',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'approval_required',
+      payload: {
+        agent_id: 'agent-1',
+        display_name: 'Agent One',
+        message: 'Approval required to delete files',
+        tool_call_id: 'call_rm',
+        approval_request: {
+          rule: 'delete-files',
+          capability: 'delete files in this workspace',
+          reason: 'it deletes files',
+          subject: 'rm cache.txt',
+          tool_name: 'Pwsh',
+        },
+      },
+    })
+
+    const state = useMessageStore.getState()
+    const run = state.streamRunsByGroup['thread-1']['stream-resumed']
+    expect(run.events).toContainEqual(
+      expect.objectContaining({
+        type: 'approval_required',
+        approval_request: expect.objectContaining({ tool_call_id: 'call_rm' }),
+      }),
+    )
+    // A run is only rendered under the user message it belongs to. Unlinked,
+    // the card never reaches the screen and the paused turn can only be
+    // answered by pressing continue again — which just re-proposes the command.
+    expect(state.streamRunIdByUserMessageIdByGroup['thread-1']['trigger-1']).toBe(
+      'stream-resumed',
+    )
+  })
+
+  it('streams into the conversation bucket even when that is not the resumed thread', () => {
+    // The main group conversation is read through the group id while its
+    // messages live on a thread of their own. Deriving one from the other put
+    // the continuation in a bucket nothing renders, so the bubble stayed on the
+    // partial text until a history refetch happened to land.
+    useMessageStore.getState().setHistory('group-1', [triggerMessage, interruptedMessage])
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const hook = renderHook(
+      () => useResumeStream('group-1', 'group-1', 'message-1'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]
+
+    // The thread being continued is the message's own, not the bucket's.
+    expect(stream.url).toBe('/api/v2/threads/thread-1/resume')
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'token',
+      payload: { delta: ' more' },
+    })
+    const resumed = useMessageStore
+      .getState()
+      .byGroup['group-1'].find((message) => message.id === 'message-1')
+    expect(resumed?.content).toBe('partial more')
+
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 2,
+      event_id: 'event-2',
+      kind: 'done',
+      payload: {},
+    })
+    // And the history the view actually reads is the one invalidated.
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'group-1', 'messages'],
+    })
+  })
+
+  it('invalidates the history of the container the conversation actually lives in', () => {
+    // A direct chat is read through `['direct-chats', id, 'messages']`. Keying
+    // the refresh to groups left the resumed message showing its partial text
+    // until something unrelated happened to refetch.
+    useMessageStore.getState().setHistory('chat-1', [triggerMessage, interruptedMessage])
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const hook = renderHook(
+      () => useResumeStream('chat-1', 'chat-1', 'message-1', 'direct-chats'),
+      { wrapper: wrapper(queryClient) },
+    )
+    act(() => hook.result.current.resume())
+    emit(mocks.streams[0].handlers, {
+      stream_id: 'stream-1',
+      seq: 1,
+      event_id: 'event-1',
+      kind: 'done',
+      payload: {},
+    })
+
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['direct-chats', 'chat-1', 'messages'],
+    })
+    // And nothing group-shaped: a direct chat has no roster query, and firing a
+    // group key at it would be a refresh aimed at a cache that does not exist.
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: ['groups', 'chat-1', 'agents'],
+    })
   })
 
   it('registers a legacy resume so shared controls cancel the server and stream', async () => {

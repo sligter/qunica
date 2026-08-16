@@ -496,6 +496,7 @@ impl ToolExecutor {
                 let run_in_background = arg_bool(&args, "run_in_background", false);
                 shell::run_shell(
                     self.shell,
+                    name,
                     workspace.root(),
                     &command,
                     timeout_seconds,

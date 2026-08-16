@@ -22,7 +22,8 @@ import {
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
 import type { RetryState } from '@/lib/api-v2/retry'
 import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
-import { conversationMessagesKey, conversationStateKey } from '@/hooks/useGroupMessages'
+import { conversationMessagesKey } from '@/hooks/useGroupMessages'
+import type { ConversationScope } from '@/hooks/useGroupMessages'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ApprovalAnswer } from '@/components/chat/ToolApprovalCard'
@@ -120,12 +121,31 @@ function errorMessage(payload: unknown): string {
   return parsed.success ? parsed.data.message ?? 'Resume failed' : 'Resume failed'
 }
 
+/**
+ * Continue the interrupted message `messageId` in the conversation `stateId`.
+ *
+ * `stateId` is the store bucket the conversation is read through — a task's
+ * thread id, or the group id for the main conversation. The thread to resume is
+ * taken from the message itself rather than from the caller: those two are the
+ * same for a task and different for the main conversation, and deriving one
+ * from the other used to put the streamed tokens in a bucket nothing renders.
+ *
+ * `scope` is the container the conversation lives in. It only reaches the query
+ * keys, but a wrong one there means the history the view reads is never
+ * invalidated and the resumed message stays stale until something else
+ * refetches it.
+ */
 export function useResumeStream(
   groupId: string | undefined,
-  threadId: string | null | undefined,
+  stateId: string | undefined,
   messageId: string | undefined,
+  scope: ConversationScope = 'groups',
 ) {
-  const stateId = conversationStateKey(groupId, threadId)
+  const threadId = useMessageStore((s) =>
+    stateId && messageId
+      ? s.byGroup[stateId]?.find((message) => message.id === messageId)?.thread_id ?? null
+      : null,
+  )
   const token = useAuthStore((s) => s.token)
   const appendToMessage = useMessageStore((s) => s.appendToMessage)
   const replaceMessage = useMessageStore((s) => s.replaceMessage)
@@ -152,6 +172,12 @@ export function useResumeStream(
   const ctrlRef = useRef<AbortController | null>(null)
   const streamIdRef = useRef<string | null>(null)
 
+  // The history query is keyed by the *view's* thread, which is a thread id for
+  // a task and absent for the main conversation — the same distinction `stateId`
+  // encodes. Keying the invalidation off the message's own thread would miss the
+  // main conversation's cache entirely and leave the resumed message stale.
+  const queryThreadId = stateId && stateId !== groupId ? stateId : undefined
+
   const finish = useCallback(() => {
     setIsStreaming(false)
     setRetry(null)
@@ -160,11 +186,15 @@ export function useResumeStream(
     if (messageId) endResume(messageId)
     if (groupId) {
       void qc.invalidateQueries({
-        queryKey: conversationMessagesKey('groups', groupId, threadId ?? undefined),
+        queryKey: conversationMessagesKey(scope, groupId, queryThreadId),
       })
-      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+      // A direct chat has no agent roster query to refresh; its sole agent is
+      // resolved from the chat itself.
+      if (scope === 'groups') {
+        void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+      }
     }
-  }, [endResume, groupId, messageId, qc, threadId])
+  }, [endResume, groupId, messageId, qc, queryThreadId, scope])
 
   const cancel = useCallback(async () => {
     const streamId = streamIdRef.current
@@ -242,9 +272,13 @@ export function useResumeStream(
           setRetry(null)
           const streamId = event.stream_id
           streamIdRef.current = streamId
-          const schedulerUpdate = parseSchedulerStreamEvent(event)
-          if (schedulerUpdate) {
-            if (!applySchedulerEvent(stateId, streamId, schedulerUpdate)) return
+          // A run is only rendered under the user message that asked for it, so
+          // an unlinked resume run is an invisible one — its approval card and
+          // waiting-for-input prompt would never reach the screen, leaving the
+          // paused turn answerable only by pressing continue again. Linking is
+          // idempotent and a no-op until the run exists, so it is safe to
+          // attempt after anything that may have created one.
+          const linkRun = () => {
             const interrupted = useMessageStore
               .getState()
               .byGroup[stateId]?.find((message) => message.id === messageId)
@@ -255,6 +289,11 @@ export function useResumeStream(
                 interrupted.reply_to_message_id,
               )
             }
+          }
+          const schedulerUpdate = parseSchedulerStreamEvent(event)
+          if (schedulerUpdate) {
+            if (!applySchedulerEvent(stateId, streamId, schedulerUpdate)) return
+            linkRun()
             if (isTerminalSchedulerUpdate(schedulerUpdate)) {
               void qc.invalidateQueries({
                 queryKey: ['groups', groupId, 'turns', schedulerUpdate.payload.turn_id],
@@ -310,6 +349,7 @@ export function useResumeStream(
                 message: payload?.message ?? 'Waiting for your input',
                 input_request: payload?.input_request,
               })
+              linkRun()
               const turnId = markStreamRunWaitingForUser(stateId, streamId)
               if (turnId) {
                 void qc.invalidateQueries({
@@ -333,6 +373,7 @@ export function useResumeStream(
                   ...parsed.data.approval_request,
                 },
               })
+              linkRun()
               const turnId = markStreamRunWaitingForUser(stateId, streamId)
               if (turnId) {
                 void qc.invalidateQueries({

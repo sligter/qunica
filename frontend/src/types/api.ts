@@ -97,6 +97,12 @@ export interface AgentToolConfig {
   tools: Record<string, AgentToolSelection>
   assistant_agents?: AgentAssistantToolSelection[]
   mcp_servers?: AgentMcpServerSelection[]
+  /**
+   * Run unattended: no tool call ever pauses for approval, and the shell
+   * commands the safety policy normally refuses outright will run. Absent means
+   * off, which is what every agent created before the setting existed gets.
+   */
+  bypass_approvals?: boolean
 }
 
 export type McpTransport = 'stdio' | 'sse' | 'streamable-http'
@@ -745,6 +751,23 @@ export interface MessageToolCall {
   status: string | null
   args_summary: string | null
   result_summary: string | null
+  /**
+   * The question a call paused on, present only while it is still unanswered.
+   *
+   * This is what makes a pause survive a reload: the live `approval_required`
+   * event is gone once the stream is, but the checkpoint on the message keeps
+   * the request, so the card can be rebuilt from history.
+   */
+  approval_request?: MessageApprovalRequest | null
+}
+
+/** The pending question carried by a tool call awaiting approval. */
+export interface MessageApprovalRequest {
+  rule: string
+  capability: string
+  reason: string
+  tool_name: string
+  subject: string
 }
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed'

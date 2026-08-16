@@ -8,7 +8,9 @@ import type {
 } from '@/types/api'
 import { McpToolSelector } from '@/components/agents/McpToolSelector'
 import { EntityPicker } from '@/components/ui/entity-picker'
+import { Label } from '@/components/ui/label'
 import { PageState } from '@/components/ui/page-state'
+import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 
@@ -86,11 +88,42 @@ export function ToolSelector({
   }
 
   const selectableAgents = agents.filter((agent) => agent.id !== currentAgentId)
+  const bypassApprovals = value.bypass_approvals ?? false
 
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-warning bg-warning/55 p-3 text-xs text-warning-foreground">
         {t('tools.notice')}
+      </div>
+      {/* Unattended mode sits with the tools rather than in a general settings
+          pane: it only means anything for the agent whose shell it turns loose,
+          and the person enabling it is the person picking that shell. */}
+      <div
+        className={cn(
+          'rounded-md border p-3',
+          bypassApprovals ? 'border-destructive bg-destructive/10' : 'border-border bg-background',
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <Label htmlFor="tool-bypass-approvals" className="text-sm font-medium">
+              {t('tools.bypassApprovals.label')}
+            </Label>
+            <p className="text-xs text-muted-foreground">{t('tools.bypassApprovals.description')}</p>
+            {bypassApprovals && (
+              <p className="text-2xs font-medium text-destructive">
+                {t('tools.bypassApprovals.warning')}
+              </p>
+            )}
+          </div>
+          <Switch
+            id="tool-bypass-approvals"
+            aria-label={t('tools.bypassApprovals.label')}
+            checked={bypassApprovals}
+            onCheckedChange={(checked) => onChange({ ...value, bypass_approvals: checked })}
+            className="mt-1 shrink-0"
+          />
+        </div>
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-muted-foreground">{t('tools.agentAsTool')}</p>
