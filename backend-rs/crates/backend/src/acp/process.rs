@@ -272,7 +272,10 @@ fn host_cli_auth_env(profile: AcpRuntimeProfile) -> Vec<(String, String)> {
         AcpRuntimeProfile::Claude => {
             keys.extend(["CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "ANTHROPIC_MODEL"]);
         }
-        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => {}
+        AcpRuntimeProfile::Custom
+        | AcpRuntimeProfile::Pi
+        | AcpRuntimeProfile::Opencode
+        | AcpRuntimeProfile::Dsh => {}
     }
     keys.into_iter()
         .filter_map(|key| {
@@ -367,7 +370,7 @@ pub(super) fn build_probe_child_env(
     env.insert(ACP_AGENT_ENV_FLAG.to_string(), "1".to_string());
 
     // Known CLI profiles need the same authenticated home as an actual agent
-    // run. Custom and OpenCode adapters remain fully isolated.
+    // run. Custom, OpenCode, and dsh adapters remain fully isolated.
     if matches!(
         profile,
         AcpRuntimeProfile::Codex | AcpRuntimeProfile::Claude | AcpRuntimeProfile::Pi
@@ -382,7 +385,10 @@ pub(super) fn build_probe_child_env(
                 env.remove("CLAUDE_CONFIG_DIR");
                 env.remove("CLAUDE_HOME");
             }
-            AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => {}
+            AcpRuntimeProfile::Custom
+            | AcpRuntimeProfile::Pi
+            | AcpRuntimeProfile::Opencode
+            | AcpRuntimeProfile::Dsh => {}
         }
         for (key, value) in host_cli_auth_env(profile) {
             env.insert(key, value);
@@ -392,7 +398,10 @@ pub(super) fn build_probe_child_env(
     let auth_keys = match profile {
         AcpRuntimeProfile::Codex => CODEX_AUTH_KEYS,
         AcpRuntimeProfile::Claude => CLAUDE_AUTH_KEYS,
-        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Pi | AcpRuntimeProfile::Opencode => &[],
+        AcpRuntimeProfile::Custom
+        | AcpRuntimeProfile::Pi
+        | AcpRuntimeProfile::Opencode
+        | AcpRuntimeProfile::Dsh => &[],
     };
     let mut sensitive_values = Vec::new();
     for key in auth_keys {
@@ -441,7 +450,7 @@ fn acp_agent_env(
                 env.insert(key, value);
             }
         }
-        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Opencode => {
+        AcpRuntimeProfile::Custom | AcpRuntimeProfile::Opencode | AcpRuntimeProfile::Dsh => {
             let config_dir = isolated_home.join("config");
             let data_dir = isolated_home.join("data");
             let cache_dir = isolated_home.join("cache");
@@ -462,6 +471,12 @@ fn acp_agent_env(
                 s(&config_dir.join("claude")),
             );
             env.insert("CLAUDE_HOME".to_string(), s(&config_dir.join("claude")));
+            if profile == AcpRuntimeProfile::Dsh {
+                // dsh resolves its own state directory from DSH_HOME; without
+                // this it would fall back to the launch cwd, i.e. the user's
+                // workspace.
+                env.insert("DSH_HOME".to_string(), s(&config_dir.join("dsh")));
+            }
         }
     }
 

@@ -3775,6 +3775,20 @@ async fn run_acp_agent_turn(
                 });
                 ctx.emit(StreamEventKind::ContextUsage, payload).await?;
             }
+            AcpEventKind::Warning => {
+                // A non-fatal notice from the ACP client itself (for example a
+                // session setting the runtime does not implement). It is not
+                // agent output, so it must not break token/reasoning runs.
+                let message = event
+                    .data
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("ACP runtime warning")
+                    .to_string();
+                let mut payload = merge_agent_identity(event.data, agent);
+                payload["message"] = json!(message);
+                ctx.emit(StreamEventKind::Warning, payload).await?;
+            }
         }
     }
     let run_control = run.control();

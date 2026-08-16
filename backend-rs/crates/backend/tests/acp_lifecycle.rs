@@ -148,6 +148,13 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
     .expect("opencode profile should normalize");
     assert_eq!(opencode.profile, AcpRuntimeProfile::Opencode);
 
+    let dsh = normalize_acp_runtime(Some(&json!({
+        "command": "dsh-acp-demo",
+        "profile": "dsh",
+    })))
+    .expect("dsh profile should normalize");
+    assert_eq!(dsh.profile, AcpRuntimeProfile::Dsh);
+
     let migrated_codex = normalize_acp_runtime(Some(&json!({
         "command": "npx",
         "profile": "codex",
@@ -211,7 +218,7 @@ fn acp_lifecycle_config_normalizes_settings_and_rejects_invalid_values() {
     );
     assert_eq!(
         err_message(json!({ "command": "agent", "profile": "rogue" })),
-        "ACP runtime profile must be custom, codex, claude, pi, or opencode"
+        "ACP runtime profile must be custom, codex, claude, pi, opencode, or dsh"
     );
     assert_eq!(
         err_message(json!({ "command": "agent", "model": 5 })),
@@ -513,6 +520,7 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
             AcpEventKind::ToolCallStart => saw_tool_start = true,
             AcpEventKind::ToolCallResult => saw_tool_result = true,
             AcpEventKind::Usage => saw_usage = true,
+            AcpEventKind::Warning => {}
             AcpEventKind::Run => {
                 terminal_status = event.data["status"].as_str().map(str::to_string)
             }
@@ -849,6 +857,7 @@ async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
         match event.kind {
             AcpEventKind::Token => applied_text = event.data.as_str().map(str::to_string),
             AcpEventKind::Usage => saw_usage = true,
+            AcpEventKind::Warning => {}
             AcpEventKind::Run => {
                 terminal_status = event.data["status"].as_str().map(str::to_string)
             }
@@ -886,6 +895,127 @@ async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
     let row = fetch_run(&pool, &run_id).await;
     assert_eq!(row.status, "completed");
     assert!(row.ended_at.is_some());
+}
+
+#[tokio::test]
+async fn acp_lifecycle_warns_instead_of_failing_when_settings_are_unimplemented() {
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+
+    // A prompt-only ACP surface: `session/set_model`, `session/set_mode`, and
+    // `session/set_config_option` are all method-not-found. Configuring a
+    // model must not take the whole turn down with it.
+    let config = fake_child_config(
+        "settings_unsupported",
+        "custom",
+        json!({
+            "timeout_seconds": 30,
+            "model": "deepseek-v4-pro",
+            "mode": "workspace-write",
+            "thinking_effort": "high",
+            "config_options": { "verbose": true },
+        }),
+    );
+    let mut run = run_acp_agent_stream(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
+            incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: None,
+        },
+    )
+    .await
+    .expect("run starts");
+    let run_id = run.run_id().to_string();
+
+    let mut warnings: Vec<Value> = Vec::new();
+    let mut tokens = String::new();
+    let mut terminal_status = None;
+    while let Some(event) = run.next_event().await {
+        match event.kind {
+            AcpEventKind::Token => tokens.push_str(event.data.as_str().unwrap_or_default()),
+            AcpEventKind::Warning => warnings.push(event.data),
+            AcpEventKind::Run => {
+                terminal_status = event.data["status"].as_str().map(str::to_string)
+            }
+            _ => {}
+        }
+    }
+
+    // The turn ran to completion and the ignored settings were reported.
+    assert_eq!(terminal_status.as_deref(), Some("completed"));
+    assert!(tokens.contains("hello"), "tokens: {tokens:?}");
+    let settings: Vec<&str> = warnings
+        .iter()
+        .filter_map(|warning| warning["setting"].as_str())
+        .collect();
+    assert!(settings.contains(&"model"), "warnings: {warnings:?}");
+    assert!(settings.contains(&"mode"), "warnings: {warnings:?}");
+    assert!(
+        settings.contains(&"thinking effort"),
+        "warnings: {warnings:?}"
+    );
+    assert!(
+        settings.contains(&"config option"),
+        "warnings: {warnings:?}"
+    );
+    assert_eq!(warnings[0]["code"], json!("acp_setting_unsupported"));
+
+    let row = fetch_run(&pool, &run_id).await;
+    assert_eq!(row.status, "completed");
+}
+
+#[tokio::test]
+async fn acp_lifecycle_fails_when_an_implemented_config_option_is_rejected() {
+    let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+
+    // `session/set_config_option` exists here but rejects the id. That is a
+    // real misconfiguration, not an unsupported surface, so it still fails.
+    let config = fake_child_config(
+        "settings_rejected",
+        "custom",
+        json!({
+            "timeout_seconds": 30,
+            "model": "deepseek-v4-pro",
+        }),
+    );
+    let mut run = run_acp_agent_stream(
+        pool.clone(),
+        AcpRunRequest {
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "hi".to_string(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
+            incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: None,
+        },
+    )
+    .await
+    .expect("run starts");
+    let run_id = run.run_id().to_string();
+
+    while run.next_event().await.is_some() {}
+
+    let row = fetch_run(&pool, &run_id).await;
+    assert_eq!(row.status, "failed");
 }
 
 #[tokio::test]
@@ -1609,7 +1739,11 @@ fn run_fake_child(mode: &str) {
                 }
             }
             "session/set_model" | "session/set_mode" => {
-                if mode == "settings" || mode == "capabilities_fallback" {
+                if mode == "settings"
+                    || mode == "capabilities_fallback"
+                    || mode == "settings_unsupported"
+                    || mode == "settings_rejected"
+                {
                     write_line(&stdout, &rpc_error(&id, -32601, "method not found"));
                 } else if mode == "capabilities_mode_legacy_latest" {
                     write_line(
@@ -1672,6 +1806,17 @@ fn run_fake_child(mode: &str) {
             }
             "session/set_config_option" => {
                 applied.push(params);
+                // A runtime whose ACP surface is prompt-only answers
+                // method-not-found for every setting; one that implements the
+                // method but dislikes the id answers invalid-params.
+                if mode == "settings_unsupported" {
+                    write_line(&stdout, &rpc_error(&id, -32601, "method not found"));
+                    continue;
+                }
+                if mode == "settings_rejected" {
+                    write_line(&stdout, &rpc_error(&id, -32602, "unknown config option"));
+                    continue;
+                }
                 let result = if mode == "capabilities_fallback" {
                     json!({
                         "configOptions": capability_config_options("gpt-5.5", "xhigh"),

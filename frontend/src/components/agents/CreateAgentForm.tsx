@@ -62,7 +62,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   description: z.string().optional(),
   system_prompt: z.string().min(1, promptRequired),
   runtime_kind: z.enum(['llm_chat', 'acp']),
-  acp_profile: z.enum(['custom', 'codex', 'claude', 'pi', 'opencode']),
+  acp_profile: z.enum(['custom', 'codex', 'claude', 'pi', 'opencode', 'dsh']),
   acp_command: z.string().optional(),
   acp_args: z.string().optional(),
   acp_env: z.string().optional(),

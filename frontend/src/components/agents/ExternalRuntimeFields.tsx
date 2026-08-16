@@ -201,6 +201,12 @@ export function ExternalRuntimeFields({
             {t('agents:runtime.noneDetected')}
           </p>
         )}
+        {/* Presets differ in what they can actually stream — dsh, for one, has
+            no tool or usage updates and no resumable sessions. Say so here
+            rather than letting the empty tool timeline speak for itself. */}
+        {selectedPreset?.description && (
+          <p className="text-2xs text-muted-foreground">{selectedPreset.description}</p>
+        )}
       </div>
 
       {missingPresets.length > 0 && (

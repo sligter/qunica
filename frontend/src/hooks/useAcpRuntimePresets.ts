@@ -128,6 +128,59 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     install_hint: 'Install opencode so it is on PATH; the ACP command is opencode acp.',
     source: 'fallback',
   },
+  {
+    id: 'dsh',
+    name: 'DeepSeek Harness',
+    description:
+      'deepseek-harness ACP server. It streams no tool, plan, or usage updates, and sessions cannot be resumed.',
+    profile: 'dsh',
+    installed: false,
+    command: 'npx',
+    // Pinned deliberately: the `latest` dist-tag on this package still points
+    // at an older release with a different dependency graph.
+    args: ['-y', '@deepseek-ai/dsh-acp-demo@0.1.0-rc.6'],
+    env: {},
+    timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
+    permission_policy: 'deny',
+    default_model: 'deepseek-v4-pro',
+    default_mode: 'workspace-write',
+    default_thinking_effort: null,
+    model_options: [
+      { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+      { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+    ],
+    mode_options: [
+      {
+        value: 'text-only',
+        label: 'Text Only',
+        description: 'No shell or filesystem tools; the agent only talks.',
+      },
+      {
+        value: 'read-only',
+        label: 'Read Only',
+        description: 'Shell and filesystem tools with every write denied.',
+      },
+      {
+        value: 'workspace-write',
+        label: 'Workspace Write',
+        description:
+          'Writes allowed in the workspace and the platform temp directories, denied everywhere else. Enforcement is partial on Windows and older Linux kernels: files granting Everyone write, and hard links, stay reachable.',
+      },
+      {
+        value: 'danger-full-access',
+        label: 'Danger: Full Access',
+        description: 'No confinement, and the runtime stops asking before it writes.',
+      },
+    ],
+    thinking_effort_options: [
+      { value: 'off', label: 'Off', description: 'Disable thinking.' },
+      { value: 'high', label: 'High', description: 'High reasoning effort (the dsh default).' },
+      { value: 'max', label: 'Max', description: 'Maximum reasoning effort.' },
+    ],
+    install_hint:
+      'Install the pinned dsh packages so dsh-acp-demo is on PATH. Set DEEPSEEK_API_KEY in the runtime environment. Requires Node 22.19+ or 24+.',
+    source: 'fallback',
+  },
 ] satisfies AcpRuntimePresetRead[]
 
 const fallbackResponse = { presets: FALLBACK_ACP_RUNTIME_PRESETS }

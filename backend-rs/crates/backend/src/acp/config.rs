@@ -73,6 +73,13 @@ pub enum AcpRuntimeProfile {
     Pi,
     /// The OpenCode ACP server profile.
     Opencode,
+    /// The deepseek-harness (`dsh`) ACP server profile.
+    ///
+    /// Its ACP surface is prompt-only: no `session/set_model`,
+    /// `session/set_mode`, `session/set_config_option`, or `session/load`, and
+    /// no tool-call/plan/usage updates. Model and permission choices are made
+    /// through its own `cordis.yml` and environment instead.
+    Dsh,
 }
 
 impl AcpRuntimeProfile {
@@ -84,6 +91,7 @@ impl AcpRuntimeProfile {
             AcpRuntimeProfile::Claude => "claude",
             AcpRuntimeProfile::Pi => "pi",
             AcpRuntimeProfile::Opencode => "opencode",
+            AcpRuntimeProfile::Dsh => "dsh",
         }
     }
 }
@@ -184,6 +192,7 @@ pub fn canonicalize_acp_runtime(config: &mut AcpRuntimeConfig) {
     let executable = match config.profile {
         AcpRuntimeProfile::Codex => Some("codex-acp"),
         AcpRuntimeProfile::Pi => Some("pi-acp"),
+        AcpRuntimeProfile::Dsh => Some(crate::acp::dsh::DSH_ACP_COMMAND),
         _ => None,
     };
     let command = executable
@@ -196,6 +205,21 @@ fn canonicalize_acp_runtime_with_command(
     config: &mut AcpRuntimeConfig,
     installed_command: Option<&str>,
 ) {
+    // A saved dsh config always pins an exact version, so the plain
+    // package-name comparison below would never match it. Resolving it to the
+    // installed binary matters more here than for the other profiles: `npx`
+    // would otherwise resolve a 60-package dependency tree on every launch,
+    // well past the capability probe's deadline.
+    if config.profile == AcpRuntimeProfile::Dsh
+        && is_npx_versioned_package_config(config, crate::acp::dsh::DSH_ACP_PACKAGE)
+    {
+        if let Some(command) = installed_command {
+            config.command = command.to_string();
+            config.args.clear();
+        }
+        return;
+    }
+
     let package = match config.profile {
         AcpRuntimeProfile::Codex if is_codex_acp_config(config) => {
             Some("@agentclientprotocol/codex-acp")
@@ -237,6 +261,21 @@ fn is_npx_package_config(config: &AcpRuntimeConfig, package: &str) -> bool {
         .and_then(|name| name.to_str())
         .unwrap_or(&config.command);
     command_name.eq_ignore_ascii_case("npx") && config.args.iter().any(|arg| arg == package)
+}
+
+/// Like [`is_npx_package_config`], but also matching a `package@version` arg.
+fn is_npx_versioned_package_config(config: &AcpRuntimeConfig, package: &str) -> bool {
+    let command_name = Path::new(&config.command)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&config.command);
+    command_name.eq_ignore_ascii_case("npx")
+        && config.args.iter().any(|arg| {
+            arg == package
+                || arg
+                    .strip_prefix(package)
+                    .is_some_and(|suffix| suffix.starts_with('@') && suffix.len() > 1)
+        })
 }
 
 fn find_command_on_path(command: &str) -> Option<PathBuf> {
@@ -378,8 +417,9 @@ fn normalize_profile(value: Option<&Value>) -> Result<AcpRuntimeProfile, AcpConf
             "claude" => Ok(AcpRuntimeProfile::Claude),
             "pi" => Ok(AcpRuntimeProfile::Pi),
             "opencode" => Ok(AcpRuntimeProfile::Opencode),
+            "dsh" => Ok(AcpRuntimeProfile::Dsh),
             _ => Err(invalid(
-                "ACP runtime profile must be custom, codex, claude, pi, or opencode",
+                "ACP runtime profile must be custom, codex, claude, pi, opencode, or dsh",
             )),
         },
         Some(_) => Err(invalid("ACP runtime profile must be a string")),

@@ -227,6 +227,17 @@ impl AcpConnection {
         *self.events_tx.lock().await = None;
     }
 
+    /// Push an event into the current turn's sink directly.
+    ///
+    /// Most events come from mapped `session/update` notifications; this is for
+    /// notices the client itself raises about the session, such as a setting
+    /// the agent does not implement. A turn with no installed sink drops it.
+    pub async fn emit_event(&self, event: AcpAgentEvent) {
+        if let Some(events_tx) = self.events_tx.lock().await.as_ref() {
+            let _ = events_tx.send(event);
+        }
+    }
+
     /// Send a JSON-RPC request and await its response.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, ProtocolError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);

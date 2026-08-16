@@ -15,6 +15,7 @@
 
 pub mod capabilities;
 pub mod config;
+pub mod dsh;
 pub mod process;
 pub mod protocol;
 
@@ -83,6 +84,9 @@ pub enum AcpEventKind {
     ToolCallResult,
     /// A token-usage update for the turn.
     Usage,
+    /// A non-fatal notice about the run, such as a session setting the agent
+    /// does not implement.
+    Warning,
 }
 
 impl AcpEventKind {
@@ -95,6 +99,7 @@ impl AcpEventKind {
             AcpEventKind::ToolCallStart => "tool_call_start",
             AcpEventKind::ToolCallResult => "tool_call_result",
             AcpEventKind::Usage => "usage",
+            AcpEventKind::Warning => "warning",
         }
     }
 }
@@ -796,7 +801,9 @@ impl LiveAcpSession {
             .map_err(|err| format!("failed to create ACP home: {err}"))?;
         let env = build_child_env(config.profile, home.path(), &config.env)
             .map_err(|err| format!("failed to build ACP environment: {err}"))?;
-        let spawned = spawn_acp_child(&config.command, &config.args, cwd, &env)
+        let args = dsh::launch_args(config, home.path(), cwd)
+            .map_err(|err| format!("failed to prepare the ACP runtime configuration: {err}"))?;
+        let spawned = spawn_acp_child(&config.command, &args, cwd, &env)
             .map_err(|err| format!("failed to start ACP agent: {err}"))?;
         let SpawnedAcpChild {
             child,
@@ -1196,27 +1203,56 @@ fn new_session_meta(config: &AcpRuntimeConfig) -> Option<Value> {
     Some(json!({ "claudeCode": { "options": { "effortLevel": effort } } }))
 }
 
+/// Whether a session setting was accepted by the agent, or is simply not
+/// implemented by it.
+///
+/// An ACP agent is free to omit `session/set_model`, `session/set_mode`, and
+/// `session/set_config_option` entirely (the dsh runtime does). That must not
+/// fail the turn — but it must not be silent either, because the user picked
+/// the value in the UI and would otherwise believe it took effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingOutcome {
+    /// The agent accepted the setting.
+    Applied,
+    /// Every method that could carry the setting returned method-not-found.
+    Unsupported,
+}
+
 /// Apply model, mode, thinking effort, and explicit config options to a new
 /// session, mirroring Python `_apply_session_settings`.
+///
+/// Settings an agent does not implement at all are reported as warnings on the
+/// turn's event stream rather than failing the turn.
 async fn apply_session_settings(
     conn: &AcpConnection,
     session_id: &str,
     config: &AcpRuntimeConfig,
 ) -> Result<(), ProtocolError> {
-    if let Some(model) = config.model.as_deref() {
-        apply_session_model(conn, session_id, model).await?;
-    }
-    if let Some(mode) = config.mode.as_deref() {
-        apply_session_mode(conn, session_id, mode, config.profile).await?;
-    }
-    if let Some(effort) = config.thinking_effort.as_deref() {
-        apply_first_config_option(
-            conn,
-            session_id,
-            &thinking_config_option_ids(config.profile),
-            &Value::String(effort.to_string()),
-        )
-        .await?;
+    // dsh implements none of the `session/set_*` methods: model, mode, and
+    // reasoning effort ride the managed `cordis.yml` its process launched
+    // with, so they are already in effect by the time the session exists.
+    // Asking over the wire would only warn "ignored" about settings that did
+    // apply. Explicit `config_options` below stay on the wire for every
+    // profile — they are an escape hatch, and a warning about them is honest.
+    if config.profile != AcpRuntimeProfile::Dsh {
+        if let Some(model) = config.model.as_deref() {
+            let outcome = apply_session_model(conn, session_id, model).await?;
+            warn_if_unsupported(conn, outcome, "model", model).await;
+        }
+        if let Some(mode) = config.mode.as_deref() {
+            let outcome = apply_session_mode(conn, session_id, mode, config.profile).await?;
+            warn_if_unsupported(conn, outcome, "mode", mode).await;
+        }
+        if let Some(effort) = config.thinking_effort.as_deref() {
+            let outcome = apply_first_config_option(
+                conn,
+                session_id,
+                &thinking_config_option_ids(config.profile),
+                &Value::String(effort.to_string()),
+            )
+            .await?;
+            warn_if_unsupported(conn, outcome, "thinking effort", effort).await;
+        }
     }
     if let Some(options) = &config.config_options {
         for (key, value) in options {
@@ -1224,14 +1260,48 @@ async fn apply_session_settings(
                 AcpConfigValue::Str(s) => Value::String(s.clone()),
                 AcpConfigValue::Bool(b) => Value::Bool(*b),
             };
-            conn.request(
-                METHOD_SESSION_SET_CONFIG_OPTION,
-                config_option_params(key, session_id, &value),
-            )
-            .await?;
+            match conn
+                .request(
+                    METHOD_SESSION_SET_CONFIG_OPTION,
+                    config_option_params(key, session_id, &value),
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(err) if err.is_method_not_found() => {
+                    warn_if_unsupported(conn, SettingOutcome::Unsupported, "config option", key)
+                        .await;
+                }
+                Err(err) => return Err(err),
+            }
         }
     }
     Ok(())
+}
+
+/// Emit a turn warning when `outcome` says the agent has no method for a
+/// setting the user configured.
+async fn warn_if_unsupported(
+    conn: &AcpConnection,
+    outcome: SettingOutcome,
+    label: &str,
+    value: &str,
+) {
+    if outcome == SettingOutcome::Applied {
+        return;
+    }
+    conn.emit_event(AcpAgentEvent::new(
+        AcpEventKind::Warning,
+        json!({
+            "message": format!(
+                "This ACP runtime does not support setting the {label} ({value}); it was ignored."
+            ),
+            "code": "acp_setting_unsupported",
+            "setting": label,
+            "value": value,
+        }),
+    ))
+    .await;
 }
 
 /// Set the session model, falling back to a `model` config option only when the
@@ -1240,7 +1310,7 @@ async fn apply_session_model(
     conn: &AcpConnection,
     session_id: &str,
     model: &str,
-) -> Result<(), ProtocolError> {
+) -> Result<SettingOutcome, ProtocolError> {
     match conn
         .request(
             METHOD_SESSION_SET_MODEL,
@@ -1248,7 +1318,7 @@ async fn apply_session_model(
         )
         .await
     {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(SettingOutcome::Applied),
         Err(err) if err.is_method_not_found() => {
             apply_first_config_option(
                 conn,
@@ -1269,7 +1339,7 @@ async fn apply_session_mode(
     session_id: &str,
     mode: &str,
     profile: AcpRuntimeProfile,
-) -> Result<(), ProtocolError> {
+) -> Result<SettingOutcome, ProtocolError> {
     match conn
         .request(
             METHOD_SESSION_SET_MODE,
@@ -1277,7 +1347,7 @@ async fn apply_session_mode(
         )
         .await
     {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(SettingOutcome::Applied),
         Err(err) if err.is_method_not_found() => {
             let ids = mode_config_option_ids(profile);
             apply_first_config_option(conn, session_id, &ids, &Value::String(mode.to_string()))
@@ -1287,16 +1357,21 @@ async fn apply_session_mode(
     }
 }
 
-/// Try each config-option id in order, returning on the first success and
-/// surfacing the last error if all fail. Mirrors Python
-/// `_apply_first_config_option` (it retries on *any* error, not only
-/// method-not-found).
+/// Try each config-option id in order, returning on the first success.
+///
+/// This deliberately diverges from Python `_apply_first_config_option`, which
+/// retries on *any* error and surfaces the last one. An agent that implements
+/// no `session/set_config_option` at all answers method-not-found for every
+/// candidate, and failing the turn over that would break every runtime whose
+/// ACP surface is prompt-only. Method-not-found therefore reports
+/// [`SettingOutcome::Unsupported`]; a candidate rejected for any other reason
+/// (the method exists but disliked the id or value) is still an error.
 async fn apply_first_config_option(
     conn: &AcpConnection,
     session_id: &str,
     option_ids: &[&str],
     value: &Value,
-) -> Result<(), ProtocolError> {
+) -> Result<SettingOutcome, ProtocolError> {
     let mut last_error: Option<ProtocolError> = None;
     for option_id in option_ids {
         match conn
@@ -1306,13 +1381,14 @@ async fn apply_first_config_option(
             )
             .await
         {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(SettingOutcome::Applied),
+            Err(err) if err.is_method_not_found() => {}
             Err(err) => last_error = Some(err),
         }
     }
     match last_error {
         Some(err) => Err(err),
-        None => Ok(()),
+        None => Ok(SettingOutcome::Unsupported),
     }
 }
 

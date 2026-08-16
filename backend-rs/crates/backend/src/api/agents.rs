@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::acp::{
-    canonicalize_acp_runtime, normalize_acp_runtime, probe_acp_runtime_capabilities,
+    canonicalize_acp_runtime, dsh, normalize_acp_runtime, probe_acp_runtime_capabilities,
     AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities, AcpRuntimeConfig, PermissionPolicy,
     DEFAULT_TIMEOUT_SECONDS,
 };
@@ -212,11 +212,7 @@ impl From<AgentRow> for AgentResponse {
     fn from(row: AgentRow) -> Self {
         let skill_ids =
             serde_json::from_str::<Vec<String>>(&row.skill_ids_json).unwrap_or_default();
-        let mut workspace_ids = row
-            .workspace_id
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut workspace_ids = row.workspace_id.iter().cloned().collect::<Vec<_>>();
         for id in serde_json::from_str::<Vec<String>>(&row.workspace_ids_json).unwrap_or_default() {
             if !workspace_ids.contains(&id) {
                 workspace_ids.push(id);
@@ -283,19 +279,19 @@ pub async fn install_acp_runtime_version(
             "Unable to find npm. Ensure npm is installed and on PATH.",
         )
     })?;
-    let output = run_command(
-        &npm,
-        &["install", "--global", "--include=optional", &package_spec],
-        ACP_INSTALL_TIMEOUT,
-    )
-    .await
-    .map_err(|message| {
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "acp_runtime_install_failed",
-            message,
-        )
-    })?;
+    // Companion packages go in the same install so a multi-package runtime can
+    // never end up half-present, which surfaces only as a startup failure.
+    let mut args = vec!["install", "--global", "--include=optional", &package_spec];
+    args.extend(preset.install_specs.iter().skip(1).copied());
+    let output = run_command(&npm, &args, ACP_INSTALL_TIMEOUT)
+        .await
+        .map_err(|message| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "acp_runtime_install_failed",
+                message,
+            )
+        })?;
 
     Ok(Json(AcpRuntimeInstallResponse {
         preset: runtime_version_status(preset).await,
@@ -507,7 +503,9 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<AgentResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(update_inner(&state, &owner_id, &agent_id, body).await?))
+    Ok(Json(
+        update_inner(&state, &owner_id, &agent_id, body).await?,
+    ))
 }
 
 /// The body of [`update`] without the axum extractors. See [`create_inner`].
@@ -543,9 +541,9 @@ pub(crate) async fn update_inner(
         None => existing.workspace_id.clone(),
     };
     let workspace_ids = match (body.workspace_ids.as_deref(), workspace_id.as_deref()) {
-        (Some(raw), Some(primary)) => Some(
-            validate_workspace_ids(state.db.pool(), Some(raw), primary, &owner_id).await?,
-        ),
+        (Some(raw), Some(primary)) => {
+            Some(validate_workspace_ids(state.db.pool(), Some(raw), primary, &owner_id).await?)
+        }
         (Some(_), None) => {
             return Err(ApiError::invalid_input(
                 "workspace_ids require a primary workspace_id",
@@ -1039,6 +1037,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
     let codex_acp = command_or_name("codex-acp");
     let pi_acp = command_or_name("pi-acp");
     let opencode = command_or_name("opencode");
+    let dsh_acp = command_or_name(dsh::DSH_ACP_COMMAND);
 
     vec![
         AcpRuntimePresetResponse {
@@ -1177,6 +1176,70 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             install_hint: "Install opencode so it is on PATH; the ACP command is opencode acp.",
             source: Some("fallback"),
         },
+        AcpRuntimePresetResponse {
+            id: "dsh",
+            name: "DeepSeek Harness",
+            description: "deepseek-harness ACP server. It streams no tool, plan, \
+                          or usage updates, and sessions cannot be resumed.",
+            profile: "dsh",
+            installed: dsh_acp.installed,
+            command: Some(if dsh_acp.installed {
+                dsh_acp.command.clone()
+            } else {
+                npx.command.clone()
+            }),
+            args: if dsh_acp.installed {
+                Vec::new()
+            } else {
+                vec!["-y", dsh::DSH_ACP_PINNED_SPEC]
+            },
+            env: BTreeMap::new(),
+            timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
+            permission_policy: "deny",
+            default_model: Some(dsh::DSH_DEFAULT_MODEL),
+            default_mode: Some("workspace-write"),
+            default_thinking_effort: None,
+            model_options: vec![
+                choice("deepseek-v4-pro", "DeepSeek V4 Pro", None),
+                choice("deepseek-v4-flash", "DeepSeek V4 Flash", None),
+            ],
+            mode_options: vec![
+                choice(
+                    "text-only",
+                    "Text Only",
+                    Some("No shell or filesystem tools; the agent only talks."),
+                ),
+                choice(
+                    "read-only",
+                    "Read Only",
+                    Some("Shell and filesystem tools with every write denied."),
+                ),
+                choice(
+                    "workspace-write",
+                    "Workspace Write",
+                    Some(
+                        "Writes allowed in the workspace and the platform temp directories, \
+                         denied everywhere else. Enforcement is partial on Windows and older \
+                         Linux kernels: files granting Everyone write, and hard links, stay \
+                         reachable.",
+                    ),
+                ),
+                choice(
+                    "danger-full-access",
+                    "Danger: Full Access",
+                    Some("No confinement, and the runtime stops asking before it writes."),
+                ),
+            ],
+            thinking_effort_options: vec![
+                choice("off", "Off", Some("Disable thinking.")),
+                choice("high", "High", Some("High reasoning effort (the dsh default).")),
+                choice("max", "Max", Some("Maximum reasoning effort.")),
+            ],
+            install_hint: "Install the pinned dsh packages so dsh-acp-demo is on PATH. \
+                           Set DEEPSEEK_API_KEY in the runtime environment. Requires \
+                           Node 22.19+ or 24+.",
+            source: Some("fallback"),
+        },
     ]
 }
 
@@ -1184,24 +1247,47 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
 struct AcpRuntimeVersionPreset {
     id: &'static str,
     package_name: &'static str,
+    /// The npm dist-tag carrying the version this runtime should track.
+    ///
+    /// Almost always `latest`. deepseek-harness is the exception: its `latest`
+    /// tag still points at an older release with a different dependency graph,
+    /// so checking it would tell users to "update" by downgrading.
+    dist_tag: &'static str,
+    /// Every package a working install needs, primary first. Empty means the
+    /// runtime is a single package installed at `dist_tag`.
+    install_specs: &'static [&'static str],
 }
 
-const ACP_RUNTIME_VERSION_PRESETS: [AcpRuntimeVersionPreset; 4] = [
+const ACP_RUNTIME_VERSION_PRESETS: [AcpRuntimeVersionPreset; 5] = [
     AcpRuntimeVersionPreset {
         id: "codex",
         package_name: "@agentclientprotocol/codex-acp",
+        dist_tag: "latest",
+        install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "claude",
         package_name: "@agentclientprotocol/claude-agent-acp",
+        dist_tag: "latest",
+        install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "pi",
         package_name: "pi-acp",
+        dist_tag: "latest",
+        install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "opencode",
         package_name: "opencode-ai",
+        dist_tag: "latest",
+        install_specs: &[],
+    },
+    AcpRuntimeVersionPreset {
+        id: "dsh",
+        package_name: dsh::DSH_ACP_PACKAGE,
+        dist_tag: dsh::DSH_DIST_TAG,
+        install_specs: dsh::DSH_INSTALL_SPECS,
     },
 ];
 
@@ -1211,17 +1297,58 @@ fn acp_runtime_version_preset(id: &str) -> Option<AcpRuntimeVersionPreset> {
         .find(|preset| preset.id == id)
 }
 
+/// The package names a preset's install covers, primary first.
+fn preset_package_names(preset: AcpRuntimeVersionPreset) -> Vec<&'static str> {
+    if preset.install_specs.is_empty() {
+        return vec![preset.package_name];
+    }
+    preset
+        .install_specs
+        .iter()
+        .map(|spec| package_name_of_spec(spec))
+        .collect()
+}
+
+/// Split the version off an npm spec. Handles scoped names, whose leading `@`
+/// is part of the name rather than a version separator.
+fn package_name_of_spec(spec: &'static str) -> &'static str {
+    match spec.rsplit_once('@') {
+        Some((name, _)) if !name.is_empty() => name,
+        _ => spec,
+    }
+}
+
 async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVersionResponse {
     let local_version = local_npm_package_version(preset.package_name).await;
-    let latest_version = npm_latest_package_version(preset.package_name).await;
-    let installed = local_version.is_some();
-    let status = match (local_version.as_deref(), latest_version.as_deref()) {
-        (None, _) => "not_installed",
-        (Some(local), Some(latest)) if local == latest => "current",
-        (Some(_), Some(_)) => "update_available",
-        (Some(_), None) => "local_only",
+    let latest_version = npm_latest_package_version(preset.package_name, preset.dist_tag).await;
+
+    // A multi-package runtime is only usable once every package is present:
+    // dsh boots into a config that names its plugins by package, and a missing
+    // one fails the plugin tree at startup rather than at first use. The whole
+    // global list is read once — a `npm list` per companion would put ten
+    // subprocesses on the path of a single version card.
+    let mut missing_companion = None;
+    if local_version.is_some() {
+        let companions = preset_package_names(preset);
+        if companions.len() > 1 {
+            let installed_globals = local_npm_global_packages().await;
+            missing_companion = companions
+                .into_iter()
+                .skip(1)
+                .find(|name| !installed_globals.contains(*name));
+        }
+    }
+
+    let installed = local_version.is_some() && missing_companion.is_none();
+    let status = match (&local_version, missing_companion, &latest_version) {
+        (None, _, _) | (_, Some(_), _) => "not_installed",
+        (Some(local), None, Some(latest)) if local == latest => "current",
+        (Some(_), None, Some(_)) => "update_available",
+        (Some(_), None, None) => "local_only",
     };
-    let message = if !installed {
+    let message = if let Some(name) = missing_companion {
+        Some(format!("Incomplete install: {name} is missing."))
+    } else if !installed {
         Some("Not installed locally.".to_string())
     } else if latest_version.is_none() {
         Some("Unable to check the npm registry.".to_string())
@@ -1258,7 +1385,36 @@ async fn local_npm_package_version(package_name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn npm_latest_package_version(package_name: &str) -> Option<String> {
+/// The names of every globally installed npm package, read in one call.
+///
+/// An unreadable list yields an empty set, which reports every companion as
+/// missing. That is the safe direction: the install button is idempotent, so a
+/// false "incomplete" costs a re-run, while a false "complete" hides a runtime
+/// that cannot boot.
+async fn local_npm_global_packages() -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let Some(npm) = npm_command() else {
+        return names;
+    };
+    let Ok(output) = run_command(
+        &npm,
+        &["list", "--global", "--depth=0", "--json"],
+        ACP_VERSION_TIMEOUT,
+    )
+    .await
+    else {
+        return names;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&output) else {
+        return names;
+    };
+    if let Some(dependencies) = value.get("dependencies").and_then(Value::as_object) {
+        names.extend(dependencies.keys().cloned());
+    }
+    names
+}
+
+async fn npm_latest_package_version(package_name: &str, dist_tag: &str) -> Option<String> {
     let encoded = package_name.replace('/', "%2F");
     let url = format!("https://registry.npmjs.org/{encoded}");
     let client = reqwest::Client::builder()
@@ -1277,7 +1433,7 @@ async fn npm_latest_package_version(package_name: &str) -> Option<String> {
         .ok()?;
     value
         .get("dist-tags")?
-        .get("latest")?
+        .get(dist_tag)?
         .as_str()
         .map(str::to_string)
 }
@@ -1286,7 +1442,15 @@ fn resolve_install_package_spec(
     preset: AcpRuntimeVersionPreset,
     requested: Option<&str>,
 ) -> Result<String, ApiError> {
-    let package_spec = requested.unwrap_or(preset.package_name).trim();
+    // A preset that pins its own version must default to the pin, not to the
+    // bare package name — npm would resolve that through `latest`, which for
+    // dsh is an older, incompatible release.
+    let default_spec = preset
+        .install_specs
+        .first()
+        .copied()
+        .unwrap_or(preset.package_name);
+    let package_spec = requested.unwrap_or(default_spec).trim();
     if package_spec.is_empty()
         || package_spec.len() > 200
         || package_spec.chars().any(char::is_whitespace)

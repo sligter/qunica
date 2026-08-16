@@ -170,7 +170,7 @@ export interface McpTestConnectionResult {
 }
 
 export type AgentRuntimeKind = 'llm_chat' | 'acp'
-export type AcpRuntimeProfile = 'custom' | 'codex' | 'claude' | 'pi' | 'opencode'
+export type AcpRuntimeProfile = 'custom' | 'codex' | 'claude' | 'pi' | 'opencode' | 'dsh'
 export type AcpPermissionPolicy = 'deny' | 'auto_allow'
 export type AcpConfigValue = string | boolean
 
@@ -194,7 +194,7 @@ export interface AcpRuntimeChoice {
 }
 
 export interface AcpRuntimePresetRead {
-  id: 'codex' | 'claude' | 'pi' | 'opencode'
+  id: 'codex' | 'claude' | 'pi' | 'opencode' | 'dsh'
   name: string
   description: string
   profile: Exclude<AcpRuntimeProfile, 'custom'>

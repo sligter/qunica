@@ -103,6 +103,12 @@ pub async fn probe_acp_runtime_capabilities(
     config: AcpRuntimeConfig,
     selected_model: Option<String>,
 ) -> Result<AcpRuntimeCapabilities, AcpCapabilityError> {
+    // A runtime with an unmet engine requirement fails deep inside its own
+    // startup, where the only signal reaching us is "the child died". Say what
+    // is actually wrong before paying for a spawn.
+    if let Some(reason) = crate::acp::dsh::preflight(&config).await {
+        return Ok(AcpRuntimeCapabilities::warning(reason));
+    }
     let started = Instant::now();
     let deadline = started + PROBE_TIMEOUT;
     let (mut session, mut raw_updates_rx) = ProbeSession::start(&config).await?;
@@ -284,12 +290,14 @@ impl ProbeSession {
             .map_err(|source| AcpCapabilityError::Environment { source })?;
         let probe_env = build_probe_child_env(config.profile, &home, &config.env)
             .map_err(|source| AcpCapabilityError::Environment { source })?;
+        let args = crate::acp::dsh::launch_args(config, &home, &cwd)
+            .map_err(|source| AcpCapabilityError::Environment { source })?;
         let SpawnedAcpChild {
             child,
             stdin,
             stdout,
             stderr,
-        } = spawn_acp_child(&config.command, &config.args, &cwd, &probe_env.variables)
+        } = spawn_acp_child(&config.command, &args, &cwd, &probe_env.variables)
             .map_err(|source| AcpCapabilityError::Spawn { source })?;
 
         let stderr_task = tokio::spawn(async move {

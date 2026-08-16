@@ -872,7 +872,7 @@ async fn agent_runtime_kind_acp_clears_provider_and_stores_runtime() {
 }
 
 #[tokio::test]
-async fn acp_runtime_presets_include_pi_and_opencode() {
+async fn acp_runtime_presets_include_pi_opencode_and_dsh() {
     let app = app().await;
     let token = register_and_login(&app, "acp-presets@example.com").await;
 
@@ -893,6 +893,7 @@ async fn acp_runtime_presets_include_pi_and_opencode() {
     assert!(ids.contains(&"claude"), "ids: {ids:?}");
     assert!(ids.contains(&"pi"), "ids: {ids:?}");
     assert!(ids.contains(&"opencode"), "ids: {ids:?}");
+    assert!(ids.contains(&"dsh"), "ids: {ids:?}");
 
     let pi = presets.iter().find(|preset| preset["id"] == "pi").unwrap();
     assert_eq!(pi["profile"], "pi");
@@ -926,6 +927,61 @@ async fn acp_runtime_presets_include_pi_and_opencode() {
         );
     } else {
         assert_eq!(opencode_command, "opencode");
+    }
+
+    let dsh = presets.iter().find(|preset| preset["id"] == "dsh").unwrap();
+    assert_eq!(dsh["profile"], "dsh");
+    assert_eq!(dsh["permission_policy"], "deny");
+    // Every offered mode must be one the composition generator accepts, and the
+    // default must be one of them.
+    let modes: Vec<&str> = dsh["mode_options"]
+        .as_array()
+        .expect("dsh mode options")
+        .iter()
+        .filter_map(|option| option["value"].as_str())
+        .collect();
+    assert_eq!(
+        modes,
+        vec![
+            "text-only",
+            "read-only",
+            "workspace-write",
+            "danger-full-access"
+        ]
+    );
+    assert_eq!(dsh["default_mode"], "workspace-write");
+    // Confinement is real but narrower than the name suggests, and incomplete
+    // on some hosts. Both facts have to reach the person choosing the mode.
+    let workspace_write_description = dsh["mode_options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["value"] == "workspace-write")
+        .and_then(|option| option["description"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        workspace_write_description.contains("temp"),
+        "workspace-write must disclose that temp directories are writable too"
+    );
+    assert!(
+        workspace_write_description.contains("partial"),
+        "workspace-write must disclose partial enforcement"
+    );
+    if dsh["installed"].as_bool().unwrap_or(false) {
+        assert_eq!(dsh["args"], json!([]));
+    } else {
+        // The npx fallback must pin an exact version: the `latest` dist-tag on
+        // this package points at an older, incompatible release.
+        let args = dsh["args"].as_array().expect("dsh args");
+        let spec = args
+            .last()
+            .and_then(Value::as_str)
+            .expect("dsh package spec");
+        assert!(
+            spec.starts_with("@deepseek-ai/dsh-acp-demo@"),
+            "spec: {spec}"
+        );
     }
 }
 
