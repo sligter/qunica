@@ -227,6 +227,7 @@ export type AcpRuntimeVersionStatus =
 export interface AcpRuntimeVersionRead {
   id: AcpRuntimePresetRead['id']
   package_name: string
+  default_package_spec: string
   installed: boolean
   local_version: string | null
   latest_version: string | null

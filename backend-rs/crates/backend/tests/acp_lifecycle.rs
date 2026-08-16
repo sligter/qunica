@@ -1404,6 +1404,36 @@ async fn acp_capability_probe_falls_back_to_model_config_option() {
 }
 
 #[tokio::test]
+async fn acp_capability_probe_survives_a_runtime_with_no_settings_methods() {
+    // dsh answers method-not-found for `session/set_model` *and* for the
+    // `session/set_config_option` fallback: its model rides the composition it
+    // launched with. A runtime with no wire-level selector must probe as "no
+    // choices discovered", not as a rejected probe — the settings panel
+    // otherwise shows a discovery error for a runtime that works.
+    let cwd = tempfile::tempdir().unwrap();
+    let log_path = cwd.path().join("probe.log");
+    let config = fake_child_config(
+        "settings_unsupported",
+        "custom",
+        json!({ "env": { "ACP_FAKE_LOG": log_path.to_string_lossy() } }),
+    );
+
+    let capabilities = probe_acp_runtime_capabilities(config, Some("gpt-5.5".to_string()))
+        .await
+        .expect("a runtime without settings methods still probes");
+
+    assert!(capabilities.warning.is_none());
+    // The user's pick stays selected even though nothing came back over the
+    // wire; the choices themselves come from the runtime preset.
+    assert_eq!(capabilities.current_model.as_deref(), Some("gpt-5.5"));
+    assert!(capabilities.models.is_empty());
+    let log = std::fs::read_to_string(log_path).expect("read fake ACP log");
+    assert!(log.contains("session/set_model"));
+    assert!(log.contains("\"configId\":\"model\""));
+    assert!(!log.contains("session/prompt"));
+}
+
+#[tokio::test]
 async fn acp_capability_probe_preserves_wire_order_for_updates_and_responses() {
     let config = fake_child_config("capabilities_ordering", "custom", json!({}));
 

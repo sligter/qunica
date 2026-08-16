@@ -278,7 +278,10 @@ export function ExternalRuntimeFields({
                 aria-label={t('agents:runtime.customPackageVersion')}
                 value={packageSpec}
                 onChange={(event) => setPackageSpec(event.target.value)}
-                placeholder={`${versionStatus?.package_name ?? selectedPreset.name}@latest`}
+                placeholder={
+                  versionStatus?.default_package_spec ??
+                  `${versionStatus?.package_name ?? selectedPreset.name}@latest`
+                }
               />
               <Button
                 type="button"

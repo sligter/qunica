@@ -218,6 +218,18 @@ async fn request_observing(
     }
 }
 
+/// Nudge the agent into revealing its model catalog by selecting the model the
+/// user already picked, falling back to a `model` config option when the agent
+/// does not implement `session/set_model`.
+///
+/// An agent that implements *neither* method has no wire-level model selector
+/// at all — dsh takes its model from the composition it launched with and
+/// answers method-not-found for every `session/set_*`. That is a discovery
+/// result, not a probe failure: treating it as one would replace the whole
+/// capability card with "rejected capability discovery" even though
+/// `initialize` and `session/new` both succeeded. The caller then falls back to
+/// the preset's own choices, and [`CapabilityState::assume_current_model`]
+/// keeps the user's pick selected.
 async fn apply_selected_model(
     conn: &AcpConnection,
     raw_updates_rx: &mut mpsc::Receiver<Value>,
@@ -235,15 +247,21 @@ async fn apply_selected_model(
     .await
     {
         Ok(_) => Ok(()),
-        Err(error) if error.is_method_not_found() => request_observing(
-            conn,
-            raw_updates_rx,
-            state,
-            METHOD_SESSION_SET_CONFIG_OPTION,
-            json!({ "configId": "model", "sessionId": session_id, "value": model }),
-        )
-        .await
-        .map(|_| ()),
+        Err(error) if error.is_method_not_found() => {
+            match request_observing(
+                conn,
+                raw_updates_rx,
+                state,
+                METHOD_SESSION_SET_CONFIG_OPTION,
+                json!({ "configId": "model", "sessionId": session_id, "value": model }),
+            )
+            .await
+            {
+                Ok(_) => Ok(()),
+                Err(error) if error.is_method_not_found() => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
         Err(error) => Err(error),
     }
 }

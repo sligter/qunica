@@ -166,6 +166,10 @@ pub struct AcpRuntimeVersionListResponse {
 struct AcpRuntimeVersionResponse {
     id: &'static str,
     package_name: &'static str,
+    /// The spec the Install button actually uses, so the custom-install hint
+    /// can show it instead of guessing `<name>@latest` — which for dsh names
+    /// an older, incompatible release.
+    default_package_spec: String,
     installed: bool,
     local_version: Option<String>,
     latest_version: Option<String>,
@@ -1359,6 +1363,7 @@ async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVe
     AcpRuntimeVersionResponse {
         id: preset.id,
         package_name: preset.package_name,
+        default_package_spec: default_install_spec(preset),
         installed,
         local_version,
         latest_version,
@@ -1438,19 +1443,25 @@ async fn npm_latest_package_version(package_name: &str, dist_tag: &str) -> Optio
         .map(str::to_string)
 }
 
+/// The spec the plain Install button installs the primary package at.
+///
+/// A preset that pins its own versions defaults to the pin; everything else
+/// tracks its dist-tag. Never the bare package name: npm would resolve that
+/// through `latest`, which for dsh is an older, incompatible release.
+fn default_install_spec(preset: AcpRuntimeVersionPreset) -> String {
+    preset
+        .install_specs
+        .first()
+        .map(|spec| (*spec).to_string())
+        .unwrap_or_else(|| format!("{}@{}", preset.package_name, preset.dist_tag))
+}
+
 fn resolve_install_package_spec(
     preset: AcpRuntimeVersionPreset,
     requested: Option<&str>,
 ) -> Result<String, ApiError> {
-    // A preset that pins its own version must default to the pin, not to the
-    // bare package name — npm would resolve that through `latest`, which for
-    // dsh is an older, incompatible release.
-    let default_spec = preset
-        .install_specs
-        .first()
-        .copied()
-        .unwrap_or(preset.package_name);
-    let package_spec = requested.unwrap_or(default_spec).trim();
+    let default_spec = default_install_spec(preset);
+    let package_spec = requested.unwrap_or(&default_spec).trim();
     if package_spec.is_empty()
         || package_spec.len() > 200
         || package_spec.chars().any(char::is_whitespace)
