@@ -98,6 +98,8 @@ export function GroupChatPage() {
       scope="groups"
       agents={agents}
       title={group.data.name}
+      conversationTitle={group.data.name}
+      threadTitle={selectedThread ? selectedThread.title ?? t('tasks.untitled') : undefined}
       subtitle={t('header.agent', {
         count: agents.length,
         formattedCount: formatNumber(agents.length, language),

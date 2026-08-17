@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { ThreadStatusIndicator } from '@/components/chat/ConversationStatusDot'
 import {
   Dialog,
   DialogClose,
@@ -127,11 +128,16 @@ export function GroupChatHeaderActions({
                   textValue={displayLabel(thread)}
                   className="min-w-0 whitespace-nowrap"
                 >
-                  <span
-                    className="block max-w-[calc(100vw-6rem)] truncate sm:max-w-64"
-                    title={displayLabel(thread)}
-                  >
-                    {displayLabel(thread)}
+                  {/* The status travels with the item text, so Radix mirrors
+                      the selected task's own state into the trigger. */}
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <ThreadStatusIndicator conversationId={groupId} threadId={thread.id} />
+                    <span
+                      className="block max-w-[calc(100vw-6rem)] truncate sm:max-w-64"
+                      title={displayLabel(thread)}
+                    >
+                      {displayLabel(thread)}
+                    </span>
                   </span>
                 </SelectItem>
               ))}

@@ -35,7 +35,9 @@ import {
   type ConversationScope,
 } from '@/hooks/useGroupMessages'
 import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
+import { notifyReplyOutcome } from '@/lib/replyNotifications'
 import { useAuthStore } from '@/stores/authStore'
+import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
 import type { ContextUsage, Message, MessageSendInput } from '@/types/api'
@@ -389,6 +391,9 @@ export function useSendMessageStream(
   )
   const startSend = useMessageStore((s) => s.startSend)
   const endSend = useMessageStore((s) => s.endSend)
+  const startActivityRun = useConversationActivityStore((s) => s.startRun)
+  const markActivityRunWaiting = useConversationActivityStore((s) => s.markRunWaiting)
+  const finishActivityRun = useConversationActivityStore((s) => s.finishRun)
   const qc = useQueryClient()
 
   const [activeStreamCount, setActiveStreamCount] = useState(0)
@@ -399,6 +404,8 @@ export function useSendMessageStream(
   const retriesRef = useRef<Map<string, RetryState>>(new Map())
   const streamIdsRef = useRef<Map<string, string>>(new Map())
   const erroredStreamIdsRef = useRef<Set<string>>(new Set())
+  /** Why a send failed, kept per request so the run can report it once. */
+  const sendFailuresRef = useRef<Map<string, string>>(new Map())
   const agentNamesRef = useRef<Map<string, string>>(new Map())
   const schedulerTurnByRequestRef = useRef<Map<string, string>>(new Map())
   const pendingSendAcknowledgementsRef = useRef<Map<string, PendingSendAcknowledgement>>(
@@ -520,6 +527,8 @@ export function useSendMessageStream(
         id,
         new Error('Message send was cancelled before acknowledgement'),
       )
+      finishActivityRun(id, 'cancelled')
+      sendFailuresRef.current.delete(id)
       streamsRef.current.get(id)?.abort()
       streamsRef.current.delete(id)
       clearRetry(id)
@@ -551,6 +560,7 @@ export function useSendMessageStream(
     clearRetry,
     clearStreamInFlight,
     endSend,
+    finishActivityRun,
     groupId,
     invalidate,
     reconcileSchedulerTurn,
@@ -585,6 +595,12 @@ export function useSendMessageStream(
         id,
         new Error('Message stream ended before the user message was acknowledged'),
       )
+      const failure = sendFailuresRef.current.get(id)
+      sendFailuresRef.current.delete(id)
+      const finishedRun = finishActivityRun(id, failure ? 'failed' : 'completed', failure)
+      if (finishedRun && !finishedRun.announced) {
+        notifyReplyOutcome(finishedRun, failure ? 'failed' : 'completed', failure)
+      }
       streamsRef.current.delete(id)
       clearRetry(id)
       const resolvedStreamId = streamId ?? streamIdsRef.current.get(id)
@@ -614,6 +630,7 @@ export function useSendMessageStream(
       clearRetry,
       completePendingCancellation,
       endSend,
+      finishActivityRun,
       invalidate,
       rejectSendBeforeAcknowledgement,
       refreshActiveCount,
@@ -659,6 +676,8 @@ export function useSendMessageStream(
       )
       optimisticMessageIdsRef.current.set(id, optimisticMessage.id)
       startOptimisticUserMessage(storeId, id, optimisticMessage)
+      sendFailuresRef.current.delete(id)
+      startActivityRun({ id, conversationId: groupId, threadId, scope })
       const message = {
         ...(typeof input === 'string' ? { content: input, attachments: [] } : input),
         client_request_id: id,
@@ -895,6 +914,8 @@ export function useSendMessageStream(
                 pushWarning(storeId, message)
                 const turnId = markStreamRunWaitingForUser(storeId, streamId)
                 if (turnId) invalidateTurn(turnId)
+                const waitingRun = markActivityRunWaiting(id)
+                if (waitingRun) notifyReplyOutcome(waitingRun, 'waiting')
                 return
               }
               case 'approval_required': {
@@ -919,6 +940,8 @@ export function useSendMessageStream(
                 })
                 const turnId = markStreamRunWaitingForUser(storeId, streamId)
                 if (turnId) invalidateTurn(turnId)
+                const approvalRun = markActivityRunWaiting(id)
+                if (approvalRun) notifyReplyOutcome(approvalRun, 'waiting')
                 return
               }
               case 'todo_update': {
@@ -951,6 +974,7 @@ export function useSendMessageStream(
                 const message = messageFromPayload(event.payload, 'Stream failed')
                 setError(message)
                 erroredStreamIdsRef.current.add(streamId)
+                sendFailuresRef.current.set(id, message)
                 markStreamRunError(storeId, streamId, message)
                 clearStreamInFlight(storeId, streamId)
                 clearActiveAgent(storeId, undefined, streamId)
@@ -983,6 +1007,7 @@ export function useSendMessageStream(
             )
             rejectSendBeforeAcknowledgement(id, err)
             setError(message)
+            sendFailuresRef.current.set(id, message)
             const streamId = streamIdsRef.current.get(id)
             if (streamId) {
               erroredStreamIdsRef.current.add(streamId)
@@ -1005,6 +1030,9 @@ export function useSendMessageStream(
         const startupError = asError(error, 'Unable to start the message stream')
         setError(startupError.message)
         schedulerTurnByRequestRef.current.delete(id)
+        // The run never reached the server, so there is nothing to announce —
+        // the composer already shows why the send did not leave.
+        finishActivityRun(id, 'cancelled')
         rejectSendBeforeAcknowledgement(id, startupError)
       }
       return acknowledgement.promise
@@ -1029,9 +1057,11 @@ export function useSendMessageStream(
       clearStreamingStreamDraft,
       finalizeInFlight,
       finalizeStreamDraft,
+      finishActivityRun,
       finishStream,
       groupId,
       invalidateTurn,
+      markActivityRunWaiting,
       markStreamRunDone,
       markStreamRunError,
       markStreamRunWaitingForUser,
@@ -1049,6 +1079,7 @@ export function useSendMessageStream(
       setStreamAgentContextUsage,
       settleOptimisticUserMessage,
       stateKey,
+      startActivityRun,
       startOptimisticUserMessage,
       startSend,
       startStreamRun,

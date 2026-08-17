@@ -129,6 +129,20 @@ export const zhCN: TranslationShape<typeof enUS> = {
   },
   chat: {
     gitActions: { expandDiff: '展开差异', collapseDiff: '收起差异', stagedCount_one: '{{formattedCount}} 项暂存', stagedCount_other: '{{formattedCount}} 项暂存' },
+    conversationStatus: {
+      running: '回复中',
+      waiting: '等待你的输入',
+      failed: '回复失败',
+    },
+    notifications: {
+      fallback: { group: '群聊', direct: '私聊' },
+      body: {
+        completed: '回复已完成。',
+        waiting: 'Agent 正在等待你的输入。',
+        failed: '回复失败。',
+        failedDetail: '回复失败：{{message}}',
+      },
+    },
     direct: {
       pickerTitle: '\u5f00\u59cb\u79c1\u804a',
       pickerDescription: '\u9009\u62e9\u4e00\u4e2a Agent \u521b\u5efa\u72ec\u7acb\u4f1a\u8bdd\u3002',
@@ -528,6 +542,14 @@ export const zhCN: TranslationShape<typeof enUS> = {
       title: '助手',
       enabled: '启用助手',
       enabledDescription: '在应用右下角显示助手入口。更改会立即保存。',
+    },
+    notifications: {
+      title: '通知',
+      replyFinished: '回复完成时通知',
+      replyFinishedDescription:
+        '群聊或私聊的回复完成、需要你输入或失败时发送系统通知。正在查看该会话时不会打扰。仅保存在本设备。',
+      permissionDenied: '本设备拒绝了通知权限。请允许 AG Swarmer 发送通知后重试。',
+      unsupported: '当前运行环境无法显示系统通知。',
     },
     shell: {
       title: 'Shell',

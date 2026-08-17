@@ -32,6 +32,7 @@ import {
   useRenameDirectChat,
 } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
 import { useAuthStore } from '@/stores/authStore'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -545,6 +546,7 @@ export function AppSidebar() {
                               >
                                 {chat.title}
                               </span>
+                              <ConversationStatusIndicator conversationId={chat.id} />
                               <span className="shrink-0 text-[10px] text-muted-foreground">
                                 {formatRelativeTime(
                                   chat.updated_at,
@@ -620,6 +622,7 @@ export function AppSidebar() {
                               >
                                 {g.name}
                               </span>
+                              <ConversationStatusIndicator conversationId={g.id} />
                               <span className="shrink-0 text-[10px] text-muted-foreground">
                                 {formatRelativeTime(
                                   g.created_at,

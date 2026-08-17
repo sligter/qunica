@@ -24,7 +24,9 @@ import type { RetryState } from '@/lib/api-v2/retry'
 import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
 import { conversationMessagesKey } from '@/hooks/useGroupMessages'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
+import { notifyReplyOutcome } from '@/lib/replyNotifications'
 import { useAuthStore } from '@/stores/authStore'
+import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ApprovalAnswer } from '@/components/chat/ToolApprovalCard'
 import type { Message } from '@/types/api'
@@ -163,6 +165,9 @@ export function useResumeStream(
   const activeResume = useMessageStore((s) =>
     messageId ? s.activeResumesByMessageId[messageId] : undefined,
   )
+  const startActivityRun = useConversationActivityStore((s) => s.startRun)
+  const markActivityRunWaiting = useConversationActivityStore((s) => s.markRunWaiting)
+  const finishActivityRun = useConversationActivityStore((s) => s.finishRun)
   const qc = useQueryClient()
 
   const [isStreaming, setIsStreaming] = useState(false)
@@ -171,6 +176,8 @@ export function useResumeStream(
   const [retryExhausted, setRetryExhausted] = useState(false)
   const ctrlRef = useRef<AbortController | null>(null)
   const streamIdRef = useRef<string | null>(null)
+  /** Why the resume failed, so the run reports the same reason it showed. */
+  const failureRef = useRef<string | null>(null)
 
   // The history query is keyed by the *view's* thread, which is a thread id for
   // a task and absent for the main conversation — the same distinction `stateId`
@@ -183,7 +190,16 @@ export function useResumeStream(
     setRetry(null)
     ctrlRef.current = null
     streamIdRef.current = null
-    if (messageId) endResume(messageId)
+    const failure = failureRef.current
+    failureRef.current = null
+    if (messageId) {
+      endResume(messageId)
+      const outcome = failure ? 'failed' : 'completed'
+      const finishedRun = finishActivityRun(messageId, outcome, failure ?? undefined)
+      if (finishedRun && !finishedRun.announced) {
+        notifyReplyOutcome(finishedRun, outcome, failure ?? undefined)
+      }
+    }
     if (groupId) {
       void qc.invalidateQueries({
         queryKey: conversationMessagesKey(scope, groupId, queryThreadId),
@@ -194,7 +210,7 @@ export function useResumeStream(
         void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
       }
     }
-  }, [endResume, groupId, messageId, qc, queryThreadId, scope])
+  }, [endResume, finishActivityRun, groupId, messageId, qc, queryThreadId, scope])
 
   const cancel = useCallback(async () => {
     const streamId = streamIdRef.current
@@ -229,9 +245,11 @@ export function useResumeStream(
     if (stateId && streamId && !turnId) {
       markStreamRunCancelled(stateId, [streamId])
     }
+    if (messageId) finishActivityRun(messageId, 'cancelled')
     finish()
   }, [
     finish,
+    finishActivityRun,
     groupId,
     markStreamRunCancelled,
     messageId,
@@ -254,7 +272,14 @@ export function useResumeStream(
     setRetry(null)
     setRetryExhausted(false)
     setIsStreaming(true)
+    failureRef.current = null
     startResume(stateId, messageId, cancel)
+    startActivityRun({
+      id: messageId,
+      conversationId: groupId,
+      threadId: queryThreadId,
+      scope,
+    })
     if (approval) {
       resolveStreamApproval(
         stateId,
@@ -329,7 +354,9 @@ export function useResumeStream(
               return
             }
             case 'error': {
-              setError(errorMessage(event.payload))
+              const message = errorMessage(event.payload)
+              failureRef.current = message
+              setError(message)
               finish()
               return
             }
@@ -356,6 +383,8 @@ export function useResumeStream(
                   queryKey: ['groups', groupId, 'turns', turnId],
                 })
               }
+              const waitingRun = markActivityRunWaiting(messageId)
+              if (waitingRun) notifyReplyOutcome(waitingRun, 'waiting')
               return
             }
             case 'approval_required': {
@@ -380,6 +409,8 @@ export function useResumeStream(
                   queryKey: ['groups', groupId, 'turns', turnId],
                 })
               }
+              const approvalRun = markActivityRunWaiting(messageId)
+              if (approvalRun) notifyReplyOutcome(approvalRun, 'waiting')
               return
             }
             case 'user_message':
@@ -408,10 +439,12 @@ export function useResumeStream(
           setRetry({ attempt, delayMs })
         },
         onError: (err) => {
+          const message = err instanceof Error ? err.message : String(err)
           setRetryExhausted(
             err instanceof Error && err.name === 'SseRetryExhaustedError',
           )
-          setError(err instanceof Error ? err.message : String(err))
+          failureRef.current = message
+          setError(message)
           finish()
         },
         onClose: () => {
@@ -432,11 +465,15 @@ export function useResumeStream(
     isStreaming,
     linkStreamRunToUserMessage,
     messageId,
+    markActivityRunWaiting,
     markStreamRunDone,
     markStreamRunWaitingForUser,
     qc,
+    queryThreadId,
     replaceMessage,
     resolveStreamApproval,
+    scope,
+    startActivityRun,
     startResume,
     stateId,
     threadId,

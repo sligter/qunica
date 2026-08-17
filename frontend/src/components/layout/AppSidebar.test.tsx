@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import i18n from '@/i18n'
 import { useAuthStore } from '@/stores/authStore'
+import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AppSidebar } from './AppSidebar'
 
@@ -46,6 +47,8 @@ function LocationProbe() {
   const location = useLocation()
   return <div data-testid="location">{location.pathname}</div>
 }
+
+const initialActivity = useConversationActivityStore.getInitialState()
 
 function renderSidebar() {
   return render(
@@ -190,5 +193,23 @@ describe('AppSidebar terminal cleanup', () => {
     expect(screen.queryByText('Chat 01')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Groups' }))
     expect(screen.queryByText('Group one')).not.toBeInTheDocument()
+  })
+
+  it('shows what each conversation is doing right now', () => {
+    mocks.groups = [{ id: 'group-1', name: 'Group one', created_at: '2026-07-22T00:00:00Z' }]
+    useConversationActivityStore.setState(initialActivity, true)
+    useConversationActivityStore.getState().startRun({
+      id: 'run-1',
+      conversationId: 'group-1',
+      threadId: 'thread-1',
+      scope: 'groups',
+    })
+    renderSidebar()
+
+    const groupRow = screen.getByText('Group one').closest('a')!
+    expect(groupRow).toHaveAccessibleName(expect.stringContaining('Replying'))
+    // The direct chat is idle, so it says nothing at all.
+    const chatRow = screen.getByText('Direct chat').closest('a')!
+    expect(chatRow).not.toHaveAccessibleName(expect.stringContaining('Replying'))
   })
 })

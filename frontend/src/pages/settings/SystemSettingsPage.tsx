@@ -11,6 +11,11 @@ import {
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
+import { notificationsSupported, requestNotificationPermission } from '@/lib/notifications'
+import {
+  readReplyNotificationsEnabled,
+  writeReplyNotificationsEnabled,
+} from '@/lib/replyNotifications'
 import { writeLanguageMirror } from '@/i18n'
 import type {
   Appearance,
@@ -41,6 +46,8 @@ export function SystemSettingsPage() {
   const [appearance, setAppearance] = useState<Appearance>('system')
   const [language, setLanguage] = useState<Language>('en-US')
   const [assistantEnabled, setAssistantEnabled] = useState(true)
+  const [replyNotifications, setReplyNotifications] = useState(readReplyNotificationsEnabled)
+  const [notificationError, setNotificationError] = useState<string | null>(null)
   const [root, setRoot] = useState('')
   const [shellPreference, setShellPreference] = useState<ShellPreference>('auto')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
@@ -154,6 +161,32 @@ export function SystemSettingsPage() {
   const onRootChange = (next: string) => {
     setRoot(next)
     saveRememberedPrefix(PICKER_SCOPE, next)
+  }
+
+  /**
+   * Per device, not per account: it pairs with an OS permission granted on this
+   * machine, so mirroring it to every device the account signs in from would be
+   * the wrong promise. Turning it on asks the browser for that permission now,
+   * rather than losing the first notification to an unanswered prompt.
+   */
+  const onReplyNotificationsChange = async (next: boolean) => {
+    setNotificationError(null)
+    if (!next) {
+      setReplyNotifications(false)
+      writeReplyNotificationsEnabled(false)
+      return
+    }
+    if (!notificationsSupported()) {
+      setNotificationError(t('notifications.unsupported'))
+      return
+    }
+    const permission = await requestNotificationPermission()
+    if (permission !== 'granted') {
+      setNotificationError(t('notifications.permissionDenied'))
+      return
+    }
+    setReplyNotifications(true)
+    writeReplyNotificationsEnabled(true)
   }
 
   const onShellPreferenceChange = async (value: string) => {
@@ -380,6 +413,24 @@ export function SystemSettingsPage() {
           {assistantError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
               {assistantError}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        <SettingsSection title={t('notifications.title')}>
+          <SettingsRow
+            label={t('notifications.replyFinished')}
+            description={t('notifications.replyFinishedDescription')}
+          >
+            <Switch
+              checked={replyNotifications}
+              onCheckedChange={(next) => void onReplyNotificationsChange(next)}
+              aria-label={t('notifications.replyFinished')}
+            />
+          </SettingsRow>
+          {notificationError ? (
+            <p className="py-2 text-sm text-destructive" role="alert">
+              {notificationError}
             </p>
           ) : null}
         </SettingsSection>

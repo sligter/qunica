@@ -15,6 +15,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
 
@@ -125,6 +126,21 @@ async fn save_file(
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+/// Show a native OS notification.
+///
+/// The desktop shell hides to the tray on close, so a reply that lands while
+/// the window is away has no other way to reach the user. Failures are the
+/// caller's to ignore: an OS that refuses toasts must not break the chat.
+#[tauri::command]
+fn show_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|error| error.to_string())
 }
 
 fn log_timestamp() -> String {
@@ -500,6 +516,7 @@ fn start_in_process_backend(
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(BackendShutdown(std::sync::Mutex::new(None)))
@@ -509,6 +526,7 @@ fn main() {
             pick_workspace_folder,
             reveal_in_file_manager,
             save_file,
+            show_notification,
             system_logs_snapshot,
             set_system_log_filter,
             clear_system_logs,

@@ -127,6 +127,20 @@ export const enUS = {
   },
   chat: {
     gitActions: { expandDiff: 'Expand diff', collapseDiff: 'Collapse diff', stagedCount_one: '{{formattedCount}} staged', stagedCount_other: '{{formattedCount}} staged' },
+    conversationStatus: {
+      running: 'Replying',
+      waiting: 'Waiting for you',
+      failed: 'Reply failed',
+    },
+    notifications: {
+      fallback: { group: 'Group chat', direct: 'Chat' },
+      body: {
+        completed: 'The reply is ready.',
+        waiting: 'The agent is waiting for your input.',
+        failed: 'The reply failed.',
+        failedDetail: 'The reply failed: {{message}}',
+      },
+    },
     direct: {
       pickerTitle: 'Start a chat',
       pickerDescription: 'Choose an Agent for a new independent chat.',
@@ -608,6 +622,14 @@ export const enUS = {
       title: 'Assistant',
       enabled: 'Enable assistant',
       enabledDescription: 'Show the assistant launcher in the bottom-right corner. Saved instantly.',
+    },
+    notifications: {
+      title: 'Notifications',
+      replyFinished: 'Notify when a reply finishes',
+      replyFinishedDescription:
+        'Send a system notification when a group or direct chat reply finishes, needs your input, or fails. Stays quiet while you are watching that conversation. Saved on this device.',
+      permissionDenied: 'This device refused notification permission. Allow notifications for AG Swarmer, then try again.',
+      unsupported: 'This runtime cannot show system notifications.',
     },
     shell: {
       title: 'Shell',

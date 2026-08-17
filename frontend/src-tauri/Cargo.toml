@@ -13,6 +13,7 @@ ag-swarmer-backend = { path = "../../backend-rs/crates/backend" }
 anyhow = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }

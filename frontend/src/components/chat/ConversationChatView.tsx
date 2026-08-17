@@ -19,6 +19,7 @@ import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import { MAX_RETRY_ATTEMPTS } from '@/lib/api-v2/retry'
 import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
+import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
@@ -49,6 +50,15 @@ export interface ConversationChatViewProps {
   }
   onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
   disabledComposerReason?: string
+  /**
+   * Plain-text names for the conversation and, for a group task, its thread.
+   *
+   * `title` is a node — a direct chat renders an editable field there — and a
+   * notification fires from outside React, so the names it puts in front of the
+   * user have to arrive as strings the activity store can hold onto.
+   */
+  conversationTitle?: string
+  threadTitle?: string
   /**
    * Whether the model answering here accepts a reasoning-effort setting.
    * Supplied by the page, which already knows the conversation's agent and
@@ -115,6 +125,8 @@ export function ConversationChatView({
   capabilities,
   onConversationUpdated,
   disabledComposerReason,
+  conversationTitle,
+  threadTitle,
   supportsReasoningEffort,
   agentIsSystem,
 }: ConversationChatViewProps) {
@@ -148,6 +160,38 @@ export function ConversationChatView({
     for (const resume of activeResumes) void resume.cancel()
   }, [activeResumes, stream])
   const fileNavRequest = useFileNavStore((state) => state.request)
+  const registerConversationTitles = useConversationActivityStore(
+    (state) => state.registerConversationTitles,
+  )
+  const setViewedConversation = useConversationActivityStore(
+    (state) => state.setViewedConversation,
+  )
+  const clearViewedConversation = useConversationActivityStore(
+    (state) => state.clearViewedConversation,
+  )
+  const clearActivityFailure = useConversationActivityStore((state) => state.clearFailure)
+
+  useEffect(() => {
+    registerConversationTitles(conversationId, threadId, {
+      conversation: conversationTitle ?? null,
+      thread: threadTitle ?? null,
+    })
+  }, [conversationId, conversationTitle, registerConversationTitles, threadId, threadTitle])
+
+  // Being on screen is what marks a failure seen and keeps a notification from
+  // announcing a reply the user is already watching arrive.
+  useEffect(() => {
+    setViewedConversation(conversationId, threadId)
+    clearActivityFailure(conversationId, threadId)
+    return () => clearViewedConversation(conversationId)
+  }, [
+    clearActivityFailure,
+    clearViewedConversation,
+    conversationId,
+    setViewedConversation,
+    threadId,
+  ])
+
   const traceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
     capabilities.showWorkspace ? readWorkspaceFilesOpen(conversationId) : false,
