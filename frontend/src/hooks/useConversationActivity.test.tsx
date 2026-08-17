@@ -17,7 +17,7 @@ import { useMessageStore } from '@/stores/messageStore'
 const mocks = vi.hoisted(() => ({
   streams: [] as Array<{ handlers: ApiV2SseHandlers }>,
   fetchJson: vi.fn(),
-  showNotification: vi.fn(),
+  showNotification: vi.fn(async () => ({ ok: true as const })),
 }))
 
 vi.mock('@/lib/api-v2/client', async (importOriginal) => {
@@ -89,6 +89,7 @@ describe('useSendMessageStream conversation activity', () => {
     mocks.streams.length = 0
     mocks.fetchJson.mockReset()
     mocks.showNotification.mockReset()
+    mocks.showNotification.mockResolvedValue({ ok: true as const })
     localStorage.clear()
     useMessageStore.setState(initialMessages, true)
     useConversationActivityStore.setState(initialActivity, true)
@@ -159,6 +160,22 @@ describe('useSendMessageStream conversation activity', () => {
     emit(handlers, 'done', {}, 1)
 
     expect(mocks.showNotification).not.toHaveBeenCalled()
+  })
+
+  it('announces a reply that lands after the user navigated away', () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const activity = useConversationActivityStore.getState()
+    activity.setViewedConversation('group-1', 'thread-1')
+    const handlers = sendMessage()
+
+    // Leaving the conversation is what the chat view does on unmount.
+    activity.clearViewedConversation('group-1')
+    emit(handlers, 'done', {}, 1)
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'Platform · Ship the API',
+      'The reply is ready.',
+    )
   })
 
   it('says nothing when the user turned notifications off', () => {

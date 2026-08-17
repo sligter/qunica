@@ -7,12 +7,22 @@
  * API — while the browser build falls back to that API.
  *
  * Nothing here throws: a refused permission or an OS without a notification
- * daemon is a quiet no-op, never a broken conversation.
+ * daemon comes back as a failed result rather than an exception. The result is
+ * reported rather than dropped — a toast that silently never appears is the
+ * hardest kind of failure to explain, so the settings screen offers a test that
+ * puts the reason on screen.
  */
 
 import { isDesktopRuntime } from '@/lib/runtime'
 
 export type NotificationPermissionState = 'granted' | 'denied' | 'default' | 'unsupported'
+
+export type NotificationResult = { ok: true } | { ok: false; error: string }
+
+function errorMessage(error: unknown): string {
+  if (typeof error === 'string') return error
+  return error instanceof Error ? error.message : String(error)
+}
 
 interface WebNotificationApi {
   permission: NotificationPermission
@@ -54,21 +64,32 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   }
 }
 
-export async function showNotification(title: string, body: string): Promise<void> {
+export async function showNotification(
+  title: string,
+  body: string,
+): Promise<NotificationResult> {
   if (isDesktopRuntime()) {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke('show_notification', { title, body })
-    } catch {
-      // An OS that refuses toasts must not break the conversation.
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) }
     }
-    return
   }
   const api = webNotification()
-  if (!api || api.permission !== 'granted') return
+  if (!api) return { ok: false, error: 'unsupported' }
+  // The preference is on by default, so the first reply to finish is usually
+  // also the first time the browser is asked. Asking here rather than only from
+  // the settings toggle is what keeps a user who never opened settings from
+  // silently getting nothing.
+  const permission =
+    api.permission === 'default' ? await requestNotificationPermission() : api.permission
+  if (permission !== 'granted') return { ok: false, error: permission }
   try {
     new api(title, { body })
-  } catch {
-    // Same reasoning as above.
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) }
   }
 }

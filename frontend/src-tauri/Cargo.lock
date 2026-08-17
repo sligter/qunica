@@ -60,6 +60,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tauri-plugin-updater",
+ "tauri-winrt-notification",
  "tokio",
  "tracing",
  "uuid",

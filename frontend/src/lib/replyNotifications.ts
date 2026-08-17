@@ -74,5 +74,11 @@ export function notifyReplyOutcome(
 ): void {
   if (!readReplyNotificationsEnabled()) return
   if (isReplyNotificationSuppressed(run)) return
-  void showNotification(conversationLabel(run), notificationBody(outcome, detail))
+  void showNotification(conversationLabel(run), notificationBody(outcome, detail)).then(
+    (result) => {
+      // Reported, not thrown: the reply itself landed fine, and the settings
+      // screen has a test button for anyone chasing a missing toast.
+      if (!result.ok) console.warn('Reply notification was not delivered:', result.error)
+    },
+  )
 }

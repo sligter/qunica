@@ -15,6 +15,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+#[cfg(not(windows))]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
@@ -131,16 +132,65 @@ async fn save_file(
 /// Show a native OS notification.
 ///
 /// The desktop shell hides to the tray on close, so a reply that lands while
-/// the window is away has no other way to reach the user. Failures are the
-/// caller's to ignore: an OS that refuses toasts must not break the chat.
+/// the window is away has no other way to reach the user. The error is returned
+/// rather than dropped: a toast that silently never appears is the hardest kind
+/// of failure to diagnose, and the settings screen offers a test that shows it.
 #[tauri::command]
-fn show_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|error| error.to_string())
+async fn show_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let identifier = app.config().identifier.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        {
+            let _ = app;
+            show_windows_toast(&identifier, &title, &body)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = identifier;
+            app.notification()
+                .builder()
+                .title(title)
+                .body(body)
+                .show()
+                .map_err(|error| error.to_string())
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Err(error) = &result {
+        tracing::warn!(target: "ag_swarmer::desktop", error, "failed to show a notification");
+    }
+    result
+}
+
+/// Raise a toast, borrowing an installed identity when this build has none.
+///
+/// Windows only delivers a toast for a registered AppUserModelID, which an
+/// installer creates along with the Start Menu shortcut. A portable or
+/// freshly-built exe has neither, so its own identifier is rejected and the
+/// notification is dropped without a sound. PowerShell's identifier is always
+/// registered; falling back to it costs the app's name in the toast header,
+/// which is a far better trade than silence.
+#[cfg(windows)]
+fn show_windows_toast(app_id: &str, title: &str, body: &str) -> Result<(), String> {
+    use tauri_winrt_notification::Toast;
+
+    let raise = |id: &str| {
+        Toast::new(id)
+            .title(title)
+            .text1(body)
+            .show()
+            .map_err(|error| error.to_string())
+    };
+    raise(app_id).or_else(|registered_error| {
+        raise(Toast::POWERSHELL_APP_ID).map_err(|fallback_error| {
+            format!("{app_id}: {registered_error}; powershell fallback: {fallback_error}")
+        })
+    })
 }
 
 fn log_timestamp() -> String {
@@ -576,6 +626,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{pids_listening_on_port, taskkill_args};
+
+    /// Proves the toast actually reaches the desktop from a worker thread.
+    ///
+    /// Two things could stop it and neither shows up at compile time: an
+    /// unregistered AppUserModelID, and a thread with no COM apartment. The
+    /// notification plugin discards the error from both, so this raises a real
+    /// toast — a visible one — rather than trusting that it would have.
+    #[cfg(windows)]
+    #[test]
+    fn raises_a_toast_without_an_installed_identity() {
+        let raised = std::thread::spawn(|| {
+            super::show_windows_toast("dev.ag-swarmer.invalid.test", "AG Swarmer", "Toast probe")
+        })
+        .join()
+        .expect("toast thread panicked");
+
+        assert!(raised.is_ok(), "no notifier accepted the toast: {raised:?}");
+    }
 
     #[test]
     fn parses_windows_netstat_listeners_for_exact_port() {

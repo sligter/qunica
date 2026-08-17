@@ -630,6 +630,10 @@ export const enUS = {
         'Send a system notification when a group or direct chat reply finishes, needs your input, or fails. Stays quiet while you are watching that conversation. Saved on this device.',
       permissionDenied: 'This device refused notification permission. Allow notifications for AG Swarmer, then try again.',
       unsupported: 'This runtime cannot show system notifications.',
+      test: 'Send a test notification',
+      testDescription: 'Check that notifications reach this device. Windows only delivers them for an installed app, so a portable build borrows the system notifier and shows another sender name.',
+      testSent: 'Test notification sent. If nothing appeared, check the notification settings for this app in your OS.',
+      testFailed: 'The test notification failed: {{message}}',
     },
     shell: {
       title: 'Shell',

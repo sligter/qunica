@@ -11,7 +11,7 @@ import {
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
-import { notificationsSupported, requestNotificationPermission } from '@/lib/notifications'
+import { notificationsSupported, requestNotificationPermission, showNotification } from '@/lib/notifications'
 import {
   readReplyNotificationsEnabled,
   writeReplyNotificationsEnabled,
@@ -48,6 +48,7 @@ export function SystemSettingsPage() {
   const [assistantEnabled, setAssistantEnabled] = useState(true)
   const [replyNotifications, setReplyNotifications] = useState(readReplyNotificationsEnabled)
   const [notificationError, setNotificationError] = useState<string | null>(null)
+  const [notificationTested, setNotificationTested] = useState(false)
   const [root, setRoot] = useState('')
   const [shellPreference, setShellPreference] = useState<ShellPreference>('auto')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
@@ -171,6 +172,7 @@ export function SystemSettingsPage() {
    */
   const onReplyNotificationsChange = async (next: boolean) => {
     setNotificationError(null)
+    setNotificationTested(false)
     if (!next) {
       setReplyNotifications(false)
       writeReplyNotificationsEnabled(false)
@@ -187,6 +189,28 @@ export function SystemSettingsPage() {
     }
     setReplyNotifications(true)
     writeReplyNotificationsEnabled(true)
+  }
+
+  /**
+   * Prove the delivery path end to end.
+   *
+   * A notification that never arrives leaves nothing behind to look at — no
+   * error, no log line the user would think to open — so the one place that
+   * claims the feature exists is also where they can make it fire on demand and
+   * read back why it did not.
+   */
+  const onTestNotification = async () => {
+    setNotificationError(null)
+    setNotificationTested(false)
+    const result = await showNotification(
+      t('notifications.testTitle'),
+      t('notifications.testBody'),
+    )
+    if (result.ok) {
+      setNotificationTested(true)
+      return
+    }
+    setNotificationError(t('notifications.testFailed', { message: result.error }))
   }
 
   const onShellPreferenceChange = async (value: string) => {
@@ -428,6 +452,19 @@ export function SystemSettingsPage() {
               aria-label={t('notifications.replyFinished')}
             />
           </SettingsRow>
+          <SettingsRow
+            label={t('notifications.test')}
+            description={t('notifications.testDescription')}
+          >
+            <Button type="button" variant="outline" onClick={() => void onTestNotification()}>
+              {t('notifications.test')}
+            </Button>
+          </SettingsRow>
+          {notificationTested ? (
+            <p className="py-2 text-sm text-muted-foreground" role="status">
+              {t('notifications.testSent')}
+            </p>
+          ) : null}
           {notificationError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
               {notificationError}

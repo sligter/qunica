@@ -28,4 +28,5 @@ uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }

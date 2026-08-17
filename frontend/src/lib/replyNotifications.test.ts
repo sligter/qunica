@@ -11,7 +11,9 @@ import {
   type ConversationActivityRun,
 } from '@/stores/conversationActivityStore'
 
-const mocks = vi.hoisted(() => ({ showNotification: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  showNotification: vi.fn(async () => ({ ok: true as const })),
+}))
 
 vi.mock('@/lib/notifications', () => ({
   showNotification: mocks.showNotification,
@@ -45,6 +47,7 @@ function setFocus(focused: boolean) {
 describe('reply notifications', () => {
   beforeEach(async () => {
     mocks.showNotification.mockReset()
+    mocks.showNotification.mockResolvedValue({ ok: true as const })
     localStorage.clear()
     useConversationActivityStore.setState(initialActivity, true)
     setFocus(false)
