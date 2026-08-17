@@ -15,6 +15,8 @@ import type { ConversationScope } from '@/hooks/useGroupMessages'
 interface MessageListProps {
   groupId: string
   stateId?: string
+  /** Thread the surrounding view's message query is keyed by, if any. */
+  threadId?: string
   hasOlderMessages?: boolean
   isLoadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
@@ -80,6 +82,7 @@ function timelineMessageIds(runs: Record<string, StreamRun>): Set<string> {
 export function MessageList({
   groupId,
   stateId = groupId,
+  threadId,
   hasOlderMessages = false,
   isLoadingOlderMessages = false,
   onLoadOlderMessages,
@@ -222,6 +225,7 @@ export function MessageList({
                 message={m}
                 groupId={groupId}
                 stateId={stateId}
+                threadId={threadId}
                 scope={scope}
                 agents={agents}
                 agentIsSystem={agentIsSystem}

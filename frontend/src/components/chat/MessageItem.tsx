@@ -27,6 +27,13 @@ interface MessageItemProps {
   groupId: string
   /** The store bucket this conversation is read through. */
   stateId?: string
+  /**
+   * The thread the surrounding view's message query is keyed by — `undefined`
+   * for conversations read without one, such as direct chats. Distinct from
+   * `message.thread_id`, which the backend always fills in: keying a cache
+   * write by the latter would miss the list actually on screen.
+   */
+  threadId?: string
   isStreaming?: boolean
   onSubmitHumanInput?: (content: string) => void
   scope?: ConversationScope
@@ -38,6 +45,7 @@ export function MessageItemView({
   message,
   groupId,
   stateId = groupId,
+  threadId,
   isStreaming,
   onSubmitHumanInput,
   scope = 'groups',
@@ -159,7 +167,7 @@ export function MessageItemView({
               senderName={senderName}
               timeLabel={time}
               groupId={groupId}
-              threadId={message.thread_id}
+              threadId={threadId}
               scope={scope}
             />
           )}

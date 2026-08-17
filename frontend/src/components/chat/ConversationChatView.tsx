@@ -276,6 +276,7 @@ export function ConversationChatView({
               <MessageList
                 groupId={conversationId}
                 stateId={stateId}
+                threadId={threadId}
                 hasOlderMessages={messagesQuery.hasNextPage}
                 isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
                 onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}

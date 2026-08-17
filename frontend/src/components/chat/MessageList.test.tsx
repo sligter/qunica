@@ -10,8 +10,10 @@ import type { Message } from '@/types/api'
 Element.prototype.scrollIntoView = () => {}
 
 vi.mock('@/components/chat/MessageItem', () => ({
-  MessageItem: ({ message }: { message: Message }) => (
-    <div data-testid={`message-${message.id}`}>{message.content}</div>
+  MessageItem: ({ message, threadId }: { message: Message; threadId?: string }) => (
+    <div data-testid={`message-${message.id}`} data-thread-id={threadId ?? ''}>
+      {message.content}
+    </div>
   ),
 }))
 
@@ -62,6 +64,18 @@ afterEach(async () => {
 })
 
 describe('MessageList scheduler summary integration', () => {
+  it('hands rows the thread its message query is keyed by', () => {
+    setMessageState()
+    render(<MessageList groupId="group-1" threadId="thread-1" />)
+    expect(screen.getByTestId('message-message-1')).toHaveAttribute('data-thread-id', 'thread-1')
+
+    // A direct chat reads its messages without a thread, even though each
+    // message carries one; rows must not invent one from the message.
+    cleanup()
+    render(<MessageList groupId="chat-1" scope="direct-chats" stateId="group-1" />)
+    expect(screen.getByTestId('message-message-1')).toHaveAttribute('data-thread-id', '')
+  })
+
   it('localizes older-message loading while preserving Agent-authored content', async () => {
     setMessageState()
     await i18n.changeLanguage('en-US')

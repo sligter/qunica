@@ -23,8 +23,15 @@ vi.mock('@/components/chat/MarkdownMessage', () => ({
   MarkdownMessage: ({ content }: { content: string }) => <div>{content}</div>,
 }))
 
+const messageActions = vi.hoisted(() => ({
+  props: [] as Array<{ groupId: string; threadId?: string | null }>,
+}))
+
 vi.mock('@/components/chat/MessageActions', () => ({
-  MessageActions: () => null,
+  MessageActions: (props: { groupId: string; threadId?: string | null }) => {
+    messageActions.props.push(props)
+    return null
+  },
 }))
 
 vi.mock('@/components/chat/MessageAttachments', () => ({
@@ -64,6 +71,7 @@ function message(overrides: Partial<Message>): Message {
 
 afterEach(() => {
   cleanup()
+  messageActions.props.length = 0
   useAuthStore.setState({ user: null })
   useMessageStore.setState({
     resumingMessageIds: new Set(),
@@ -220,5 +228,30 @@ describe('MessageItem', () => {
 
     act(() => useMessageStore.getState().endResume(interrupted.id))
     expect(screen.queryByTestId('interrupted-message-actions')).not.toBeInTheDocument()
+  })
+
+  // The backend stamps every message with a thread, but a direct chat reads its
+  // messages without one. Targeting `message.thread_id` made delete write to a
+  // cache entry nobody rendered, so the row stayed on screen.
+  it('scopes message actions to the thread the list is keyed by, not the message', () => {
+    render(
+      <MessageItem
+        groupId="chat-1"
+        scope="direct-chats"
+        message={message({ sender_type: 'user', thread_id: 'thread-9' })}
+      />,
+    )
+    expect(messageActions.props.at(-1)).toMatchObject({ groupId: 'chat-1' })
+    expect(messageActions.props.at(-1)?.threadId).toBeUndefined()
+
+    cleanup()
+    render(
+      <MessageItem
+        groupId="group-1"
+        threadId="thread-2"
+        message={message({ sender_type: 'user', thread_id: 'thread-2' })}
+      />,
+    )
+    expect(messageActions.props.at(-1)?.threadId).toBe('thread-2')
   })
 })
