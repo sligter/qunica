@@ -137,12 +137,12 @@ mod tests {
 
     #[test]
     fn config_app_data_sqlite_url_uses_desktop_database_name() {
-        let path = std::path::Path::new("C:/Users/Test/AppData/Roaming/dev.ag-swarmer.desktop")
+        let path = std::path::Path::new("C:/Users/Test/AppData/Roaming/ag-swarmer.desktop")
             .join("ag-swarmer.sqlite3");
         let url = sqlite_url_for_path(&path);
         assert!(url.starts_with("sqlite://"));
         assert!(url.ends_with("/ag-swarmer.sqlite3?mode=rwc"));
-        assert!(url.contains("dev.ag-swarmer.desktop"));
+        assert!(url.contains("ag-swarmer.desktop"));
     }
 
     #[test]

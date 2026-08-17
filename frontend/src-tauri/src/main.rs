@@ -210,9 +210,9 @@ fn show_windows_toast(
 /// Register an AppUserModelID so Windows delivers toasts for a portable exe.
 ///
 /// The installer normally writes the identity via the Start Menu shortcut; a
-/// portable build never runs it. Writing the equivalent HKCU registration is
-/// idempotent and gives `CreateToastNotifierWithId` the identity it otherwise
-/// rejects, so the toast shows the app's own name and icon.
+/// portable build never runs it. Writing the equivalent HKCU registration and
+/// claiming the ID on this process lets `CreateToastNotifierWithId` resolve the
+/// app's own name and icon instead of showing the raw AppUserModelID.
 #[cfg(windows)]
 fn register_windows_app_user_model_id(app_id: &str, display_name: &str) -> Result<(), String> {
     use winreg::enums::HKEY_CURRENT_USER;
@@ -232,6 +232,24 @@ fn register_windows_app_user_model_id(app_id: &str, display_name: &str) -> Resul
         .map_err(|error| error.to_string())?;
     key.set_value("IconUri", &icon_uri)
         .map_err(|error| error.to_string())?;
+
+    // Claim the ID on this process; otherwise Windows can still deliver the
+    // toast but labels it with the raw AppUserModelID instead of DisplayName.
+    use std::os::windows::ffi::OsStrExt;
+    let wide_app_id: Vec<u16> = std::ffi::OsStr::new(app_id)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let hr = unsafe {
+        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            wide_app_id.as_ptr(),
+        )
+    };
+    if hr != 0 {
+        return Err(format!(
+            "SetCurrentProcessExplicitAppUserModelID failed: 0x{hr:08X}"
+        ));
+    }
     Ok(())
 }
 
@@ -679,7 +697,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn registers_an_identity_and_raises_a_toast() {
-        const TEST_APP_ID: &str = "dev.ag-swarmer.test.notification";
+        const TEST_APP_ID: &str = "ag-swarmer.test.notification";
 
         super::register_windows_app_user_model_id(TEST_APP_ID, "AG Swarmer")
             .expect("register test AUMID");

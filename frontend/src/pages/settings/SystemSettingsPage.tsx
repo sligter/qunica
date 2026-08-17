@@ -452,11 +452,13 @@ export function SystemSettingsPage() {
               aria-label={t('notifications.replyFinished')}
             />
           </SettingsRow>
-          <SettingsRow
-            label={t('notifications.test')}
-            description={t('notifications.testDescription')}
-          >
-            <Button type="button" variant="outline" onClick={() => void onTestNotification()}>
+          <SettingsRow label={t('notifications.test')}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void onTestNotification()}
+            >
               {t('notifications.test')}
             </Button>
           </SettingsRow>

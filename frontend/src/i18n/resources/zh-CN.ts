@@ -551,7 +551,6 @@ export const zhCN: TranslationShape<typeof enUS> = {
       permissionDenied: '本设备拒绝了通知权限。请允许 AG Swarmer 发送通知后重试。',
       unsupported: '当前运行环境无法显示系统通知。',
       test: '发送测试通知',
-      testDescription: '确认通知能送达本设备。Windows 只为已安装的应用投递通知，便携版会借用系统通知程序，因此发送方名称会不同。',
       testSent: '测试通知已发送。如果没有出现，请检查操作系统中本应用的通知设置。',
       testFailed: '测试通知失败：{{message}}',
     },
