@@ -116,6 +116,12 @@ export function GroupChatPage() {
             )
             selectThread(next?.id ?? archivedId)
           }}
+          onDeleted={(deletedId) => {
+            const remaining = threads.filter((thread) => thread.id !== deletedId)
+            const next = remaining.find((thread) => thread.status !== 'archived')
+              ?? remaining[0]
+            if (next) selectThread(next.id)
+          }}
         />
       )}
       disabledComposerReason={

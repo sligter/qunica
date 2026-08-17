@@ -51,3 +51,37 @@ export function useArchiveGroupThread(groupId: string) {
     },
   })
 }
+
+export function useRestoreGroupThread(groupId: string) {
+  const token = useAuthStore((state) => state.token)
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      fetchJson<GroupThread>(`/threads/${threadId}/unarchive`, {
+        method: 'POST',
+        token,
+      }),
+    onSuccess: (restored) => {
+      queryClient.setQueryData<GroupThread[]>(groupThreadsKey(groupId), (threads = []) =>
+        threads.map((thread) => thread.id === restored.id ? restored : thread),
+      )
+    },
+  })
+}
+
+export function useDeleteGroupThread(groupId: string) {
+  const token = useAuthStore((state) => state.token)
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      fetchJson<void>(`/threads/${threadId}`, {
+        method: 'DELETE',
+        token,
+      }),
+    onSuccess: (_result, threadId) => {
+      queryClient.setQueryData<GroupThread[]>(groupThreadsKey(groupId), (threads = []) =>
+        threads.filter((thread) => thread.id !== threadId),
+      )
+    },
+  })
+}

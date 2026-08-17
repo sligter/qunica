@@ -299,6 +299,112 @@ pub async fn archive(
     Ok(Json(ThreadResponse::from(thread)))
 }
 
+/// Restores an archived task so it accepts messages again.
+///
+/// Only the archived → active transition is a real change; every other live
+/// status is returned untouched so a double click is harmless.
+pub async fn unarchive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(thread_id): Path<String>,
+) -> Result<Json<ThreadResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    ensure_task_thread(&thread)?;
+    if thread.status == "cleared" {
+        return Err(ApiError::not_found("task not found"));
+    }
+    if thread.status != "archived" {
+        return Ok(Json(ThreadResponse::from(thread)));
+    }
+
+    sqlx::query(
+        "UPDATE threads SET status = 'active', updated_at = ? \
+         WHERE id = ? AND status = 'archived'",
+    )
+    .bind(now_rfc3339())
+    .bind(&thread_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to restore task"))?;
+
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    Ok(Json(ThreadResponse::from(thread)))
+}
+
+/// Deletes an archived task.
+///
+/// Archiving is the gate: a task has to be archived first, which is what rules
+/// out deleting one that is still running. The rows are soft-deleted (`cleared`)
+/// the same way message clearing works, and the git bindings are released so the
+/// branch can back a new task.
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(thread_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    ensure_task_thread(&thread)?;
+    if thread.status == "cleared" {
+        return Err(ApiError::not_found("task not found"));
+    }
+    if thread.status != "archived" {
+        return Err(ApiError::conflict("task must be archived before deletion"));
+    }
+
+    let worktree_path: Option<String> =
+        sqlx::query_scalar("SELECT worktree_path FROM threads WHERE id = ?")
+            .bind(&thread_id)
+            .fetch_one(state.db.pool())
+            .await
+            .map_err(|_| ApiError::internal("database error"))?;
+
+    let _guard = state.write_lock.lock().await;
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start task delete transaction"))?;
+
+    sqlx::query(
+        "UPDATE messages SET status = 'cleared' \
+         WHERE thread_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(&thread_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to delete task messages"))?;
+
+    let deleted = sqlx::query(
+        "UPDATE threads \
+         SET status = 'cleared', git_branch = NULL, worktree_path = NULL, updated_at = ? \
+         WHERE id = ? AND status = 'archived'",
+    )
+    .bind(now_rfc3339())
+    .bind(&thread_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to delete task"))?
+    .rows_affected();
+    if deleted == 0 {
+        return Err(ApiError::conflict("task is no longer archived"));
+    }
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit task delete"))?;
+    drop(_guard);
+
+    if let Some(worktree_path) = worktree_path {
+        remove_thread_worktree(&state, &thread.group_id, &owner_id, &worktree_path).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn cancel(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -452,6 +558,38 @@ async fn rollback_task_worktree(root: &FsPath, path: &FsPath, binding: &TaskWork
         if let Err(error) = workspace_git::delete_branch(root, &binding.branch, true).await {
             tracing::warn!(%error, branch = %binding.branch, "failed to roll back task branch");
         }
+    }
+}
+
+/// Detaches a deleted task's worktree from the shared repository.
+///
+/// Best effort on purpose: the task row is already gone, so a missing workspace
+/// or a git failure is logged rather than surfaced — it must not leave the user
+/// with a task they cannot delete. The branch itself is kept, since it may still
+/// carry the work the task produced.
+async fn remove_thread_worktree(
+    state: &AppState,
+    group_id: &str,
+    owner_id: &str,
+    worktree_path: &str,
+) {
+    let workspace = workspace_files::load_owned_local_workspace(
+        state.db.pool(),
+        ConversationRoot::conversation(ConversationScope::Groups, group_id, owner_id),
+    )
+    .await;
+    let Ok(workspace) = workspace else {
+        tracing::warn!(
+            group_id,
+            path = worktree_path,
+            "skipped task worktree cleanup: workspace is unavailable"
+        );
+        return;
+    };
+    if let Err(error) =
+        workspace_git::remove_task_worktree(&workspace.root, FsPath::new(worktree_path)).await
+    {
+        tracing::warn!(%error, path = worktree_path, "failed to remove deleted task worktree");
     }
 }
 

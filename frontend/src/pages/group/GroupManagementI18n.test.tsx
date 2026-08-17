@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   createTaskMutateAsync: vi.fn(),
   createTaskReset: vi.fn(),
   archiveTaskMutateAsync: vi.fn(),
+  restoreTaskMutateAsync: vi.fn(),
+  deleteTaskMutateAsync: vi.fn(),
   isStreaming: false,
   clearMutateAsync: vi.fn(),
   deleteMutateAsync: vi.fn(),
@@ -115,6 +117,14 @@ vi.mock('@/hooks/useGroupThreads', () => ({
   useArchiveGroupThread: () => ({
     isPending: false,
     mutateAsync: mocks.archiveTaskMutateAsync,
+  }),
+  useRestoreGroupThread: () => ({
+    isPending: false,
+    mutateAsync: mocks.restoreTaskMutateAsync,
+  }),
+  useDeleteGroupThread: () => ({
+    isPending: false,
+    mutateAsync: mocks.deleteTaskMutateAsync,
   }),
 }))
 vi.mock('@/hooks/useWorkspaceGit', () => ({
@@ -285,6 +295,8 @@ describe('group management i18n', () => {
     })
     mocks.createTaskReset.mockReset()
     mocks.archiveTaskMutateAsync.mockReset()
+    mocks.restoreTaskMutateAsync.mockReset()
+    mocks.deleteTaskMutateAsync.mockReset()
     mocks.isStreaming = false
     mocks.clearMutateAsync.mockReset()
     mocks.deleteMutateAsync.mockReset()
@@ -414,6 +426,45 @@ describe('group management i18n', () => {
     expect(screen.getByRole('combobox', { name: 'Current task' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Start new task' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Archive task' })).toBeDisabled()
+  })
+
+  it('offers restore and delete only while an archived task is selected', async () => {
+    const user = userEvent.setup()
+    const archivedThread: GroupThread = {
+      ...taskThread,
+      id: 'thread-2',
+      title: 'Archived task',
+      status: 'archived',
+    }
+    mocks.groupThreads = [taskThread, archivedThread]
+    mocks.restoreTaskMutateAsync.mockResolvedValue({ ...archivedThread, status: 'active' })
+    mocks.deleteTaskMutateAsync.mockResolvedValue(undefined)
+    window.localStorage.setItem('ag-swarmer:groups:selected-thread:group-1', 'thread-2')
+
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1']}>
+        <Routes>
+          <Route path="/groups/:groupId" element={<GroupChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Archive task' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Restore task' }))
+    await waitFor(() => {
+      expect(mocks.restoreTaskMutateAsync).toHaveBeenCalledWith('thread-2')
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Delete task' }))
+    expect(mocks.deleteTaskMutateAsync).not.toHaveBeenCalled()
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete task' }),
+    )
+    await waitFor(() => {
+      expect(mocks.deleteTaskMutateAsync).toHaveBeenCalledWith('thread-2')
+      expect(window.localStorage.getItem('ag-swarmer:groups:selected-thread:group-1'))
+        .toBe('thread-1')
+    })
   })
 
   it('localizes the manage shell and tabs while preserving the group name', async () => {

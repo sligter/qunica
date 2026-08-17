@@ -496,7 +496,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/direct-chats/:chat_id/workspace-files/text/save",
             axum::routing::patch(direct_chats::save_workspace_file_text),
         )
-        .route("/api/v2/threads/:thread_id", get(threads::get))
+        .route(
+            "/api/v2/threads/:thread_id",
+            get(threads::get).delete(threads::delete),
+        )
         .route(
             "/api/v2/threads/:thread_id/cancel",
             axum::routing::post(threads::cancel),
@@ -508,6 +511,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/threads/:thread_id/archive",
             axum::routing::post(threads::archive),
+        )
+        .route(
+            "/api/v2/threads/:thread_id/unarchive",
+            axum::routing::post(threads::unarchive),
         )
         .route(
             "/api/v2/skills",

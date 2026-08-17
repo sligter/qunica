@@ -297,15 +297,185 @@ async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
         .unwrap()
         .contains("shared workspace"));
 
+    // Deleting a task releases its worktree and frees the branch for a new one,
+    // while the branch itself survives with whatever work the task produced.
+    let created_id = created["id"].as_str().unwrap();
+    let (status, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{created_id}/archive"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        &app,
+        authed("DELETE", &format!("/api/v2/threads/{created_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!Path::new(&created_path).exists());
+    assert!(git_stdout(repository.path(), &["branch", "--list", "task/new"]).contains("task/new"));
+
+    let (status, rebound) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "Reused branch", "git_branch": "task/new"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(rebound["git_branch"], "task/new");
+    let rebound_path: String = sqlx::query_scalar("SELECT worktree_path FROM threads WHERE id = ?")
+        .bind(rebound["id"].as_str().unwrap())
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+
     run_git(
         repository.path(),
         &["worktree", "remove", "--force", &existing_path],
     );
     run_git(
         repository.path(),
-        &["worktree", "remove", "--force", &created_path],
+        &["worktree", "remove", "--force", &rebound_path],
     );
     let _ = std::fs::remove_dir_all(&state.task_worktree_root);
+}
+
+#[tokio::test]
+async fn archived_task_threads_restore_and_delete() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "task-restore@example.test";
+    let token = register_and_login(&app, email).await;
+    let owner_id: String = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let group_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO groups (id, owner_id, name, created_at, updated_at) \
+         VALUES (?, ?, 'Restorable tasks', ?, ?)",
+    )
+    .bind(&group_id)
+    .bind(&owner_id)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let (_, task) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "Restorable"}),
+        ),
+    )
+    .await;
+    let task_id = task["id"].as_str().unwrap().to_owned();
+    let message_id = seed_message(&state, &group_id, &task_id, "kept while archived").await;
+
+    let (status, _) = send(
+        &app,
+        authed("DELETE", &format!("/api/v2/threads/{task_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{task_id}/archive"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, restored) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{task_id}/unarchive"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(restored["status"], "active");
+
+    let (status, again) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{task_id}/unarchive"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["status"], "active");
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{task_id}/archive"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(
+        &app,
+        authed("DELETE", &format!("/api/v2/threads/{task_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, threads) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/threads"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(threads.as_array().unwrap().is_empty());
+
+    let message_status: String = sqlx::query_scalar("SELECT status FROM messages WHERE id = ?")
+        .bind(&message_id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(message_status, "cleared");
+
+    let (status, _) = send(
+        &app,
+        authed("DELETE", &format!("/api/v2/threads/{task_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{task_id}/unarchive"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 async fn seed_message(

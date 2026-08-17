@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Archive, ChevronRight, ListPlus } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronRight, ListPlus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -26,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { useArchiveGroupThread, useCreateGroupThread } from '@/hooks/useGroupThreads'
+import { useArchiveGroupThread, useCreateGroupThread, useDeleteGroupThread, useRestoreGroupThread } from '@/hooks/useGroupThreads'
 import { useGroupWorkspaceGitBranches } from '@/hooks/useWorkspaceGit'
 import type { GroupThread } from '@/types/api'
 
@@ -36,6 +36,7 @@ interface GroupChatHeaderActionsProps {
   selectedThread: GroupThread | undefined
   onSelect: (threadId: string) => void
   onArchived: (threadId: string) => void
+  onDeleted: (threadId: string) => void
   disabled?: boolean
 }
 
@@ -45,18 +46,23 @@ export function GroupChatHeaderActions({
   selectedThread,
   onSelect,
   onArchived,
+  onDeleted,
   disabled = false,
 }: GroupChatHeaderActionsProps) {
   const { t } = useTranslation(['groups', 'common'])
   const createThread = useCreateGroupThread(groupId)
   const archiveThread = useArchiveGroupThread(groupId)
+  const restoreThread = useRestoreGroupThread(groupId)
+  const deleteThread = useDeleteGroupThread(groupId)
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [gitBranch, setGitBranch] = useState('')
   const gitBranches = useGroupWorkspaceGitBranches(createOpen ? groupId : undefined)
   const activeThreads = threads.filter((thread) => thread.status !== 'archived')
   const archivedThreads = threads.filter((thread) => thread.status === 'archived')
+  const selectedArchived = selectedThread?.status === 'archived'
   const displayTitle = (thread: GroupThread) => thread.title || t('tasks.untitled')
   const displayLabel = (thread: GroupThread, archived = false) => [
     displayTitle(thread),
@@ -67,7 +73,10 @@ export function GroupChatHeaderActions({
   const availableBranches = (gitBranches.data?.branches ?? []).filter(
     (branch) => branch.kind === 'local' && !branch.current && !boundBranches.has(branch.name),
   )
-  const mutating = createThread.isPending || archiveThread.isPending
+  const mutating = createThread.isPending
+    || archiveThread.isPending
+    || restoreThread.isPending
+    || deleteThread.isPending
 
   const create = async (event: FormEvent) => {
     event.preventDefault()
@@ -231,18 +240,50 @@ export function GroupChatHeaderActions({
         </DialogContent>
       </Dialog>
 
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 text-muted-foreground"
-        disabled={disabled || mutating || !selectedThread || selectedThread.status === 'archived'}
-        onClick={() => setArchiveOpen(true)}
-        aria-label={t('tasks.archive')}
-        title={t('tasks.archive')}
-      >
-        <Archive className="h-4 w-4" aria-hidden="true" />
-      </Button>
+      {selectedArchived ? (
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground"
+            disabled={mutating}
+            onClick={() => {
+              if (!selectedThread) return
+              void restoreThread.mutateAsync(selectedThread.id)
+            }}
+            aria-label={t('tasks.restore')}
+            title={t('tasks.restore')}
+          >
+            <ArchiveRestore className="h-4 w-4" aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground"
+            disabled={mutating}
+            onClick={() => setDeleteOpen(true)}
+            aria-label={t('tasks.delete')}
+            title={t('tasks.delete')}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </>
+      ) : (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-foreground"
+          disabled={disabled || mutating || !selectedThread}
+          onClick={() => setArchiveOpen(true)}
+          aria-label={t('tasks.archive')}
+          title={t('tasks.archive')}
+        >
+          <Archive className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      )}
       <ConfirmDialog
         open={archiveOpen}
         onOpenChange={setArchiveOpen}
@@ -253,6 +294,20 @@ export function GroupChatHeaderActions({
           if (!selectedThread) return
           const archived = await archiveThread.mutateAsync(selectedThread.id)
           onArchived(archived.id)
+        }}
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={t('tasks.deleteTitle', { title: selectedThread ? displayTitle(selectedThread) : '' })}
+        description={t('tasks.deleteDescription')}
+        confirmLabel={t('tasks.delete')}
+        destructive
+        onConfirm={async () => {
+          if (!selectedThread) return
+          const deletedId = selectedThread.id
+          await deleteThread.mutateAsync(deletedId)
+          onDeleted(deletedId)
         }}
       />
     </div>
