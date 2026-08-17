@@ -32,10 +32,12 @@ import type {
   TokenUsageTimelinePoint,
 } from '@/types/api'
 
-type RangePreset = '7d' | '30d' | '90d' | 'custom'
+type RangePreset = 'today' | 'yesterday' | '7d' | '30d' | '90d' | 'custom'
 type Dimension = 'group' | 'provider' | 'model' | 'agent'
 
 const ALL = '__all__'
+
+const RANGE_PRESETS: RangePreset[] = ['today', 'yesterday', '7d', '30d', '90d', 'custom']
 
 function dateInputValue(date: Date) {
   const year = date.getFullYear()
@@ -44,11 +46,20 @@ function dateInputValue(date: Date) {
   return `${year}-${month}-${day}`
 }
 
-function presetDates(days: number) {
-  const to = new Date()
-  const from = new Date(to)
-  from.setDate(from.getDate() - days + 1)
-  return { from: dateInputValue(from), to: dateInputValue(to) }
+function daysAgo(days: number) {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date
+}
+
+/** The inclusive `from`/`to` pair a preset stands for. */
+function presetDates(preset: Exclude<RangePreset, 'custom'>) {
+  if (preset === 'today' || preset === 'yesterday') {
+    const day = dateInputValue(daysAgo(preset === 'today' ? 0 : 1))
+    return { from: day, to: day }
+  }
+  const days = Number.parseInt(preset, 10)
+  return { from: dateInputValue(daysAgo(days - 1)), to: dateInputValue(new Date()) }
 }
 
 function formatTokens(value: number, locale: string, compact = false) {
@@ -256,7 +267,7 @@ function BreakdownList({
 export function TokenUsagePage() {
   const { t, i18n } = useTranslation('usage')
   const locale = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const initialDates = useMemo(() => presetDates(30), [])
+  const initialDates = useMemo(() => presetDates('30d'), [])
   const [range, setRange] = useState<RangePreset>('30d')
   const [filters, setFilters] = useState<TokenUsageFilters>(initialDates)
   const validRange = Boolean(filters.from && filters.to && filters.from <= filters.to)
@@ -270,8 +281,7 @@ export function TokenUsagePage() {
   const selectRange = (next: RangePreset) => {
     setRange(next)
     if (next !== 'custom') {
-      const days = Number.parseInt(next, 10)
-      setFilters((current) => ({ ...current, ...presetDates(days) }))
+      setFilters((current) => ({ ...current, ...presetDates(next) }))
     }
   }
 
@@ -321,16 +331,16 @@ export function TokenUsagePage() {
               </button>
             ) : null}
           </div>
-          <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-5">
-            <div className="space-y-1.5">
+          <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-6">
+            <div className="space-y-1.5 md:col-span-2">
               <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">{t('filters.range')}</span>
-              <div className="grid h-9 grid-cols-4 rounded-md border border-input bg-background p-0.5">
-                {(['7d', '30d', '90d', 'custom'] as RangePreset[]).map((preset) => (
+              <div className="grid h-9 grid-cols-6 rounded-md border border-input bg-background p-0.5">
+                {RANGE_PRESETS.map((preset) => (
                   <button
                     key={preset}
                     type="button"
                     aria-pressed={range === preset}
-                    className={cn('rounded text-xs font-medium transition-colors', range === preset ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+                    className={cn('truncate rounded px-1 text-xs font-medium transition-colors', range === preset ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
                     onClick={() => selectRange(preset)}
                   >
                     {t(`ranges.${preset}`)}

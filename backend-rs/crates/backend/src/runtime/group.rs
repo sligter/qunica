@@ -46,7 +46,7 @@ use uuid::Uuid;
 
 use crate::acp::{
     canonicalize_acp_runtime, normalize_acp_runtime, run_acp_agent_stream, AcpEventKind, AcpImage,
-    AcpRunRequest,
+    AcpRunRequest, AcpRuntimeProfile,
 };
 use crate::llm::{
     build_provider, effort_from_config, model_from_config, vision_enabled, ChatDelta, ChatMessage,
@@ -59,6 +59,7 @@ use crate::runtime::agent_as_tool::{
     AGENT_AS_TOOL_NAME,
 };
 use crate::runtime::approval;
+use crate::runtime::compaction::estimate_text_tokens;
 use crate::runtime::compaction_hook::ProviderSummarizer;
 use crate::runtime::conversation_context::{
     load_conversation, load_conversation_for_resume, sanitize_acp_agent_brief,
@@ -3583,6 +3584,7 @@ async fn run_acp_agent_turn(
         .model
         .clone()
         .unwrap_or_else(|| "ACP runtime".to_string());
+    let usage_profile = config.profile;
     let invocation = build_invocation_context(services, ctx, agent, group)
         .await
         .map_err(StepErr::Db)?;
@@ -3623,6 +3625,11 @@ async fn run_acp_agent_turn(
         incremental_prompt.push_str(input);
     }
     let context_hash = acp_context_hash(&invocation.system_prompt);
+    // The transcript prompt is the best host-side picture of what sits in the
+    // agent's context: on a fresh session it *is* what we send, and on a reused
+    // one the agent already holds the same material. Measured before the move
+    // into the request, and only used if the agent reports no usage itself.
+    let prompt_token_estimate = estimate_text_tokens(&prompt);
 
     let mut run = await_with_cancellation(
         ctx,
@@ -3667,6 +3674,13 @@ async fn run_acp_agent_turn(
     };
     let mut last_was_reasoning = false;
     let mut last_was_response = false;
+    // Everything the agent said, kept only to size the fallback estimate below.
+    let mut reasoning = String::new();
+    let mut agent_reported_usage = false;
+    // Whether the model ran at all. A run can fail before the prompt is ever
+    // delivered — a rejected `session/set_model`, say — and that turn cost
+    // nothing, so it must not be estimated as though the prompt were consumed.
+    let mut agent_produced_output = false;
     while let Some(event) = match await_with_cancellation(ctx, run.next_event()).await {
         Ok(event) => event,
         Err(StepErr::Cancelled) => {
@@ -3709,6 +3723,7 @@ async fn run_acp_agent_turn(
                 last_was_reasoning = false;
                 let text = event.data.as_str().unwrap_or_default().to_string();
                 if !text.is_empty() {
+                    agent_produced_output = true;
                     ctx.emit(
                         StreamEventKind::Token,
                         json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
@@ -3725,6 +3740,8 @@ async fn run_acp_agent_turn(
                 if !text.is_empty() {
                     turn.push_reasoning(&text, !last_was_reasoning);
                     last_was_reasoning = true;
+                    reasoning.push_str(&text);
+                    agent_produced_output = true;
                     ctx.emit(
                         StreamEventKind::Reasoning,
                         json!({ "agent_id": agent.agent_id, "text": text, "delta": text }),
@@ -3735,6 +3752,7 @@ async fn run_acp_agent_turn(
             AcpEventKind::ToolCallStart => {
                 last_was_reasoning = false;
                 last_was_response = false;
+                agent_produced_output = true;
                 // The ACP payload lacks the agent identity the LLM path injects;
                 // merge it in so tool cards render under this agent's timeline
                 // instead of a phantom "Agent" block (agent_id -> unknown-agent).
@@ -3761,6 +3779,7 @@ async fn run_acp_agent_turn(
             }
             AcpEventKind::Usage => {
                 last_was_reasoning = false;
+                agent_reported_usage = true;
                 let usage = acp_context_usage(&event.data);
                 persist_token_usage(&services.pool, &usage_record_id, &usage_dimensions, &usage)
                     .await
@@ -3791,6 +3810,35 @@ async fn run_acp_agent_turn(
             }
         }
     }
+
+    // Runtimes whose ACP surface carries no `usage_update` — `dsh` is the one
+    // we ship a preset for — would otherwise leave the turn with no context
+    // meter and no row in the token ledger. Estimate it host-side instead of
+    // reporting nothing, clearly labelled so it is never mistaken for a figure
+    // the agent itself reported.
+    if !agent_reported_usage && agent_produced_output {
+        let usage = estimated_acp_context_usage(
+            prompt_token_estimate,
+            estimate_text_tokens(&content) + estimate_text_tokens(&reasoning),
+            acp_context_window(usage_profile, agent.model_config_json.as_deref()),
+        );
+        persist_token_usage(&services.pool, &usage_record_id, &usage_dimensions, &usage)
+            .await
+            .map_err(StepErr::Db)?;
+        let usage_json = context_usage_to_json(&usage);
+        turn.set_context_usage(usage_json.clone());
+        ctx.record_scheduled_usage(&usage_json);
+        ctx.emit(
+            StreamEventKind::ContextUsage,
+            json!({
+                "agent_id": agent.agent_id,
+                "display_name": agent.display_name,
+                "context_usage": usage_json,
+            }),
+        )
+        .await?;
+    }
+
     let run_control = run.control();
     match await_with_cancellation(ctx, run.join()).await {
         Ok(Ok(())) => {}
@@ -3870,6 +3918,51 @@ fn acp_context_usage(data: &Value) -> ag_swarmer_domain::runtime::ContextUsage {
         output_reserve_tokens: None,
         ratio,
         source: ratio.map(|_| "provider".to_string()),
+    }
+}
+
+/// The context window a `dsh` agent runs against.
+///
+/// `dsh` expresses the window in its plugin config rather than over ACP, and
+/// the managed composition [`crate::acp::dsh`] writes leaves `contextWindow`
+/// unset — so every model routed through `dsh-llm-deepseek` gets that adapter's
+/// own default, which is what this mirrors.
+const DSH_CONTEXT_WINDOW_TOKENS: i64 = 1_000_000;
+
+/// The context window to measure an ACP agent's estimated usage against.
+///
+/// An agent's own `context_window_tokens` override wins; otherwise only a
+/// profile whose window is known from its configuration gets one. A guess would
+/// be worse than nothing here: the frontend renders an absent window as
+/// "usage unknown" and still shows the token counts, whereas a wrong window
+/// renders a confident, wrong percentage.
+fn acp_context_window(profile: AcpRuntimeProfile, model_config_json: Option<&str>) -> Option<i64> {
+    context_window_override(model_config_json)
+        .0
+        .or(match profile {
+            AcpRuntimeProfile::Dsh => Some(DSH_CONTEXT_WINDOW_TOKENS),
+            _ => None,
+        })
+}
+
+/// Build the [`ContextUsage`] for an ACP turn the agent never reported usage
+/// for, from host-side token estimates of what was sent and what came back.
+fn estimated_acp_context_usage(
+    input_tokens: i64,
+    output_tokens: i64,
+    context_window_tokens: Option<i64>,
+) -> ag_swarmer_domain::runtime::ContextUsage {
+    let total_tokens = input_tokens.saturating_add(output_tokens);
+    ag_swarmer_domain::runtime::ContextUsage {
+        input_tokens: Some(input_tokens),
+        output_tokens: Some(output_tokens),
+        total_tokens: Some(total_tokens),
+        context_window_tokens,
+        output_reserve_tokens: None,
+        ratio: context_window_tokens
+            .filter(|window| *window > 0)
+            .map(|window| ((total_tokens as f64) / (window as f64)).clamp(0.0, 1.0)),
+        source: Some("host_estimate".to_string()),
     }
 }
 
@@ -7064,6 +7157,54 @@ mod tests {
     use crate::runtime::conversation_context::{
         ConversationActor, ConversationAttachment, ConversationMessage,
     };
+
+    /// An ACP runtime that reports no usage still has to produce a usage
+    /// figure, and it must never be mistaken for one the agent reported.
+    #[test]
+    fn estimated_acp_usage_is_labelled_and_only_rated_against_a_known_window() {
+        let unknown = estimated_acp_context_usage(1_200, 300, None);
+        assert_eq!(unknown.input_tokens, Some(1_200));
+        assert_eq!(unknown.output_tokens, Some(300));
+        assert_eq!(unknown.total_tokens, Some(1_500));
+        assert_eq!(unknown.source.as_deref(), Some("host_estimate"));
+        // No window means no percentage; the frontend renders "usage unknown"
+        // rather than a number nothing backs.
+        assert_eq!(unknown.ratio, None);
+        assert_eq!(unknown.context_window_tokens, None);
+
+        let rated = estimated_acp_context_usage(1_500, 500, Some(4_000));
+        assert_eq!(rated.ratio, Some(0.5));
+        assert_eq!(rated.context_window_tokens, Some(4_000));
+
+        // A turn larger than the window is full, not over-full.
+        assert_eq!(
+            estimated_acp_context_usage(9_000, 2_000, Some(4_000)).ratio,
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn acp_context_windows_come_from_the_agent_first_and_the_profile_second() {
+        // dsh's window is not on the wire; it is the one the managed
+        // composition leaves the adapter to default to.
+        assert_eq!(
+            acp_context_window(AcpRuntimeProfile::Dsh, None),
+            Some(DSH_CONTEXT_WINDOW_TOKENS)
+        );
+        // Every other profile would be a guess, so it stays unknown.
+        assert_eq!(acp_context_window(AcpRuntimeProfile::Custom, None), None);
+        assert_eq!(acp_context_window(AcpRuntimeProfile::Codex, None), None);
+
+        let override_json = r#"{"context_window_tokens": 32000}"#;
+        assert_eq!(
+            acp_context_window(AcpRuntimeProfile::Dsh, Some(override_json)),
+            Some(32_000)
+        );
+        assert_eq!(
+            acp_context_window(AcpRuntimeProfile::Custom, Some(override_json)),
+            Some(32_000)
+        );
+    }
 
     #[test]
     fn automatic_task_title_uses_a_bounded_first_line() {

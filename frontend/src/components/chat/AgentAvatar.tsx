@@ -86,6 +86,7 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
     provider: t('messages.context.provider'),
     previous_provider_delta: t('messages.context.previousProvider'),
     fallback_tokenizer: t('messages.context.estimated'),
+    host_estimate: t('messages.context.hostEstimate'),
   }
   const sourceLabel = usage.source
     ? (sourceLabels[usage.source] ?? t('messages.context.sourceUnknownDetail', { value: usage.source }))

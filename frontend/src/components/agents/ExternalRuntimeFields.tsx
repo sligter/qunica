@@ -202,8 +202,8 @@ export function ExternalRuntimeFields({
           </p>
         )}
         {/* Presets differ in what they can actually stream — dsh, for one, has
-            no tool or usage updates and no resumable sessions. Say so here
-            rather than letting the empty tool timeline speak for itself. */}
+            no tool updates and no resumable sessions. Say so here rather than
+            letting the empty tool timeline speak for itself. */}
         {selectedPreset?.description && (
           <p className="text-2xs text-muted-foreground">{selectedPreset.description}</p>
         )}

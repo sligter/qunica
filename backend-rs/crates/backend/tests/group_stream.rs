@@ -3723,6 +3723,33 @@ async fn group_stream_runs_acp_agent_without_llm_provider() {
     assert!(payloads_of_kind(&events, StreamEventKind::AcpAgentRun)
         .iter()
         .any(|payload| payload["status"] == "completed"));
+
+    // This agent never sends `usage_update` — the shape every dsh run has. The
+    // turn still has to report what it cost, estimated host-side and labelled
+    // as such, or the context meter and the token ledger both stay empty.
+    let usage = payloads_of_kind(&events, StreamEventKind::ContextUsage);
+    assert_eq!(usage.len(), 1);
+    let usage = &usage[0]["context_usage"];
+    assert_eq!(usage["source"], "host_estimate");
+    assert!(usage["input_tokens"].as_i64().unwrap() > 0);
+    assert!(usage["output_tokens"].as_i64().unwrap() > 0);
+    assert_eq!(
+        usage["total_tokens"].as_i64().unwrap(),
+        usage["input_tokens"].as_i64().unwrap() + usage["output_tokens"].as_i64().unwrap()
+    );
+    // No profile here declares a window, so a percentage would be invented.
+    assert!(usage["ratio"].is_null());
+
+    let (recorded, provider, model): (i64, String, String) = sqlx::query_as(
+        "SELECT total_tokens, provider_name, model FROM token_usage_records WHERE agent_id = ?",
+    )
+    .bind(&agent_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(recorded, usage["total_tokens"].as_i64().unwrap());
+    assert_eq!(provider, "ACP");
+    assert_eq!(model, "ACP runtime");
 }
 
 fn assert_invalid_params_agent_error(events: &[Value], agent_id: &str) {
@@ -3797,6 +3824,17 @@ async fn acp_invalid_params_fails_dispatch_without_silence() {
     assert_invalid_params_agent_error(&events, &agent_id);
     assert!(kinds(&events).contains(&"done".to_string()));
     assert!(!kinds(&events).contains(&"agent_message".to_string()));
+
+    // This run dies at `session/set_model`, so the prompt never reaches the
+    // model. The host-side usage estimate must not invent a cost for it.
+    assert!(payloads_of_kind(&events, StreamEventKind::ContextUsage).is_empty());
+    let billed: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM token_usage_records WHERE agent_id = ?")
+            .bind(&agent_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(billed, 0);
     let (history_status, history) = send(
         &app,
         authed_empty(

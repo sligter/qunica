@@ -78,7 +78,8 @@ pub enum AcpRuntimeProfile {
     /// Its ACP surface is prompt-only: no `session/set_model`,
     /// `session/set_mode`, `session/set_config_option`, or `session/load`, and
     /// no tool-call/plan/usage updates. Model and permission choices are made
-    /// through its own `cordis.yml` and environment instead.
+    /// through its own `cordis.yml` and environment instead, and the runtime
+    /// estimates this profile's token usage host-side.
     Dsh,
 }
 

@@ -421,7 +421,9 @@ fn estimate_message_tokens(message: &ChatMessage) -> i64 {
     tokens
 }
 
-fn estimate_text_tokens(text: &str) -> i64 {
+/// Estimate the token cost of one run of text, with the same ASCII/CJK split
+/// [`estimate_tokens`] uses per message.
+pub fn estimate_text_tokens(text: &str) -> i64 {
     let mut ascii = 0i64;
     let mut wide = 0i64;
     for character in text.chars() {

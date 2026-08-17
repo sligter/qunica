@@ -1183,8 +1183,9 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
         AcpRuntimePresetResponse {
             id: "dsh",
             name: "DeepSeek Harness",
-            description: "deepseek-harness ACP server. It streams no tool, plan, \
-                          or usage updates, and sessions cannot be resumed.",
+            description: "deepseek-harness ACP server. It streams no tool or plan \
+                          updates and sessions cannot be resumed; token usage is \
+                          estimated by ag-swarmer rather than reported.",
             profile: "dsh",
             installed: dsh_acp.installed,
             command: Some(if dsh_acp.installed {

@@ -132,7 +132,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     id: 'dsh',
     name: 'DeepSeek Harness',
     description:
-      'deepseek-harness ACP server. It streams no tool, plan, or usage updates, and sessions cannot be resumed.',
+      'deepseek-harness ACP server. It streams no tool or plan updates and sessions cannot be resumed; token usage is estimated by ag-swarmer rather than reported.',
     profile: 'dsh',
     installed: false,
     command: 'npx',
