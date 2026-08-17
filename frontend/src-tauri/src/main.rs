@@ -142,15 +142,20 @@ async fn show_notification(
     body: String,
 ) -> Result<(), String> {
     let identifier = app.config().identifier.clone();
+    let display_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "AG Swarmer".to_string());
     let result = tauri::async_runtime::spawn_blocking(move || {
         #[cfg(windows)]
         {
             let _ = app;
-            show_windows_toast(&identifier, &title, &body)
+            show_windows_toast(&identifier, &display_name, &title, &body)
         }
         #[cfg(not(windows))]
         {
-            let _ = identifier;
+            let _ = (identifier, display_name);
             app.notification()
                 .builder()
                 .title(title)
@@ -167,17 +172,23 @@ async fn show_notification(
     result
 }
 
-/// Raise a toast, borrowing an installed identity when this build has none.
+/// Raise a toast under this app's own identity, registering it first if needed.
 ///
 /// Windows only delivers a toast for a registered AppUserModelID, which an
-/// installer creates along with the Start Menu shortcut. A portable or
-/// freshly-built exe has neither, so its own identifier is rejected and the
-/// notification is dropped without a sound. PowerShell's identifier is always
-/// registered; falling back to it costs the app's name in the toast header,
-/// which is a far better trade than silence.
+/// installer creates along with a Start Menu shortcut. A portable build has
+/// neither, so it registers the identity under HKCU on demand and then uses the
+/// app's own name and icon. PowerShell's always-registered identifier stays as a
+/// fallback for machines that deny the registry write.
 #[cfg(windows)]
-fn show_windows_toast(app_id: &str, title: &str, body: &str) -> Result<(), String> {
+fn show_windows_toast(
+    app_id: &str,
+    display_name: &str,
+    title: &str,
+    body: &str,
+) -> Result<(), String> {
     use tauri_winrt_notification::Toast;
+
+    let registration_error = register_windows_app_user_model_id(app_id, display_name).err();
 
     let raise = |id: &str| {
         Toast::new(id)
@@ -186,11 +197,42 @@ fn show_windows_toast(app_id: &str, title: &str, body: &str) -> Result<(), Strin
             .show()
             .map_err(|error| error.to_string())
     };
-    raise(app_id).or_else(|registered_error| {
+    raise(app_id).or_else(|identity_error| {
         raise(Toast::POWERSHELL_APP_ID).map_err(|fallback_error| {
-            format!("{app_id}: {registered_error}; powershell fallback: {fallback_error}")
+            let registration = registration_error
+                .map(|error| format!("; AUMID registration: {error}"))
+                .unwrap_or_default();
+            format!("{app_id}: {identity_error}{registration}; powershell fallback: {fallback_error}")
         })
     })
+}
+
+/// Register an AppUserModelID so Windows delivers toasts for a portable exe.
+///
+/// The installer normally writes the identity via the Start Menu shortcut; a
+/// portable build never runs it. Writing the equivalent HKCU registration is
+/// idempotent and gives `CreateToastNotifierWithId` the identity it otherwise
+/// rejects, so the toast shows the app's own name and icon.
+#[cfg(windows)]
+fn register_windows_app_user_model_id(app_id: &str, display_name: &str) -> Result<(), String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    // The notification schema wants a URI; the executable carries the app icon.
+    let icon_uri = format!("file:///{}", exe.to_string_lossy().replace('\\', "/"));
+
+    let reg_path = format!(r"SOFTWARE\Classes\AppUserModelId\{app_id}");
+    let (key, _disposition) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(&reg_path)
+        .map_err(|error| error.to_string())?;
+    key.set_value("DisplayName", &display_name)
+        .map_err(|error| error.to_string())?;
+    key.set_value("IconBackgroundColor", &"0")
+        .map_err(|error| error.to_string())?;
+    key.set_value("IconUri", &icon_uri)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn log_timestamp() -> String {
@@ -627,22 +669,42 @@ fn main() {
 mod tests {
     use super::{pids_listening_on_port, taskkill_args};
 
-    /// Proves the toast actually reaches the desktop from a worker thread.
+    /// Proves a portable exe can register its own identity and raise a toast.
     ///
     /// Two things could stop it and neither shows up at compile time: an
-    /// unregistered AppUserModelID, and a thread with no COM apartment. The
-    /// notification plugin discards the error from both, so this raises a real
-    /// toast — a visible one — rather than trusting that it would have.
+    /// unregistered AppUserModelID, and a worker thread with no COM apartment.
+    /// Registering first (rather than borrowing PowerShell's identity) is what
+    /// lets the toast carry the app's own name and icon, so this raises directly
+    /// under the freshly-registered ID to prove the registration is sufficient.
     #[cfg(windows)]
     #[test]
-    fn raises_a_toast_without_an_installed_identity() {
+    fn registers_an_identity_and_raises_a_toast() {
+        const TEST_APP_ID: &str = "dev.ag-swarmer.test.notification";
+
+        super::register_windows_app_user_model_id(TEST_APP_ID, "AG Swarmer")
+            .expect("register test AUMID");
+
         let raised = std::thread::spawn(|| {
-            super::show_windows_toast("dev.ag-swarmer.invalid.test", "AG Swarmer", "Toast probe")
+            tauri_winrt_notification::Toast::new(TEST_APP_ID)
+                .title("AG Swarmer")
+                .text1("Toast probe")
+                .show()
+                .map_err(|error| error.to_string())
         })
         .join()
         .expect("toast thread panicked");
 
-        assert!(raised.is_ok(), "no notifier accepted the toast: {raised:?}");
+        // Give the toast time to post before removing the identity it carries.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let registered = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey(format!(r"SOFTWARE\Classes\AppUserModelId\{TEST_APP_ID}"))
+            .is_ok();
+        let _ = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .delete_subkey_all(format!(r"SOFTWARE\Classes\AppUserModelId\{TEST_APP_ID}"));
+
+        assert!(registered, "AUMID registry key was not created");
+        assert!(raised.is_ok(), "own identity was not accepted: {raised:?}");
     }
 
     #[test]
