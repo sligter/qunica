@@ -15,7 +15,7 @@ export function LoginPage() {
   }, [title])
 
   return (
-    <AuthCard title={title}>
+    <AuthCard title={title} subtitle={t('login.subtitle')}>
       <AuthForm mode="login" onSuccess={() => void navigate('/')} />
       <p className="text-sm text-muted-foreground">
         {t('login.switchPrompt')}{' '}

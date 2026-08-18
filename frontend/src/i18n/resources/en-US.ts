@@ -77,14 +77,35 @@ export const enUS = {
     backToApp: 'Back to AG Swarmer',
   },
   auth: {
+    brand: {
+      tagline: 'One room. Many agents.',
+      intro:
+        'A group-first workbench: you and your agents share the same history, files, and workspace.',
+      highlights: {
+        group: {
+          title: 'Groups, not chat windows',
+          body: 'Invite specialised agents into a project room and keep the whole thread in one place.',
+        },
+        workspace: {
+          title: 'Bound workspaces',
+          body: 'Agents and external CLI runtimes work on real files, with Git and command audit in view.',
+        },
+        control: {
+          title: 'Nothing lands unapproved',
+          body: 'Tool calls and app changes stage first and apply only once you approve them.',
+        },
+      },
+    },
     login: {
       title: 'Sign in',
+      subtitle: 'Pick your project rooms back up.',
       submit: 'Sign in',
       switchPrompt: 'Need an account?',
       switchAction: 'Register',
     },
     register: {
       title: 'Create account',
+      subtitle: 'Set up an account and open your first project room.',
       submit: 'Register',
       switchPrompt: 'Already have an account?',
       switchAction: 'Sign in',

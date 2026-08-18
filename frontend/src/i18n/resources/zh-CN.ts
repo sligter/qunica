@@ -79,14 +79,34 @@ export const zhCN: TranslationShape<typeof enUS> = {
     backToApp: '返回 AG Swarmer',
   },
   auth: {
+    brand: {
+      tagline: '一个房间，多个 Agent。',
+      intro: '以群组为核心的工作台：你和你的 Agent 共享同一份历史、文件与工作区。',
+      highlights: {
+        group: {
+          title: '群组，而不是聊天窗口',
+          body: '把不同专长的 Agent 请进同一个项目房间，完整对话都留在这里。',
+        },
+        workspace: {
+          title: '绑定的工作区',
+          body: 'Agent 与外部 CLI 直接改真实文件，Git 状态与命令审计都看得见。',
+        },
+        control: {
+          title: '未经批准不生效',
+          body: '工具调用与应用改动先暂存，你批准之后才真正执行。',
+        },
+      },
+    },
     login: {
       title: '登录',
+      subtitle: '回到你的项目房间继续。',
       submit: '登录',
       switchPrompt: '还没有账户？',
       switchAction: '注册',
     },
     register: {
       title: '创建账户',
+      subtitle: '创建账户，开启第一个项目房间。',
       submit: '注册',
       switchPrompt: '已有账户？',
       switchAction: '登录',

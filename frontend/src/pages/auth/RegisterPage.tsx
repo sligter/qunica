@@ -15,7 +15,7 @@ export function RegisterPage() {
   }, [title])
 
   return (
-    <AuthCard title={title}>
+    <AuthCard title={title} subtitle={t('register.subtitle')}>
       <AuthForm mode="register" onSuccess={() => void navigate('/')} />
       <p className="text-sm text-muted-foreground">
         {t('register.switchPrompt')}{' '}

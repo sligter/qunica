@@ -262,6 +262,82 @@
   }
 }
 
+/* Brand mark — five agents leaning in on one answer. The nodes arrive in
+   sequence, the ring keeps a slow sway, and the star breathes: enough life that
+   the signed-out screen reads as a product, little enough to ignore while
+   typing a password. */
+@keyframes brand-node-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* A sway rather than a full turn: a rotation would carry the amber node away
+   from 12 o'clock, and that position is what makes the mark recognisable. */
+@keyframes brand-ring-sway {
+  0%,
+  100% {
+    transform: rotate(-2.6deg);
+  }
+  50% {
+    transform: rotate(2.6deg);
+  }
+}
+
+@keyframes brand-star-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-60deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes brand-star-pulse {
+  0%,
+  100% {
+    opacity: 0.88;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+/* Sign-in entrance: content lifts into place in reading order. */
+@keyframes auth-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes auth-aurora {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, -6%, 0) scale(1.12);
+  }
+}
+
 @layer utilities {
   .animate-startup-progress {
     animation: startup-progress 1.4s ease-in-out infinite;
@@ -293,6 +369,36 @@
     background-size: 180% 100%;
     animation: stream-skeleton 1.7s linear infinite;
   }
+
+  /* Each node scales from its own centre; fill-box is what makes "center" mean
+     the bubble rather than the whole 120×120 viewBox. */
+  .animate-brand-node {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: brand-node-in 640ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* These two turn about the mark's own centre, in viewBox units — the default
+     transform-box for SVG children already resolves against it. */
+  .animate-brand-ring {
+    transform-origin: 60px 60px;
+    animation: brand-ring-sway 9s ease-in-out infinite;
+  }
+
+  .animate-brand-star {
+    transform-origin: 60px 60px;
+    animation:
+      brand-star-in 720ms 620ms cubic-bezier(0.22, 1, 0.36, 1) both,
+      brand-star-pulse 4.8s 1.35s ease-in-out infinite;
+  }
+
+  .animate-auth-rise {
+    animation: auth-rise 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-auth-aurora {
+    animation: auth-aurora 18s ease-in-out infinite;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -313,5 +419,21 @@
   .animate-stream-breathe {
     animation: none;
     opacity: 0.75;
+  }
+
+  /* The entrance is how the signed-out screen introduces itself, but the
+     content it introduces has to be there either way — so these settle on
+     their last frame rather than on the invisible first one. */
+  .animate-brand-node,
+  .animate-brand-star,
+  .animate-auth-rise {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .animate-brand-ring,
+  .animate-auth-aurora {
+    animation: none;
   }
 }
