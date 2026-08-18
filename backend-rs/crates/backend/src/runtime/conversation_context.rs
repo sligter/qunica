@@ -226,14 +226,45 @@ fn fallback_display_name(id: &str, unknown: &str) -> String {
     }
 }
 
+/// A rendered conversation, plus where each input row ended up.
+pub struct RenderedConversation {
+    pub messages: Vec<ChatMessage>,
+    /// Index into [`Self::messages`] of the message carrying row `i`'s own
+    /// text, when the row produced one.
+    ///
+    /// Rows do not map one-to-one onto messages. The current agent's own turn
+    /// expands into an assistant tool-call message, one `tool` message per
+    /// result, and a trailing text message — or, for an interrupted turn that
+    /// produced calls but no text, into nothing at all. A caller that wants to
+    /// reach back into `messages` for a given row therefore has to be told
+    /// where it landed: deriving the position from the row index is off by
+    /// however many extra messages the rows before it expanded into, and
+    /// writing through that offset overwrites somebody else's message.
+    pub message_index_by_row: Vec<Option<usize>>,
+}
+
 pub fn to_llm_messages(
     system_prompt: &str,
     current_agent_id: &str,
     rows: &[ConversationMessage],
     access: AttachmentAccess,
 ) -> Vec<ChatMessage> {
+    render_conversation(system_prompt, current_agent_id, rows, access).messages
+}
+
+pub fn render_conversation(
+    system_prompt: &str,
+    current_agent_id: &str,
+    rows: &[ConversationMessage],
+    access: AttachmentAccess,
+) -> RenderedConversation {
     let mut messages = vec![ChatMessage::text("system", system_prompt.to_string())];
+    let mut message_index_by_row = Vec::with_capacity(rows.len());
     for row in rows {
+        // Recorded before the row is rendered so it names the message this row
+        // is about to produce, and left `None` when it produces none.
+        let mut own_message_index = messages.len();
+        let mut produced_own_message = true;
         match &row.actor {
             ConversationActor::Agent { id, .. } if id == current_agent_id => {
                 let completed_calls: Vec<(ToolCall, String)> = row
@@ -286,7 +317,10 @@ pub fn to_llm_messages(
                     }));
                 }
                 if !row.content.is_empty() || row.tool_calls.is_empty() {
+                    own_message_index = messages.len();
                     messages.push(ChatMessage::text("assistant", row.content.clone()));
+                } else {
+                    produced_own_message = false;
                 }
             }
             _ => messages.push(ChatMessage::text(
@@ -294,8 +328,12 @@ pub fn to_llm_messages(
                 render_untrusted_message(row, access),
             )),
         }
+        message_index_by_row.push(produced_own_message.then_some(own_message_index));
     }
-    messages
+    RenderedConversation {
+        messages,
+        message_index_by_row,
+    }
 }
 
 /// Render the complete ACP task while retaining the existing host task
@@ -546,6 +584,68 @@ mod tests {
                 "result": "file body"
             }]
         }"#
+    }
+
+    fn human_row(id: &str, content: &str) -> ConversationMessage {
+        ConversationRow {
+            id: id.to_string(),
+            sender_type: "human".to_string(),
+            sender_id: Some("user-1".to_string()),
+            content: Some(content.to_string()),
+            agent_name: None,
+            group_agent_display_name: None,
+            human_display_name: Some("Ada".to_string()),
+            turn_id: None,
+            dispatch_id: None,
+            reply_to_message_id: None,
+            content_json: None,
+        }
+        .into()
+    }
+
+    /// The mapping is what the vision path writes image parts through. Deriving
+    /// the position arithmetically (`row index + 1`) lands on the `tool` result
+    /// the agent turn expanded into, and replacing that with a user message
+    /// orphans the assistant tool call above it.
+    #[test]
+    fn a_row_that_expands_into_several_messages_does_not_shift_later_rows() {
+        let rows = vec![
+            human_row("h1", "read the note"),
+            agent_row(Some(turn_json())),
+            human_row("h2", "now describe this image"),
+        ];
+
+        let rendered = render_conversation("sys", "agent-1", &rows, AttachmentAccess::Readable);
+
+        // system, user(h1), assistant(calls), tool, assistant("done"), user(h2)
+        assert_eq!(rendered.messages.len(), 6);
+        assert_eq!(rendered.message_index_by_row, vec![Some(1), Some(4), Some(5)]);
+        let target = rendered.message_index_by_row[2].unwrap();
+        assert_eq!(rendered.messages[target].role, "user");
+        assert!(rendered.messages[target]
+            .content
+            .contains("now describe this image"));
+        assert_ne!(
+            rendered.messages[2 + 1].role,
+            "user",
+            "the naive offset lands on the tool result, which is the bug"
+        );
+    }
+
+    /// An interrupted turn — calls recorded, none completed, no text — renders
+    /// as nothing at all. A caller indexing by row would run off the end.
+    #[test]
+    fn a_row_that_renders_to_nothing_maps_to_none() {
+        let rows = vec![agent_row(Some(
+            r#"{"schema_version":1,"tool_calls":[{"tool_call_id":"c","tool_name":"Read"}]}"#,
+        ))];
+        let mut rows = rows;
+        rows[0].content = String::new();
+
+        let rendered = render_conversation("sys", "agent-1", &rows, AttachmentAccess::Readable);
+
+        assert_eq!(rendered.messages.len(), 1, "only the system prompt");
+        assert_eq!(rendered.message_index_by_row, vec![None]);
     }
 
     #[test]

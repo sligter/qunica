@@ -50,6 +50,10 @@ pub struct StepContext {
     pub context_window_tokens: Option<i64>,
     /// The fraction of that window reserved for output.
     pub context_output_reserve_ratio: Option<f64>,
+    /// Tokens this request spends on things compaction cannot shrink — the
+    /// tool schemas. Subtracted from the window so the pressure threshold is
+    /// measured against the room the messages actually have.
+    pub fixed_overhead_tokens: i64,
     /// Produces replacement text when a span of history has to be compacted.
     /// Carried here so a hook can summarize through the same provider and model
     /// the step itself is using.
@@ -67,6 +71,7 @@ impl std::fmt::Debug for StepContext {
                 "context_output_reserve_ratio",
                 &self.context_output_reserve_ratio,
             )
+            .field("fixed_overhead_tokens", &self.fixed_overhead_tokens)
             .finish_non_exhaustive()
     }
 }
@@ -138,6 +143,10 @@ impl HookChain {
     pub fn defaults() -> Self {
         Self::new()
             .with(Arc::new(super::compaction_hook::CompactionHook))
+            // Before the trace hook, so what it logs is the size that actually
+            // reached the model rather than the size the tool happened to
+            // return.
+            .with(Arc::new(super::tool_output::ToolResultCapHook))
             .with(Arc::new(ToolTraceHook))
     }
 
@@ -237,20 +246,36 @@ impl RuntimeHook for ToolTraceHook {
     }
 }
 
+/// A [`StepContext`] for tests in this crate that need one but do not care what
+/// is in it.
+///
+/// Shared rather than re-declared per module so a new field on `StepContext`
+/// costs one edit instead of one per test module.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+pub(crate) mod test_support {
+    use super::StepContext;
+    use std::sync::Arc;
 
-    fn step() -> StepContext {
+    pub(crate) fn step_context() -> StepContext {
         StepContext {
             agent_id: "agent-1".to_string(),
             agent_display_name: "Agent".to_string(),
             model: "test-model".to_string(),
             context_window_tokens: None,
             context_output_reserve_ratio: None,
-            summarizer: Arc::new(super::super::compaction_hook::UnavailableSummarizer),
+            fixed_overhead_tokens: 0,
+            summarizer: Arc::new(crate::runtime::compaction_hook::UnavailableSummarizer),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn step() -> StepContext {
+        test_support::step_context()
     }
 
     fn call() -> ToolCall {

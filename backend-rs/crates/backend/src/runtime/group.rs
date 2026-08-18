@@ -59,11 +59,11 @@ use crate::runtime::agent_as_tool::{
     AGENT_AS_TOOL_NAME,
 };
 use crate::runtime::approval;
-use crate::runtime::compaction::estimate_text_tokens;
+use crate::runtime::compaction::{estimate_text_tokens, estimate_tool_schema_tokens};
 use crate::runtime::compaction_hook::ProviderSummarizer;
 use crate::runtime::conversation_context::{
-    load_conversation, load_conversation_for_resume, sanitize_acp_agent_brief,
-    to_acp_incremental_prompt, to_acp_prompt, to_llm_messages, AttachmentAccess,
+    load_conversation, load_conversation_for_resume, render_conversation, sanitize_acp_agent_brief,
+    to_acp_incremental_prompt, to_acp_prompt, AttachmentAccess,
 };
 use crate::runtime::group_scheduler::{
     allows_agent_edge,
@@ -2942,19 +2942,23 @@ async fn run_agent_turn(
     let model = ctx.model_override.clone().unwrap_or_else(|| {
         model_from_config(&agent.model_config_json, &provider_cfg.default_model)
     });
+    let invocation = build_invocation_context(services, ctx, agent, group)
+        .await
+        .map_err(StepErr::Db)?;
     // Hooks summarize through the agent's own provider and model, so a
-    // compacted span is described by the model that produced it.
+    // compacted span is described by the model that produced it. Built after
+    // the invocation context because the tool schemas it resolved are part of
+    // every request and are not something compaction can shrink, so the
+    // threshold has to be measured against the window minus them.
     let step = StepContext {
         agent_id: agent.agent_id.clone(),
         agent_display_name: agent.display_name.clone(),
         model: model.clone(),
         context_window_tokens: provider_cfg.context_window_tokens,
         context_output_reserve_ratio: provider_cfg.context_output_reserve_ratio,
+        fixed_overhead_tokens: estimate_tool_schema_tokens(&invocation.tools),
         summarizer: Arc::new(ProviderSummarizer::new(provider.clone(), model.clone())),
     };
-    let invocation = build_invocation_context(services, ctx, agent, group)
-        .await
-        .map_err(StepErr::Db)?;
     let conversation_workspace_root = resolve_group_workspace_root(&services.pool, group)
         .await
         .map_err(StepErr::Db)?;
@@ -3043,6 +3047,11 @@ async fn run_agent_turn(
         model: &model,
     };
 
+    // Tokens the summarizer has already been billed for this turn. The
+    // summarizer's counter is cumulative, so each pass records only what it
+    // just spent.
+    let mut summarizer_accounted = 0u64;
+
     loop {
         // `pre_step` is where compaction runs: the message list is reduced
         // before a request is derived from it, not after the provider rejects
@@ -3053,6 +3062,14 @@ async fn run_agent_turn(
             ctx.emit(StreamEventKind::Warning, json!({ "message": notice }))
                 .await?;
         }
+        account_summarizer_usage(
+            services,
+            ctx,
+            &step,
+            &usage_dimensions,
+            &mut summarizer_accounted,
+        )
+        .await?;
 
         let usage_record_id = Uuid::new_v4().to_string();
         let request = ChatRequest {
@@ -3088,6 +3105,14 @@ async fn run_agent_turn(
                         );
                         ctx.emit(StreamEventKind::Warning, json!({ "message": reason }))
                             .await?;
+                        account_summarizer_usage(
+                            services,
+                            ctx,
+                            &step,
+                            &usage_dimensions,
+                            &mut summarizer_accounted,
+                        )
+                        .await?;
                         continue;
                     }
                     RequestRecovery::Propagate => {
@@ -4800,6 +4825,55 @@ fn complete_scheduled_usage(ctx: &mut StreamCtx, budget: &mut TurnBudget) {
         .saturating_sub(ctx.scheduled_accounted_tokens);
     budget.record_completion(unaccounted);
     ctx.scheduled_accounted_tokens = ctx.scheduled_total_tokens;
+}
+
+/// Bill and budget tokens the summarizer spent since it was last accounted.
+///
+/// A compaction summary is a second provider request charged to the same turn,
+/// so it has to count against both the durable token records and the turn's
+/// token budget — the two places the model's own usage already counts against.
+/// The summarizer's counter is cumulative across a turn (one `Arc` shared by
+/// every pass), so the caller tracks its own high-water mark and this records
+/// only the delta.
+async fn account_summarizer_usage(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    step: &StepContext,
+    dimensions: &TokenUsageDimensions<'_>,
+    accounted: &mut u64,
+) -> Result<(), StepErr> {
+    let claimed = step.summarizer.claimed_tokens();
+    let delta = claimed.saturating_sub(*accounted);
+    if delta == 0 {
+        return Ok(());
+    }
+    *accounted = claimed;
+    persist_token_usage(
+        &services.pool,
+        &Uuid::new_v4().to_string(),
+        dimensions,
+        &ag_swarmer_domain::runtime::ContextUsage {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: Some(token_count_i64(delta)),
+            context_window_tokens: None,
+            output_reserve_tokens: None,
+            ratio: None,
+            source: Some("compaction_summary".to_string()),
+        },
+    )
+    .await
+    .map_err(StepErr::Db)?;
+    // Route through the same scheduled-usage bucket the model's own usage
+    // flows through, so `account_scheduled_tokens` pulls it into the turn
+    // budget with no separate path to forget.
+    ctx.record_scheduled_usage(&json!({ "total_tokens": delta }));
+    tracing::debug!(
+        agent_id = %step.agent_id,
+        tokens = delta,
+        "accounted compaction summary usage"
+    );
+    Ok(())
 }
 
 fn private_execution_artifact(mode: &str, execution: &AgentExecution, total_tokens: u64) -> Value {
@@ -6872,7 +6946,8 @@ fn vision_messages_from_rows(
     access: AttachmentAccess,
     use_native_images: bool,
 ) -> (Vec<ChatMessage>, Vec<String>) {
-    let mut messages = to_llm_messages(system_prompt, current_agent_id, rows, access);
+    let rendered = render_conversation(system_prompt, current_agent_id, rows, access);
+    let mut messages = rendered.messages;
     if !use_native_images {
         return (messages, Vec::new());
     }
@@ -6887,6 +6962,16 @@ fn vision_messages_from_rows(
         ) {
             continue;
         }
+        // Where this row actually landed. A row's position in `rows` is not its
+        // position in `messages`: an earlier turn of the current agent expands
+        // into a tool-call message plus one message per result, so `index + 1`
+        // points somewhere further up the list — at a `tool` result, in the
+        // common case. Overwriting that with a user message orphans the
+        // assistant tool call that precedes it, and the provider rejects the
+        // whole request rather than the one message.
+        let Some(target) = rendered.message_index_by_row.get(index).copied().flatten() else {
+            continue;
+        };
         let mut parts = Vec::new();
         for attachment in &row.attachments {
             if !native_image_mime_type(&attachment.mime_type) {
@@ -6945,10 +7030,10 @@ fn vision_messages_from_rows(
             ));
         }
         if !parts.is_empty() {
-            let text = messages[index + 1].content.clone();
+            let text = messages[target].content.clone();
             let mut combined = vec![ag_swarmer_domain::runtime::ChatContentPart::text(text)];
             combined.extend(parts);
-            messages[index + 1] = ChatMessage::with_parts("user", combined);
+            messages[target] = ChatMessage::with_parts("user", combined);
         }
     }
     warnings.truncate(8);

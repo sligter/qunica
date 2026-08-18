@@ -9,6 +9,7 @@
 //!   context overflow, so an overlong thread failed the turn and failed again
 //!   identically on every retry.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -47,6 +48,7 @@ impl RuntimeHook for CompactionHook {
         let limits = CompactionLimits::from_provider(
             step.context_window_tokens,
             step.context_output_reserve_ratio,
+            step.fixed_overhead_tokens,
         )?;
         let outcome = compact(
             messages,
@@ -78,6 +80,7 @@ impl RuntimeHook for CompactionHook {
         let limits = CompactionLimits::from_provider(
             step.context_window_tokens,
             step.context_output_reserve_ratio,
+            step.fixed_overhead_tokens,
         )
         .unwrap_or(CompactionLimits {
             usable_tokens: estimate_tokens(messages).max(1),
@@ -123,11 +126,23 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
 pub struct ProviderSummarizer {
     provider: Arc<dyn LlmProvider>,
     model: String,
+    /// Total tokens the summarizer has spent across every pass this turn.
+    ///
+    /// Providers report usage on the stream (as `ChatDelta::Usage`), which the
+    /// old collector dropped. Recording it here — instead of in the caller's
+    /// per-request usage bookkeeping — is what lets it reach the budget and
+    /// token records: a summary is not the answer the model is streaming, it is
+    /// a second request paid for out of the same turn.
+    usage: Arc<AtomicU64>,
 }
 
 impl ProviderSummarizer {
     pub fn new(provider: Arc<dyn LlmProvider>, model: String) -> Self {
-        Self { provider, model }
+        Self {
+            provider,
+            model,
+            usage: Arc::new(AtomicU64::new(0)),
+        }
     }
 }
 
@@ -149,24 +164,43 @@ impl Summarizer for ProviderSummarizer {
             reasoning_effort: Some(ReasoningEffort::Low),
         };
         let stream = self.provider.stream(request).await?;
-        Ok(collect_text(stream).await)
+        let (text, tokens) = collect_text(stream).await;
+        self.usage.fetch_add(tokens, Ordering::Relaxed);
+        Ok(text)
+    }
+
+    fn claimed_tokens(&self) -> u64 {
+        self.usage.load(Ordering::Relaxed)
     }
 }
 
-/// Drain a provider stream into its assistant text.
-async fn collect_text(mut stream: Receiver<ChatDelta>) -> String {
+/// Drain a provider stream into its assistant text and the tokens it reported.
+async fn collect_text(mut stream: Receiver<ChatDelta>) -> (String, u64) {
     let mut text = String::new();
+    let mut tokens = 0u64;
     while let Some(delta) = stream.recv().await {
         match delta {
             ChatDelta::Token(chunk) => text.push_str(&chunk),
+            ChatDelta::Usage(usage) => {
+                tokens = usage
+                    .total_tokens
+                    .or_else(|| {
+                        usage
+                            .input_tokens
+                            .zip(usage.output_tokens)
+                            .map(|(input, output)| input.saturating_add(output))
+                    })
+                    .unwrap_or_default()
+                    .max(0) as u64;
+            }
             ChatDelta::Done => break,
-            // Reasoning, usage, tool calls, and a truncated stream all leave
-            // whatever text arrived usable; an empty result falls back to the
+            // Reasoning, tool calls, and a truncated stream all leave whatever
+            // text arrived usable; an empty result falls back to the
             // host-authored placeholder in `compact`.
             _ => {}
         }
     }
-    text
+    (text, tokens)
 }
 
 /// A summarizer for turns that have no provider to call.
@@ -190,12 +224,9 @@ mod tests {
 
     fn step(window: Option<i64>) -> StepContext {
         StepContext {
-            agent_id: "agent-1".to_string(),
-            agent_display_name: "Agent".to_string(),
-            model: "test-model".to_string(),
             context_window_tokens: window,
             context_output_reserve_ratio: Some(0.2),
-            summarizer: Arc::new(UnavailableSummarizer),
+            ..crate::runtime::hooks::test_support::step_context()
         }
     }
 
@@ -334,5 +365,29 @@ mod tests {
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("Compacted context"), "{notices:?}");
         assert!(messages.len() < before);
+    }
+
+    #[tokio::test]
+    async fn collecting_a_summary_captures_what_the_provider_reported() {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.send(ChatDelta::Token("a summary".to_string()))
+            .await
+            .unwrap();
+        tx.send(ChatDelta::Usage(ag_swarmer_domain::runtime::ContextUsage {
+            input_tokens: Some(1_200),
+            output_tokens: Some(30),
+            total_tokens: Some(1_230),
+            context_window_tokens: None,
+            output_reserve_tokens: None,
+            ratio: None,
+            source: None,
+        }))
+        .await
+        .unwrap();
+        tx.send(ChatDelta::Done).await.unwrap();
+
+        let (text, tokens) = collect_text(rx).await;
+        assert_eq!(text, "a summary");
+        assert_eq!(tokens, 1_230);
     }
 }

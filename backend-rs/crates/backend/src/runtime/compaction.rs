@@ -28,12 +28,24 @@ use async_trait::async_trait;
 
 use crate::llm::ChatMessage;
 use crate::tools::todo::{self, TodoItem, TodoStatus};
+use ag_swarmer_domain::runtime::ToolDefinition;
 
-/// Messages at the end of the thread that are never pruned or summarized.
+/// Messages at the end of the thread that are never pruned or summarized,
+/// under normal pressure.
 ///
 /// Recent turns are what the model is actually working from; compacting them is
 /// how an agent forgets the instruction it was given two messages ago.
 pub const RETAINED_TAIL_MESSAGES: usize = 8;
+
+/// The retained tail in emergency and overflow mode: only the most recent
+/// couple of messages survive intact.
+///
+/// This is the "fire drill" tier — the space to land under has to come from
+/// somewhere, and squeezing the tail instead of repeating the summary is what
+/// distinguishes it from a normal pass. It mirrors the article's last two
+/// layers: near history stays whole under pressure, but at 92% only a skeleton
+/// does.
+const EMERGENCY_RETAINED_TAIL_MESSAGES: usize = 2;
 
 /// A tool result longer than this is pruned once it leaves the retained tail.
 pub const MAX_RETAINED_TOOL_RESULT_CHARS: usize = 4_000;
@@ -46,6 +58,12 @@ const PRUNE_TAIL_CHARS: usize = 2_000;
 
 /// Fraction of the usable window above which pressure compaction runs.
 pub const PRESSURE_RATIO: f64 = 0.75;
+/// Fraction of the usable window above which the emergency tier runs.
+///
+/// Above this the thread is one request away from being rejected, so a normal
+/// pass that lands under the target is no longer enough: the tail is squeezed
+/// so the summary genuinely shrinks the request.
+pub const EMERGENCY_RATIO: f64 = 0.92;
 /// Fraction of the usable window a compaction aims to land under.
 const TARGET_RATIO: f64 = 0.55;
 
@@ -54,6 +72,9 @@ const TARGET_RATIO: f64 = 0.55;
 pub enum CompactionTrigger {
     /// The estimated request is approaching the window.
     Pressure,
+    /// The estimated request has blown past the emergency threshold; compress
+    /// harder than pressure so it lands well under before the provider refuses.
+    Emergency,
     /// The provider rejected the request as too long. Compaction runs
     /// regardless of the estimate, because the estimate was evidently wrong.
     Overflow,
@@ -62,6 +83,10 @@ pub enum CompactionTrigger {
 /// What one compaction pass changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactionOutcome {
+    /// Silent empty messages dropped by the rule pass.
+    pub snipped_messages: usize,
+    /// Characters removed by the rule pass (collapsed repeated lines).
+    pub snipped_chars: usize,
     /// Tool results whose middles were elided.
     pub pruned_results: usize,
     /// Characters removed by pruning.
@@ -80,12 +105,17 @@ impl CompactionOutcome {
     /// not shrink would fail identically, so a pass that makes no progress
     /// surfaces the original provider error instead of looping.
     pub fn made_progress(&self) -> bool {
-        self.pruned_chars > 0 || self.summarized_messages > 0
+        self.snipped_chars > 0
+            || self.snipped_messages > 0
+            || self.pruned_chars > 0
+            || self.summarized_messages > 0
     }
 
     pub fn describe(&self) -> String {
         format!(
-            "pruned {} tool result(s) (-{} chars), summarized {} message(s); estimated {} -> {} tokens",
+            "snipped {} message(s) (-{} chars), pruned {} tool result(s) (-{} chars), summarized {} message(s); estimated {} -> {} tokens",
+            self.snipped_messages,
+            self.snipped_chars,
             self.pruned_results,
             self.pruned_chars,
             self.summarized_messages,
@@ -98,7 +128,9 @@ impl CompactionOutcome {
 /// The window a thread has to fit into.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompactionLimits {
-    /// Tokens available for input after the provider's output reserve.
+    /// Tokens available for the message list, after the provider's output
+    /// reserve and the fixed per-request overhead the messages share the window
+    /// with.
     pub usable_tokens: i64,
 }
 
@@ -109,9 +141,18 @@ impl CompactionLimits {
     /// Pressure compaction does not run against a guessed window. Discarding
     /// history because of an invented number is worse than sending a request
     /// that fits, and the overflow path still recovers if it does not.
+    ///
+    /// `fixed_overhead_tokens` is everything in the request that is not a
+    /// message and that compaction cannot shrink — in practice the tool
+    /// schemas. Leaving it out is why the threshold used to be measured against
+    /// the wrong number: an agent with four MCP servers mounted carries tens of
+    /// thousands of tokens of tool definitions on every request, so a message
+    /// list at "75% of the window" was really at 90% of it, and pressure
+    /// compaction stopped firing before the provider rejected the request.
     pub fn from_provider(
         context_window_tokens: Option<i64>,
         output_reserve_ratio: Option<f64>,
+        fixed_overhead_tokens: i64,
     ) -> Option<Self> {
         let window = context_window_tokens.filter(|tokens| *tokens > 0)?;
         let reserve_ratio = output_reserve_ratio
@@ -119,12 +160,16 @@ impl CompactionLimits {
             .unwrap_or(0.0);
         let reserve = ((window as f64) * reserve_ratio).round() as i64;
         Some(Self {
-            usable_tokens: (window - reserve).max(1),
+            usable_tokens: (window - reserve - fixed_overhead_tokens.max(0)).max(1),
         })
     }
 
     fn pressure_threshold(&self) -> i64 {
         ((self.usable_tokens as f64) * PRESSURE_RATIO) as i64
+    }
+
+    fn emergency_threshold(&self) -> i64 {
+        ((self.usable_tokens as f64) * EMERGENCY_RATIO) as i64
     }
 
     fn target(&self) -> i64 {
@@ -140,6 +185,16 @@ impl CompactionLimits {
 #[async_trait]
 pub trait Summarizer: Send + Sync {
     async fn summarize(&self, transcript: &str) -> anyhow::Result<String>;
+
+    /// Tokens the summarizer has spent so far, when it spends any.
+    ///
+    /// Summarizing is a real provider call — the same billable boundary as the
+    /// request it is shrinking — and it is subject to the same turn budget. A
+    /// summarizer that spends nothing (unavailable, or a test double) reports
+    /// zero; the caller records the delta after each pass.
+    fn claimed_tokens(&self) -> u64 {
+        0
+    }
 }
 
 /// Reduce `messages` in place.
@@ -157,6 +212,18 @@ pub async fn compact(
     if trigger == CompactionTrigger::Pressure && tokens_before <= limits.pressure_threshold() {
         return None;
     }
+    // A pressure pass that has already blown past the emergency ceiling needs
+    // the drastic tail, not the normal one: the normal pass will not shrink it
+    // enough to land under 55%, and the provider is one estimate away from
+    // refusing it.
+    let trigger = if trigger == CompactionTrigger::Pressure
+        && tokens_before > limits.emergency_threshold()
+    {
+        CompactionTrigger::Emergency
+    } else {
+        trigger
+    };
+    let retained = retained_tail_messages(trigger);
 
     let mut outcome = CompactionOutcome {
         tokens_before,
@@ -164,7 +231,15 @@ pub async fn compact(
         ..Default::default()
     };
 
-    let (pruned_results, pruned_chars) = prune_tool_results(messages);
+    // Layer one, cheapest: pure rules, no model call. Drop silent messages and
+    // collapse runs of identical lines inside tool results. This runs before
+    // pruning because it is free, so it earns the easy reductions before the
+    // deterministic head/tail cut has to fire.
+    let snip = snip_compact(messages);
+    outcome.snipped_messages = snip.dropped_messages;
+    outcome.snipped_chars = snip.snipped_chars;
+
+    let (pruned_results, pruned_chars) = prune_tool_results(messages, retained);
     outcome.pruned_results = pruned_results;
     outcome.pruned_chars = pruned_chars;
     outcome.tokens_after = estimate_tokens(messages);
@@ -178,7 +253,7 @@ pub async fn compact(
         return Some(outcome);
     }
 
-    if let Some(span) = select_span(messages) {
+    if let Some(span) = select_span(messages, retained) {
         let transcript = render_transcript(&messages[span.clone()]);
         // Read before the splice: after it, the messages holding the checklist
         // are gone.
@@ -209,9 +284,85 @@ pub async fn compact(
     Some(outcome)
 }
 
+/// What the rule-based pre-pass removed.
+struct SnipOutcome {
+    dropped_messages: usize,
+    snipped_chars: usize,
+}
+
+/// Layer one of the funnel: pure rules, no model call.
+///
+/// * Drops silent messages — ones carrying no content, no tool calls, no
+///   reasoning, and no parts. A `tool` result is never dropped, because even an
+///   empty result is a statement that the call ran, and removing it would
+///   orphan the assistant tool call that asked for it.
+/// * Collapses runs of identical consecutive lines inside a tool result. This is
+///   the repeated-stack-trace case: one line printed five hundred times carries
+///   every byte of the information a single copy does, and it is exactly the
+///   cheap cleanup that should not wait for the deterministic head/tail cut.
+fn snip_compact(messages: &mut Vec<ChatMessage>) -> SnipOutcome {
+    let mut dropped_messages = 0;
+    let mut snipped_chars = 0;
+    let original = std::mem::take(messages);
+    let mut kept = Vec::with_capacity(original.len());
+    for mut message in original {
+        let silent = message.role != "tool"
+            && message.content.trim().is_empty()
+            && message.tool_calls.is_empty()
+            && message.parts.is_empty()
+            && message
+                .reasoning_content
+                .as_deref()
+                .is_none_or(|reasoning| reasoning.trim().is_empty());
+        if silent {
+            dropped_messages += 1;
+            continue;
+        }
+        if message.role == "tool" {
+            if let Some(collapsed) = collapse_repeated_lines(&message.content) {
+                snipped_chars += message.content.chars().count() - collapsed.chars().count();
+                message.content = collapsed;
+            }
+        }
+        kept.push(message);
+    }
+    *messages = kept;
+    SnipOutcome {
+        dropped_messages,
+        snipped_chars,
+    }
+}
+
+/// Consecutive identical non-empty lines beyond the threshold collapse to one
+/// copy plus a marker, or `None` when nothing was repeated.
+const REPEATED_LINE_RUN_THRESHOLD: usize = 4;
+
+fn collapse_repeated_lines(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut changed = false;
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let mut run = 1;
+        while index + run < lines.len() && lines[index + run] == line {
+            run += 1;
+        }
+        if !line.trim().is_empty() && run > REPEATED_LINE_RUN_THRESHOLD {
+            out.push(line);
+            out.push("[... dropped a run of repeated identical lines; one copy kept ...]");
+            changed = true;
+        } else {
+            out.extend_from_slice(&lines[index..index + run]);
+        }
+        index += run;
+    }
+    changed.then(|| out.join("\n"))
+}
+
 /// Elide the middle of every oversized tool result outside the retained tail.
-fn prune_tool_results(messages: &mut [ChatMessage]) -> (usize, usize) {
-    let prunable = messages.len().saturating_sub(RETAINED_TAIL_MESSAGES);
+fn prune_tool_results(messages: &mut [ChatMessage], retained: usize) -> (usize, usize) {
+    let prunable = messages.len().saturating_sub(retained);
     let mut count = 0;
     let mut removed = 0;
     for message in messages.iter_mut().take(prunable) {
@@ -321,15 +472,58 @@ fn prune_text(text: &str) -> Option<String> {
     ))
 }
 
+/// The longest opening message compaction will pin.
+///
+/// A pinned message can never be reduced, so pinning an enormous one (a pasted
+/// log, a whole file) would hand the overflow path a floor it cannot get under.
+/// Past this size the task statement is summarized like anything else.
+const MAX_PINNED_TASK_CHARS: usize = 4_000;
+
+/// The number of leading messages compaction never touches.
+///
+/// The system prompt, and the first thing the user said. That opening message
+/// is the task the thread exists to do, and it is the clearest example of
+/// context that cannot be rebuilt by re-running anything: a file can be read
+/// again and a command run again, but "only use the native APIs, no lodash" is
+/// said once. Leaving it in the summarizable span made it the *first* thing to
+/// go, and when the summarizer failed the fallback text dropped it outright.
+fn preserved_prefix(messages: &[ChatMessage]) -> usize {
+    let pinnable = messages.get(1).is_some_and(|message| {
+        message.role == "user" && message.content.chars().count() <= MAX_PINNED_TASK_CHARS
+    });
+    if pinnable {
+        2
+    } else {
+        1
+    }
+}
+
+/// The retained tail for a trigger.
+///
+/// The normal tier keeps a healthy recent window. Emergency and overflow keep
+/// only a skeleton: the whole point of those passes is to shrink the request
+/// for real, and the room has to come from somewhere.
+fn retained_tail_messages(trigger: CompactionTrigger) -> usize {
+    match trigger {
+        CompactionTrigger::Pressure => RETAINED_TAIL_MESSAGES,
+        CompactionTrigger::Emergency | CompactionTrigger::Overflow => {
+            EMERGENCY_RETAINED_TAIL_MESSAGES
+        }
+    }
+}
+
 /// The span of messages to replace with a summary.
 ///
-/// Starts at 1 so the system prompt survives, and stops short of the retained
-/// tail. The end is advanced past any `tool` message so the retained tail never
-/// begins with a result whose call has been summarized away — providers reject
-/// that outright.
-fn select_span(messages: &[ChatMessage]) -> Option<std::ops::Range<usize>> {
-    let start = 1;
-    let mut end = messages.len().checked_sub(RETAINED_TAIL_MESSAGES)?;
+/// Starts after the preserved prefix and stops short of the retained tail. The
+/// end is advanced past any `tool` message so the retained tail never begins
+/// with a result whose call has been summarized away — providers reject that
+/// outright.
+fn select_span(
+    messages: &[ChatMessage],
+    retained: usize,
+) -> Option<std::ops::Range<usize>> {
+    let start = preserved_prefix(messages);
+    let mut end = messages.len().checked_sub(retained)?;
     while end < messages.len() && messages[end].role == "tool" {
         end += 1;
     }
@@ -343,6 +537,17 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
         .iter()
         .map(|message| {
             let mut line = format!("[{}] {}", message.role, message.content.trim());
+            // Why a decision was made is not recoverable by re-running
+            // anything: the model does not reproduce the same reasoning on a
+            // second pass. It is replayed into history, so it is in the span
+            // being dropped — a summarizer that never sees it can only record
+            // what was done, not what it was for.
+            if let Some(reasoning) = message.reasoning_content.as_deref() {
+                let reasoning = reasoning.trim();
+                if !reasoning.is_empty() {
+                    line.push_str(&format!("\n[thinking] {reasoning}"));
+                }
+            }
             if !message.tool_calls.is_empty() {
                 let calls = message
                     .tool_calls
@@ -382,13 +587,38 @@ fn summary_message(summary: &str, replaced: usize, checklist: Option<&[TodoItem]
 }
 
 /// The prompt used to summarize a compacted span.
+///
+/// A fixed field template rather than a free-form essay. Fielded summaries lose
+/// less than prose does — they force the model to name the few things a
+/// compacted agent actually cannot recover by re-reading the transcript, and
+/// they stay comparable from one pass to the next, which is what lets a long
+/// thread compact twice without the second pass forgetting what the first
+/// carried. The highest-value fields are the ones a re-run cannot rebuild:
+/// decisions and their reasons, and side effects already performed.
 pub const SUMMARY_INSTRUCTION: &str = "You are compacting the earlier part of a working \
     conversation so it can be dropped from an agent's context window. Write a dense summary that \
-    lets the agent continue without re-reading it. Cover, in this order and only where they \
-    apply: what was asked for; decisions made and the reasons given; files, commands, and \
-    identifiers touched, by exact name; results and errors that still matter; and anything left \
-    open. Preserve exact names, paths, and numbers. Do not add anything that is not in the \
-    transcript, do not editorialize, and do not address the reader.";
+    lets the agent continue without re-reading it. Fill the following fields in order; leave a \
+    field out entirely when the transcript gives you nothing for it. Preserve exact names, paths, \
+    ids, and numbers. Do not add anything not in the transcript, do not editorialize, and do not \
+    address the reader.\n\n\
+    ## Original task\n\
+    What the user originally asked for, in one or two sentences.\n\n\
+    ## Completed work\n\
+    What has been done so far, as a short checklist.\n\n\
+    ## Files and identifiers touched\n\
+    Exact paths, commands, symbols, and ids, with what changed.\n\n\
+    ## Side effects already performed\n\
+    Irreversible or stateful actions that must not be repeated: commands run (builds, installs, \
+    tests), files deployed, database writes, git commits, media or files generated. This is the \
+    field that prevents the agent from doing the same thing twice when it resumes.\n\n\
+    ## Decisions and constraints\n\
+    Decisions made and why; constraints the user stated (preferences, bans, style rules). These \
+    are stated once and cannot be recovered by re-running anything, so record them verbatim where \
+    possible.\n\n\
+    ## Results and errors that still matter\n\
+    Test outcomes, failures, and the facts the next step depends on.\n\n\
+    ## Open questions / next steps\n\
+    What remains to be done or decided.";
 
 /// Estimate the token cost of `messages`.
 ///
@@ -402,14 +632,48 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> i64 {
     messages.iter().map(estimate_message_tokens).sum()
 }
 
+/// Estimate the token cost of the tool definitions sent with every request.
+///
+/// Not part of [`estimate_tokens`] because it is not part of what compaction
+/// can reduce: the schemas are fixed for the turn, so they belong in the
+/// limits (see [`CompactionLimits::from_provider`]) rather than in the number
+/// measured against them. They are far from negligible — an MCP server may
+/// publish up to [`crate::mcp::protocol::MAX_TOOLS_PER_SERVER`] tools, and each
+/// carries a name, a description, and a JSON Schema.
+pub fn estimate_tool_schema_tokens(tools: &[ToolDefinition]) -> i64 {
+    /// Per-tool framing the provider adds around each definition.
+    const PER_TOOL_OVERHEAD: i64 = 8;
+
+    tools
+        .iter()
+        .map(|tool| {
+            PER_TOOL_OVERHEAD
+                + estimate_text_tokens(&tool.name)
+                + estimate_text_tokens(&tool.description)
+                + estimate_text_tokens(&tool.input_schema.to_string())
+        })
+        .sum()
+}
+
 fn estimate_message_tokens(message: &ChatMessage) -> i64 {
     /// Role, delimiters, and per-message framing the provider adds.
     const PER_MESSAGE_OVERHEAD: i64 = 8;
 
-    let mut tokens = PER_MESSAGE_OVERHEAD + estimate_text_tokens(&message.content);
-    for part in &message.parts {
-        if let ag_swarmer_domain::runtime::ChatContentPart::Text { text } = part {
-            tokens += estimate_text_tokens(text);
+    let mut tokens = PER_MESSAGE_OVERHEAD;
+    // `ChatMessage::with_parts` derives `content` by concatenating the text
+    // parts, so counting both is counting the same text twice.
+    if message.parts.is_empty() {
+        tokens += estimate_text_tokens(&message.content);
+    } else {
+        for part in &message.parts {
+            tokens += match part {
+                ag_swarmer_domain::runtime::ChatContentPart::Text { text } => {
+                    estimate_text_tokens(text)
+                }
+                ag_swarmer_domain::runtime::ChatContentPart::Image { data_base64, .. } => {
+                    estimate_image_tokens(data_base64)
+                }
+            };
         }
     }
     for call in &message.tool_calls {
@@ -418,7 +682,25 @@ fn estimate_message_tokens(message: &ChatMessage) -> i64 {
     if let Some(name) = message.tool_name.as_deref() {
         tokens += estimate_text_tokens(name);
     }
+    // Reasoning travels back to providers configured for passback, so a thread
+    // of long thinking blocks costs what it costs whether or not this counts it.
+    if let Some(reasoning) = message.reasoning_content.as_deref() {
+        tokens += estimate_text_tokens(reasoning);
+    }
     tokens
+}
+
+/// Estimate the token cost of one inline image.
+///
+/// Providers charge images by pixel count, which the encoded bytes do not
+/// reveal without decoding them, so this is a coarse proxy over the decoded
+/// size, bounded by the range vision models actually bill (roughly 85 tokens
+/// for a thumbnail up to ~1600 for a full-resolution image). Deliberately
+/// biased high: an image counted as free is how a thread of four attachments
+/// sails past the pressure threshold and is rejected by the provider instead.
+fn estimate_image_tokens(data_base64: &str) -> i64 {
+    let bytes = (data_base64.len() as i64) * 3 / 4;
+    (bytes / 600).clamp(85, 1_600)
 }
 
 /// Estimate the token cost of one run of text, with the same ASCII/CJK split
@@ -531,19 +813,83 @@ mod tests {
 
     #[test]
     fn limits_are_only_derived_from_a_declared_window() {
-        assert_eq!(CompactionLimits::from_provider(None, Some(0.2)), None);
-        assert_eq!(CompactionLimits::from_provider(Some(0), None), None);
+        assert_eq!(CompactionLimits::from_provider(None, Some(0.2), 0), None);
+        assert_eq!(CompactionLimits::from_provider(Some(0), None, 0), None);
         assert_eq!(
-            CompactionLimits::from_provider(Some(100_000), Some(0.2))
+            CompactionLimits::from_provider(Some(100_000), Some(0.2), 0)
                 .unwrap()
                 .usable_tokens,
             80_000
         );
         assert_eq!(
-            CompactionLimits::from_provider(Some(100_000), None)
+            CompactionLimits::from_provider(Some(100_000), None, 0)
                 .unwrap()
                 .usable_tokens,
             100_000
+        );
+    }
+
+    #[test]
+    fn tool_schemas_come_out_of_the_message_budget() {
+        // Mounting a few MCP servers is worth tens of thousands of tokens the
+        // messages never get to use.
+        assert_eq!(
+            CompactionLimits::from_provider(Some(100_000), Some(0.2), 30_000)
+                .unwrap()
+                .usable_tokens,
+            50_000
+        );
+        // A window smaller than its own overhead still leaves a positive
+        // budget, so the caller divides by something rather than nothing.
+        assert_eq!(
+            CompactionLimits::from_provider(Some(1_000), None, 5_000)
+                .unwrap()
+                .usable_tokens,
+            1
+        );
+    }
+
+    #[test]
+    fn tool_definitions_are_not_free() {
+        let tools = vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file from the workspace.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": { "file_path": { "type": "string" } },
+                "required": ["file_path"]
+            }),
+        }];
+        assert!(estimate_tool_schema_tokens(&tools) > 30);
+        assert_eq!(estimate_tool_schema_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn an_image_is_not_estimated_as_free() {
+        let image = ag_swarmer_domain::runtime::ChatContentPart::image(
+            "image/png",
+            "A".repeat(1_200_000),
+        );
+        let message = ChatMessage::with_parts("user", vec![image]);
+        let tokens = estimate_message_tokens(&message);
+        assert!(tokens > 1_000, "{tokens}");
+    }
+
+    #[test]
+    fn text_carried_as_a_part_is_not_counted_twice() {
+        let text = "x".repeat(4_000);
+        let plain = ChatMessage::text("user", text.clone());
+        let as_part = ChatMessage::with_parts(
+            "user",
+            vec![ag_swarmer_domain::runtime::ChatContentPart::text(
+                text.clone(),
+            )],
+        );
+        // `with_parts` derives `content` from the text parts, so the two
+        // messages carry the same text and must cost the same.
+        assert_eq!(
+            estimate_message_tokens(&plain),
+            estimate_message_tokens(&as_part)
         );
     }
 
@@ -610,11 +956,55 @@ mod tests {
         assert!(outcome.summarized_messages > 0);
         assert_eq!(messages.len(), original - outcome.summarized_messages + 1);
         assert_eq!(messages[0].role, "system", "the system prompt must survive");
-        assert!(messages[1]
+        assert_eq!(
+            messages[1].content, "question 0",
+            "the opening task must survive"
+        );
+        assert!(messages[2]
             .content
             .contains("The agent answered twenty questions."));
-        assert!(messages[1].content.contains("ag-swarmer-context-summary"));
+        assert!(messages[2].content.contains("ag-swarmer-context-summary"));
         assert!(outcome.made_progress());
+    }
+
+    #[tokio::test]
+    async fn the_opening_task_is_never_summarized_away() {
+        let mut messages = vec![
+            ChatMessage::text("system", "You are a test agent."),
+            ChatMessage::text("user", "Refactor the parser. Do not add dependencies."),
+        ];
+        messages.extend(thread(20).into_iter().skip(1));
+        let limits = CompactionLimits { usable_tokens: 100 };
+
+        // Twice, because the second pass is the one that used to eat it: the
+        // span always started at index 1, which is exactly where it lives.
+        for pass in ["first", "second"] {
+            compact(
+                &mut messages,
+                limits,
+                CompactionTrigger::Pressure,
+                &FixedSummarizer("the agent did some work"),
+            )
+            .await
+            .unwrap_or_else(|| panic!("the {pass} pass should compact"));
+            messages.extend(thread(20).into_iter().skip(1));
+        }
+
+        assert_eq!(
+            messages[1].content, "Refactor the parser. Do not add dependencies.",
+            "a constraint the user stated once is not recoverable by re-running anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_enormous_opening_message_is_not_pinned() {
+        // Pinning it would give the overflow path a floor it cannot get under.
+        let mut messages = vec![
+            ChatMessage::text("system", "system"),
+            ChatMessage::text("user", "x".repeat(MAX_PINNED_TASK_CHARS + 1)),
+        ];
+        messages.extend(thread(20).into_iter().skip(1));
+        assert_eq!(preserved_prefix(&messages), 1);
     }
 
     #[tokio::test]
@@ -630,7 +1020,7 @@ mod tests {
         .expect("overflow always runs");
 
         assert!(outcome.made_progress());
-        assert!(messages[1].content.contains("could not be summarized"));
+        assert!(messages[2].content.contains("could not be summarized"));
     }
 
     #[tokio::test]
@@ -657,8 +1047,8 @@ mod tests {
         messages.extend(tool_exchange("build output"));
         messages.extend(thread(3).into_iter().skip(1));
 
-        let span = select_span(&messages).expect("a span should be selectable");
-        assert_eq!(span.start, 1);
+        let span = select_span(&messages, RETAINED_TAIL_MESSAGES).expect("a span should be selectable");
+        assert_eq!(span.start, preserved_prefix(&messages));
         assert_ne!(
             messages[span.end].role, "tool",
             "the retained tail must not begin with a tool result"
@@ -667,8 +1057,8 @@ mod tests {
 
     #[test]
     fn a_thread_shorter_than_the_retained_tail_has_no_span() {
-        assert!(select_span(&thread(1)).is_none());
-        assert!(select_span(&[]).is_none());
+        assert!(select_span(&thread(1), RETAINED_TAIL_MESSAGES).is_none());
+        assert!(select_span(&[], RETAINED_TAIL_MESSAGES).is_none());
     }
 
     #[test]
@@ -682,10 +1072,136 @@ mod tests {
     }
 
     #[test]
+    fn snip_drops_silent_non_tool_messages_and_keeps_empty_tool_results() {
+        let mut messages = vec![
+            ChatMessage::text("system", "You are a test agent."),
+            ChatMessage::text("user", "   "),
+            ChatMessage::text("assistant", ""),
+            ChatMessage::tool_result("call-1", "Bash", ""),
+        ];
+
+        let outcome = snip_compact(&mut messages);
+
+        assert_eq!(outcome.dropped_messages, 2, "the blank user and assistant");
+        let shape: Vec<(String, String)> = messages
+            .iter()
+            .map(|m| (m.role.clone(), m.content.clone()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("system".to_string(), "You are a test agent.".to_string()),
+                ("tool".to_string(), String::new()),
+            ],
+            "an empty tool result is a statement that the call ran, not noise"
+        );
+    }
+
+    #[test]
+    fn snip_collapses_a_run_of_identical_log_lines() {
+        let mut lines = vec!["building", "packages"];
+        for _ in 0..500 {
+            lines.push("error: conflicting type in crate `foo`");
+        }
+        lines.push("done");
+        let mut messages = vec![ChatMessage::tool_result(
+            "call-1",
+            "Bash",
+            lines.join("\n"),
+        )];
+
+        let outcome = snip_compact(&mut messages);
+
+        assert_eq!(outcome.dropped_messages, 0);
+        assert!(outcome.snipped_chars > 0);
+        let content = &messages[0].content;
+        assert!(content.contains("error: conflicting type"), "{content}");
+        assert!(content.contains("repeated identical lines"), "{content}");
+        assert_eq!(
+            content.matches("error: conflicting type").count(),
+            1,
+            "one copy survives: {content}"
+        );
+    }
+
+    #[test]
+    fn snip_leaves_distinct_lines_and_short_runs_alone() {
+        let text = "a\nb\nc\nd\nd\n"; // a run of 2 identical "d" is under the threshold
+        let mut messages = vec![ChatMessage::tool_result("call-1", "Bash", text.to_string())];
+        snip_compact(&mut messages);
+        assert_eq!(messages[0].content, text);
+    }
+
+    #[test]
+    fn the_tail_sizes_differ_by_tier() {
+        assert_eq!(
+            retained_tail_messages(CompactionTrigger::Pressure),
+            RETAINED_TAIL_MESSAGES
+        );
+        assert_eq!(
+            retained_tail_messages(CompactionTrigger::Emergency),
+            EMERGENCY_RETAINED_TAIL_MESSAGES
+        );
+        assert_eq!(
+            retained_tail_messages(CompactionTrigger::Overflow),
+            EMERGENCY_RETAINED_TAIL_MESSAGES
+        );
+    }
+
+    #[test]
+    fn the_emergency_ceiling_sits_above_the_pressure_ceiling() {
+        let limits = CompactionLimits { usable_tokens: 10_000 };
+        assert!(limits.emergency_threshold() > limits.pressure_threshold());
+    }
+
+    #[tokio::test]
+    async fn pressure_near_overflow_escalates_to_the_skeleton_tail() {
+        let mut messages = thread(30);
+        let outcome = compact(
+            &mut messages,
+            CompactionLimits { usable_tokens: 600 },
+            CompactionTrigger::Pressure,
+            &FixedSummarizer("summary"),
+        )
+        .await
+        .expect("the estimate sits above 92%, so the pass must run");
+
+        assert!(outcome.summarized_messages > 0);
+        // system + pinned task + the summary + a two-message skeleton tail.
+        assert_eq!(
+            messages.len(),
+            5,
+            "an emergency pass keeps only a skeleton, but kept {} messages",
+            messages.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_normal_pressure_pass_keeps_the_full_tail() {
+        let mut messages = thread(30);
+        // A window where 61 small messages are past 75% but short of 92%, so no
+        // escalation: the tail stays at the full size.
+        let outcome = compact(
+            &mut messages,
+            CompactionLimits {
+                usable_tokens: 800,
+            },
+            CompactionTrigger::Pressure,
+            &FixedSummarizer("summary"),
+        )
+        .await
+        .unwrap();
+
+        // span replaced [2 .. len-8), so 8 tail messages survive.
+        assert_eq!(messages.len(), 2 + 1 + RETAINED_TAIL_MESSAGES);
+        assert!(outcome.summarized_messages > 0);
+    }
+
+    #[test]
     fn the_retained_tail_is_never_pruned() {
         let mut messages = vec![ChatMessage::text("system", "s")];
         messages.extend(tool_exchange(&"x".repeat(30_000)));
-        let (count, removed) = prune_tool_results(&mut messages);
+        let (count, removed) = prune_tool_results(&mut messages, RETAINED_TAIL_MESSAGES);
         assert_eq!((count, removed), (0, 0));
     }
 
@@ -801,7 +1317,7 @@ mod tests {
         messages.extend(todo_exchange(&borrowed));
         messages.extend(thread(6).into_iter().skip(1));
 
-        let (count, removed) = prune_tool_results(&mut messages);
+        let (count, removed) = prune_tool_results(&mut messages, RETAINED_TAIL_MESSAGES);
         assert_eq!(
             (count, removed),
             (0, 0),
