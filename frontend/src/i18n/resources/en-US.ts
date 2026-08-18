@@ -86,13 +86,13 @@ export const enUS = {
           title: 'Groups, not chat windows',
           body: 'Invite specialised agents into a project room and keep the whole thread in one place.',
         },
-        workspace: {
-          title: 'Bound workspaces',
-          body: 'Agents and external CLI runtimes work on real files, with Git and command audit in view.',
+        scheduler: {
+          title: 'Scheduler modes',
+          body: 'Bounded and automatic modes orchestrate agents, with step budgets, failure limits, and moderator routing in view.',
         },
-        control: {
-          title: 'Nothing lands unapproved',
-          body: 'Tool calls and app changes stage first and apply only once you approve them.',
+        harness: {
+          title: 'Third-party harness integration',
+          body: 'Plug Codex, Claude, DeepSeek Harness, and other external runtimes in over ACP — in the same room as your agents.',
         },
       },
     },

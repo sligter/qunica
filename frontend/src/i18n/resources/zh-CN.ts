@@ -87,13 +87,13 @@ export const zhCN: TranslationShape<typeof enUS> = {
           title: '群组，而不是聊天窗口',
           body: '把不同专长的 Agent 请进同一个项目房间，完整对话都留在这里。',
         },
-        workspace: {
-          title: '绑定的工作区',
-          body: 'Agent 与外部 CLI 直接改真实文件，Git 状态与命令审计都看得见。',
+        scheduler: {
+          title: '调度模式',
+          body: '有界与自动两种模式编排 Agent 协作，步骤预算、失败熔断与主持模型路由都看得见。',
         },
-        control: {
-          title: '未经批准不生效',
-          body: '工具调用与应用改动先暂存，你批准之后才真正执行。',
+        harness: {
+          title: '第三方 HARNESS 接入',
+          body: '通过 ACP 接入 Codex、Claude、DeepSeek Harness 等外部运行时，让它们和原生 Agent 同处一个房间。',
         },
       },
     },

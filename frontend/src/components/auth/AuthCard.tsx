@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { MessagesSquare, ShieldCheck, SquareTerminal } from 'lucide-react'
+import { MessagesSquare, Plug, Workflow } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { BrandMark } from '@/components/brand/BrandMark'
@@ -20,8 +20,8 @@ interface AuthCardProps {
  */
 const HIGHLIGHTS = [
   { key: 'group', Icon: MessagesSquare },
-  { key: 'workspace', Icon: SquareTerminal },
-  { key: 'control', Icon: ShieldCheck },
+  { key: 'scheduler', Icon: Workflow },
+  { key: 'harness', Icon: Plug },
 ] as const
 
 /** Entrance beats in ms: the mark lands, then the pitch, then the form. */
