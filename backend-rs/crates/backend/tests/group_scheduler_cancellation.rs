@@ -1,9 +1,6 @@
-#[path = "../src/runtime/group_scheduler/cancellation.rs"]
-mod cancellation;
-
 use std::sync::Arc;
 
-use cancellation::{ActiveTurnRegistry, TurnCancellation};
+use ag_swarmer_backend::runtime::group_scheduler::{ActiveTurnRegistry, TurnCancellation};
 use tokio::{
     sync::Barrier,
     time::{timeout, Duration},

@@ -30,25 +30,42 @@ use crate::llm::ChatMessage;
 use crate::tools::todo::{self, TodoItem, TodoStatus};
 use ag_swarmer_domain::runtime::ToolDefinition;
 
-/// Messages at the end of the thread that are never pruned or summarized,
-/// under normal pressure.
+/// Turns at the end of the thread that are never pruned or summarized under
+/// normal pressure.
 ///
-/// Recent turns are what the model is actually working from; compacting them is
-/// how an agent forgets the instruction it was given two messages ago.
-pub const RETAINED_TAIL_MESSAGES: usize = 8;
+/// A turn is one interaction unit — a user message, a plain assistant reply, or
+/// a whole `assistant(calls) -> tool* -> assistant(text)` exchange — so tool
+/// results never inflate the count (see [`is_turn_head`]). Recent turns are what
+/// the model is actually working from; compacting them is how an agent forgets
+/// the instruction it was given two turns ago.
+pub const RETAINED_TAIL_TURNS: usize = 8;
 
 /// The retained tail in emergency and overflow mode: only the most recent
-/// couple of messages survive intact.
+/// couple of turns survive intact.
 ///
 /// This is the "fire drill" tier — the space to land under has to come from
 /// somewhere, and squeezing the tail instead of repeating the summary is what
 /// distinguishes it from a normal pass. It mirrors the article's last two
 /// layers: near history stays whole under pressure, but at 92% only a skeleton
 /// does.
-const EMERGENCY_RETAINED_TAIL_MESSAGES: usize = 2;
+const EMERGENCY_RETAINED_TAIL_TURNS: usize = 2;
 
 /// A tool result longer than this is pruned once it leaves the retained tail.
+///
+/// This is the strict threshold for the prefix being summarized away. The tail,
+/// once it alone exceeds the ceiling, is pruned at the laxer
+/// [`TAIL_RETAINED_TOOL_RESULT_CHARS`].
 pub const MAX_RETAINED_TOOL_RESULT_CHARS: usize = 4_000;
+
+/// A tool result in the retained tail longer than this is pruned once the tail
+/// exceeds its token ceiling. Laxer than the prefix: the recent context is what
+/// the model works from, so more of it survives.
+const TAIL_RETAINED_TOOL_RESULT_CHARS: usize = 8_000;
+
+/// Fraction of the usable window the retained tail may occupy before its tool
+/// results are pruned. Leaves room for the preserved prefix and the summary
+/// inside [`TARGET_RATIO`].
+const TAIL_CEILING_RATIO: f64 = 0.40;
 
 /// Characters of a pruned tool result kept from the start.
 const PRUNE_HEAD_CHARS: usize = 1_200;
@@ -175,6 +192,12 @@ impl CompactionLimits {
     fn target(&self) -> i64 {
         ((self.usable_tokens as f64) * TARGET_RATIO) as i64
     }
+
+    /// The token budget the retained tail may occupy before its tool results
+    /// are pruned.
+    fn tail_ceiling(&self) -> i64 {
+        ((self.usable_tokens as f64) * TAIL_CEILING_RATIO) as i64
+    }
 }
 
 /// Produces the replacement text for a compacted span.
@@ -223,8 +246,6 @@ pub async fn compact(
     } else {
         trigger
     };
-    let retained = retained_tail_messages(trigger);
-
     let mut outcome = CompactionOutcome {
         tokens_before,
         tokens_after: tokens_before,
@@ -239,7 +260,10 @@ pub async fn compact(
     outcome.snipped_messages = snip.dropped_messages;
     outcome.snipped_chars = snip.snipped_chars;
 
-    let (pruned_results, pruned_chars) = prune_tool_results(messages, retained);
+    // Computed after snip: dropping silent messages shifts indices, so the turn
+    // boundary must be read against the already-trimmed list.
+    let tail_start = retained_tail_start(messages, trigger);
+    let (pruned_results, pruned_chars) = prune_tool_results(messages, tail_start, limits);
     outcome.pruned_results = pruned_results;
     outcome.pruned_chars = pruned_chars;
     outcome.tokens_after = estimate_tokens(messages);
@@ -253,7 +277,7 @@ pub async fn compact(
         return Some(outcome);
     }
 
-    if let Some(span) = select_span(messages, retained) {
+    if let Some(span) = select_span(messages, tail_start, limits) {
         let transcript = render_transcript(&messages[span.clone()]);
         // Read before the splice: after it, the messages holding the checklist
         // are gone.
@@ -360,29 +384,61 @@ fn collapse_repeated_lines(text: &str) -> Option<String> {
     changed.then(|| out.join("\n"))
 }
 
-/// Elide the middle of every oversized tool result outside the retained tail.
-fn prune_tool_results(messages: &mut [ChatMessage], retained: usize) -> (usize, usize) {
-    let prunable = messages.len().saturating_sub(retained);
+/// Elide oversized tool results so the request stays inside its budget.
+///
+/// Two passes. Everything outside the retained tail is pruned at the strict
+/// threshold, because it is about to be summarized anyway and only the head and
+/// tail need survive. Inside the tail, pruning only fires when the tail alone
+/// exceeds its ceiling, oldest result first at the laxer threshold, so the
+/// recent context the model works from is the last thing to go.
+fn prune_tool_results(
+    messages: &mut [ChatMessage],
+    tail_start: usize,
+    limits: CompactionLimits,
+) -> (usize, usize) {
     let mut count = 0;
     let mut removed = 0;
-    for message in messages.iter_mut().take(prunable) {
-        if message.role != "tool" {
-            continue;
-        }
-        let Some(pruned) = prune_text(&message.content) else {
-            continue;
-        };
-        // A checklist is bounded by construction and is the one tool result
-        // whose middle cannot be recovered by running the tool again. Eliding
-        // it would drop the items in the middle of the agent's own plan.
-        if todo::todos_from_output(&message.content).is_some() {
-            continue;
-        }
-        removed += message.content.chars().count() - pruned.chars().count();
-        message.content = pruned;
-        count += 1;
+
+    for message in messages.iter_mut().take(tail_start) {
+        let (c, r) = prune_tool_result(message, MAX_RETAINED_TOOL_RESULT_CHARS);
+        count += c;
+        removed += r;
     }
+
+    let ceiling = limits.tail_ceiling();
+    let mut tail_tokens = estimate_tokens(&messages[tail_start..]);
+    let mut index = tail_start;
+    while index < messages.len() && tail_tokens > ceiling {
+        let (c, r) = prune_tool_result(&mut messages[index], TAIL_RETAINED_TOOL_RESULT_CHARS);
+        if c > 0 {
+            tail_tokens = estimate_tokens(&messages[tail_start..]);
+        }
+        count += c;
+        removed += r;
+        index += 1;
+    }
+
     (count, removed)
+}
+
+/// Prune one message in place, returning the result pruned and characters
+/// removed. A checklist is never touched, and short results pass through.
+fn prune_tool_result(message: &mut ChatMessage, max_chars: usize) -> (usize, usize) {
+    if message.role != "tool" {
+        return (0, 0);
+    }
+    // A checklist is bounded by construction and is the one tool result whose
+    // middle cannot be recovered by running the tool again. Eliding it would
+    // drop the items in the middle of the agent's own plan.
+    if todo::todos_from_output(&message.content).is_some() {
+        return (0, 0);
+    }
+    let Some(pruned) = prune_text_budget(&message.content, max_chars) else {
+        return (0, 0);
+    };
+    let removed = message.content.chars().count() - pruned.chars().count();
+    message.content = pruned;
+    (1, removed)
 }
 
 /// Marks a checklist restated inside a summary message.
@@ -457,10 +513,13 @@ fn parse_checklist(text: &str) -> Option<Vec<TodoItem>> {
     (!todos.is_empty()).then_some(todos)
 }
 
-/// Keep the head and tail of `text`, replacing the middle with a marker.
-fn prune_text(text: &str) -> Option<String> {
+/// Keep the head and tail of `text`, replacing the middle with a marker, at the
+/// given size threshold. The summarized prefix uses
+/// [`MAX_RETAINED_TOOL_RESULT_CHARS`] and the tail the laxer
+/// [`TAIL_RETAINED_TOOL_RESULT_CHARS`].
+fn prune_text_budget(text: &str, max_chars: usize) -> Option<String> {
     let total = text.chars().count();
-    if total <= MAX_RETAINED_TOOL_RESULT_CHARS {
+    if total <= max_chars {
         return None;
     }
     let head: String = text.chars().take(PRUNE_HEAD_CHARS).collect();
@@ -498,35 +557,99 @@ fn preserved_prefix(messages: &[ChatMessage]) -> usize {
     }
 }
 
-/// The retained tail for a trigger.
+/// The message index at which the retained tail begins for a trigger.
 ///
-/// The normal tier keeps a healthy recent window. Emergency and overflow keep
-/// only a skeleton: the whole point of those passes is to shrink the request
-/// for real, and the room has to come from somewhere.
-fn retained_tail_messages(trigger: CompactionTrigger) -> usize {
-    match trigger {
-        CompactionTrigger::Pressure => RETAINED_TAIL_MESSAGES,
+/// The tail is measured in turns, not messages: a turn carries its tool results
+/// with it, so a heavy tool exchange does not crowd out the turns around it.
+/// The emergency and overflow tiers keep only a skeleton — the whole point of
+/// those passes is to shrink the request for real.
+fn retained_tail_start(messages: &[ChatMessage], trigger: CompactionTrigger) -> usize {
+    let turns = match trigger {
+        CompactionTrigger::Pressure => RETAINED_TAIL_TURNS,
         CompactionTrigger::Emergency | CompactionTrigger::Overflow => {
-            EMERGENCY_RETAINED_TAIL_MESSAGES
+            EMERGENCY_RETAINED_TAIL_TURNS
         }
+    };
+    let start = preserved_prefix(messages);
+    let heads: Vec<usize> = (start..messages.len())
+        .filter(|&index| is_turn_head(messages, index))
+        .collect();
+    if heads.len() <= turns {
+        start
+    } else {
+        heads[heads.len() - turns]
     }
+}
+
+/// Whether `index` can start the retained tail without cutting a turn in two.
+///
+/// A `tool` result is never a turn start: it answers the assistant call before
+/// it. An `assistant` message starts a turn only when it made the calls
+/// (carries `tool_calls`) or is a plain reply not immediately preceded by a
+/// tool result; an assistant right after `tool` messages is the conclusion of
+/// that exchange, not a place to resume from.
+fn is_turn_head(messages: &[ChatMessage], index: usize) -> bool {
+    match messages[index].role.as_str() {
+        "assistant" => {
+            !messages[index].tool_calls.is_empty()
+                || index == 0
+                || messages[index - 1].role != "tool"
+        }
+        "tool" => false,
+        _ => true,
+    }
+}
+
+/// Step `end` back to the start of the turn it touches, if it touches one.
+///
+/// A boundary landing on a tool result or on the answer that concludes an
+/// exchange cuts that turn in half: the summary keeps the call and its results
+/// while the tail keeps only the answer. Retreating to the `assistant` message
+/// that made the calls keeps the whole turn in the tail.
+fn retreat_to_turn_head(messages: &[ChatMessage], mut end: usize, start: usize) -> usize {
+    while end > start && !is_turn_head(messages, end) {
+        end -= 1;
+    }
+    end
+}
+
+/// Step `end` forward past the turn it touches so the whole turn is summarized.
+fn advance_to_turn_head(messages: &[ChatMessage], mut end: usize) -> usize {
+    while end < messages.len() && !is_turn_head(messages, end) {
+        end += 1;
+    }
+    end
 }
 
 /// The span of messages to replace with a summary.
 ///
 /// Starts after the preserved prefix and stops short of the retained tail. The
-/// end is advanced past any `tool` message so the retained tail never begins
-/// with a result whose call has been summarized away — providers reject that
-/// outright.
+/// boundary is snapped to a turn start rather than left at the raw index:
+/// a raw cut landing mid-turn would otherwise leave the
+/// turn's answer in the tail while summarizing the call and results that
+/// produced it, or orphan a tool result at the head of the tail.
+///
+/// The straddling turn goes, whole, one way or the other. It stays in the tail
+/// when that leaves the span non-empty and the tail affordable enough to keep;
+/// otherwise the whole turn is summarized too. The affordability check bounds
+/// the tail alone — a heuristic, not a landing guarantee — and only moves the
+/// boundary when the snap does. A tail whose raw boundary is already a turn
+/// start is left as-is: trimming an oversized-but-clean tail is the job of
+/// tail-ceiling pruning, not of boundary snapping.
 fn select_span(
     messages: &[ChatMessage],
-    retained: usize,
+    raw: usize,
+    limits: CompactionLimits,
 ) -> Option<std::ops::Range<usize>> {
     let start = preserved_prefix(messages);
-    let mut end = messages.len().checked_sub(retained)?;
-    while end < messages.len() && messages[end].role == "tool" {
-        end += 1;
-    }
+
+    let retreat = retreat_to_turn_head(messages, raw, start);
+    let advance = advance_to_turn_head(messages, raw);
+
+    let keep_tail =
+        retreat > start + 1 && estimate_tokens(&messages[retreat..]) <= limits.target();
+    let end = if keep_tail { retreat } else { advance };
+
     // A span worth a model call and a splice.
     (end > start + 1).then_some(start..end)
 }
@@ -1039,36 +1162,158 @@ mod tests {
         assert!(outcome.made_progress());
     }
 
+    /// A thread whose tail edge contains one tool turn: `assistant(calls) ->
+    /// tool -> assistant(text)`, followed by a trailing user turn so the turn
+    /// has a real boundary on both sides.
+    ///
+    /// Returns the messages plus the indices of the call and the concluding
+    /// answer, captured before the trailing pairs are appended.
+    fn turn_on_the_tail_edge() -> (Vec<ChatMessage>, usize, usize) {
+        let mut messages = thread(4);
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            args: json!({ "command": "cargo build" }),
+            provider_metadata: None,
+        };
+        messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
+        messages.push(ChatMessage::tool_result(call.id, call.name, "build output".to_string()));
+        messages.push(ChatMessage::text("assistant", "the build failed due to X"));
+        let calls_index = messages.len() - 3;
+        let conclusion_index = messages.len() - 1;
+        messages.extend(thread(2).into_iter().skip(1));
+        (messages, calls_index, conclusion_index)
+    }
+
     #[test]
     fn a_span_never_leaves_an_orphan_tool_result_at_the_head_of_the_tail() {
         // The tail boundary lands mid tool exchange; the span must extend past
-        // the result so the retained tail starts with a complete message.
+        // the result so the retained tail starts with a complete turn.
         let mut messages = thread(2);
         messages.extend(tool_exchange("build output"));
         messages.extend(thread(3).into_iter().skip(1));
+        let raw = messages.iter().position(|message| message.role == "tool").unwrap();
 
-        let span = select_span(&messages, RETAINED_TAIL_MESSAGES).expect("a span should be selectable");
+        let span = select_span(
+            &messages,
+            raw,
+            CompactionLimits { usable_tokens: 10_000 },
+        )
+        .expect("a span should be selectable");
         assert_eq!(span.start, preserved_prefix(&messages));
-        assert_ne!(
-            messages[span.end].role, "tool",
-            "the retained tail must not begin with a tool result"
+        assert!(
+            is_turn_head(&messages, span.end),
+            "the retained tail must begin with a complete turn, not a tool result or a dangling answer"
         );
     }
 
     #[test]
+    fn a_straddling_tool_result_pulls_the_whole_turn_into_the_tail() {
+        let (messages, calls_index, conclusion_index) = turn_on_the_tail_edge();
+        // Land the raw boundary on the tool result, one message after the call.
+        let raw = calls_index + 1;
+        let limits = CompactionLimits { usable_tokens: 10_000 };
+
+        let span = select_span(&messages, raw, limits).expect("a span should be selectable");
+
+        assert_eq!(span.end, calls_index);
+        assert!(
+            span.end < conclusion_index,
+            "the answer must stay with the call that produced it"
+        );
+    }
+
+    #[test]
+    fn a_boundary_on_a_concluding_answer_is_not_split() {
+        let (messages, calls_index, _) = turn_on_the_tail_edge();
+        // Land the raw boundary exactly on the concluding answer — the position
+        // the old forward-scan silently left split.
+        let raw = calls_index + 2;
+        let limits = CompactionLimits { usable_tokens: 10_000 };
+
+        let span = select_span(&messages, raw, limits).expect("a span should be selectable");
+
+        assert_eq!(span.end, calls_index);
+    }
+
+    #[test]
+    fn a_turn_too_large_for_the_tail_is_summarized_instead() {
+        let mut messages = thread(4);
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            args: json!({ "command": "cargo build" }),
+            provider_metadata: None,
+        };
+        messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
+        messages.push(ChatMessage::tool_result(call.id, call.name, "x".repeat(30_000)));
+        messages.push(ChatMessage::text("assistant", "done"));
+        let huge_index = messages.len() - 2;
+        messages.extend(thread(3).into_iter().skip(1));
+
+        let raw = huge_index;
+        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let span = select_span(&messages, raw, limits).expect("a span should be selectable");
+
+        // The straddling turn is too big to keep whole in the tail, so the
+        // boundary advances past it and the tail it leaves is affordable.
+        assert!(span.end > huge_index);
+        assert!(estimate_tokens(&messages[span.end..]) <= limits.target());
+    }
+
+    #[test]
+    fn an_emergency_tail_never_begins_with_a_tool_result() {
+        let mut messages = thread(4);
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            args: json!({ "command": "cargo build" }),
+            provider_metadata: None,
+        };
+        messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
+        messages.push(ChatMessage::tool_result(call.id, call.name, "output".to_string()));
+        messages.push(ChatMessage::text("assistant", "done"));
+
+        let tail_start = retained_tail_start(&messages, CompactionTrigger::Emergency);
+        assert!(
+            is_turn_head(&messages, tail_start),
+            "even the skeleton tail begins on a turn start, never a tool result"
+        );
+        assert_ne!(messages[tail_start].role, "tool");
+    }
+
+    #[test]
+    fn a_clean_boundary_is_left_untouched() {
+        let messages = thread(6);
+        let raw = messages.len() - 4; // an already-clean turn head
+        let span = select_span(
+            &messages,
+            raw,
+            CompactionLimits { usable_tokens: 10_000 },
+        )
+        .expect("a span should be selectable");
+        assert_eq!(span.end, raw, "a boundary already on a turn start must not move");
+    }
+
+    #[test]
     fn a_thread_shorter_than_the_retained_tail_has_no_span() {
-        assert!(select_span(&thread(1), RETAINED_TAIL_MESSAGES).is_none());
-        assert!(select_span(&[], RETAINED_TAIL_MESSAGES).is_none());
+        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let messages = thread(1); // one user turn + one assistant turn
+        let tail_start = retained_tail_start(&messages, CompactionTrigger::Pressure);
+        assert!(select_span(&messages, tail_start, limits).is_none());
+
+        let empty: Vec<ChatMessage> = Vec::new();
+        assert_eq!(retained_tail_start(&empty, CompactionTrigger::Pressure), 1);
     }
 
     #[test]
     fn pruning_keeps_both_ends_of_a_tool_result() {
         let text = format!("HEAD{}TAIL", "m".repeat(20_000));
-        let pruned = prune_text(&text).unwrap();
+        let pruned = prune_text_budget(&text, MAX_RETAINED_TOOL_RESULT_CHARS).unwrap();
         assert!(pruned.starts_with("HEAD"));
         assert!(pruned.ends_with("TAIL"));
         assert!(pruned.chars().count() < text.chars().count());
-        assert!(prune_text("short").is_none());
+        assert!(prune_text_budget("short", MAX_RETAINED_TOOL_RESULT_CHARS).is_none());
     }
 
     #[test]
@@ -1133,19 +1378,13 @@ mod tests {
     }
 
     #[test]
-    fn the_tail_sizes_differ_by_tier() {
-        assert_eq!(
-            retained_tail_messages(CompactionTrigger::Pressure),
-            RETAINED_TAIL_MESSAGES
-        );
-        assert_eq!(
-            retained_tail_messages(CompactionTrigger::Emergency),
-            EMERGENCY_RETAINED_TAIL_MESSAGES
-        );
-        assert_eq!(
-            retained_tail_messages(CompactionTrigger::Overflow),
-            EMERGENCY_RETAINED_TAIL_MESSAGES
-        );
+    fn the_tail_keeps_fewer_turns_under_emergency_than_pressure() {
+        let messages = thread(20);
+        let pressure = retained_tail_start(&messages, CompactionTrigger::Pressure);
+        let emergency = retained_tail_start(&messages, CompactionTrigger::Emergency);
+        let overflow = retained_tail_start(&messages, CompactionTrigger::Overflow);
+        assert!(pressure < emergency, "pressure keeps more turns than emergency");
+        assert_eq!(emergency, overflow, "emergency and overflow share a skeleton");
     }
 
     #[test]
@@ -1167,7 +1406,7 @@ mod tests {
         .expect("the estimate sits above 92%, so the pass must run");
 
         assert!(outcome.summarized_messages > 0);
-        // system + pinned task + the summary + a two-message skeleton tail.
+        // system + pinned task + the summary + a two-turn skeleton tail.
         assert_eq!(
             messages.len(),
             5,
@@ -1192,17 +1431,89 @@ mod tests {
         .await
         .unwrap();
 
-        // span replaced [2 .. len-8), so 8 tail messages survive.
-        assert_eq!(messages.len(), 2 + 1 + RETAINED_TAIL_MESSAGES);
+        // span replaced [2 .. len-8), so 8 turns (8 messages, in a simple
+        // thread) survive.
+        assert_eq!(messages.len(), 2 + 1 + RETAINED_TAIL_TURNS);
         assert!(outcome.summarized_messages > 0);
     }
 
     #[test]
-    fn the_retained_tail_is_never_pruned() {
-        let mut messages = vec![ChatMessage::text("system", "s")];
-        messages.extend(tool_exchange(&"x".repeat(30_000)));
-        let (count, removed) = prune_tool_results(&mut messages, RETAINED_TAIL_MESSAGES);
+    fn the_tail_is_pruned_only_above_the_ceiling() {
+        // A ceiling far above the tail leaves it alone.
+        let mut small = vec![ChatMessage::text("system", "s")];
+        small.extend(tool_exchange(&"x".repeat(30_000)));
+        let tail_start = retained_tail_start(&small, CompactionTrigger::Pressure);
+        let (count, removed) = prune_tool_results(
+            &mut small,
+            tail_start,
+            CompactionLimits { usable_tokens: 1_000_000 },
+        );
         assert_eq!((count, removed), (0, 0));
+
+        // A ceiling below the oversized tail prunes the tool result inside it.
+        let mut big = vec![ChatMessage::text("system", "s")];
+        big.extend(tool_exchange(&"x".repeat(30_000)));
+        let tail_start = retained_tail_start(&big, CompactionTrigger::Pressure);
+        let (count, removed) = prune_tool_results(
+            &mut big,
+            tail_start,
+            CompactionLimits { usable_tokens: 10_000 },
+        );
+        assert!(count > 0);
+        assert!(removed > 0);
+    }
+
+    #[test]
+    fn a_tool_exchange_counts_as_one_turn() {
+        let mut messages = vec![ChatMessage::text("system", "s")];
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            args: json!({ "command": "cargo build" }),
+            provider_metadata: None,
+        };
+        messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
+        for _ in 0..20 {
+            messages.push(ChatMessage::tool_result(
+                call.id.clone(),
+                call.name.clone(),
+                "output".to_string(),
+            ));
+        }
+        messages.push(ChatMessage::text("assistant", "done"));
+
+        // Twenty-two messages, one turn: even the emergency tier (two turns)
+        // keeps the whole exchange instead of cutting it two messages from the
+        // end the way a message count would.
+        assert_eq!(
+            retained_tail_start(&messages, CompactionTrigger::Emergency),
+            1,
+            "a tool exchange must count as one turn, not twenty-two messages"
+        );
+    }
+
+    #[test]
+    fn a_checklist_in_the_tail_survives_ceiling_pruning() {
+        let long: Vec<(String, &str)> = (0..30)
+            .map(|index| (format!("step {index} {}", "x".repeat(400)), "pending"))
+            .collect();
+        let borrowed: Vec<(&str, &str)> = long
+            .iter()
+            .map(|(content, status)| (content.as_str(), *status))
+            .collect();
+        let mut messages = vec![ChatMessage::text("system", "s")];
+        messages.extend(todo_exchange(&borrowed));
+
+        let tail_start = retained_tail_start(&messages, CompactionTrigger::Pressure);
+        // A ceiling low enough that the oversized checklist would be pruned if
+        // it were any other tool result.
+        let (count, removed) = prune_tool_results(
+            &mut messages,
+            tail_start,
+            CompactionLimits { usable_tokens: 1_000 },
+        );
+        assert_eq!((count, removed), (0, 0), "a checklist is exempt even in the tail");
+        assert_eq!(latest_checklist(&messages).unwrap().len(), 30);
     }
 
     #[tokio::test]
@@ -1317,7 +1628,12 @@ mod tests {
         messages.extend(todo_exchange(&borrowed));
         messages.extend(thread(6).into_iter().skip(1));
 
-        let (count, removed) = prune_tool_results(&mut messages, RETAINED_TAIL_MESSAGES);
+        let tail_start = retained_tail_start(&messages, CompactionTrigger::Pressure);
+        let (count, removed) = prune_tool_results(
+            &mut messages,
+            tail_start,
+            CompactionLimits { usable_tokens: 100_000 },
+        );
         assert_eq!(
             (count, removed),
             (0, 0),
