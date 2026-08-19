@@ -2059,7 +2059,10 @@ pub async fn generate_group_workspace_git_commit_message(
                     "commit message generation failed: provider stream ended early: {reason}"
                 )));
             }
-            ChatDelta::Reasoning(_) | ChatDelta::ToolCall(_) | ChatDelta::Usage(_) => {}
+            ChatDelta::Reasoning(_)
+            | ChatDelta::ReasoningSignature(_)
+            | ChatDelta::ToolCall(_)
+            | ChatDelta::Usage(_) => {}
         }
     }
 

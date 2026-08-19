@@ -3147,6 +3147,10 @@ async fn run_agent_turn(
         // reasoning that produced *its* tool calls. Providers running in
         // thinking mode reject a tool-call message that arrives without it.
         let mut round_reasoning = String::new();
+        // The provider's signature over `round_reasoning`, when it signs what it
+        // thinks. Kept for the round rather than the turn for the same reason:
+        // it is verified against the thinking it travels with.
+        let mut round_signature: Option<String> = None;
         // A reasoning delta starts a new segment when the previous delta was not
         // reasoning (so token/tool interleaving splits reasoning blocks).
         let mut last_was_reasoning = false;
@@ -3225,6 +3229,11 @@ async fn run_agent_turn(
                         }
                         return Err(err);
                     }
+                }
+                ChatDelta::ReasoningSignature(signature) => {
+                    // Not shown to anyone: it exists only so the thinking it
+                    // signs can travel back with this round's tool calls.
+                    round_signature = Some(signature);
                 }
                 ChatDelta::ToolCall(call) => {
                     last_was_reasoning = false;
@@ -3324,7 +3333,8 @@ async fn run_agent_turn(
                 AgentAsToolOutcome::Continue(result) => {
                     messages.push(
                         ChatMessage::assistant_tool_calls(round_content, vec![call.clone()])
-                            .with_reasoning(round_reasoning),
+                            .with_reasoning(round_reasoning)
+                            .with_reasoning_signature(round_signature),
                     );
                     messages.push(ChatMessage::tool_result(call.id, call.name, result));
                     continue;
@@ -3334,7 +3344,8 @@ async fn run_agent_turn(
 
         messages.push(
             ChatMessage::assistant_tool_calls(round_content, tool_calls.clone())
-                .with_reasoning(round_reasoning),
+                .with_reasoning(round_reasoning)
+                .with_reasoning_signature(round_signature),
         );
 
         let mut wait_for_user: Option<Value> = None;

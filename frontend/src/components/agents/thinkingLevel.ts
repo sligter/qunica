@@ -1,4 +1,4 @@
-export const thinkingLevelValues = ['default', 'low', 'medium', 'high', 'xhigh'] as const
+export const thinkingLevelValues = ['default', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 
 export type ThinkingLevel = (typeof thinkingLevelValues)[number]
 
@@ -8,6 +8,7 @@ export const thinkingLevelOptions: { value: ThinkingLevel; label: string }[] = [
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'XHigh' },
+  { value: 'max', label: 'Max' },
 ]
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {

@@ -218,7 +218,7 @@ export const enUS = {
     },
     composer: {
       placeholder: 'Message your agents…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', uploadUnsupportedTitle: 'External file uploads are not supported in direct chats', dropZone: 'Message composer file drop area', showMore: 'Show {{count}} more agents', closeAgents: 'Close agent list',
-      effort: { label: 'Thinking', low: 'Low', medium: 'Medium', high: 'High' },
+      effort: { label: 'Thinking', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
       drop: { ready: 'Drop workspace files to attach them or folders to insert their paths.', fileAdded_one: 'Workspace file added.', fileAdded_other: '{{count}} workspace files added.', directoryInserted_one: 'Folder path inserted.', directoryInserted_other: '{{count}} folder paths inserted.', unsupported: 'This dropped item is not supported.', uploadUnsupported: 'External file uploads are not supported in direct chats.', noWorkspace: 'This conversation has no local workspace.', unreadable: 'Unable to read that workspace item.', limitReached: 'You can attach up to {{count}} files.' },
     },
     attachments: { uploading: 'Uploading…', uploaded: 'Uploaded', failed: 'Upload failed', workspace: 'Workspace file', unknownType: 'Unknown type', retry: 'Retry upload', remove: 'Remove attachment', open: 'Open attachment', retryNamed: 'Retry upload {{name}}', removeNamed: 'Remove {{name}}', openNamed: 'Open {{name}}', previewNamed: 'Preview {{name}}' },
@@ -360,7 +360,7 @@ export const enUS = {
       },
     },
     mentions: { noDescription: 'No description provided', agent: 'Agent', team: 'Team', description: 'Description', announcement: 'Announcement' },
-    thinking: { default: 'Default', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' },
+    thinking: { default: 'Default', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
   },
   groups: {
     tasks: {

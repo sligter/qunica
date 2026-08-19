@@ -899,9 +899,16 @@ fn parse_effort_override(raw: Option<&str>) -> Result<Option<ReasoningEffort>, A
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    ReasoningEffort::parse(raw)
-        .map(Some)
-        .ok_or_else(|| ApiError::invalid_input("effort_override must be low, medium, or high"))
+    ReasoningEffort::parse(raw).map(Some).ok_or_else(|| {
+        ApiError::invalid_input(format!(
+            "effort_override must be one of: {}",
+            ReasoningEffort::ALL
+                .iter()
+                .map(|level| level.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })
 }
 
 pub async fn stream_group(

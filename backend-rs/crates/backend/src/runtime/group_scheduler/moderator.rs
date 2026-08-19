@@ -240,7 +240,7 @@ async fn collect_response(
                 total_tokens = total_tokens.saturating_add(u64::try_from(tokens).unwrap_or(0));
             }
             ChatDelta::Done => break,
-            ChatDelta::Reasoning(_) => {}
+            ChatDelta::Reasoning(_) | ChatDelta::ReasoningSignature(_) => {}
             // A cut connection leaves the selection JSON half-written, which
             // would parse as a malformed decision rather than a provider fault.
             ChatDelta::Truncated(_) => {

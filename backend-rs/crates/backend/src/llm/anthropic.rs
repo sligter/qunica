@@ -13,6 +13,15 @@ use ag_swarmer_domain::runtime::ChatContentPart;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: i64 = 4096;
+/// Room left for the answer on top of a thinking budget.
+///
+/// `max_tokens` covers thinking *and* the reply, and Anthropic rejects a
+/// request whose budget is not strictly below it, so a deeper thinking level
+/// has to raise the ceiling with it — otherwise the model spends its whole
+/// allowance thinking and has nothing left to say.
+const THINKING_RESPONSE_RESERVE: i64 = DEFAULT_MAX_TOKENS;
+/// The shallowest thinking Anthropic accepts; anything less is an error.
+const MIN_THINKING_BUDGET: i64 = 1024;
 
 /// Streams responses from the Anthropic `/v1/messages` endpoint.
 pub struct AnthropicProvider {
@@ -33,7 +42,19 @@ impl AnthropicProvider {
     }
 }
 
-fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<Value>, Vec<Value>) {
+/// Split the neutral message list into Anthropic's `system` field and its
+/// `messages` array.
+///
+/// `thinking_enabled` decides whether an assistant turn's own thinking travels
+/// back with it. Anthropic requires that: with thinking on, the assistant
+/// message that made the tool calls must lead with the signed thinking block
+/// that produced them, and a request whose tool results follow a plain text
+/// block is rejected outright. It is equally an error to send a thinking block
+/// when thinking is off, so the flag gates both directions.
+fn split_system_and_messages(
+    messages: &[ChatMessage],
+    thinking_enabled: bool,
+) -> (Option<Value>, Vec<Value>) {
     let mut system_parts = Vec::new();
     let mut system_content_parts = Vec::new();
     let mut system_has_image = false;
@@ -63,6 +84,9 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<Value>, Vec<Va
         }
         if !message.tool_calls.is_empty() {
             let mut content = Vec::new();
+            if thinking_enabled {
+                content.extend(thinking_block(message));
+            }
             if !message.content.trim().is_empty() {
                 content.push(json!({ "type": "text", "text": message.content }));
             }
@@ -121,6 +145,28 @@ fn split_system_and_messages(messages: &[ChatMessage]) -> (Option<Value>, Vec<Va
         (!system_parts.is_empty()).then(|| Value::String(system_parts.join("\n\n")))
     };
     (system, out)
+}
+
+/// The signed thinking that produced this assistant message, as the content
+/// block Anthropic wants back.
+///
+/// Empty unless the message carries both the thinking and the signature over
+/// it. Reasoning replayed from stored history arrives without a signature, and
+/// an unsigned or re-signed block fails verification — so the choice is between
+/// sending nothing and sending something the provider rejects. Only the turn
+/// currently in flight has a signature, which is also the only turn Anthropic
+/// requires one for.
+fn thinking_block(message: &ChatMessage) -> Option<Value> {
+    let thinking = message
+        .reasoning_content
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())?;
+    let signature = message.reasoning_signature.as_deref()?;
+    Some(json!({
+        "type": "thinking",
+        "thinking": thinking,
+        "signature": signature,
+    }))
 }
 
 fn anthropic_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
@@ -195,6 +241,14 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
                         out.push(ChatDelta::Reasoning(thinking.to_string()));
                     }
                 }
+                // Closes a thinking block: the provider's signature over the
+                // thinking that just streamed. Carried out of the stream so the
+                // block can travel back with the tool calls it produced.
+                "signature_delta" => {
+                    if let Some(signature) = delta["signature"].as_str() {
+                        out.push(ChatDelta::ReasoningSignature(signature.to_string()));
+                    }
+                }
                 "input_json_delta" => {
                     let index = value["index"].as_i64().unwrap_or(0);
                     if let Some(partial) = delta["partial_json"].as_str() {
@@ -221,6 +275,17 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
                 }));
             }
         }
+        // A fault raised mid-stream — an overload, an expired credential — after
+        // the response already began. The HTTP status was 200, so nothing else
+        // marks this as a failure: without it the round ends on `Done` and a
+        // dropped answer reads as a model that chose to say nothing.
+        "error" => {
+            let reason = value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"]["type"].as_str())
+                .unwrap_or("provider error");
+            out.push(ChatDelta::Truncated(reason.to_string()));
+        }
         _ => {}
     }
 
@@ -231,24 +296,37 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
 impl LlmProvider for AnthropicProvider {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let (system, messages) = split_system_and_messages(&request.messages);
+        let (system, messages) =
+            split_system_and_messages(&request.messages, request.reasoning_effort.is_some());
+        // Anthropic takes a token budget, not a level. `max_tokens` covers the
+        // thinking as well as the reply and must stay above the budget, so a
+        // deeper level raises both together rather than being clamped down to
+        // fit a fixed ceiling.
+        let thinking = request.reasoning_effort.map(|effort| {
+            effort
+                .thinking_budget_tokens()
+                .max(MIN_THINKING_BUDGET)
+        });
+        let max_tokens = thinking.map_or(DEFAULT_MAX_TOKENS, |budget| {
+            budget.saturating_add(THINKING_RESPONSE_RESERVE)
+        });
         let mut body = json!({
             "model": request.model,
             "messages": messages,
-            "temperature": request.temperature,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "stream": true,
         });
+        // Extended thinking fixes sampling: Anthropic rejects any temperature
+        // but 1 while it is on. Absent rather than null in every other case —
+        // the API validates the field's type, so a null is a rejected request,
+        // not an omitted setting.
+        if let Some(temperature) = request.temperature.filter(|_| thinking.is_none()) {
+            body["temperature"] = json!(temperature);
+        }
         if let Some(system) = system {
             body["system"] = system;
         }
-        // Anthropic takes a token budget, not a level, and rejects one that is
-        // not strictly below `max_tokens`. Clamp rather than trust the table:
-        // if DEFAULT_MAX_TOKENS is ever lowered, the request must still be
-        // valid instead of failing at the provider.
-        if let Some(effort) = request.reasoning_effort {
-            let ceiling = DEFAULT_MAX_TOKENS - 1;
-            let budget = effort.thinking_budget_tokens().min(ceiling).max(1024);
+        if let Some(budget) = thinking {
             body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
         }
         if request.include_empty_tools || !request.tools.is_empty() {

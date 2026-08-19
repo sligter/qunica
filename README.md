@@ -201,6 +201,7 @@ The composer can override model and thinking level for a single message.
 
 - Model picker appears only for single-agent sessions when the provider exposes multiple models.
 - Thinking controls appear only when the model declares support (OpenAI `reasoning_effort`, Anthropic `thinking.budget_tokens`, Gemini `thinkingConfig`).
+- Five levels — `low`, `medium`, `high`, `xhigh`, `max` — each its own depth. OpenAI-compatible endpoints receive the level itself and never a token budget; Anthropic and Gemini receive a budget that grows with it (and Anthropic's `max_tokens` grows with the budget).
 
 ### External CLI agents
 

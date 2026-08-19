@@ -225,6 +225,11 @@ impl LlmProvider for OpenAiCompatibleProvider {
         if let Some(temperature) = request.temperature {
             body["temperature"] = json!(temperature);
         }
+        // The level itself, never a token budget: this endpoint's vocabulary
+        // for thinking is the enum, and a budget key here is either ignored or
+        // rejected as an unknown parameter. Levels the endpoint does not know
+        // are still sent as chosen rather than rounded down to `high` — an
+        // operator picking `xhigh` on a gateway that has it means it.
         if let Some(effort) = request.reasoning_effort {
             body["reasoning_effort"] = json!(effort.as_str());
         }

@@ -777,7 +777,7 @@ async fn llm_contract_gemini_replays_function_call_thought_signature() {
 }
 
 // ---------------------------------------------------------------------------
-// Reasoning effort: one three-level abstraction, three provider dialects
+// Reasoning effort: one five-level abstraction, three provider dialects
 // ---------------------------------------------------------------------------
 
 fn effort_request(effort: Option<ReasoningEffort>) -> ChatRequest {
@@ -812,9 +812,27 @@ async fn llm_contract_openai_maps_effort_to_its_own_enum() {
         (ReasoningEffort::Low, "low"),
         (ReasoningEffort::Medium, "medium"),
         (ReasoningEffort::High, "high"),
+        (ReasoningEffort::XHigh, "xhigh"),
+        (ReasoningEffort::Max, "max"),
     ] {
         let body = captured_body(&provider, &captures, Some(effort)).await;
         assert_eq!(body["reasoning_effort"], json!(expected));
+    }
+}
+
+#[tokio::test]
+async fn llm_contract_openai_never_sends_a_thinking_budget() {
+    // This endpoint's vocabulary for thinking is the level. A budget key is an
+    // unknown parameter here — at best ignored, at worst a rejected request.
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+
+    for effort in ReasoningEffort::ALL {
+        let body = captured_body(&provider, &captures, Some(effort)).await;
+        for key in ["thinking", "thinking_budget", "budget_tokens", "reasoning"] {
+            assert!(body.get(key).is_none(), "{key} in {body}");
+        }
+        assert!(body.get("max_tokens").is_none(), "{body}");
     }
 }
 
@@ -824,24 +842,160 @@ async fn llm_contract_anthropic_maps_effort_to_a_thinking_budget() {
     let provider = AnthropicProvider::new(url, "test-key");
 
     let mut previous = 0;
-    for effort in [
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-    ] {
+    for effort in ReasoningEffort::ALL {
         let body = captured_body(&provider, &captures, Some(effort)).await;
         assert_eq!(body["thinking"]["type"], "enabled");
         let budget = body["thinking"]["budget_tokens"].as_i64().unwrap();
         // Anthropic rejects a budget that is not below max_tokens, so the
-        // mapping has to stay under whatever the request asks for.
+        // request has to make room for the answer above whatever it thinks.
         let max_tokens = body["max_tokens"].as_i64().unwrap();
         assert!(
             budget < max_tokens,
             "budget {budget} vs max_tokens {max_tokens}"
         );
+        // 1024 is the shallowest budget the API accepts.
+        assert!(budget >= 1024, "budget {budget} below the provider minimum");
         assert!(budget > previous, "effort must increase the budget");
         previous = budget;
     }
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_drops_temperature_while_thinking() {
+    // Extended thinking fixes sampling: Anthropic rejects any temperature but 1
+    // while it is on, and `effort_request` asks for 0.0.
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let body = captured_body(&provider, &captures, Some(ReasoningEffort::High)).await;
+    assert!(body.get("temperature").is_none(), "{body}");
+
+    // Without thinking the setting applies as asked — and is absent rather
+    // than null when there is none.
+    let body = captured_body(&provider, &captures, None).await;
+    assert_eq!(body["temperature"], json!(0.0));
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_sends_signed_thinking_back_with_its_tool_calls() {
+    // With thinking on, Anthropic requires the assistant turn that made the
+    // tool calls to lead with the signed thinking block that produced them;
+    // tool results following a bare text block are rejected outright.
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let mut request = effort_request(Some(ReasoningEffort::High));
+    request.messages = vec![
+        ChatMessage::text("user", "search"),
+        ChatMessage::assistant_tool_calls(
+            "looking",
+            vec![ToolCall {
+                id: "call-1".to_string(),
+                name: "search".to_string(),
+                args: json!({ "q": "rust" }),
+                provider_metadata: None,
+            }],
+        )
+        .with_reasoning("I should search.")
+        .with_reasoning_signature(Some("sig-abc".to_string())),
+        ChatMessage::tool_result("call-1", "search", "{\"ok\":true}"),
+    ];
+    let _ = collect(provider.stream(request).await.unwrap()).await;
+    let body = captures.lock().await.last().cloned().expect("a request");
+
+    let content = body["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "thinking", "{body}");
+    assert_eq!(content[0]["thinking"], "I should search.");
+    assert_eq!(content[0]["signature"], "sig-abc");
+    assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[2]["type"], "tool_use");
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_omits_thinking_it_cannot_prove() {
+    // Reasoning replayed from stored history has no signature, and the
+    // provider verifies one against the other — so an unsigned block is a
+    // rejected request rather than a preserved thought. The same block is
+    // equally invalid when thinking is off.
+    let (url, captures) = capture_server("data: {\"type\":\"message_stop\"}\n").await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let assistant = ChatMessage::assistant_tool_calls(
+        "looking",
+        vec![ToolCall {
+            id: "call-1".to_string(),
+            name: "search".to_string(),
+            args: json!({}),
+            provider_metadata: None,
+        }],
+    )
+    .with_reasoning("recovered from the database");
+
+    let mut unsigned = effort_request(Some(ReasoningEffort::High));
+    unsigned.messages = vec![ChatMessage::text("user", "search"), assistant.clone()];
+    let _ = collect(provider.stream(unsigned).await.unwrap()).await;
+
+    let mut thinking_off = effort_request(None);
+    thinking_off.messages = vec![
+        ChatMessage::text("user", "search"),
+        assistant.with_reasoning_signature(Some("sig-abc".to_string())),
+    ];
+    let _ = collect(provider.stream(thinking_off).await.unwrap()).await;
+
+    let bodies = captures.lock().await.clone();
+    for body in bodies {
+        assert_eq!(body["messages"][1]["content"][0]["type"], "text", "{body}");
+    }
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_surfaces_the_signature_over_its_thinking() {
+    let url = fake_server(concat!(
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step\"}}\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-abc\"}}\n",
+    ))
+    .await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let deltas = collect(
+        provider
+            .stream(effort_request(Some(ReasoningEffort::High)))
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(reasoning(&deltas), vec!["step".to_string()]);
+    assert!(
+        deltas
+            .iter()
+            .any(|delta| matches!(delta, ChatDelta::ReasoningSignature(s) if s == "sig-abc")),
+        "{deltas:?}"
+    );
+}
+
+#[tokio::test]
+async fn llm_contract_anthropic_reports_a_mid_stream_error_as_truncation() {
+    // The status was 200 and the body began normally, so nothing else marks
+    // this as a failure: ending on `Done` would pass a dropped answer off as a
+    // model that chose to say nothing.
+    let url = fake_server(concat!(
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n",
+    ))
+    .await;
+    let provider = AnthropicProvider::new(url, "test-key");
+
+    let deltas = collect(provider.stream(effort_request(None)).await.unwrap()).await;
+
+    assert_eq!(tokens(&deltas), vec!["partial".to_string()]);
+    assert!(
+        deltas
+            .iter()
+            .any(|delta| matches!(delta, ChatDelta::Truncated(reason) if reason == "Overloaded")),
+        "{deltas:?}"
+    );
 }
 
 #[tokio::test]

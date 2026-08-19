@@ -8679,7 +8679,7 @@ async fn the_agents_configured_thinking_level_reaches_the_provider_request() {
 }
 
 #[tokio::test]
-async fn an_xhigh_thinking_level_lands_on_the_deepest_level_this_abstraction_has() {
+async fn the_deepest_thinking_levels_reach_the_provider_as_themselves() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "agent-xhigh@example.com").await;
     let owner = owner_id(&state, "agent-xhigh@example.com").await;
@@ -8696,8 +8696,9 @@ async fn an_xhigh_thinking_level_lands_on_the_deepest_level_this_abstraction_has
         "2024-01-01T00:00:00Z",
     )
     .await;
-    // `xhigh` exists for ACP runtimes only. Dropping it as unrecognized would
-    // turn the deepest setting into no thinking at all.
+    // `xhigh` and `max` are levels of their own, not deeper-sounding names for
+    // `high`: rounding them down made the two deepest settings in the agent
+    // form change nothing about the request they configure.
     set_agent_model_config(&state, &agent, json!({"reasoning_effort": "xhigh"})).await;
 
     stream_events(
@@ -8708,8 +8709,18 @@ async fn an_xhigh_thinking_level_lands_on_the_deepest_level_this_abstraction_has
     )
     .await;
 
+    set_agent_model_config(&state, &agent, json!({"reasoning_effort": "max"})).await;
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha again"}),
+    )
+    .await;
+
     let requests = captured.lock().await;
-    assert_eq!(requests[0]["reasoning_effort"], "high");
+    assert_eq!(requests[0]["reasoning_effort"], "xhigh");
+    assert_eq!(requests[1]["reasoning_effort"], "max");
 }
 
 #[tokio::test]

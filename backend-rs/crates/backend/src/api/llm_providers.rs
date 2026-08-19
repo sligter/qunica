@@ -513,7 +513,10 @@ async fn probe_model(config: ProviderConfig) -> TestModelResponse {
                 ChatDelta::Truncated(reason) => {
                     anyhow::bail!("provider stream ended early: {reason}")
                 }
-                ChatDelta::Token(_) | ChatDelta::Reasoning(_) | ChatDelta::Usage(_) => {}
+                ChatDelta::Token(_)
+                | ChatDelta::Reasoning(_)
+                | ChatDelta::ReasoningSignature(_)
+                | ChatDelta::Usage(_) => {}
             }
         }
         anyhow::bail!("model returned no content")

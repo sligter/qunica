@@ -84,8 +84,8 @@ interface ComposerProps {
   supportsReasoningEffort?: boolean
 }
 
-/** Reasoning depth, matching the backend's three levels. */
-const EFFORT_LEVELS = ['low', 'medium', 'high'] as const
+/** Reasoning depth, matching the backend's five levels. */
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
 /** ~10 lines of text-sm (20px line-height) plus padding. */

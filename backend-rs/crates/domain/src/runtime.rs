@@ -46,6 +46,16 @@ pub struct ChatMessage {
     /// per-model `reasoning_passback` setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// The provider's cryptographic signature over [`Self::reasoning_content`],
+    /// for providers that sign the thinking they emit.
+    ///
+    /// Anthropic signs every thinking block and verifies the signature when the
+    /// block travels back, which it requires for the assistant turn that made
+    /// the tool calls. Reasoning replayed from stored history has no signature,
+    /// which is how a provider tells "thinking from this turn" (send it back)
+    /// from "thinking recovered from the database" (do not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_signature: Option<String>,
 }
 
 impl ChatMessage {
@@ -58,6 +68,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            reasoning_signature: None,
         }
     }
 
@@ -68,6 +79,23 @@ impl ChatMessage {
         let reasoning = reasoning.into();
         if !reasoning.trim().is_empty() {
             self.reasoning_content = Some(reasoning);
+        }
+        self
+    }
+
+    /// Attach the provider's signature over the reasoning already on this
+    /// message.
+    ///
+    /// A signature without the thinking it signs is useless — the provider
+    /// verifies one against the other — so it is only kept when there is
+    /// reasoning here to sign.
+    #[must_use]
+    pub fn with_reasoning_signature(mut self, signature: Option<String>) -> Self {
+        let Some(signature) = signature.filter(|value| !value.trim().is_empty()) else {
+            return self;
+        };
+        if self.reasoning_content.is_some() {
+            self.reasoning_signature = Some(signature);
         }
         self
     }
@@ -88,6 +116,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            reasoning_signature: None,
         }
     }
 
@@ -100,6 +129,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            reasoning_signature: None,
         }
     }
 
@@ -116,6 +146,7 @@ impl ChatMessage {
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
             reasoning_content: None,
+            reasoning_signature: None,
         }
     }
 }
@@ -131,7 +162,7 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDefinition>,
     /// How hard the model should think before answering.
     ///
-    /// A neutral three-level abstraction, not a passthrough: the providers
+    /// A neutral five-level abstraction, not a passthrough: the providers
     /// spell this very differently — an enum for OpenAI, a token budget for
     /// Anthropic, a nested config for Gemini — so each maps it itself.
     /// `None` means the key is omitted entirely rather than sent as null.
@@ -140,20 +171,33 @@ pub struct ChatRequest {
 }
 
 /// Reasoning depth, in terms every supported provider can express.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The two deepest levels are levels of their own rather than aliases of
+/// [`Self::High`]: an agent set to `max` asks for markedly more thinking than
+/// one set to `high`, and collapsing them made the deepest settings in the
+/// agent form change nothing about the request they configure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl ReasoningEffort {
+    /// Every level, shallowest first — the vocabulary the API and the agent
+    /// form share.
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::XHigh, Self::Max];
+
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim() {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
             _ => None,
         }
     }
@@ -163,18 +207,26 @@ impl ReasoningEffort {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
     /// A thinking-token budget for providers that take one.
     ///
     /// Callers must keep the result below the request's `max_tokens`; the
-    /// provider rejects a budget that is not.
+    /// provider rejects a budget that is not. The ceiling is deliberately
+    /// 24576 rather than something larger: it is the deepest budget every
+    /// provider that takes one accepts (Gemini 2.5 Flash caps there, and
+    /// Anthropic still has room for the answer itself under the smallest
+    /// output limit of a thinking-capable Claude model).
     pub const fn thinking_budget_tokens(self) -> i64 {
         match self {
-            Self::Low => 1024,
-            Self::Medium => 2048,
-            Self::High => 3072,
+            Self::Low => 2048,
+            Self::Medium => 4096,
+            Self::High => 8192,
+            Self::XHigh => 16384,
+            Self::Max => 24576,
         }
     }
 }
@@ -183,6 +235,13 @@ impl ReasoningEffort {
 pub enum ChatDelta {
     Token(String),
     Reasoning(String),
+    /// The provider's signature over the thinking it just streamed.
+    ///
+    /// Arrives after the reasoning it signs, and only from providers that sign
+    /// their thinking. A consumer that replays the reasoning has to carry this
+    /// with it: Anthropic verifies the signature against the thinking text and
+    /// rejects a block whose signature is missing or does not match.
+    ReasoningSignature(String),
     ToolCall(ToolCall),
     Usage(ContextUsage),
     /// The provider connection ended in the middle of the response, so whatever

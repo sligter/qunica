@@ -17,7 +17,7 @@ Working rules:
 - Be concise in final replies: state what changed, what was verified, and any
   remaining risk.`
 
-export const DEFAULT_AGENT_TEMPERATURE = 0.7
+export const DEFAULT_AGENT_TEMPERATURE = 0.95
 export const AGENT_TEMPERATURE_STEP = 0.05
 
 const TEMPERATURE_TOLERANCE = 1e-9

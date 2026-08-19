@@ -236,9 +236,9 @@ pub fn vision_enabled(model_config_json: Option<&str>) -> bool {
 /// The reasoning depth an agent is configured with, if any.
 ///
 /// `None` means the key is omitted from the provider request entirely, which
-/// is what an agent left on the default thinking level wants. `xhigh` is an
-/// ACP-only level with no equivalent here, so it lands on the deepest level
-/// this abstraction has rather than being dropped as unrecognized.
+/// is what an agent left on the default thinking level wants. Every level the
+/// agent form offers is a level here, so the deepest settings reach the
+/// provider as themselves rather than as a shallower stand-in.
 pub fn effort_from_config(model_config_json: Option<&str>) -> Option<ReasoningEffort> {
     let raw = model_config_json
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
@@ -248,9 +248,6 @@ pub fn effort_from_config(model_config_json: Option<&str>) -> Option<ReasoningEf
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })?;
-    if raw.trim() == "xhigh" {
-        return Some(ReasoningEffort::High);
-    }
     ReasoningEffort::parse(&raw)
 }
 
