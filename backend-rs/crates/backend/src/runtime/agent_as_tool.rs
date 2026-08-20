@@ -56,7 +56,15 @@ impl AgentAsToolCall {
             .map_err(|_| AgentAsToolFailure::failed("mode must be call or handoff"))?
             .unwrap_or(AgentAsToolMode::Handoff);
 
-        let requested_agent = requested_agent.trim().to_string();
+        // Models name an assistant the way the roster prints it, which is with
+        // the `@` they see in every group message. Stripping it here means a
+        // call written the obvious way resolves instead of failing on a
+        // character the selector never contained.
+        let requested_agent = requested_agent
+            .trim()
+            .trim_start_matches('@')
+            .trim()
+            .to_string();
         if requested_agent.is_empty() {
             return Err(AgentAsToolFailure::failed(
                 "assistant selector must not be empty",
@@ -207,6 +215,48 @@ pub(crate) async fn resolve_dispatch(
     Err(AgentAsToolFailure::unavailable(
         "assistant is not enabled for this agent",
     ))
+}
+
+/// The assistants a caller could actually dispatch to on this turn.
+///
+/// `bound` counts what the owner selected on the agent; `dispatchable` holds
+/// only the ones that survive every gate the resolver applies later — same
+/// owner, active, an active member of *this* group, not muted, not the caller.
+/// The two are reported separately because the gap between them is the whole
+/// diagnosis when delegation quietly does nothing: assistants were bound, but
+/// none of them are in the room.
+pub(crate) struct AssistantRoster {
+    pub bound: usize,
+    pub dispatchable: Vec<AssistantMember>,
+}
+
+/// Resolve the roster used to describe `AgentAsTool` to the model.
+///
+/// Never fails the turn: a caller whose tool configuration will not parse, or
+/// whose lookup errors, simply has nothing to dispatch to, which is how the
+/// tool then presents itself. The dispatch path re-runs the same checks and is
+/// the authority on any individual call.
+pub(crate) async fn dispatchable_assistants(
+    pool: &SqlitePool,
+    group_id: &str,
+    caller: &CallerAgent,
+    muted_agent_ids: &HashSet<String>,
+) -> AssistantRoster {
+    let bound_ids = enabled_assistant_ids(caller).unwrap_or_default();
+    let mut dispatchable = load_bound_group_members(
+        pool,
+        group_id,
+        &caller.owner_id,
+        &bound_ids,
+        muted_agent_ids,
+    )
+    .await
+    .unwrap_or_default();
+    dispatchable.retain(|helper| helper.agent_id != caller.agent_id);
+    AssistantRoster {
+        bound: bound_ids.len(),
+        dispatchable,
+    }
 }
 
 fn first_string<'a>(args: &'a Value, names: &[&str]) -> Option<&'a str> {

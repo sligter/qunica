@@ -334,7 +334,7 @@ export const enUS = {
     },
     tools: {
       notice: 'Selected built-ins are bound as executable provider-native tools with bounded safeguards. Some tools may return setup-required or input-required results when a provider or resume contract is not configured; they are still truthful runtime tool calls, not saved-only claims.',
-      agentAsTool: 'Agent as tool', agentAsToolDescription: 'Bind other owned agents as callable assistants. Runtime delegation dispatches a bounded @mention-style task to the selected helper and returns the helper response as a tool result.', noAgents: 'No other agents are available.',
+      agentAsTool: 'Agent as tool', agentAsToolDescription: 'Bind other owned agents as callable assistants. Runtime delegation dispatches a bounded @mention-style task to the selected helper and returns the helper response as a tool result. An assistant is only dispatchable while it is also an active, unmuted member of the same group as this agent.', noAgents: 'No other agents are available.',
       bypassApprovals: {
         label: 'Unattended mode (bypass all approvals)',
         description: 'Run every tool call without asking. Approval cards are never shown, and shell commands the safety policy would normally refuse are run anyway. The equivalent of Codex YOLO mode or Claude Code --dangerously-skip-permissions.',

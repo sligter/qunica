@@ -292,6 +292,35 @@ async fn seed_agent_with_id(
     agent_id.to_string()
 }
 
+/// Seed an agent the owner has, but that never joined the group.
+///
+/// Binding one of these as an assistant is the configuration that used to make
+/// delegation vanish: the tool was offered, every call resolved to nothing, and
+/// the turn ended without a word.
+async fn seed_unjoined_agent(
+    state: &AppState,
+    owner_id: &str,
+    provider_id: &str,
+    name: &str,
+) -> String {
+    let agent_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO agents \
+         (id, owner_id, name, system_prompt, runtime_kind, provider_id, model_config_json, \
+          tool_config_json, skill_ids_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'You are a test agent.', 'llm_chat', ?, NULL, NULL, '[]', 'active', \
+                 '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&agent_id)
+    .bind(owner_id)
+    .bind(name)
+    .bind(provider_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    agent_id
+}
+
 async fn set_tool_config(state: &AppState, agent_id: &str, tool_config: Value) {
     sqlx::query("UPDATE agents SET tool_config_json = ? WHERE id = ?")
         .bind(tool_config.to_string())
@@ -321,6 +350,51 @@ async fn fake_provider_sequence(bodies: Vec<String>) -> String {
         axum::serve(listener, app).await.unwrap();
     });
     format!("http://{addr}")
+}
+
+/// Like [`fake_provider_sequence`], but keeps every request body so a test can
+/// assert on the tool list the runtime actually advertised.
+async fn recording_fake_provider_sequence(bodies: Vec<String>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let queue = Arc::new(Mutex::new(VecDeque::from(bodies)));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        move |request: Request<Body>| {
+            let queue = Arc::clone(&queue);
+            let requests = Arc::clone(&requests);
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                requests
+                    .lock()
+                    .await
+                    .push(serde_json::from_slice(&bytes).unwrap());
+                let body = {
+                    let mut queue = queue.lock().await;
+                    queue
+                        .pop_front()
+                        .unwrap_or_else(|| "data: [DONE]\n".to_string())
+                };
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), requests)
+}
+
+/// The `AgentAsTool` definition in a recorded provider request, if it was
+/// advertised at all.
+fn agent_as_tool_schema(request: &Value) -> Option<&Value> {
+    request["tools"]
+        .as_array()?
+        .iter()
+        .find(|tool| tool["function"]["name"] == "AgentAsTool")
 }
 
 fn text_body(text: &str) -> String {
@@ -562,11 +636,14 @@ async fn agent_as_tool_requires_bound_active_group_member() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace).await;
 
-    let provider_url = fake_provider_sequence(vec![tool_body(vec![(
-        "call_handoff",
-        "AgentAsTool",
-        json!({"assistant": "Helper", "task": "take over"}),
-    )])])
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_handoff",
+            "AgentAsTool",
+            json!({"assistant": "Helper", "task": "take over"}),
+        )]),
+        text_body("Helper is not bound to me, so I answered myself."),
+    ])
     .await;
     let provider = seed_provider(&state, &owner, &provider_url).await;
     let helper = seed_agent(
@@ -580,7 +657,7 @@ async fn agent_as_tool_requires_bound_active_group_member() {
         None,
     )
     .await;
-    seed_agent(
+    let caller = seed_agent(
         &state,
         &owner,
         &group,
@@ -594,7 +671,7 @@ async fn agent_as_tool_requires_bound_active_group_member() {
 
     let (outcome, events) = run_turn(&state, &group, &owner, "@Caller delegate").await;
 
-    assert_eq!(outcome, TurnOutcome::Silence);
+    assert_eq!(outcome, TurnOutcome::Completed);
     let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["tool_name"], "AgentAsTool");
@@ -610,8 +687,9 @@ async fn agent_as_tool_requires_bound_active_group_member() {
     assert!(helper_starts.is_empty(), "unbound helper must not run");
 
     let rows = message_rows(&state).await;
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0, "user");
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
 }
 
 #[tokio::test]
@@ -749,11 +827,14 @@ async fn agent_as_tool_does_not_dispatch_muted_helper() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace).await;
 
-    let provider_url = fake_provider_sequence(vec![tool_body(vec![(
-        "call_handoff",
-        "AgentAsTool",
-        json!({"assistant": "Helper", "task": "take over"}),
-    )])])
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_handoff",
+            "AgentAsTool",
+            json!({"assistant": "Helper", "task": "take over"}),
+        )]),
+        text_body("Helper is muted, so I answered myself."),
+    ])
     .await;
     let provider = seed_provider(&state, &owner, &provider_url).await;
     let helper = seed_agent(
@@ -767,7 +848,7 @@ async fn agent_as_tool_does_not_dispatch_muted_helper() {
         None,
     )
     .await;
-    seed_agent(
+    let caller = seed_agent(
         &state,
         &owner,
         &group,
@@ -787,15 +868,16 @@ async fn agent_as_tool_does_not_dispatch_muted_helper() {
 
     let (outcome, events) = run_turn(&state, &group, &owner, "@Caller delegate").await;
 
-    assert_eq!(outcome, TurnOutcome::Silence);
+    assert_eq!(outcome, TurnOutcome::Completed);
     let helper_starts: Vec<&Value> = payloads_of_kind(&events, StreamEventKind::AgentStart)
         .into_iter()
         .filter(|payload| payload["agent_id"] == helper)
         .collect();
     assert!(helper_starts.is_empty(), "muted helper must not run");
     let rows = message_rows(&state).await;
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0, "user");
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
 }
 
 #[tokio::test]
@@ -920,6 +1002,311 @@ async fn agent_as_tool_rejects_recursive_self_cycle() {
     let rows = message_rows(&state).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0, "user");
+}
+
+/// The tool has to name its targets. Without this the `assistant` field was an
+/// unconstrained string and the description named nobody, so the model had to
+/// guess an identifier and a wrong guess looked exactly like the feature not
+/// existing.
+#[tokio::test]
+async fn agent_as_tool_schema_names_the_assistants_the_caller_can_reach() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-schema@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let (provider_url, requests) =
+        recording_fake_provider_sequence(vec![text_body("nothing to delegate")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Research Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, _events) = run_turn(&state, &group, &owner, "@Caller answer").await;
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    let requests = requests.lock().await;
+    let schema = agent_as_tool_schema(&requests[0]).expect("AgentAsTool must be advertised");
+    let description = schema["function"]["description"].as_str().unwrap();
+    assert!(
+        description.contains("@Research Helper (helper-agent)"),
+        "description must name the reachable assistant: {description}"
+    );
+    let parameters = &schema["function"]["parameters"];
+    assert_eq!(
+        parameters["properties"]["assistant"]["enum"],
+        json!(["Research Helper"]),
+        "the selector must be constrained to names that resolve"
+    );
+    assert_eq!(
+        parameters["properties"]["mode"]["enum"],
+        json!(["call", "handoff"]),
+        "mode must enumerate its two values rather than take any string"
+    );
+}
+
+/// An assistant bound but absent from the group makes the tool unusable, so it
+/// is withheld and the misconfiguration is said out loud instead of leaving the
+/// owner to infer it from an agent that never delegates.
+#[tokio::test]
+async fn agent_as_tool_is_withheld_and_warned_when_no_assistant_is_in_the_group() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-withheld@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let (provider_url, requests) =
+        recording_fake_provider_sequence(vec![text_body("answering directly")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let outsider = seed_unjoined_agent(&state, &owner, &provider, "outsider-agent").await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": outsider, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller answer").await;
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    let requests = requests.lock().await;
+    assert!(
+        agent_as_tool_schema(&requests[0]).is_none(),
+        "a tool that cannot name a single reachable assistant must not be advertised"
+    );
+    let warnings = payloads_of_kind(&events, StreamEventKind::Warning);
+    assert!(
+        warnings.iter().any(|payload| payload["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("AgentAsTool is unavailable"))),
+        "the owner must be told why delegation is not available: {warnings:?}"
+    );
+}
+
+/// The whole point of the fix: a rejected dispatch comes back as a tool result,
+/// so the caller can name a different assistant and finish its turn. This used
+/// to end the turn outright — no reply, no result, no reason.
+#[tokio::test]
+async fn agent_as_tool_unavailable_assistant_lets_the_caller_retry_and_answer() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-retry@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_wrong",
+            "AgentAsTool",
+            json!({"assistant": "Ghost", "task": "research", "mode": "call"}),
+        )]),
+        tool_body(vec![(
+            "call_right",
+            "AgentAsTool",
+            json!({"assistant": "@Helper", "task": "research", "mode": "call"}),
+        )]),
+        text_body("helper findings"),
+        text_body("caller final answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let ghost = seed_unjoined_agent(&state, &owner, &provider, "Ghost").await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [
+            {"agent_id": ghost, "enabled": true},
+            {"agent_id": helper, "enabled": true},
+        ]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller investigate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 2, "both the rejection and the retry report");
+    assert_eq!(results[0]["status"], "unavailable");
+    assert!(results[0]["result_summary"]
+        .as_str()
+        .unwrap()
+        .contains("must be added to this group"));
+    assert_eq!(results[1]["status"], "completed");
+
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2, "the helper answered privately");
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
+}
+
+/// Handoff is the mode a call gets when it does not ask for one, and it used to
+/// be the mode whose rejections were swallowed: the caller's turn ended with
+/// nothing written and nothing explained.
+#[tokio::test]
+async fn agent_as_tool_handoff_rejection_returns_a_tool_result_instead_of_ending_the_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-handoff-recover@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_handoff",
+            "AgentAsTool",
+            json!({"assistant": "Ghost", "task": "take over"}),
+        )]),
+        text_body("Ghost is not in this group, so I answered myself."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let ghost = seed_unjoined_agent(&state, &owner, &provider, "Ghost").await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [
+            {"agent_id": ghost, "enabled": true},
+            {"agent_id": helper, "enabled": true},
+        ]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller delegate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "unavailable");
+
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2, "the caller must still get to answer");
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(
+        rows[1].2.as_deref(),
+        Some("Ghost is not in this group, so I answered myself.")
+    );
+}
+
+/// A `mode` the enum does not contain is a malformed call, not a reason to lose
+/// the turn: the model is told what the two values are and gets to try again.
+#[tokio::test]
+async fn agent_as_tool_unparseable_mode_is_reported_and_recoverable() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-bad-mode@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_bad_mode",
+            "AgentAsTool",
+            json!({"assistant": "Helper", "task": "research", "mode": "delegate"}),
+        )]),
+        text_body("Retrying without the bad mode."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller investigate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "failed");
+    assert!(results[0]["result_summary"]
+        .as_str()
+        .unwrap()
+        .contains("call or handoff"));
+
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
 }
 
 mod agent_as_tool {

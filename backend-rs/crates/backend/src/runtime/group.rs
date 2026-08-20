@@ -55,8 +55,8 @@ use crate::llm::{
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
-    resolve_dispatch, AgentAsToolCall, AgentAsToolFailure, AgentAsToolMode, CallerAgent,
-    AGENT_AS_TOOL_NAME,
+    dispatchable_assistants, resolve_dispatch, AgentAsToolCall, AgentAsToolFailure,
+    AgentAsToolMode, AssistantMember, CallerAgent, AGENT_AS_TOOL_NAME,
 };
 use crate::runtime::approval;
 use crate::runtime::compaction::{estimate_text_tokens, estimate_tool_schema_tokens};
@@ -2517,6 +2517,10 @@ struct InvocationContext {
     tools: Vec<ToolDefinition>,
     executor: ToolExecutor,
     workspace_root: Option<PathBuf>,
+    /// Configuration problems worth telling the user about, surfaced once when
+    /// the turn starts rather than left for them to infer from what the agent
+    /// did not do.
+    warnings: Vec<String>,
 }
 
 enum AgentRunResult {
@@ -2981,6 +2985,10 @@ async fn run_agent_turn(
         ctx.emit(StreamEventKind::Warning, json!({ "message": warning }))
             .await?;
     }
+    for warning in &invocation.warnings {
+        ctx.emit(StreamEventKind::Warning, json!({ "message": warning }))
+            .await?;
+    }
     if let Some(input) = delegated_input {
         messages.push(ChatMessage::text("user", input));
     }
@@ -3323,7 +3331,6 @@ async fn run_agent_turn(
                 group,
                 handoff_depth,
                 call.clone(),
-                &content,
                 &mut turn,
                 scheduler.as_deref_mut(),
             )
@@ -4275,7 +4282,6 @@ async fn handle_agent_as_tool(
     group: &GroupRuntimeConfig,
     handoff_depth: usize,
     call: ToolCall,
-    content: &str,
     turn: &mut TurnData,
     scheduler: Option<&mut ScheduledTurnRuntime>,
 ) -> Result<AgentAsToolOutcome, StepErr> {
@@ -4291,23 +4297,7 @@ async fn handle_agent_as_tool(
     let parsed = match AgentAsToolCall::from_args(call.id.clone(), &call.args) {
         Ok(parsed) => parsed,
         Err(failure) => {
-            turn.record_tool_result(
-                Some(call.id.clone()),
-                Some(AGENT_AS_TOOL_NAME.to_string()),
-                Some(failure.status.to_string()),
-                Some(failure.message.clone()),
-            );
-            emit_tool_call_failure(ctx, agent, &call.id, &failure).await?;
-            return finish_agent_content(
-                ctx,
-                agent,
-                false,
-                content.to_string(),
-                turn,
-                handoff_depth == 0,
-            )
-            .await
-            .map(AgentAsToolOutcome::Terminal);
+            return agent_as_tool_failure(ctx, agent, &call.id, turn, failure).await;
         }
     };
     let caller = CallerAgent {
@@ -4328,26 +4318,7 @@ async fn handle_agent_as_tool(
     {
         Ok(dispatch) => dispatch,
         Err(failure) => {
-            if parsed.mode == AgentAsToolMode::Call {
-                return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
-            }
-            turn.record_tool_result(
-                Some(parsed.tool_call_id.clone()),
-                Some(AGENT_AS_TOOL_NAME.to_string()),
-                Some(failure.status.to_string()),
-                Some(failure.message.clone()),
-            );
-            emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
-            return finish_agent_content(
-                ctx,
-                agent,
-                false,
-                content.to_string(),
-                turn,
-                handoff_depth == 0,
-            )
-            .await
-            .map(AgentAsToolOutcome::Terminal);
+            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
         }
     };
     let helper_candidate = match load_candidate_by_id(
@@ -4366,26 +4337,7 @@ async fn handle_agent_as_tool(
                     AgentAsToolFailure::failed("helper lookup failed")
                 }
             };
-            if parsed.mode == AgentAsToolMode::Call {
-                return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
-            }
-            turn.record_tool_result(
-                Some(parsed.tool_call_id.clone()),
-                Some(AGENT_AS_TOOL_NAME.to_string()),
-                Some(failure.status.to_string()),
-                Some(failure.message.clone()),
-            );
-            emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
-            return finish_agent_content(
-                ctx,
-                agent,
-                false,
-                content.to_string(),
-                turn,
-                handoff_depth == 0,
-            )
-            .await
-            .map(AgentAsToolOutcome::Terminal);
+            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
         }
     };
 
@@ -4393,7 +4345,7 @@ async fn handle_agent_as_tool(
         let failure = AgentAsToolFailure::unavailable(
             "AgentAsTool dispatch is unavailable while resuming an interrupted message",
         );
-        return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
     };
     handle_bounded_agent_as_tool(
         services,
@@ -4427,14 +4379,14 @@ async fn handle_bounded_agent_as_tool(
     if !allows_agent_edge(&scheduler.topology, &agent.agent_id, &helper.agent_id) {
         let failure =
             AgentAsToolFailure::unavailable("group topology does not allow this agent dispatch");
-        return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
     }
     account_scheduled_tokens(ctx, &mut scheduler.budget);
     if let Err(error) = scheduler.budget.check_dispatch(&helper.agent_id, child_hop) {
         let failure = AgentAsToolFailure::unavailable(format!(
             "scheduler dispatch budget rejected the helper: {error}"
         ));
-        return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
     }
     scheduler
         .initial_round_claims
@@ -4607,7 +4559,7 @@ async fn handle_bounded_agent_as_tool(
                     }
                 }));
             }
-            return bounded_agent_as_tool_failure(ctx, agent, parsed, turn, failure).await;
+            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
         }
         Err(StepErr::SchedulerPersistence) => return Err(StepErr::SchedulerPersistence),
     };
@@ -4767,20 +4719,32 @@ async fn handle_bounded_agent_as_tool(
     }
 }
 
-async fn bounded_agent_as_tool_failure(
+/// Report an `AgentAsTool` call that never reached a helper.
+///
+/// Every one of these is a pre-dispatch rejection — unparseable arguments, an
+/// assistant that is not bound, not in the group, muted, or off the topology —
+/// and every one of them comes back to the model as a tool result so it can
+/// name a different assistant or drop the delegation and answer directly.
+///
+/// Handoff-mode rejections used to end the caller's turn instead. Since a model
+/// that calls a tool usually has not written any prose yet, the turn ended with
+/// nothing at all: no reply, no result, no reason — delegation that "did not
+/// work" with nowhere to look. The mode describes what a *successful* dispatch
+/// does with the turn, so it has no bearing on a dispatch that did not happen.
+async fn agent_as_tool_failure(
     ctx: &mut StreamCtx,
     agent: &Candidate,
-    parsed: AgentAsToolCall,
+    tool_call_id: &str,
     turn: &mut TurnData,
     failure: AgentAsToolFailure,
 ) -> Result<AgentAsToolOutcome, StepErr> {
     turn.record_tool_result(
-        Some(parsed.tool_call_id.clone()),
+        Some(tool_call_id.to_string()),
         Some(AGENT_AS_TOOL_NAME.to_string()),
         Some(failure.status.to_string()),
         Some(failure.message.clone()),
     );
-    emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
+    emit_tool_call_failure(ctx, agent, tool_call_id, &failure).await?;
     Ok(AgentAsToolOutcome::Continue(format!(
         "status: {}\n{}",
         failure.status, failure.message
@@ -5625,8 +5589,39 @@ async fn build_invocation_context(
 
     let mut tools = enabled_tools
         .iter()
+        .filter(|name| name.as_str() != AGENT_AS_TOOL_NAME)
         .flat_map(|name| tool_definitions_for(name, executor.shell().dialect))
         .collect::<Vec<_>>();
+    // `AgentAsTool` is the one tool whose schema depends on the rest of the
+    // group, so it is built here rather than from the static table: it has to
+    // name the assistants this caller can actually reach, and there is no such
+    // list until the group and the caller's bindings are both known.
+    let mut warnings = Vec::new();
+    if enabled_tools.iter().any(|name| name == AGENT_AS_TOOL_NAME) {
+        let caller = CallerAgent {
+            agent_id: agent.agent_id.clone(),
+            owner_id: agent.owner_id.clone(),
+            display_name: agent.display_name.clone(),
+            tool_config_json: agent.tool_config_json.clone(),
+        };
+        let roster =
+            dispatchable_assistants(pool, &ctx.group_id, &caller, &group.muted_agent_ids).await;
+        if roster.dispatchable.is_empty() {
+            // Bound but unreachable is a configuration mistake that used to be
+            // invisible: the tool was advertised, every call failed, and the
+            // owner saw an agent that simply never delegated. Say it once, in
+            // the transcript, instead of offering a tool that cannot succeed.
+            if roster.bound > 0 {
+                warnings.push(format!(
+                    "@{} has assistant agents bound for delegation, but none of them are active \
+                     members of this group, so AgentAsTool is unavailable this turn.",
+                    agent.display_name
+                ));
+            }
+        } else {
+            tools.push(agent_as_tool_definition(&roster.dispatchable));
+        }
+    }
     tools.extend(
         executor
             .mcp_mount()
@@ -5662,6 +5657,7 @@ async fn build_invocation_context(
         tools,
         executor,
         workspace_root: workspaces.primary,
+        warnings,
     })
 }
 
@@ -6749,18 +6745,6 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                 "additionalProperties": false
             }),
         ),
-        AGENT_AS_TOOL_NAME => (
-            "Dispatch a task to a bound assistant that is active in this group.",
-            object_schema(
-                &[
-                    ("assistant", "string"),
-                    ("task", "string"),
-                    ("instructions", "string"),
-                    ("mode", "string"),
-                ],
-                &["assistant", "task"],
-            ),
-        ),
         _ => return None,
     };
     Some(ToolDefinition {
@@ -6786,6 +6770,74 @@ fn object_schema(fields: &[(&str, &str)], required: &[&str]) -> Value {
         "required": required,
         "additionalProperties": false,
     })
+}
+
+/// Describe `AgentAsTool` in terms of the assistants this caller can reach.
+///
+/// The generic definition this replaced named no one: `assistant` was an
+/// unconstrained string and the description did not say who was on the other
+/// end, so a model had to guess an identifier out of the roster and a wrong
+/// guess was indistinguishable from the feature being absent. Listing the
+/// resolvable names — and constraining the field to them — is what turns the
+/// tool from advertised into callable.
+///
+/// `assistants` is expected to be non-empty: a tool that cannot name a single
+/// valid target is not advertised at all.
+fn agent_as_tool_definition(assistants: &[AssistantMember]) -> ToolDefinition {
+    // Display names are what the roster and every `@mention` in the transcript
+    // use, so they are what the model already has in hand. Two members can
+    // share one, and an enum that repeats a value is malformed, so the list is
+    // deduplicated; the resolver breaks any remaining tie by binding order.
+    let mut choices: Vec<String> = Vec::new();
+    for assistant in assistants {
+        if !choices.contains(&assistant.display_name) {
+            choices.push(assistant.display_name.clone());
+        }
+    }
+    let roster = assistants
+        .iter()
+        .map(|assistant| {
+            if assistant.name == assistant.display_name {
+                format!("@{}", assistant.display_name)
+            } else {
+                format!("@{} ({})", assistant.display_name, assistant.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    ToolDefinition {
+        name: AGENT_AS_TOOL_NAME.to_string(),
+        description: format!(
+            "Delegate a task to one of the assistant agents bound to you. Available in this \
+             group right now: {roster}. The assistant does not see your reasoning, so state the \
+             task on its own terms."
+        ),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "assistant": {
+                    "type": "string",
+                    "enum": choices,
+                    "description": "Which assistant to dispatch to, by the name listed above"
+                },
+                "task": {
+                    "type": "string",
+                    "description": "The work to delegate, written so the assistant can act on it without further context"
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": "Optional constraints on how to do it — format, depth, what to leave alone"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["call", "handoff"],
+                    "description": "call: the assistant runs privately and its reply comes back to you as this tool's result, so you keep the turn and answer the group yourself. handoff: the assistant takes the turn and replies to the group in your place, and you do not speak again. Defaults to handoff, so pass call whenever you intend to use the answer."
+                }
+            },
+            "required": ["assistant", "task"],
+            "additionalProperties": false
+        }),
+    }
 }
 
 #[derive(sqlx::FromRow)]
