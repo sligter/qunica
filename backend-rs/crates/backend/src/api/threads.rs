@@ -63,6 +63,11 @@ pub struct CreateTaskThreadRequest {
     git_branch: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ClearTaskMessagesResponse {
+    cleared_count: u64,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct ThreadAccessRow {
     id: String,
@@ -331,6 +336,47 @@ pub async fn unarchive(
 
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     Ok(Json(ThreadResponse::from(thread)))
+}
+
+/// Clears one task's conversation without removing the task or touching its siblings.
+pub async fn clear_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(thread_id): Path<String>,
+) -> Result<Json<ClearTaskMessagesResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let thread_id = validate_uuid(&thread_id, "thread id")?;
+    let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
+    ensure_task_thread(&thread)?;
+    if thread.status == "cleared" {
+        return Err(ApiError::not_found("task not found"));
+    }
+
+    let _guard = state.write_lock.lock().await;
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM group_turns \
+         WHERE thread_id = ? AND status IN ('pending', 'running', 'waiting_for_user'))",
+    )
+    .bind(&thread_id)
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    if active {
+        return Err(ApiError::conflict("task is still running"));
+    }
+
+    let cleared_count = sqlx::query(
+        "UPDATE messages SET status = 'cleared' \
+         WHERE thread_id = ? AND group_id = ? AND status IN ('visible', 'interrupted')",
+    )
+    .bind(&thread_id)
+    .bind(&thread.group_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to clear task messages"))?
+    .rows_affected();
+
+    Ok(Json(ClearTaskMessagesResponse { cleared_count }))
 }
 
 /// Deletes an archived task.

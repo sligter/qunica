@@ -94,7 +94,7 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
     useAuthStore.setState({ token: null })
   })
 
-  it('uses an empty HTML sandbox and revokes Object URLs on switch and unmount', async () => {
+  it('allows scripts in the isolated HTML sandbox and revokes Object URLs', async () => {
     const createObjectURL = vi.fn()
       .mockReturnValueOnce('blob:html-preview')
       .mockReturnValueOnce('blob:pdf-preview')
@@ -117,7 +117,7 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
 
     const iframe = await screen.findByTitle('Sandboxed HTML preview of page.html')
     expect(iframe).toHaveAttribute('src', 'blob:html-preview')
-    expect(iframe.getAttribute('sandbox')).toBe('')
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts')
     expect(iframe).not.toHaveAttribute('allow')
 
     const pdfFile = { ...baseFile, path: 'fake.html', name: 'fake.html' }
@@ -373,6 +373,20 @@ describe('WorkspaceTextEditor', () => {
     })
     expect(await screen.findByText('Saved')).toBeVisible()
     expect(editor).toHaveValue('edited')
+  })
+
+  it('highlights recognized source files behind the editable text', () => {
+    const { container } = renderEditor(textResponse({
+      path: 'src/main.ts',
+      name: 'main.ts',
+      content: 'const answer: number = 42',
+    }))
+
+    expect(container.querySelector('pre[data-language="typescript"]')).toBeVisible()
+    expect(container.querySelector('.hljs-keyword')).toHaveTextContent('const')
+    expect(screen.getByRole('textbox', { name: 'Edit main.ts' })).toHaveValue(
+      'const answer: number = 42',
+    )
   })
 
   it('accepts IME input and leaves native editing shortcuts untouched', () => {

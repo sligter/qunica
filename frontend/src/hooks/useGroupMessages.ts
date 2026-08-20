@@ -83,6 +83,26 @@ export function useClearGroupMessages(groupId: string | undefined) {
   return useClearConversationMessages('groups', groupId)
 }
 
+export function useClearGroupThreadMessages(groupId: string) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  const clearGroupMessages = useMessageStore((s) => s.clearGroupMessages)
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      fetchJson<ClearGroupMessagesResponse>(`/threads/${threadId}/messages/clear`, {
+        method: 'POST',
+        token,
+      }),
+    onSuccess: (_result, threadId) => {
+      const messagesKey = conversationMessagesKey('groups', groupId, threadId)
+      qc.setQueryData(messagesKey, emptyMessagePages())
+      clearGroupMessages(threadId)
+      void qc.invalidateQueries({ queryKey: messagesKey })
+      void qc.invalidateQueries({ queryKey: ['groups', groupId, 'agents'] })
+    },
+  })
+}
+
 function useResetConversationContext(scope: ConversationScope, conversationId: string) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()

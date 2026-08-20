@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
+import { GroupTemplatesSection } from '@/components/groups/GroupTemplatesSection'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
@@ -385,6 +386,8 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
       </SettingsSection>
 
       <GroupSchedulerSettingsSection group={group} />
+
+      <GroupTemplatesSection group={group} />
 
       <SettingsSection title={t('settings.danger')}>
         <SettingsRow

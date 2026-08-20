@@ -1,4 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import hljs from 'highlight.js/lib/common'
+import powershell from 'highlight.js/lib/languages/powershell'
 import {
   AlertTriangle,
   ChevronDown,
@@ -54,6 +56,25 @@ function snapshotFromFile(file: ConversationWorkspaceFileTextResponse): EditorSn
     version: file.version,
     truncated: file.truncated,
   }
+}
+
+hljs.registerLanguage('powershell', powershell)
+
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  c: 'c', cc: 'cpp', cpp: 'cpp', cs: 'csharp', css: 'css', go: 'go', h: 'c',
+  hpp: 'cpp', html: 'xml', htm: 'xml', java: 'java', js: 'javascript', jsx: 'javascript',
+  json: 'json', md: 'markdown', markdown: 'markdown', php: 'php', ps1: 'powershell',
+  py: 'python', rb: 'ruby', rs: 'rust', sh: 'shell', sql: 'sql', svelte: 'xml',
+  toml: 'ini', ts: 'typescript', tsx: 'typescript', vue: 'xml', xml: 'xml', yml: 'yaml', yaml: 'yaml',
+}
+
+function sourceLanguage(path: string): string | null {
+  const name = path.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase() ?? ''
+  if (name === 'dockerfile') return 'shell'
+  if (name === 'makefile') return hljs.getLanguage(name) ? name : null
+  const extension = name.includes('.') ? name.split('.').at(-1) ?? '' : ''
+  const language = LANGUAGE_BY_EXTENSION[extension]
+  return language && hljs.getLanguage(language) ? language : null
 }
 
 function matchPositions(content: string, query: string): number[] {
@@ -120,11 +141,17 @@ export function WorkspaceTextEditor({
   const currentPath = useRef(file.path)
   const draftRevision = useRef(0)
   const editorRef = useRef<HTMLTextAreaElement>(null)
+  const highlightRef = useRef<HTMLPreElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const editorId = useId()
   currentPath.current = file.path
   const dirty = draft !== snapshot.content
   const matches = matchPositions(draft, searchValue)
+  const language = sourceLanguage(snapshot.path)
+  const highlighted = useMemo(
+    () => language ? hljs.highlight(draft, { language, ignoreIllegals: true }).value : null,
+    [draft, language],
+  )
 
   useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange])
 
@@ -471,21 +498,57 @@ export function WorkspaceTextEditor({
       <label htmlFor={editorId} className="sr-only">
         {t('workspace.previewPanel.editorLabel', { name: file.name })}
       </label>
-      <Textarea
-        ref={editorRef}
-        id={editorId}
-        value={draft}
-        readOnly={snapshot.truncated || save.isPending || refreshing}
-        aria-readonly={snapshot.truncated || save.isPending || refreshing}
-        aria-busy={save.isPending || refreshing}
-        onChange={(event) => updateDraft(event.target.value)}
-        onKeyDown={handleEditorKeyDown}
-        spellCheck={false}
-        className={cn(
-          'mt-3 flex-1 whitespace-pre font-mono text-xs leading-5',
-          presentation === 'editor' ? 'min-h-[24rem] resize-none' : 'min-h-[20rem] resize-y',
-        )}
-      />
+      {language && highlighted !== null ? (
+        <div
+          className={cn(
+            'workspace-code-editor relative mt-3 flex-1 overflow-hidden rounded-md border border-input bg-background shadow-sm',
+            presentation === 'editor' ? 'min-h-[24rem]' : 'min-h-[20rem]',
+          )}
+        >
+          <pre
+            ref={highlightRef}
+            aria-hidden="true"
+            data-language={language}
+            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre px-3 py-2 font-mono text-xs leading-5"
+          >
+            <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+          </pre>
+          <Textarea
+            ref={editorRef}
+            id={editorId}
+            value={draft}
+            readOnly={snapshot.truncated || save.isPending || refreshing}
+            aria-readonly={snapshot.truncated || save.isPending || refreshing}
+            aria-busy={save.isPending || refreshing}
+            onChange={(event) => updateDraft(event.target.value)}
+            onKeyDown={handleEditorKeyDown}
+            onScroll={(event) => {
+              if (!highlightRef.current) return
+              highlightRef.current.scrollTop = event.currentTarget.scrollTop
+              highlightRef.current.scrollLeft = event.currentTarget.scrollLeft
+            }}
+            spellCheck={false}
+            wrap="off"
+            className="workspace-code-input relative z-10 h-full min-h-full resize-none whitespace-pre border-0 bg-transparent font-mono text-xs leading-5 shadow-none focus-visible:ring-0"
+          />
+        </div>
+      ) : (
+        <Textarea
+          ref={editorRef}
+          id={editorId}
+          value={draft}
+          readOnly={snapshot.truncated || save.isPending || refreshing}
+          aria-readonly={snapshot.truncated || save.isPending || refreshing}
+          aria-busy={save.isPending || refreshing}
+          onChange={(event) => updateDraft(event.target.value)}
+          onKeyDown={handleEditorKeyDown}
+          spellCheck={false}
+          className={cn(
+            'mt-3 flex-1 whitespace-pre font-mono text-xs leading-5',
+            presentation === 'editor' ? 'min-h-[24rem] resize-none' : 'min-h-[20rem] resize-y',
+          )}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmRefreshOpen}

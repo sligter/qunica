@@ -196,7 +196,6 @@ export function Composer({
   // null means "whatever the agent is configured with"; only an explicit pick
   // becomes an override on the wire.
   const [effortOverride, setEffortOverride] = useState<EffortLevel | null>(null)
-  const [showEfforts, setShowEfforts] = useState(false)
   // Only offered when the answering model advertises support. Sending the
   // field to a model that rejects it turns a normal question into a provider
   // error.
@@ -840,51 +839,28 @@ export function Composer({
               <div className="flex-1" />
             )}
             {effortSupported ? (
-              <div className="relative shrink-0">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 gap-1 px-2 text-2xs text-muted-foreground"
-                  onClick={() => setShowEfforts((open) => !open)}
-                  aria-haspopup="listbox"
-                  aria-expanded={showEfforts}
-                >
-                  <span className="truncate">
-                    {effortOverride
-                      ? t(`composer.effort.${effortOverride}`)
-                      : t('composer.effort.label')}
-                  </span>
-                  <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
-                </Button>
-                {showEfforts ? (
-                  <>
-                    <div
-                      className="fixed inset-0 z-40 cursor-default"
-                      onClick={() => setShowEfforts(false)}
-                    />
-                    <div
-                      role="listbox"
-                      className="absolute bottom-full right-0 z-50 mb-2 w-40 rounded-md border border-border bg-background p-1 shadow-md"
-                    >
-                      {EFFORT_LEVELS.map((level) => (
-                        <button
-                          key={level}
-                          type="button"
-                          role="option"
-                          aria-selected={level === effortOverride}
-                          className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-                          onClick={() => {
-                            setEffortOverride(level)
-                            setShowEfforts(false)
-                          }}
-                        >
-                          {t(`composer.effort.${level}`)}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                ) : null}
+              <div className="flex w-36 shrink-0 items-center gap-2 px-1">
+                <span className="w-11 truncate text-right text-2xs text-muted-foreground">
+                  {effortOverride
+                    ? t(`composer.effort.${effortOverride}`)
+                    : t('composer.effort.auto')}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={EFFORT_LEVELS.length}
+                  step={1}
+                  value={effortOverride ? EFFORT_LEVELS.indexOf(effortOverride) + 1 : 0}
+                  onChange={(event) => {
+                    const value = Number(event.target.value)
+                    setEffortOverride(EFFORT_LEVELS[value - 1] ?? null)
+                  }}
+                  className="h-1.5 min-w-0 flex-1 cursor-pointer accent-primary"
+                  aria-label={t('composer.effort.label')}
+                  aria-valuetext={effortOverride
+                    ? t(`composer.effort.${effortOverride}`)
+                    : t('composer.effort.auto')}
+                />
               </div>
             ) : null}
             {isStreaming && hasText && (

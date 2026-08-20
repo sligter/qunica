@@ -639,6 +639,108 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
 }
 
 #[tokio::test]
+async fn group_templates_snapshot_settings_and_create_a_new_group() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-templates@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let agent = create_agent(&app, &token, &workspace, "Template agent").await;
+    let (status, source) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({
+                "name": "Template source",
+                "workspace_id": workspace,
+                "description": "Reusable setup",
+                "free_speech": true,
+                "communication_mode": "star",
+                "initial_agents": [agent]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, template) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/group-templates",
+            &token,
+            json!({"name": "Review team", "group_id": source["id"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(template["config"]["initial_agents"], json!([agent]));
+
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({
+                "name": "From template",
+                "workspace_id": workspace,
+                "template_id": template["id"]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["description"], "Reusable setup");
+    assert_eq!(created["free_speech"], true);
+    assert_eq!(created["communication_mode"], "star");
+
+    let (status, agents) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{}/agents", created["id"].as_str().unwrap()),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(agents.as_array().unwrap().len(), 1);
+    assert_eq!(agents[0]["agent_id"], agent);
+
+    let template_id = template["id"].as_str().unwrap();
+    let stranger = register_and_login(&app, "group-templates-stranger@example.com").await;
+    let (status, templates) = send(
+        &app,
+        authed("GET", "/api/v2/group-templates", &stranger),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(templates.as_array().unwrap().is_empty());
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/group-templates/{template_id}"),
+            &stranger,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = send(
+        &app,
+        authed(
+            "DELETE",
+            &format!("/api/v2/group-templates/{template_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn group_members_add_list_and_candidates_are_owner_scoped() {
     let (app, state) = app_with_state().await;
     let owner_email = "group-members-owner@example.com";
@@ -1174,10 +1276,13 @@ async fn group_notes_create_writes_markdown_file() {
         std::fs::read_to_string(group_note_file(root.path(), note_id)).unwrap(),
         "first draft"
     );
+    let index = std::fs::read_to_string(root.path().join("Notes/index.md")).unwrap();
+    assert!(index.contains("Plan"));
+    assert!(index.contains(note_id));
 }
 
 #[tokio::test]
-async fn group_notes_list_orders_active_notes_and_reads_file_content() {
+async fn group_notes_list_is_lightweight_and_get_reads_file_content() {
     let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "group-notes-list@example.com").await;
     let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
@@ -1219,10 +1324,22 @@ async fn group_notes_list_orders_active_notes_and_reads_file_content() {
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["id"], newer_id);
-    assert_eq!(rows[0]["content"], "db newer");
+    assert_eq!(rows[0]["content"], "");
     assert_eq!(rows[1]["id"], older_id);
-    assert_eq!(rows[1]["content"], "file older");
+    assert_eq!(rows[1]["content"], "");
     assert!(!rows.iter().any(|row| row["id"] == deleted_id));
+
+    let (status, loaded) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/notes/{older_id}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(loaded["content"], "file older");
 }
 
 #[tokio::test]
@@ -1511,7 +1628,11 @@ async fn group_notes_rejects_note_file_symlink_before_patch_read_and_delete() {
 
     let (status, body) = send(
         &app,
-        authed("GET", &format!("/api/v2/groups/{group_id}/notes"), &token),
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/notes/{note_id}"),
+            &token,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

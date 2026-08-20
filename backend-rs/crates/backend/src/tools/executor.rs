@@ -118,6 +118,8 @@ impl McpMount {
 pub struct ToolExecutor {
     /// The bound workspace, or `None` when no local workspace is configured.
     workspace: Option<WorkspaceTools>,
+    /// Shared group-note directory, exposed through note-only tools.
+    group_notes: Option<WorkspaceTools>,
     /// Skill metadata/instructions mounted for the non-executing SkillManager.
     mounted_skills: Vec<MountedSkill>,
     /// Tavily settings resolved for the agent owner, if configured.
@@ -145,6 +147,7 @@ impl std::fmt::Debug for ToolExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolExecutor")
             .field("workspace", &self.workspace)
+            .field("group_notes", &self.group_notes)
             .field("mounted_skills", &self.mounted_skills)
             .field("web_search_configured", &self.web_search.is_some())
             .field(
@@ -190,6 +193,7 @@ impl ToolExecutor {
         };
         Ok(Self {
             workspace,
+            group_notes: None,
             mounted_skills,
             web_search: None,
             media_generation: None,
@@ -210,6 +214,7 @@ impl ToolExecutor {
     pub fn without_workspace_with_skills(mounted_skills: Vec<MountedSkill>) -> Self {
         Self {
             workspace: None,
+            group_notes: None,
             mounted_skills,
             web_search: None,
             media_generation: None,
@@ -229,6 +234,16 @@ impl ToolExecutor {
         self.mcp_manager = Some(manager);
         self.mcp_mount = mount;
         self
+    }
+
+    /// Grant read/edit access to the shared notes directory without exposing the group workspace.
+    pub fn with_group_notes(mut self, root: Option<PathBuf>) -> Result<Self, ToolError> {
+        self.group_notes = root.map(WorkspaceTools::new).transpose()?;
+        Ok(self)
+    }
+
+    pub fn has_group_notes(&self) -> bool {
+        self.group_notes.is_some()
     }
 
     /// Bind the policy rules the user has approved for this thread.
@@ -317,12 +332,31 @@ impl ToolExecutor {
     /// [`ToolError`] for [`execute`](Self::execute) to render.
     async fn dispatch(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         match name {
+            "ReadGroupNotes" | "EditGroupNote" => {
+                let Some(notes) = self.group_notes.clone() else {
+                    return Ok(controlled::setup_required(
+                        name,
+                        "this group has no shared notes",
+                    ));
+                };
+                match name {
+                    "ReadGroupNotes" => {
+                        let path = arg_str_opt(&args, "path").unwrap_or("index.md").to_string();
+                        run_blocking(move || notes.read(&path, 1, MAX_READ_LINES)).await
+                    }
+                    _ => {
+                        let path = arg_path(&args)?.to_string();
+                        let edits = arg_file_edits(&args)?;
+                        run_blocking(move || notes.edit(&path, &edits)).await
+                    }
+                }
+            }
             // The shell tool answers to whichever name the host advertises it
             // under, plus the other dialects' names: a model that has seen
             // `Bash` elsewhere should reach the shell rather than an "unknown
             // tool" error, and its result already states the real dialect.
-            "Read" | "Write" | "Edit" | "Glob" | "Grep" | "Bash" | "Pwsh" | "Cmd" | "Shell"
-            | "ShellOutput" | "ShellKill" | "ShellJobs" => {
+            "Read" | "Write" | "Edit" | "DeleteFile" | "Glob" | "Grep" | "Bash" | "Pwsh"
+            | "Cmd" | "Shell" | "ShellOutput" | "ShellKill" | "ShellJobs" => {
                 let Some(workspace) = self.workspace.clone() else {
                     return Ok(controlled::workspace_required(name));
                 };
@@ -471,6 +505,10 @@ impl ToolExecutor {
                 let path = arg_path(&args)?.to_string();
                 let edits = arg_file_edits(&args)?;
                 run_blocking(move || workspace.edit(&path, &edits)).await
+            }
+            "DeleteFile" => {
+                let path = arg_path(&args)?.to_string();
+                run_blocking(move || workspace.delete_file(&path)).await
             }
             "Glob" => {
                 let pattern = arg_str_opt(&args, "pattern").unwrap_or("**/*").to_string();

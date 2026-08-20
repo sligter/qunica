@@ -146,8 +146,9 @@ describe('Composer', () => {
     const onSend = vi.fn()
     render(<Composer onSend={onSend} supportsReasoningEffort />)
 
-    await user.click(screen.getByRole('button', { name: /thinking/i }))
-    await user.click(screen.getByRole('option', { name: 'High' }))
+    fireEvent.change(screen.getByRole('slider', { name: /thinking/i }), {
+      target: { value: '3' },
+    })
     await user.type(screen.getByRole('textbox'), 'hard question')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
 
@@ -162,7 +163,7 @@ describe('Composer', () => {
     // Sending the field to a model that rejects it turns a normal question
     // into a provider error.
     render(<Composer onSend={vi.fn()} />)
-    expect(screen.queryByRole('button', { name: /thinking/i })).toBeNull()
+    expect(screen.queryByRole('slider', { name: /thinking/i })).toBeNull()
   })
 
   it('localizes the composer placeholder and stream cancellation action', async () => {

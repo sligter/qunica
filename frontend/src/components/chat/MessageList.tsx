@@ -25,6 +25,7 @@ interface MessageListProps {
   scope?: ConversationScope
   agents?: GroupAgentRead[]
   agentIsSystem?: boolean
+  moderatorEnabled?: boolean
 }
 
 const EMPTY_MESSAGES: readonly Message[] = []
@@ -91,6 +92,7 @@ export function MessageList({
   scope = 'groups',
   agents,
   agentIsSystem,
+  moderatorEnabled,
 }: MessageListProps) {
   const { t } = useTranslation('chat')
   const messages = useMessageStore((s) => s.byGroup[stateId] ?? EMPTY_MESSAGES)
@@ -236,6 +238,8 @@ export function MessageList({
                   turnId={turnId}
                   status={schedulerStatus}
                   summaries={run?.criticalSummaries}
+                  agentName={(agentId) =>
+                    agents?.find((agent) => agent.agent_id === agentId)?.display_name ?? agentId}
                   onViewTrace={onViewTurnTrace}
                 />
               ) : null}
@@ -245,6 +249,7 @@ export function MessageList({
                   groupId={groupId}
                   agents={agents}
                   agentIsSystem={agentIsSystem}
+                  moderatorEnabled={moderatorEnabled}
                   onSubmitHumanInput={onSubmitHumanInput}
                   stateId={stateId}
                   scope={scope}

@@ -194,6 +194,14 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(groups::create).get(groups::list),
         )
         .route(
+            "/api/v2/group-templates",
+            axum::routing::post(groups::create_group_template).get(groups::list_group_templates),
+        )
+        .route(
+            "/api/v2/group-templates/:template_id",
+            axum::routing::delete(groups::delete_group_template),
+        )
+        .route(
             "/api/v2/direct-chats",
             axum::routing::post(direct_chats::create).get(direct_chats::list),
         )
@@ -223,7 +231,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/groups/:group_id/notes/:note_id",
-            axum::routing::patch(groups::update_group_note).delete(groups::delete_group_note),
+            get(groups::get_group_note)
+                .patch(groups::update_group_note)
+                .delete(groups::delete_group_note),
         )
         .route(
             "/api/v2/groups/:group_id/files",
@@ -515,6 +525,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/threads/:thread_id/unarchive",
             axum::routing::post(threads::unarchive),
+        )
+        .route(
+            "/api/v2/threads/:thread_id/messages/clear",
+            axum::routing::post(threads::clear_messages),
         )
         .route(
             "/api/v2/skills",

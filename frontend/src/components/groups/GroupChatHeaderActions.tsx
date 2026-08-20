@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Archive, ArchiveRestore, ChevronRight, ListPlus, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronRight, Eraser, ListPlus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/select'
 import { useArchiveGroupThread, useCreateGroupThread, useDeleteGroupThread, useRestoreGroupThread } from '@/hooks/useGroupThreads'
 import { useGroupWorkspaceGitBranches } from '@/hooks/useWorkspaceGit'
+import { useClearGroupThreadMessages } from '@/hooks/useGroupMessages'
 import type { GroupThread } from '@/types/api'
 
 interface GroupChatHeaderActionsProps {
@@ -55,9 +56,11 @@ export function GroupChatHeaderActions({
   const archiveThread = useArchiveGroupThread(groupId)
   const restoreThread = useRestoreGroupThread(groupId)
   const deleteThread = useDeleteGroupThread(groupId)
+  const clearThread = useClearGroupThreadMessages(groupId)
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [clearOpen, setClearOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [gitBranch, setGitBranch] = useState('')
   const gitBranches = useGroupWorkspaceGitBranches(createOpen ? groupId : undefined)
@@ -78,6 +81,7 @@ export function GroupChatHeaderActions({
     || archiveThread.isPending
     || restoreThread.isPending
     || deleteThread.isPending
+    || clearThread.isPending
 
   const create = async (event: FormEvent) => {
     event.preventDefault()
@@ -246,6 +250,19 @@ export function GroupChatHeaderActions({
         </DialogContent>
       </Dialog>
 
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 text-muted-foreground"
+        disabled={disabled || mutating || !selectedThread}
+        onClick={() => setClearOpen(true)}
+        aria-label={t('tasks.clearMessages')}
+        title={t('tasks.clearMessages')}
+      >
+        <Eraser className="h-4 w-4" aria-hidden="true" />
+      </Button>
+
       {selectedArchived ? (
         <>
           <Button
@@ -290,6 +307,17 @@ export function GroupChatHeaderActions({
           <Archive className="h-4 w-4" aria-hidden="true" />
         </Button>
       )}
+      <ConfirmDialog
+        open={clearOpen}
+        onOpenChange={setClearOpen}
+        title={t('tasks.clearMessagesTitle', { title: selectedThread ? displayTitle(selectedThread) : '' })}
+        description={t('tasks.clearMessagesDescription')}
+        confirmLabel={t('tasks.clearMessages')}
+        destructive
+        onConfirm={async () => {
+          if (selectedThread) await clearThread.mutateAsync(selectedThread.id)
+        }}
+      />
       <ConfirmDialog
         open={archiveOpen}
         onOpenChange={setArchiveOpen}

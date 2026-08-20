@@ -15,6 +15,7 @@ import type {
 
 interface DispatchDagProps {
   dispatches: readonly AgentDispatchTrace[]
+  agentName?: (agentId: string) => string
   className?: string
 }
 
@@ -173,13 +174,13 @@ function reasonLabel(value: string, t: TFunction<'chat'>) {
     : t('common:wireLabels.unknownSelectionReason', { value })
 }
 
-function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) {
+function ArtifactDetails({ artifact, agentName }: { artifact: PublicTurnArtifact | null; agentName: (agentId: string) => string }) {
   const { t } = useTranslation('chat')
   if (!artifact) return null
   return (
     <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-t border-border pt-2 text-2xs">
       {artifact.mode ? <><dt className="text-muted-foreground">{t('trace.mode')}</dt><dd>{hasOwnKey(actionKeys, artifact.mode) ? t(actionKeys[artifact.mode]) : artifact.mode}</dd></> : null}
-      {artifact.target_agent_id ? <><dt className="text-muted-foreground">{t('trace.target')}</dt><dd className="truncate" title={artifact.target_agent_id}>{artifact.target_agent_id}</dd></> : null}
+      {artifact.target_agent_id ? <><dt className="text-muted-foreground">{t('trace.target')}</dt><dd className="truncate" title={artifact.target_agent_id}>{agentName(artifact.target_agent_id)}</dd></> : null}
       {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">{t('trace.child')}</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
       {artifact.outcome ? <><dt className="text-muted-foreground">{t('trace.outcome')}</dt><dd className="break-words">{artifact.outcome}</dd></> : null}
       {artifact.failure_code ? <><dt className="text-muted-foreground">{t('trace.failure')}</dt><dd className="break-words text-destructive">{artifact.failure_code}</dd></> : null}
@@ -187,7 +188,7 @@ function ArtifactDetails({ artifact }: { artifact: PublicTurnArtifact | null }) 
   )
 }
 
-function DagRow({ node, depth }: FlatDagNode) {
+function DagRow({ node, depth, agentName }: FlatDagNode & { agentName: (agentId: string) => string }) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const IssueIcon = node.issue === 'orphan' ? Link2Off : AlertTriangle
@@ -203,7 +204,7 @@ function DagRow({ node, depth }: FlatDagNode) {
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Route className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 truncate font-mono text-xs font-semibold" title={dispatch.target_agent_id}>
-            {dispatch.target_agent_id}
+            {agentName(dispatch.target_agent_id)}
           </span>
           <span className="rounded-[3px] bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
             {actionLabel(dispatch.action_kind, t)}
@@ -224,13 +225,13 @@ function DagRow({ node, depth }: FlatDagNode) {
           ) : null}
         </div>
         {dispatch.failure_code ? <p className="mt-1 break-words text-2xs text-destructive">{t('trace.failureDetail', { message: dispatch.failure_code })}</p> : null}
-        <ArtifactDetails artifact={dispatch.artifact} />
+        <ArtifactDetails artifact={dispatch.artifact} agentName={agentName} />
       </div>
     </li>
   )
 }
 
-export function DispatchDag({ dispatches, className }: DispatchDagProps) {
+export function DispatchDag({ dispatches, agentName = (agentId) => agentId, className }: DispatchDagProps) {
   const { t } = useTranslation('chat')
   const forest = buildDispatchForest(dispatches)
   const flattened = flattenForest(forest)
@@ -245,7 +246,7 @@ export function DispatchDag({ dispatches, className }: DispatchDagProps) {
       </div>
       <ul className="space-y-2" aria-label={t('trace.dispatchPath')}>
         {flattened.map(({ node, depth }) => (
-          <DagRow key={node.dispatch.id} node={node} depth={depth} />
+          <DagRow key={node.dispatch.id} node={node} depth={depth} agentName={agentName} />
         ))}
       </ul>
     </div>

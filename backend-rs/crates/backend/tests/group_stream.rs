@@ -3019,6 +3019,76 @@ async fn group_stream_executes_native_tool_and_continues_model() {
     assert_eq!(messages[0]["content"], "I read the file.");
 }
 
+#[tokio::test]
+async fn every_group_agent_can_read_and_edit_shared_notes_on_demand() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "shared-note-tools@example.com").await;
+    let owner = owner_id(&state, "shared-note-tools@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (status, note) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/notes"),
+            &token,
+            json!({"title": "Shared plan", "content": "before"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let note_id = note["id"].as_str().unwrap();
+
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![("read_notes", "ReadGroupNotes", json!({}))]),
+        tool_body(vec![(
+            "edit_note",
+            "EditGroupNote",
+            json!({
+                "path": format!("{note_id}.md"),
+                "edits": [{"oldText": "before", "newText": "after"}]
+            }),
+        )]),
+        text_body("Updated the shared note."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Note editor",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE group_agents SET context_scope_json = '{\"workspace_mode\":\"self\"}' \
+         WHERE group_id = ? AND agent_id = ?",
+    )
+    .bind(&group)
+    .bind(&agent)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "Update the group note."}),
+    )
+    .await;
+    let starts = payloads_of_kind(&events, StreamEventKind::ToolCallStart);
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0]["tool_name"], "ReadGroupNotes");
+    assert_eq!(starts[1]["tool_name"], "EditGroupNote");
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("Notes").join(format!("{note_id}.md"))).unwrap(),
+        "after"
+    );
+}
+
 /// A checklist is only useful if the client can find it. It has to leave the
 /// turn twice: once live on `todo_update`, and once durably in `content_json`,
 /// so a reload rebuilds the same list instead of an empty one.
@@ -4448,7 +4518,7 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "automatic-scheduler@example.com").await;
     let owner = owner_id(&state, "automatic-scheduler@example.com").await;
-    let workspace = create_workspace(&app, &token).await;
+    let (_group_root, workspace) = create_local_workspace(&app, &token).await;
     let moderator_provider = seed_provider(&state, &owner, &unreachable_local_url().await).await;
     let group = create_group(
         &app,
@@ -4469,6 +4539,17 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
         }),
     )
     .await;
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/notes"),
+            &token,
+            json!({"title": "Moderator context", "content": "NOTE_VISIBLE_TO_MODERATOR"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
     let agent_provider = seed_provider(
         &state,
         &owner,
@@ -4513,7 +4594,7 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
         &token,
-        json!({"content": "finish the task"}),
+        json!({"content": "finish the task using the group notes"}),
     )
     .await;
 
@@ -4546,6 +4627,12 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
 
     let requests = moderator_requests.lock().await;
     assert_eq!(requests.len(), 3);
+    let first_input: Value =
+        serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert!(first_input["objective"]
+        .as_str()
+        .unwrap()
+        .contains("NOTE_VISIBLE_TO_MODERATOR"));
     let second_input: Value =
         serde_json::from_str(requests[1]["messages"][1]["content"].as_str().unwrap()).unwrap();
     assert_eq!(second_input["progress_summary"], "first assigned");
@@ -7911,15 +7998,11 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
     let requests = requests.lock().await;
     let system_prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
     assert!(
-        system_prompt.contains(&format!(
-            "Runtime environment:\n- operating_system: {}\n- architecture: {}",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        )),
+        system_prompt.contains(&format!("Runtime: {} · shell ", std::env::consts::OS)),
         "got: {system_prompt}"
     );
     assert!(
-        system_prompt.contains("- shell_tool: "),
+        system_prompt.contains(" via "),
         "the prompt should name the shell tool the model can actually call, got: {system_prompt}"
     );
     assert!(

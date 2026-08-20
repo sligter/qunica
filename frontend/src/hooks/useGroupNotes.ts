@@ -13,6 +13,15 @@ export function useGroupNotes(groupId: string | undefined) {
   })
 }
 
+export function useGroupNote(groupId: string, noteId: string | undefined) {
+  const token = useAuthStore((s) => s.token)
+  return useQuery({
+    queryKey: ['groups', groupId, 'notes', noteId],
+    queryFn: () => fetchJson<GroupNoteRead>(`/groups/${groupId}/notes/${noteId}`, { token }),
+    enabled: token !== null && noteId !== undefined,
+  })
+}
+
 export function useCreateGroupNote(groupId: string) {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()

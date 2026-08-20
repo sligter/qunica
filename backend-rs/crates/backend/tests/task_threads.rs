@@ -126,6 +126,43 @@ async fn task_threads_create_list_filter_and_archive() {
         .unwrap();
     assert_eq!(first_status, "active");
 
+    let replacement = seed_message(&state, &group_id, &first_id, "clear only this task").await;
+    let (status, cleared) = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{first_id}/messages/clear"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["cleared_count"], 1);
+    let statuses = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, status FROM messages WHERE id IN (?, ?) ORDER BY id",
+    )
+    .bind(&replacement)
+    .bind(&second_message)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        statuses
+            .iter()
+            .find(|(id, _)| id == &replacement)
+            .unwrap()
+            .1,
+        "cleared"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .find(|(id, _)| id == &second_message)
+            .unwrap()
+            .1,
+        "visible"
+    );
+
     let (status, archived) = send(
         &app,
         authed(
@@ -485,14 +522,21 @@ async fn seed_message(
     content: &str,
 ) -> String {
     let id = Uuid::new_v4().to_string();
+    let seq: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE thread_id = ?")
+            .bind(thread_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
     sqlx::query(
         "INSERT INTO messages \
          (id, thread_id, group_id, seq, sender_type, message_type, content, status, created_at) \
-         VALUES (?, ?, ?, 1, 'user', 'text', ?, 'visible', ?)",
+         VALUES (?, ?, ?, ?, 'user', 'text', ?, 'visible', ?)",
     )
     .bind(&id)
     .bind(thread_id)
     .bind(group_id)
+    .bind(seq)
     .bind(content)
     .bind(NOW)
     .execute(state.db.pool())

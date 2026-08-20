@@ -929,6 +929,13 @@ fn builtin_tools() -> Vec<BuiltinToolResponse> {
             true,
         ),
         tool(
+            "delete_file",
+            "DeleteFile",
+            "Delete one regular workspace file.",
+            "write",
+            true,
+        ),
+        tool(
             "glob",
             "Glob",
             "List workspace files matching a glob pattern.",

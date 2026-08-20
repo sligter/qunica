@@ -160,6 +160,50 @@
 }
 
 @layer components {
+  .workspace-code-input {
+    color: transparent;
+    caret-color: var(--color-foreground);
+    -webkit-text-fill-color: transparent;
+  }
+
+  .workspace-code-editor .hljs-comment,
+  .workspace-code-editor .hljs-quote {
+    color: var(--color-muted-foreground);
+    font-style: italic;
+  }
+
+  .workspace-code-editor .hljs-keyword,
+  .workspace-code-editor .hljs-selector-tag,
+  .workspace-code-editor .hljs-literal {
+    color: var(--color-primary);
+    font-weight: 600;
+  }
+
+  .workspace-code-editor .hljs-string,
+  .workspace-code-editor .hljs-regexp,
+  .workspace-code-editor .hljs-addition {
+    color: var(--color-success);
+  }
+
+  .workspace-code-editor .hljs-number,
+  .workspace-code-editor .hljs-symbol,
+  .workspace-code-editor .hljs-attr {
+    color: var(--color-warning-foreground);
+  }
+
+  .workspace-code-editor .hljs-title,
+  .workspace-code-editor .hljs-section,
+  .workspace-code-editor .hljs-built_in,
+  .workspace-code-editor .hljs-type {
+    color: var(--color-avatar-3);
+  }
+
+  .workspace-code-editor .hljs-variable,
+  .workspace-code-editor .hljs-template-variable,
+  .workspace-code-editor .hljs-attribute {
+    color: var(--color-avatar-6);
+  }
+
   .terminal-dock {
     contain: layout paint;
     transition: height 140ms ease-out;

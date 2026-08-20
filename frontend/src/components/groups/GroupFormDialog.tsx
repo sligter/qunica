@@ -21,6 +21,7 @@ import { WorkspaceField } from '@/components/agents/WorkspaceField'
 import { useAgents } from '@/hooks/useAgents'
 import { useCreateGroup } from '@/hooks/useCreateGroup'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
+import { useGroupTemplates } from '@/hooks/useGroupTemplates'
 import { ApiError } from '@/lib/api-v2/client'
 import { cn } from '@/lib/utils'
 import type { GroupCommunicationMode } from '@/types/api'
@@ -68,9 +69,11 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
   const navigate = useNavigate()
   const agents = useAgents()
   const settings = useSystemSettings()
+  const templates = useGroupTemplates()
   const createGroup = useCreateGroup()
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [submitError, setSubmitError] = useState<string | null | undefined>(undefined)
 
   const form = useForm<FormValues>({
@@ -93,16 +96,41 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
 
   const rootConfigured = Boolean(settings.data?.group_workspace_root)
 
+  const applyTemplate = (templateId: string) => {
+    setSelectedTemplateId(templateId)
+    const template = templates.data?.find((item) => item.id === templateId)
+    if (!template) {
+      form.setValue('description', '')
+      form.setValue('announcement', '')
+      form.setValue('communication_mode', 'mesh')
+      form.setValue('free_speech', false)
+      form.setValue('allow_agent_free_mention', true)
+      setSelectedAgentIds([])
+      return
+    }
+    const config = template.config
+    form.setValue('description', config.description ?? '')
+    form.setValue('announcement', config.announcement ?? '')
+    form.setValue('communication_mode', config.communication_mode)
+    form.setValue('free_speech', config.free_speech)
+    form.setValue('allow_agent_free_mention', config.allow_agent_free_mention)
+    const available = new Set(agents.data?.map((agent) => agent.id) ?? [])
+    setSelectedAgentIds(config.initial_agents.filter((agentId) => available.has(agentId)))
+  }
+
   const onSubmit = form.handleSubmit(async (values) => {
     setSubmitError(undefined)
     try {
       const created = await createGroup.mutateAsync({
         name: values.name,
+        template_id: selectedTemplateId || undefined,
         description: values.description ?? null,
         announcement: values.announcement ?? null,
         communication_mode: values.communication_mode,
+        free_speech: values.free_speech,
+        allow_agent_free_mention: values.allow_agent_free_mention,
         workspace_id: selectedWorkspaceId || undefined,
-        initial_agents: selectedAgentIds.length ? selectedAgentIds : undefined,
+        initial_agents: selectedAgentIds,
       })
       onOpenChange(false)
       void navigate(`/groups/${created.id}`)
@@ -128,6 +156,23 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
                 {t(`create.${form.formState.errors.name.message}`)}
               </p>
             )}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="gd-template">{t('create.template')}</Label>
+            <select
+              id="gd-template"
+              value={selectedTemplateId}
+              onChange={(event) => applyTemplate(event.target.value)}
+              disabled={templates.isLoading || agents.isLoading}
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="">{t('create.noTemplate')}</option>
+              {templates.data?.map((template) => (
+                <option key={template.id} value={template.id}>{template.name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">{t('create.templateDescription')}</p>
           </div>
 
           <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">

@@ -105,6 +105,19 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     fetchNextPage: vi.fn(),
   }),
   useClearGroupMessages: () => ({ isPending: false, mutateAsync: mocks.clearMutateAsync }),
+  useClearGroupThreadMessages: () => ({
+    isPending: false,
+    mutateAsync: mocks.clearMutateAsync,
+  }),
+}))
+vi.mock('@/hooks/useGroupTemplates', () => ({
+  useGroupTemplates: () => ({ data: [], error: null, isLoading: false }),
+  useCreateGroupTemplate: () => ({
+    error: null,
+    isPending: false,
+    mutateAsync: vi.fn(),
+  }),
+  useDeleteGroupTemplate: () => ({ isPending: false, mutateAsync: vi.fn() }),
 }))
 vi.mock('@/hooks/useGroupThreads', () => ({
   useGroupThreads: () => ({ data: mocks.groupThreads, error: null, isLoading: false }),
@@ -322,6 +335,7 @@ describe('group management i18n', () => {
 
     expect(screen.getByRole('heading', { name: '创建新群组' })).toBeVisible()
     expect(screen.getByLabelText('群组名称')).toBeVisible()
+    expect(screen.getByLabelText('群模板')).toBeVisible()
     expect(screen.getByText('D:/groups')).toBeVisible()
     expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
   })

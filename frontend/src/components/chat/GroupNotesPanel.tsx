@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NotebookPen, Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -10,6 +10,7 @@ import {
   useCreateGroupNote,
   useDeleteGroupNote,
   useGroupNotes,
+  useGroupNote,
   useUpdateGroupNote,
 } from '@/hooks/useGroupNotes'
 import type { GroupNoteRead } from '@/types/api'
@@ -28,6 +29,13 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
   const [noteContent, setNoteContent] = useState('')
+  const note = useGroupNote(groupId, editing?.id)
+
+  useEffect(() => {
+    if (!editing || note.data?.id !== editing.id) return
+    setTitle(note.data.title)
+    setNoteContent(note.data.content)
+  }, [editing, note.data])
 
   const openCreate = () => {
     setEditing(null)
@@ -40,7 +48,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
     setCreating(false)
     setEditing(note)
     setTitle(note.title)
-    setNoteContent(note.content)
+    setNoteContent('')
   }
 
   const onSave = async () => {
@@ -58,13 +66,18 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
 
   const isForm = creating || editing !== null
   const isPending = create.isPending || update.isPending
+  const noteUnavailable = editing !== null
+    && (note.isLoading || note.isError || note.data?.id !== editing.id)
   const mutationError = create.error ?? update.error ?? del.error
   const displayError = (error: unknown) => error instanceof Error ? error.message : String(error)
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{t('chat:workspace.notesPanel.title')}</h2>
+        <div>
+          <h2 className="text-sm font-semibold">{t('chat:workspace.notesPanel.title')}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('chat:workspace.notesPanel.description')}</p>
+        </div>
         {!isForm && (
           <Button size="sm" variant="outline" onClick={openCreate}>
             <Plus className="mr-1 h-3.5 w-3.5" />
@@ -92,8 +105,14 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
               value={noteContent}
               onChange={(e) => setNoteContent(e.target.value)}
               placeholder={t('chat:workspace.notesPanel.contentPlaceholder')}
+              disabled={noteUnavailable}
             />
           </div>
+          {note.error ? (
+            <p className="text-sm text-destructive" role="alert">
+              {t('chat:workspace.notesPanel.loadError', { message: displayError(note.error) })}
+            </p>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
@@ -104,7 +123,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
             >
               {t('common:actions.cancel')}
             </Button>
-            <Button onClick={() => void onSave()} disabled={isPending || !title.trim()}>
+            <Button onClick={() => void onSave()} disabled={isPending || noteUnavailable || !title.trim()}>
               {isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           </div>

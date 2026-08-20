@@ -1,4 +1,4 @@
-//! Safe workspace file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`.
+//! Safe workspace file tools: `Read`, `Write`, `Edit`, `DeleteFile`, `Glob`, `Grep`.
 //!
 //! [`WorkspaceTools`] is the file-tool facade the Task 8b runtime tool loop will
 //! drive. Every method routes caller-supplied paths through
@@ -296,6 +296,19 @@ impl WorkspaceTools {
             "Edited {rel}; replaced {} block(s).",
             edits.len()
         )))
+    }
+
+    /// Delete one regular file. Directories and symlinks are deliberately rejected.
+    pub fn delete_file(&self, file_path: &str) -> Result<ToolResult, ToolError> {
+        let (index, target) = self.resolve(file_path)?;
+        let meta =
+            fs::symlink_metadata(&target).map_err(|_| ToolError::invalid("file does not exist"))?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(ToolError::invalid("target path is not a regular file"));
+        }
+        let rel = self.relative_display(index, &target);
+        fs::remove_file(target)?;
+        Ok(ToolResult::completed(format!("Deleted {rel}.")))
     }
 
     /// List files matching `pattern` across the primary root and every mount,

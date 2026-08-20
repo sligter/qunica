@@ -147,6 +147,39 @@ describe('StreamTimeline activity rendering', () => {
     expect(screen.getByText('等待 Agent 开始…')).toBeVisible()
   })
 
+  it('shows moderator scheduling after the latest agent activity finishes', () => {
+    const finished = event({
+      id: 'draft-1',
+      stream_id: 'stream-1',
+      type: 'response_draft' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      content: 'Finished reply',
+      status: 'finalized' as const,
+      created_at: '2026-07-16T10:00:04Z',
+    })
+    render(<StreamTimeline moderatorEnabled run={{
+      ...run([finished], 'active'),
+      turn_id: 'turn-1',
+      scheduler_status: 'running',
+    }} />)
+
+    expect(screen.getByText('Moderator')).toBeVisible()
+    expect(screen.getByText('Choosing the next speaker…')).toBeVisible()
+    expect(screen.getByText('Finished reply')).toBeVisible()
+  })
+
+  it('keeps deterministic scheduler gaps under the generic waiting state', () => {
+    render(<StreamTimeline run={{
+      ...run([], 'active'),
+      turn_id: 'turn-1',
+      scheduler_status: 'running',
+    }} />)
+
+    expect(screen.queryByText('Moderator')).toBeNull()
+    expect(screen.getByText('Waiting for agents to start…')).toBeVisible()
+  })
+
   it('localizes known tool activity statuses', async () => {
     const setupRequired = event({
       id: 'tool-1',

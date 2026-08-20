@@ -81,6 +81,16 @@ type RemoteOperation = (() => Promise<unknown>) | null
 type RepositoryState = NonNullable<GroupWorkspaceGitStatus['state']>
 type DiffLineKind = 'addition' | 'deletion' | 'hunk' | 'meta' | 'context'
 
+const COMMIT_PROMPT_STORAGE_KEY = 'ag-swarmer:git:commit-message-prompt'
+
+function readCommitPrompt(): string {
+  try {
+    return localStorage.getItem(COMMIT_PROMPT_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 const repositoryStateKeys = {
   conflict: 'workspace.gitPanel.conflicts',
   detached: 'workspace.gitPanel.detached',
@@ -513,6 +523,7 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const [selectedCommit, setSelectedCommit] = useState<string | undefined>()
   const [reviewOpen, setReviewOpen] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
+  const [commitPrompt, setCommitPrompt] = useState(readCommitPrompt)
   const [gitError, setGitError] = useState<string | null>(null)
   const [branchSheetOpen, setBranchSheetOpen] = useState(false)
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false)
@@ -599,6 +610,14 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
     setSelection(null)
     setReviewOpen(false)
   }, [groupId])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COMMIT_PROMPT_STORAGE_KEY, commitPrompt)
+    } catch {
+      // A custom prompt is a convenience; storage denial must not block Git.
+    }
+  }, [commitPrompt])
 
   useEffect(() => {
     if (!log.data) return
@@ -852,13 +871,33 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
             size="icon"
             className="absolute right-1 top-1 h-6 w-6"
             disabled={!canUseGit || staged.length === 0}
-            onClick={() => run(() => generateMessage.mutateAsync().then((result) => setCommitMessage(result.message)))}
+            onClick={() => run(() => generateMessage.mutateAsync({
+              ...(commitPrompt.trim() ? { prompt: commitPrompt.trim() } : {}),
+            }).then((result) => setCommitMessage(result.message)))}
             aria-label={t('chat:workspace.gitPanel.generateCommitMessage')}
             title={t('chat:workspace.gitPanel.generateCommitMessage')}
           >
             <Sparkles className={cn('h-3.5 w-3.5', generateMessage.isPending && 'animate-pulse')} />
           </Button>
         </div>
+
+        <details className="rounded-md border border-border/70 bg-muted/20 px-2 py-1">
+          <summary className="cursor-pointer select-none text-[10px] text-muted-foreground">
+            {t('chat:workspace.gitPanel.commitPrompt')}
+          </summary>
+          <Textarea
+            value={commitPrompt}
+            onChange={(event) => setCommitPrompt(event.target.value)}
+            rows={3}
+            maxLength={4000}
+            className="mt-1 min-h-16 resize-y text-xs"
+            placeholder={t('chat:workspace.gitPanel.commitPromptPlaceholder')}
+            aria-label={t('chat:workspace.gitPanel.commitPrompt')}
+          />
+          <p className="py-1 text-[10px] text-muted-foreground">
+            {t('chat:workspace.gitPanel.commitPromptHint')}
+          </p>
+        </details>
 
         <div ref={actionsRef} className="relative flex overflow-visible rounded-lg border border-border bg-card">
           <button

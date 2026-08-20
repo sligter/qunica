@@ -90,10 +90,12 @@ function renderTab(nextStatus: GroupWorkspaceGitStatus = status) {
 describe('WorkspaceGitTab i18n', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
+    localStorage.removeItem('ag-swarmer:git:commit-message-prompt')
   })
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    localStorage.removeItem('ag-swarmer:git:commit-message-prompt')
   })
 
   it('renders the compact Orca-style Git controls without loading a diff eagerly', () => {
@@ -233,6 +235,31 @@ describe('WorkspaceGitTab i18n', () => {
     expect(document.querySelector('[data-diff-line="deletion"]')).toHaveTextContent('-OLD_RAW_DIFF')
     expect(document.querySelector('[data-diff-line="hunk"]')).toHaveTextContent('@@ -1 +1 @@')
     expect(document.querySelector('[data-diff-line="meta"]')).toHaveTextContent('diff --git')
+  })
+
+  it('sends the custom commit prompt to the generator', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      message: 'Use scoped commit style',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab()
+
+    fireEvent.click(screen.getByText('Custom generation prompt'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom generation prompt' }), {
+      target: { value: 'Use conventional commits with a scope.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate commit message' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/workspace-git/commit-message'),
+      expect.objectContaining({
+        body: '{"prompt":"Use conventional commits with a scope."}',
+      }),
+    ))
+    expect(await screen.findByDisplayValue('Use scoped commit style')).toBeVisible()
   })
 
   it('renders the compact Git controls in Chinese', async () => {

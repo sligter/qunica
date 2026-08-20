@@ -790,6 +790,20 @@ async fn workspace_tools_executor_dispatches_file_and_non_file_tools_safely() {
         .await;
     assert_eq!(edited.status, ToolStatus::Completed);
 
+    let deleted = executor
+        .execute("DeleteFile", json!({ "path": "a/b.txt" }))
+        .await;
+    assert_eq!(deleted.status, ToolStatus::Completed, "{}", deleted.output);
+    assert!(!root.path().join("a/b.txt").exists());
+    assert_eq!(
+        executor
+            .execute("DeleteFile", json!({ "path": "a" }))
+            .await
+            .status,
+        ToolStatus::Failed,
+    );
+    assert!(root.path().join("a").is_dir());
+
     // A non-file tool runs through the same executor.
     let todos = executor
         .execute("TodoWrite", json!({ "todos": ["x"] }))

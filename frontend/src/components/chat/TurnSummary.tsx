@@ -21,6 +21,7 @@ interface TurnSummaryProps {
   status: GroupTurnStatus
   summaries?: readonly TurnCriticalSummary[]
   onViewTrace: (turnId: string, trigger: HTMLButtonElement) => void
+  agentName?: (agentId: string) => string
   className?: string
 }
 
@@ -42,7 +43,10 @@ interface SummaryTranslation {
   values?: Record<string, string | number>
 }
 
-function knownSummaryTranslation(summary: TurnCriticalSummary): SummaryTranslation | null {
+function knownSummaryTranslation(
+  summary: TurnCriticalSummary,
+  agentName: (agentId: string) => string,
+): SummaryTranslation | null {
   if (!summary.kind) return null
   switch (summary.kind) {
     case 'deterministic_selection': {
@@ -54,19 +58,19 @@ function knownSummaryTranslation(summary: TurnCriticalSummary): SummaryTranslati
     }
     case 'call':
       return summary.target_agent_id && summary.message === `Agent call routed to ${summary.target_agent_id}`
-        ? { key: 'trace.summaries.call', values: { target: summary.target_agent_id } }
+        ? { key: 'trace.summaries.call', values: { target: agentName(summary.target_agent_id) } }
         : null
     case 'handoff':
       return summary.target_agent_id && summary.message === `Handoff routed to ${summary.target_agent_id}`
-        ? { key: 'trace.summaries.handoff', values: { target: summary.target_agent_id } }
+        ? { key: 'trace.summaries.handoff', values: { target: agentName(summary.target_agent_id) } }
         : null
     case 'dispatch_failed':
       return summary.target_agent_id && summary.message === `Dispatch to ${summary.target_agent_id} failed`
-        ? { key: 'trace.summaries.dispatchFailed', values: { target: summary.target_agent_id } }
+        ? { key: 'trace.summaries.dispatchFailed', values: { target: agentName(summary.target_agent_id) } }
         : null
     case 'moderator_fallback':
       return summary.target_agent_id && summary.message === `Moderator fallback selected ${summary.target_agent_id}`
-        ? { key: 'trace.summaries.moderatorFallback', values: { target: summary.target_agent_id } }
+        ? { key: 'trace.summaries.moderatorFallback', values: { target: agentName(summary.target_agent_id) } }
         : null
     case 'cancelled':
       return summary.message === 'Turn cancelled' ? { key: 'trace.summaries.cancelled' } : null
@@ -119,6 +123,7 @@ export function TurnSummary({
   status,
   summaries = [],
   onViewTrace,
+  agentName = (agentId) => agentId,
   className,
 }: TurnSummaryProps) {
   const { t } = useTranslation('chat')
@@ -139,7 +144,7 @@ export function TurnSummary({
           <span>{t(turnStatusKeys[status])}</span>
         </span>
         {summaries.slice(-2).map((summary) => {
-          const translation = knownSummaryTranslation(summary)
+          const translation = knownSummaryTranslation(summary, agentName)
           const message = translation ? t(translation.key, translation.values) : summary.message
           return (
             <span

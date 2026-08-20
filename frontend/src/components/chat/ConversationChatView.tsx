@@ -68,6 +68,8 @@ export interface ConversationChatViewProps {
   supportsReasoningEffort?: boolean
   /** Render non-user messages with the dedicated system Assistant identity. */
   agentIsSystem?: boolean
+  /** Whether scheduler gaps represent a private moderator-model call. */
+  moderatorEnabled?: boolean
 }
 
 function workspaceFilesOpenStorageKey(conversationId: string): string {
@@ -129,6 +131,7 @@ export function ConversationChatView({
   threadTitle,
   supportsReasoningEffort,
   agentIsSystem,
+  moderatorEnabled,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
@@ -329,6 +332,7 @@ export function ConversationChatView({
                 scope={scope}
                 agents={agents}
                 agentIsSystem={agentIsSystem}
+                moderatorEnabled={moderatorEnabled}
               />
 
               {stream.retry ? (
@@ -397,6 +401,7 @@ export function ConversationChatView({
       {capabilities.showTurnTrace ? (
         <TurnTraceDrawer
           groupId={conversationId}
+          agents={agents}
           turnId={selectedTurnId}
           open={selectedTurnId !== null}
           returnFocusRef={traceTriggerRef}

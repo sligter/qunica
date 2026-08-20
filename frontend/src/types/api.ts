@@ -565,12 +565,37 @@ export interface DirectChatUpdate {
 
 export interface GroupCreate extends Partial<GroupSchedulerConfig> {
   name: string
+  template_id?: string
   workspace_id?: string | null
   auto_share_workspace_with_new_agents?: boolean
   description?: string | null
   announcement?: string | null
+  free_speech?: boolean
+  proactive_mode?: boolean
+  allow_agent_free_mention?: boolean
+  agent_free_mention_max_dispatches?: number
   communication_mode?: GroupCommunicationMode
   initial_agents?: string[]
+}
+
+export interface GroupTemplateConfig extends GroupSchedulerConfig {
+  description: string | null
+  announcement: string | null
+  auto_share_workspace_with_new_agents: boolean
+  free_speech: boolean
+  proactive_mode: boolean
+  allow_agent_free_mention: boolean
+  agent_free_mention_max_dispatches: number
+  communication_mode: GroupCommunicationMode
+  initial_agents: string[]
+}
+
+export interface GroupTemplateRead {
+  id: string
+  name: string
+  config: GroupTemplateConfig
+  created_at: string
+  updated_at: string
 }
 
 export interface GroupUpdate extends Partial<GroupSchedulerConfig> {
@@ -947,6 +972,10 @@ export interface GroupWorkspaceGitCommitRequest {
 
 export interface GroupWorkspaceGitCommitMessageResponse {
   message: string
+}
+
+export interface GroupWorkspaceGitCommitMessageRequest {
+  prompt?: string
 }
 
 export type GroupWorkspaceGitDiffMode = 'worktree' | 'staged' | 'branch' | 'commit'

@@ -60,6 +60,11 @@ vi.mock('@/hooks/useDeleteGroup', () => ({
 vi.mock('@/hooks/useGroupMessages', () => ({
   useClearGroupMessages: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
+vi.mock('@/hooks/useGroupTemplates', () => ({
+  useGroupTemplates: () => ({ data: [], isLoading: false, error: null }),
+  useCreateGroupTemplate: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
+  useDeleteGroupTemplate: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
+}))
 vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
   useTerminalRuntime: () => ({ closeConversation: vi.fn() }),
 }))

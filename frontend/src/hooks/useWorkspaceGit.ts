@@ -12,6 +12,7 @@ import type {
   GroupWorkspaceGitBranchSwitchRequest,
   GroupWorkspaceGitCommitDetails,
   GroupWorkspaceGitCommitMessageResponse,
+  GroupWorkspaceGitCommitMessageRequest,
   GroupWorkspaceGitCommitRequest,
   GroupWorkspaceGitCreateBranchFromCommitRequest,
   GroupWorkspaceGitDiff,
@@ -246,10 +247,10 @@ export function useGenerateGroupWorkspaceGitCommitMessage(groupId: string | unde
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: () =>
+    mutationFn: (body: GroupWorkspaceGitCommitMessageRequest) =>
       fetchJson<GroupWorkspaceGitCommitMessageResponse>(
         `/groups/${requireGroupId(groupId)}/workspace-git/commit-message`,
-        { token, method: 'POST' },
+        { token, method: 'POST', body },
       ),
     onSuccess: () => {
       void queryClient.invalidateQueries({

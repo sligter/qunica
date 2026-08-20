@@ -54,6 +54,20 @@ describe('DispatchDag', () => {
     expect(rows[2]).toHaveAttribute('data-visual-depth', '1')
   })
 
+  it('renders agent names while retaining IDs as diagnostics', () => {
+    render(
+      <DispatchDag
+        dispatches={[dispatch('dispatch-1', null, 'agent-1')]}
+        agentName={(id) => id === 'agent-1' ? 'Researcher' : id}
+      />,
+    )
+
+    const speaker = screen.getByText('Researcher')
+    expect(speaker).toBeVisible()
+    expect(speaker).toHaveAttribute('title', 'agent-1')
+    expect(screen.queryByText('agent-1')).not.toBeInTheDocument()
+  })
+
   it('renders orphan and cycle records once without recursing forever', () => {
     render(
       <DispatchDag dispatches={[

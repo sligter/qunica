@@ -36,7 +36,7 @@ describe('GroupNotesPanel i18n', () => {
 
     expect(screen.getByRole('heading', { name: 'Group notes' })).toBeVisible()
     expect(screen.getByText('TITLE_RAW_原文')).toBeVisible()
-    expect(screen.getByText('Empty note')).toBeVisible()
+    expect(screen.getByText('Open to load')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Delete note TITLE_RAW_原文' })).toBeVisible()
   })
 

@@ -49,6 +49,7 @@ interface StreamTimelineProps {
   stateId?: string
   scope?: ConversationScope
   agentIsSystem?: boolean
+  moderatorEnabled?: boolean
 }
 
 function inputRequestKey(request: HumanInputRequest): string {
@@ -539,6 +540,26 @@ function AgentBlockView({
   )
 }
 
+function SchedulerWaiting({ since }: { since: string }) {
+  const { t } = useTranslation('chat')
+  return (
+    <div className="flex min-w-0 w-full gap-2 px-3 py-2.5" data-scheduler-waiting>
+      <AgentAvatar name={t('stream.moderator')} kind="agent" className="mt-0.5" />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <span className="shrink-0 font-medium text-foreground">{t('stream.moderator')}</span>
+          <StreamStatusPill
+            status={{ phase: 'preparing', since }}
+            label={t('stream.moderatorScheduling')}
+            className="min-w-0"
+          />
+        </div>
+        <StreamSkeleton />
+      </div>
+    </div>
+  )
+}
+
 export function StreamTimeline({
   run,
   groupId = run.group_id,
@@ -547,6 +568,7 @@ export function StreamTimeline({
   stateId,
   scope,
   agentIsSystem,
+  moderatorEnabled = false,
 }: StreamTimelineProps) {
   const { t } = useTranslation('chat')
   const groupAgents = useGroupAgents(agents === undefined ? groupId : undefined)
@@ -563,6 +585,7 @@ export function StreamTimeline({
   const blocks = buildBlocks(run.events, t('messages.agent'))
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
+    if (run.turn_id && moderatorEnabled) return <SchedulerWaiting since={run.created_at} />
     return (
       <div className="flex min-w-0 w-full gap-2 px-3 py-2.5">
         <AgentAvatar
@@ -584,6 +607,11 @@ export function StreamTimeline({
       </div>
     )
   }
+  const schedulerWaiting = run.status === 'active'
+    && moderatorEnabled
+    && Boolean(run.turn_id)
+    && run.scheduler_status !== 'waiting_for_user'
+    && blocks.every((block) => block.kind === 'notice' || blockStatus(block) === null)
   return (
     <div className="flex w-full flex-col">
       {blocks.map((block, index) => {
@@ -629,6 +657,7 @@ export function StreamTimeline({
           />
         )
       })}
+      {schedulerWaiting ? <SchedulerWaiting since={run.updated_at} /> : null}
     </div>
   )
 }

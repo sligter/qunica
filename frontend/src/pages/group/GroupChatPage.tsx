@@ -97,6 +97,7 @@ export function GroupChatPage() {
       workspaceId={group.data.workspace_id}
       scope="groups"
       agents={agents}
+      moderatorEnabled={group.data.moderator_enabled}
       title={group.data.name}
       conversationTitle={group.data.name}
       threadTitle={selectedThread ? selectedThread.title ?? t('tasks.untitled') : undefined}

@@ -66,6 +66,7 @@ const GROUP_NOTE_COLUMNS: &str = "id, group_id, title, content, created_at, upda
 
 const NOTES_DIR: &str = "Notes";
 const NOTE_FILE_SUFFIX: &str = ".md";
+const NOTE_INDEX_FILE: &str = "index.md";
 const GROUP_FILE_COLUMNS: &str = "id, group_id, filename, file_size, mime_type, created_at";
 const UPLOADS_DIR: &str = "uploads";
 const MAX_WORKSPACE_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -101,6 +102,8 @@ pub struct GroupWorkspaceGitCommitDiffQuery {
 #[derive(Debug, Deserialize)]
 pub struct CreateRequest {
     name: String,
+    #[serde(default)]
+    template_id: Option<String>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
@@ -147,6 +150,47 @@ pub struct CreateRequest {
     moderator_model: Option<String>,
     #[serde(default)]
     initial_agents: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupTemplateCreateRequest {
+    name: String,
+    group_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GroupTemplateConfig {
+    description: Option<String>,
+    announcement: Option<String>,
+    auto_share_workspace_with_new_agents: bool,
+    free_speech: bool,
+    proactive_mode: bool,
+    allow_agent_free_mention: bool,
+    agent_free_mention_max_dispatches: i64,
+    communication_mode: String,
+    scheduler_mode: String,
+    agent_mention_policy: String,
+    max_agent_steps: Option<i64>,
+    max_steps_per_agent: i64,
+    max_scheduler_hops: i64,
+    max_moderator_calls: i64,
+    max_consecutive_failures: i64,
+    max_total_failures: i64,
+    max_total_tokens: i64,
+    turn_timeout_seconds: i64,
+    moderator_enabled: bool,
+    moderator_provider_id: Option<String>,
+    moderator_model: Option<String>,
+    initial_agents: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupTemplateResponse {
+    id: String,
+    name: String,
+    config: GroupTemplateConfig,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,6 +425,12 @@ pub struct GroupWorkspaceGitCommitRequest {
     message: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct GroupWorkspaceGitCommitMessageRequest {
+    prompt: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GroupWorkspaceGitCommitMessageResponse {
     message: String,
@@ -544,6 +594,15 @@ struct GroupRow {
     admin_agent_ids_json: Option<String>,
     muted_member_ids_json: Option<String>,
     status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GroupTemplateRow {
+    id: String,
+    name: String,
+    config_json: String,
     created_at: String,
     updated_at: String,
 }
@@ -894,6 +953,203 @@ impl GroupNoteRow {
     }
 }
 
+fn decode_group_template(row: GroupTemplateRow) -> Result<GroupTemplateResponse, ApiError> {
+    let config = serde_json::from_str(&row.config_json)
+        .map_err(|_| ApiError::internal("group template is invalid"))?;
+    Ok(GroupTemplateResponse {
+        id: row.id,
+        name: row.name,
+        config,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+async fn apply_group_template(
+    pool: &SqlitePool,
+    owner_id: &str,
+    body: &mut CreateRequest,
+) -> Result<(), ApiError> {
+    let Some(raw_template_id) = body.template_id.take() else {
+        return Ok(());
+    };
+    let template_id = validate_uuid(&raw_template_id, "template id")?;
+    let row = sqlx::query_as::<_, GroupTemplateRow>(
+        "SELECT id, name, config_json, created_at, updated_at \
+         FROM group_templates WHERE id = ? AND owner_id = ?",
+    )
+    .bind(&template_id)
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .ok_or_else(|| ApiError::not_found("group template not found"))?;
+    let config = decode_group_template(row)?.config;
+
+    body.description = body.description.take().or(config.description);
+    body.announcement = body.announcement.take().or(config.announcement);
+    body.auto_share_workspace_with_new_agents = body
+        .auto_share_workspace_with_new_agents
+        .or(Some(config.auto_share_workspace_with_new_agents));
+    body.free_speech = body.free_speech.or(Some(config.free_speech));
+    body.proactive_mode = body.proactive_mode.or(Some(config.proactive_mode));
+    body.allow_agent_free_mention = body
+        .allow_agent_free_mention
+        .or(Some(config.allow_agent_free_mention));
+    body.agent_free_mention_max_dispatches = body
+        .agent_free_mention_max_dispatches
+        .or(Some(config.agent_free_mention_max_dispatches));
+    body.communication_mode = body
+        .communication_mode
+        .take()
+        .or(Some(config.communication_mode));
+    body.scheduler_mode = body.scheduler_mode.take().or(Some(config.scheduler_mode));
+    body.agent_mention_policy = body
+        .agent_mention_policy
+        .take()
+        .or(Some(config.agent_mention_policy));
+    body.max_agent_steps = body.max_agent_steps.or(config.max_agent_steps);
+    body.max_steps_per_agent = body
+        .max_steps_per_agent
+        .or(Some(config.max_steps_per_agent));
+    body.max_scheduler_hops = body.max_scheduler_hops.or(Some(config.max_scheduler_hops));
+    body.max_moderator_calls = body
+        .max_moderator_calls
+        .or(Some(config.max_moderator_calls));
+    body.max_consecutive_failures = body
+        .max_consecutive_failures
+        .or(Some(config.max_consecutive_failures));
+    body.max_total_failures = body.max_total_failures.or(Some(config.max_total_failures));
+    body.max_total_tokens = body.max_total_tokens.or(Some(config.max_total_tokens));
+    body.turn_timeout_seconds = body
+        .turn_timeout_seconds
+        .or(Some(config.turn_timeout_seconds));
+    body.moderator_enabled = body.moderator_enabled.or(Some(config.moderator_enabled));
+    body.moderator_provider_id = body
+        .moderator_provider_id
+        .take()
+        .or(config.moderator_provider_id);
+    body.moderator_model = body.moderator_model.take().or(config.moderator_model);
+    body.initial_agents = body.initial_agents.take().or(Some(config.initial_agents));
+    Ok(())
+}
+
+pub async fn list_group_templates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<GroupTemplateResponse>>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let rows = sqlx::query_as::<_, GroupTemplateRow>(
+        "SELECT id, name, config_json, created_at, updated_at \
+         FROM group_templates WHERE owner_id = ? ORDER BY updated_at DESC, id DESC",
+    )
+    .bind(&owner_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    Ok(Json(
+        rows.into_iter()
+            .map(decode_group_template)
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
+pub async fn create_group_template(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<GroupTemplateCreateRequest>,
+) -> Result<(StatusCode, Json<GroupTemplateResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&body.group_id, "group id")?;
+    let name = validate_name(&body.name)?;
+    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
+    let initial_agents = sqlx::query_scalar::<_, String>(
+        "SELECT agent_id FROM group_agents \
+         WHERE group_id = ? AND status = 'active' ORDER BY joined_at ASC, agent_id ASC",
+    )
+    .bind(&group_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    let config = GroupTemplateConfig {
+        description: group.description,
+        announcement: group.announcement,
+        auto_share_workspace_with_new_agents: group.auto_share_workspace_with_new_agents != 0,
+        free_speech: group.free_speech != 0,
+        proactive_mode: group.proactive_mode != 0,
+        allow_agent_free_mention: group.allow_agent_free_mention != 0,
+        agent_free_mention_max_dispatches: group.agent_free_mention_max_dispatches,
+        communication_mode: group.communication_mode,
+        scheduler_mode: group.scheduler_mode,
+        agent_mention_policy: group.agent_mention_policy,
+        max_agent_steps: group.max_agent_steps,
+        max_steps_per_agent: group.max_steps_per_agent,
+        max_scheduler_hops: group.max_scheduler_hops,
+        max_moderator_calls: group.max_moderator_calls,
+        max_consecutive_failures: group.max_consecutive_failures,
+        max_total_failures: group.max_total_failures,
+        max_total_tokens: group.max_total_tokens,
+        turn_timeout_seconds: group.turn_timeout_seconds,
+        moderator_enabled: group.moderator_enabled != 0,
+        moderator_provider_id: group.moderator_provider_id,
+        moderator_model: group.moderator_model,
+        initial_agents,
+    };
+    let id = Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+    let config_json = serde_json::to_string(&config)
+        .map_err(|_| ApiError::internal("failed to encode group template"))?;
+    sqlx::query(
+        "INSERT INTO group_templates (id, owner_id, name, config_json, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&owner_id)
+    .bind(&name)
+    .bind(&config_json)
+    .bind(&now)
+    .bind(&now)
+    .execute(state.db.pool())
+    .await
+    .map_err(|error| {
+        if is_unique_violation(&error) {
+            ApiError::conflict("a group template with this name already exists")
+        } else {
+            ApiError::internal("failed to create group template")
+        }
+    })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(GroupTemplateResponse {
+            id,
+            name,
+            config,
+            created_at: now.clone(),
+            updated_at: now,
+        }),
+    ))
+}
+
+pub async fn delete_group_template(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(template_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let template_id = validate_uuid(&template_id, "template id")?;
+    let deleted = sqlx::query("DELETE FROM group_templates WHERE id = ? AND owner_id = ?")
+        .bind(&template_id)
+        .bind(&owner_id)
+        .execute(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("failed to delete group template"))?
+        .rows_affected();
+    if deleted == 0 {
+        return Err(ApiError::not_found("group template not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 impl From<GroupFileRow> for GroupFileResponse {
     fn from(row: GroupFileRow) -> Self {
         Self {
@@ -926,16 +1182,17 @@ pub async fn create(
 pub(crate) async fn create_inner(
     state: &AppState,
     owner_id: &str,
-    body: CreateRequest,
+    mut body: CreateRequest,
 ) -> Result<GroupResponse, ApiError> {
     let owner_id = owner_id.to_string();
+
+    apply_group_template(state.db.pool(), &owner_id, &mut body).await?;
 
     let name = validate_name(&body.name)?;
     let description = normalize_description(body.description.as_deref());
     let announcement = normalize_description(body.announcement.as_deref());
-    let auto_share_workspace_with_new_agents = body
-        .auto_share_workspace_with_new_agents
-        .unwrap_or(true);
+    let auto_share_workspace_with_new_agents =
+        body.auto_share_workspace_with_new_agents.unwrap_or(true);
     let free_speech = body.free_speech.unwrap_or(false);
     let proactive_mode = body.proactive_mode.unwrap_or(false);
     let allow_agent_free_mention = body.allow_agent_free_mention.unwrap_or(true);
@@ -1997,6 +2254,7 @@ pub async fn generate_group_workspace_git_commit_message(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(group_id): Path<String>,
+    body: Option<Json<GroupWorkspaceGitCommitMessageRequest>>,
 ) -> Result<Json<GroupWorkspaceGitCommitMessageResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
@@ -2035,9 +2293,19 @@ pub async fn generate_group_workspace_git_commit_message(
     let provider = build_provider(&provider_config).map_err(|err| {
         ApiError::invalid_input(format!("commit message generation failed: {err}"))
     })?;
+    let prompt = body
+        .as_deref()
+        .and_then(|body| body.prompt.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if prompt.is_some_and(|value| value.chars().count() > 4_000) {
+        return Err(ApiError::invalid_input(
+            "commit message prompt must be at most 4000 characters",
+        ));
+    }
     let request = ChatRequest {
         model,
-        messages: commit_message_prompt(&diff),
+        messages: commit_message_prompt(&diff, prompt),
         temperature: Some(0.2),
         reasoning_passback: provider_config.reasoning_passback,
         include_empty_tools: false,
@@ -2152,16 +2420,32 @@ pub async fn list_group_notes(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let group = load_active_note_group(state.db.pool(), &group_id, &owner_id).await?;
+    group_notes_workspace_root(state.db.pool(), &group, &group.owner_id).await?;
     let rows = fetch_group_note_rows(state.db.pool(), &group_id).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                let content = row.content.clone();
+                row.into_response_with_content(content)
+            })
+            .collect(),
+    ))
+}
 
-    let mut notes = Vec::with_capacity(rows.len());
-    for row in rows {
-        let content = read_group_note_content(&root, &row.id, &row.content)?;
-        notes.push(row.into_response_with_content(content));
-    }
-    Ok(Json(notes))
+pub async fn get_group_note(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, note_id)): Path<(String, String)>,
+) -> Result<Json<GroupNoteResponse>, ApiError> {
+    let user_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let note_id = validate_uuid(&note_id, "note id")?;
+    let group = load_active_note_group(state.db.pool(), &group_id, &user_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &group.owner_id).await?;
+    let row = load_active_group_note(state.db.pool(), &group_id, &note_id).await?;
+    let content = read_group_note_content(&root, &row.id, &row.content)?;
+    Ok(Json(row.into_response_with_content(content)))
 }
 
 pub async fn create_group_note(
@@ -2173,8 +2457,8 @@ pub async fn create_group_note(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let group = load_active_note_group(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &group.owner_id).await?;
     let title = validate_note_title(&body.title)?;
     let content = body.content.unwrap_or_default();
     let note_id = Uuid::new_v4().to_string();
@@ -2208,6 +2492,7 @@ pub async fn create_group_note(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note create"))?;
+    sync_group_note_index(state.db.pool(), &root, &group_id).await?;
 
     let row = fetch_group_note_row(state.db.pool(), &group_id, &note_id)
         .await?
@@ -2229,8 +2514,8 @@ pub async fn update_group_note(
     let group_id = validate_uuid(&group_id, "group id")?;
     let note_id = validate_uuid(&note_id, "note id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let group = load_active_note_group(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &group.owner_id).await?;
     let existing = load_active_group_note(state.db.pool(), &group_id, &note_id).await?;
 
     let title = match body.title.as_deref() {
@@ -2268,6 +2553,7 @@ pub async fn update_group_note(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note update"))?;
+    sync_group_note_index(state.db.pool(), &root, &group_id).await?;
 
     let row = fetch_group_note_row(state.db.pool(), &group_id, &note_id)
         .await?
@@ -2285,8 +2571,8 @@ pub async fn delete_group_note(
     let group_id = validate_uuid(&group_id, "group id")?;
     let note_id = validate_uuid(&note_id, "note id")?;
 
-    let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
-    let root = group_notes_workspace_root(state.db.pool(), &group, &owner_id).await?;
+    let group = load_active_note_group(state.db.pool(), &group_id, &owner_id).await?;
+    let root = group_notes_workspace_root(state.db.pool(), &group, &group.owner_id).await?;
     load_active_group_note(state.db.pool(), &group_id, &note_id).await?;
 
     let now = now_rfc3339();
@@ -2313,6 +2599,7 @@ pub async fn delete_group_note(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note delete"))?;
+    sync_group_note_index(state.db.pool(), &root, &group_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3045,12 +3332,11 @@ async fn fetch_group_note_rows(
     pool: &SqlitePool,
     group_id: &str,
 ) -> Result<Vec<GroupNoteRow>, ApiError> {
-    let sql = format!(
-        "SELECT {GROUP_NOTE_COLUMNS} FROM group_notes \
+    let sql =
+        "SELECT id, group_id, title, '' AS content, created_at, updated_at FROM group_notes \
          WHERE group_id = ? AND status = 'active' \
-         ORDER BY updated_at DESC, id DESC"
-    );
-    sqlx::query_as::<_, GroupNoteRow>(&sql)
+         ORDER BY updated_at DESC, id DESC";
+    sqlx::query_as::<_, GroupNoteRow>(sql)
         .bind(group_id)
         .fetch_all(pool)
         .await
@@ -3351,7 +3637,7 @@ async fn load_group_commit_message_provider(
     .map_err(|_| ApiError::internal("database error"))
 }
 
-fn commit_message_prompt(diff: &str) -> Vec<ChatMessage> {
+fn commit_message_prompt(diff: &str, custom_prompt: Option<&str>) -> Vec<ChatMessage> {
     let mut prompt_diff: String = diff.chars().take(MAX_COMMIT_DIFF_PROMPT_CHARS).collect();
     if diff.chars().count() > MAX_COMMIT_DIFF_PROMPT_CHARS {
         prompt_diff.push_str("\n[diff truncated]");
@@ -3360,7 +3646,9 @@ fn commit_message_prompt(diff: &str) -> Vec<ChatMessage> {
     vec![
         ChatMessage::text(
             "system",
-            "Write one concise Git commit subject for the staged diff. Return only the subject line. No markdown, quotes, bullets, or prefixes. Use imperative mood when natural. Keep it under 72 characters.",
+            custom_prompt.unwrap_or(
+                "Write one concise Git commit subject for the staged diff. Return only the subject line. No markdown, quotes, bullets, or prefixes. Use imperative mood when natural. Keep it under 72 characters.",
+            ),
         ),
         ChatMessage::text("user", prompt_diff),
     ]
@@ -3471,6 +3759,35 @@ async fn group_notes_workspace_root(
         ));
     }
     Ok(root)
+}
+
+async fn load_active_note_group(
+    pool: &SqlitePool,
+    group_id: &str,
+    user_id: &str,
+) -> Result<GroupRow, ApiError> {
+    let group = fetch_row(pool, group_id)
+        .await?
+        .filter(|row| row.status == "active")
+        .ok_or_else(|| ApiError::not_found("group not found"))?;
+    if group.owner_id == user_id {
+        return Ok(group);
+    }
+    let member: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM group_members \
+         WHERE group_id = ? AND user_id = ? AND status = 'active')",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    if !member {
+        return Err(ApiError::permission_denied(
+            "group notes are not shared with this user",
+        ));
+    }
+    Ok(group)
 }
 
 async fn fetch_user_row(pool: &SqlitePool, user_id: &str) -> Result<Option<UserRow>, ApiError> {
@@ -4694,6 +5011,40 @@ fn note_relative_path(note_id: &str) -> String {
     format!("{NOTES_DIR}/{note_id}{NOTE_FILE_SUFFIX}")
 }
 
+async fn sync_group_note_index(
+    pool: &SqlitePool,
+    root: &FsPath,
+    group_id: &str,
+) -> Result<(), ApiError> {
+    let rows = fetch_group_note_rows(pool, group_id).await?;
+    let notes_dir = root.join(NOTES_DIR);
+    fs::create_dir_all(&notes_dir)
+        .map_err(|_| ApiError::invalid_input("group notes path is not a directory"))?;
+    let path = notes_dir.join(NOTE_INDEX_FILE);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(ApiError::invalid_input(
+                "group note index path is not a regular file",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(ApiError::invalid_input("group note index path is invalid")),
+    }
+    let mut index = String::from("# Group notes\n");
+    for row in rows {
+        let title = row
+            .title
+            .replace(['\r', '\n'], " ")
+            .replace('\\', "\\\\")
+            .replace('[', "\\[")
+            .replace(']', "\\]");
+        index.push_str(&format!("\n- [{title}]({}{})", row.id, NOTE_FILE_SUFFIX));
+    }
+    index.push('\n');
+    fs::write(path, index).map_err(|_| ApiError::internal("failed to write group note index"))
+}
+
 fn group_note_path(root: &FsPath, note_id: &str) -> Result<PathBuf, ApiError> {
     resolve_workspace_path(root, &note_relative_path(note_id)).map_err(path_safety_error)
 }
@@ -4913,4 +5264,17 @@ where
     D: Deserializer<'de>,
 {
     Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_commit_message_prompt_replaces_the_default_instruction() {
+        let messages = commit_message_prompt("diff body", Some("Use a ticket prefix."));
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].content, "Use a ticket prefix.");
+        assert_eq!(messages[1].content, "diff body");
+    }
 }

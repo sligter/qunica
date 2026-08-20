@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -26,6 +26,9 @@ vi.mock('@/hooks/useGroupThreads', () => ({
   useArchiveGroupThread: () => idle,
   useRestoreGroupThread: () => idle,
   useDeleteGroupThread: () => idle,
+}))
+vi.mock('@/hooks/useGroupMessages', () => ({
+  useClearGroupThreadMessages: () => idle,
 }))
 vi.mock('@/hooks/useWorkspaceGit', () => ({
   useGroupWorkspaceGitBranches: () => ({ data: undefined, isLoading: false, error: null }),
@@ -85,6 +88,7 @@ async function openSwitcher() {
 describe('GroupChatHeaderActions task status', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
+    idle.mutateAsync.mockReset().mockResolvedValue({})
     useConversationActivityStore.setState(initialActivity, true)
   })
 
@@ -122,5 +126,16 @@ describe('GroupChatHeaderActions task status', () => {
       'Ship the API',
       'Write the docs',
     ])
+  })
+
+  it('clears only the selected task from the header action', async () => {
+    const user = userEvent.setup()
+    renderSwitcher()
+
+    await user.click(screen.getByRole('button', { name: 'Clear current task' }))
+    const dialog = screen.getByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Clear current task' }))
+
+    expect(idle.mutateAsync).toHaveBeenCalledWith('thread-1')
   })
 })

@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { formatNumber } from '@/lib/format'
 import { normalizeLanguage } from '@/i18n'
 import type { GroupTurnStatus, GroupTurnTerminationReason } from '@/lib/api-v2/types'
+import type { GroupAgentRead } from '@/types/api'
 
 interface TurnTraceDrawerProps {
   groupId: string | undefined
@@ -18,6 +19,7 @@ interface TurnTraceDrawerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   returnFocusRef?: RefObject<HTMLElement | null>
+  agents?: GroupAgentRead[]
 }
 
 const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running', 'waiting_for_user'])
@@ -74,6 +76,7 @@ export function TurnTraceDrawer({
   open,
   onOpenChange,
   returnFocusRef,
+  agents = [],
 }: TurnTraceDrawerProps) {
   const { t, i18n } = useTranslation('chat')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
@@ -82,6 +85,8 @@ export function TurnTraceDrawer({
   const data = trace.data
   const maxHop = data?.dispatches.reduce((maximum, dispatch) => Math.max(maximum, dispatch.hop), 0) ?? 0
   const canCancel = data ? activeStatuses.has(data.turn.status) : false
+  const agentName = (agentId: string) =>
+    agents.find((agent) => agent.agent_id === agentId)?.display_name ?? agentId
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -166,7 +171,7 @@ export function TurnTraceDrawer({
                 />
               </div>
 
-              <DispatchDag dispatches={data.dispatches} />
+              <DispatchDag dispatches={data.dispatches} agentName={agentName} />
             </div>
           </ScrollArea>
         ) : null}
