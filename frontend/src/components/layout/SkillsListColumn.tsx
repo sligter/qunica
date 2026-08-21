@@ -1,3 +1,4 @@
+import { Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
@@ -22,6 +23,7 @@ export function SkillsListColumn({ width }: SkillsListColumnProps) {
       loadError={!!skills.error}
       errorText={t('loadError')}
       emptyText={t('empty')}
+      icon={Sparkles}
       width={width}
       items={(skills.data ?? []).map((s) => ({
         id: s.id,

@@ -1,3 +1,4 @@
+import { Server } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
@@ -35,6 +36,7 @@ export function McpServersListColumn({ width }: McpServersListColumnProps) {
       loadError={!!servers.error}
       errorText={t('loadError')}
       emptyText={t('empty')}
+      icon={Server}
       width={width}
       items={(servers.data ?? []).map((server) => ({
         id: server.id,

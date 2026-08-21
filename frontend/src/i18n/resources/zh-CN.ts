@@ -50,7 +50,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
       missingHint: '该选择项已不存在。移除它以清理配置。',
       keyboardHint: '\u2191\u2193 移动 · 空格键切换',
     },
-    state: { loading: '加载中…', unavailable: '不可用', noMatches: '无匹配项。' },
+    state: { loading: '加载中…', unavailable: '不可用', noMatches: '无匹配项。', clearSearch: '清除搜索', emptyHint: '创建第一个即可开始使用。', matchCount_one: '{{count}} 个匹配', matchCount_other: '{{count}} 个匹配', totalCount_one: '{{count}} 项', totalCount_other: '{{count}} 项', filteredCount: '显示 {{shown}} / {{total}} 项' },
     errors: { unexpected: '出现问题，请重试。', detail: '错误：{{message}}' },
     wireLabels: {
       unknownAction: '操作：{{value}}',
@@ -146,6 +146,14 @@ export const zhCN: TranslationShape<typeof enUS> = {
     logout: '退出登录',
     backToChat: '返回聊天',
     openingWorkspace: '正在打开工作区…',
+    // 资源库各区域的一句话简介，显示在 EntityLayout 标题下方。
+    libraryDescriptions: {
+      agents: '可复用的 AI 成员：提示词、运行时、工具与技能。',
+      providers: '供所有会话和 Agent 共用的模型服务端点。',
+      mcpServers: '以工具形式暴露给 Agent 的外部服务。',
+      skills: '可注入任意 Agent 的提示词片段。',
+      workspaces: '绑定到群组和 Agent 的本地目录。',
+    },
   },
   chat: {
     gitActions: { expandDiff: '展开差异', collapseDiff: '收起差异', stagedCount_one: '{{formattedCount}} 项暂存', stagedCount_other: '{{formattedCount}} 项暂存' },
@@ -548,6 +556,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
   settings: {
     title: '系统设置',
     subtitle: '账户级偏好设置与集成。',
+    description: '账户级偏好设置与集成。',
     tabs: { preferences: '偏好设置', system: '系统', media: '媒体', logs: '运行日志' },
     appearance: '外观',
     theme: '主题',

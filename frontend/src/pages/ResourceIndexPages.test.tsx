@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import i18n from '@/i18n'
@@ -21,11 +22,19 @@ describe('resource index pages', () => {
   })
 
   it.each(cases)('renders %p empty-state heading in English and Chinese', async (Page, english, chinese) => {
-    const view = render(<Page />)
+    const view = render(
+      <MemoryRouter>
+        <Page />
+      </MemoryRouter>,
+    )
     expect(screen.getByRole('heading', { name: english })).toBeInTheDocument()
 
     await i18n.changeLanguage('zh-CN')
-    view.rerender(<Page />)
+    view.rerender(
+      <MemoryRouter>
+        <Page />
+      </MemoryRouter>,
+    )
     expect(screen.getByRole('heading', { name: chinese })).toBeInTheDocument()
   })
 })
