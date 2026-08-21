@@ -1,16 +1,17 @@
 import { Suspense } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router-dom'
 import { ArrowLeft, Images, ScrollText, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
+import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 /** Global settings shell with a compact system/logs navigation. */
 export function SettingsLayout() {
   const { t } = useTranslation(['navigation', 'settings', 'assistant'])
-  const navigate = useNavigate()
+  const close = useCloseOverlay()
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -18,7 +19,7 @@ export function SettingsLayout() {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => void navigate('/')}
+          onClick={close}
           aria-label={t('backToChat')}
         >
           <ArrowLeft className="h-4 w-4" />

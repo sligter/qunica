@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
-import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AppLayout } from '@/components/layout/AppLayout'
@@ -14,6 +14,28 @@ import type { TerminalTransport } from '@/terminal/transport'
 
 vi.mock('@/components/assistant/AssistantDock', () => ({
   AssistantDock: () => <div data-testid="assistant-dock" />,
+}))
+
+// `appChildren` replaces the old hand-rolled `<Route>` children, so provide the
+// context-menu test content on the eager home route rather than a lazy settings
+// page — the suite needs it synchronously, and lazy would suspend the first
+// render behind a Suspense boundary.
+vi.mock('@/pages/home/ChatHomePage', () => ({
+  ChatHomePage: () => (
+    <>
+      <div>Settings content</div>
+      <input aria-label="Settings input" />
+      <article data-copy-text="Full agent reply">Full agent reply</article>
+    </>
+  ),
+}))
+
+vi.mock('@/pages/agents/AgentsIndexPage', () => ({
+  AgentsIndexPage: () => <div>Agents content</div>,
+}))
+
+vi.mock('@/hooks/useAgents', () => ({
+  useAgents: () => ({ data: [], isLoading: false, error: null }),
 }))
 
 function createFakeTransport(): TerminalTransport {
@@ -39,25 +61,25 @@ async function renderAppLayout(
     interpolation: { escapeValue: false },
   })
 
-  return render(
+  // The router only has to get `AppLayout` onto the screen — it re-matches the
+  // real surface tree itself through `useRoutes(appChildren, …)`. Keeping the
+  // data router's own tree to a single splat stops it from flattening (and
+  // mutating) the shared route array across the many routers this file builds.
+  const router = createMemoryRouter(
+    [{ path: '*', element: <AppLayout terminalTransport={terminalTransport} /> }],
+    { initialEntries: ['/'] },
+  )
+
+  const view = render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
-          <MemoryRouter initialEntries={['/settings']}>
-            <Routes>
-              <Route element={<AppLayout terminalTransport={terminalTransport} />}>
-                <Route
-                  path="settings"
-                  element={<><div>Settings content</div><input aria-label="Settings input" /><article data-copy-text="Full agent reply">Full agent reply</article><Link to="/agents">Agents route</Link></>}
-                />
-                <Route path="agents" element={<div>Agents content</div>} />
-              </Route>
-            </Routes>
-          </MemoryRouter>
+          <RouterProvider router={router} />
         </TooltipProvider>
       </QueryClientProvider>
     </I18nextProvider>,
   )
+  return { ...view, router }
 }
 
 describe('AppLayout', () => {
@@ -194,7 +216,7 @@ describe('AppLayout', () => {
       Boolean(directChats.compareDocumentPosition(groups) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true)
     expect(screen.getByText('Groups')).toBeInTheDocument()
-    expect(screen.getByText('Agents')).toBeInTheDocument()
+    expect(screen.getByText('Library')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
@@ -203,18 +225,20 @@ describe('AppLayout', () => {
 
     expect(screen.getByText('私聊')).toBeInTheDocument()
     expect(screen.getByText('群组')).toBeInTheDocument()
-    expect(screen.getByText('Agent')).toBeInTheDocument()
+    expect(screen.getByText('资源库')).toBeInTheDocument()
     expect(screen.getByText('设置')).toBeInTheDocument()
   })
 
   it('keeps one terminal host mounted across routes without creating on non-chat routes', async () => {
     const transport = createFakeTransport()
-    await renderAppLayout('en-US', transport)
+    const { router } = await renderAppLayout('en-US', transport)
     const host = screen.getByTestId('terminal-dock-host')
 
-    fireEvent.click(screen.getByRole('link', { name: 'Agents route' }))
+    await act(async () => {
+      await router.navigate('/agents')
+    })
 
-    expect(screen.getByText('Agents content')).toBeInTheDocument()
+    expect(await screen.findByText('Agents content')).toBeInTheDocument()
     expect(screen.getByTestId('terminal-dock-host')).toBe(host)
     expect(transport.create).not.toHaveBeenCalled()
     expect(transport.close).not.toHaveBeenCalled()

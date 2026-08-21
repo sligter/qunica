@@ -6,7 +6,9 @@ import {
   BarChart3,
   Bot,
   ChevronDown,
+  ChevronUp,
   Folder,
+  Library,
   LogOut,
   MessageSquarePlus,
   PanelLeft,
@@ -34,6 +36,7 @@ import {
 } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
+import { OverlayNavLink } from '@/components/layout/overlayRouting'
 import { useAuthStore } from '@/stores/authStore'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -47,6 +50,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
@@ -79,30 +87,6 @@ function useLazyList(total: number, active: boolean, resetKey: string) {
     loadMore: () => setLimit((current) => Math.min(total, current + LIST_BATCH_SIZE)),
     sentinelRef,
   }
-}
-
-/**
- * Heading over a sidebar group. Same uppercase micro-label as the section
- * headings on the content side, minus the rule — the sidebar's own borders
- * already do that job.
- */
-function SidebarGroupLabel({
-  className,
-  children,
-}: {
-  className?: string
-  children: ReactNode
-}) {
-  return (
-    <p
-      className={cn(
-        'px-1 pb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground',
-        className,
-      )}
-    >
-      {children}
-    </p>
-  )
 }
 
 function SidebarSectionHeader({
@@ -204,6 +188,7 @@ export function AppSidebar() {
   const [query, setQuery] = useState('')
   const [directChatsExpanded, setDirectChatsExpanded] = useState(true)
   const [groupsExpanded, setGroupsExpanded] = useState(true)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const [chatMenu, setChatMenu] = useState<DirectChatMenuState | null>(null)
   const [pendingRenameChat, setPendingRenameChat] = useState<{ id: string; title: string } | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -281,6 +266,33 @@ export function AppSidebar() {
       window.removeEventListener('keydown', escape)
     }
   }, [chatMenu])
+
+  // The library area the current route lives under, if any. Drives the entry
+  // row's active state and the echoed name.
+  const activeLibraryItem = libraryItems.find(
+    (item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`),
+  )
+
+  // Arrow-key roving through the library flyout. Escape, outside-click and
+  // focus restore are Radix Popover's own job; this only adds the grid keys.
+  const onLibraryKeys = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[data-library-item]'),
+    )
+    if (items.length === 0) return
+    const current = items.indexOf(document.activeElement as HTMLElement)
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowDown'
+            ? (current + 1) % items.length
+            : (current - 1 + items.length) % items.length
+    items[next]?.focus()
+  }
 
   return (
     <aside
@@ -714,56 +726,90 @@ export function AppSidebar() {
         </div>
       ) : null}
 
-      {/* Library */}
+      {/* Library — six areas behind a single entry. They were six always-on
+          rows that pushed the conversation list short; now they live in a
+          flyout so expanding them never steals vertical space from chats. */}
       <nav
         className={cn(
           'shrink-0 border-t border-border py-2',
-          collapsed ? 'flex flex-col items-center gap-1' : 'px-2',
+          collapsed ? 'flex flex-col items-center' : 'px-2',
         )}
       >
-        {!collapsed && (
-          <SidebarGroupLabel className="px-3 pt-1">{t('navigation:library')}</SidebarGroupLabel>
-        )}
-        {libraryItems.map(({ to, key, icon: Icon }) => {
-          const label = t(`navigation:${key}`)
-          return collapsed ? (
-            <Tooltip key={to}>
+        <Popover open={libraryOpen} onOpenChange={setLibraryOpen}>
+          {collapsed ? (
+            <Tooltip>
               <TooltipTrigger asChild>
-                <NavLink
-                  to={to}
-                  aria-label={label}
-                  className={({ isActive }) =>
-                    cn(
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={t('navigation:library')}
+                    className={cn(
                       'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
-                      isActive
+                      activeLibraryItem
                         ? 'bg-primary/10 text-primary'
                         : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
+                    )}
+                  >
+                    <Library className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {activeLibraryItem
+                  ? t(`navigation:${activeLibraryItem.key}`)
+                  : t('navigation:library')}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className={cn(
+                  'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors',
+                  activeLibraryItem
+                    ? 'bg-primary/10 font-medium text-primary'
+                    : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
+                )}
+              >
+                <Library className="h-4 w-4" />
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {activeLibraryItem
+                    ? t(`navigation:${activeLibraryItem.key}`)
+                    : t('navigation:library')}
+                </span>
+                <ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+          )}
+          <PopoverContent
+            side={collapsed ? 'right' : 'top'}
+            align="start"
+            sideOffset={collapsed ? 4 : 2}
+            className={collapsed ? 'ml-2 min-w-44 p-1.5' : 'w-56 p-1.5'}
+          >
+            <nav aria-label={t('navigation:library')} onKeyDown={onLibraryKeys}>
+              {libraryItems.map(({ to, key, icon: Icon }) => (
+                <OverlayNavLink
+                  key={to}
+                  to={to}
+                  data-library-item=""
+                  onClick={() => setLibraryOpen(false)}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+                      isActive
+                        ? 'bg-accent font-medium text-accent-foreground'
+                        : 'text-foreground hover:bg-card-hover',
                     )
                   }
                 >
-                  <Icon className="h-4 w-4" />
-                </NavLink>
-              </TooltipTrigger>
-              <TooltipContent side="right">{label}</TooltipContent>
-            </Tooltip>
-          ) : (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-                  isActive
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
-                )
-              }
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </NavLink>
-          )
-        })}
+                  <Icon className="h-4 w-4 text-muted-foreground" />
+                  {t(`navigation:${key}`)}
+                </OverlayNavLink>
+              ))}
+            </nav>
+          </PopoverContent>
+        </Popover>
       </nav>
 
       {/* Bottom: Settings + user menu */}
@@ -776,7 +822,7 @@ export function AppSidebar() {
         {collapsed ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <NavLink
+              <OverlayNavLink
                 to="/settings"
                 aria-label={t('navigation:settings')}
                 className={({ isActive }) =>
@@ -789,12 +835,12 @@ export function AppSidebar() {
                 }
               >
                 <Settings className="h-4 w-4" />
-              </NavLink>
+              </OverlayNavLink>
             </TooltipTrigger>
             <TooltipContent side="right">{t('navigation:settings')}</TooltipContent>
           </Tooltip>
         ) : (
-          <NavLink
+          <OverlayNavLink
             to="/settings"
             className={({ isActive }) =>
               cn(
@@ -807,7 +853,7 @@ export function AppSidebar() {
           >
             <Settings className="h-4 w-4" />
             {t('navigation:settings')}
-          </NavLink>
+          </OverlayNavLink>
         )}
         <SidebarUserMenu collapsed={collapsed} />
       </div>

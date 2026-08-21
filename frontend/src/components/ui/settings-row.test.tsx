@@ -63,7 +63,7 @@ describe('settings layout alignment', () => {
       </SettingsRow>,
     )
 
-    expect(container.firstElementChild).toHaveClass('space-y-2')
+    expect(container.firstElementChild).toHaveClass('space-y-1.5')
     expect(container.firstElementChild).not.toHaveClass('sm:w-72')
   })
 })

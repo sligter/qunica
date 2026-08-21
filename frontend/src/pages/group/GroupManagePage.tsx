@@ -1,10 +1,11 @@
 import { useEffect } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { GroupNotesPanel } from '@/components/chat/GroupNotesPanel'
 import { DetailShell } from '@/components/layout/DetailShell'
+import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { PageState } from '@/components/ui/page-state'
@@ -33,6 +34,7 @@ export function GroupManagePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = parseTab(searchParams.get('tab'))
   const group = useGroup(groupId)
+  const closeOverlay = useCloseOverlay(`/groups/${groupId ?? ''}`)
 
   useEffect(() => {
     const previousTitle = document.title
@@ -55,10 +57,8 @@ export function GroupManagePage() {
       title={t('manage.title')}
       subtitle={group.data?.name}
       leading={
-        <Button variant="ghost" size="icon" asChild aria-label={t('manage.back')}>
-          <Link to={`/groups/${groupId}`}>
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
+        <Button variant="ghost" size="icon" aria-label={t('manage.back')} onClick={closeOverlay}>
+          <ArrowLeft className="h-4 w-4" />
         </Button>
       }
       contentClassName={MANAGE_CONTENT_WIDTH}

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { MessagesSquare, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { GroupChatHeaderActions } from '@/components/groups/GroupChatHeaderActions'
+import { OverlayLink } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { PageState } from '@/components/ui/page-state'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
@@ -132,9 +133,9 @@ export function GroupChatPage() {
       }
       headerActions={
         <Button variant="ghost" size="icon" asChild aria-label={t('actions.manage')}>
-          <Link to={`/groups/${groupId}/manage`}>
+          <OverlayLink to={`/groups/${groupId}/manage`}>
             <Settings className="h-4 w-4" />
-          </Link>
+          </OverlayLink>
         </Button>
       }
       capabilities={{

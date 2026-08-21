@@ -1,9 +1,10 @@
 import { Suspense, useEffect, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
+import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 
 interface EntityLayoutProps {
@@ -21,7 +22,7 @@ interface EntityLayoutProps {
 export function EntityLayout({ titleKey, list }: EntityLayoutProps) {
   const { t } = useTranslation('navigation')
   const location = useLocation()
-  const navigate = useNavigate()
+  const close = useCloseOverlay()
   const title = t(titleKey)
 
   useEffect(() => {
@@ -34,7 +35,7 @@ export function EntityLayout({ titleKey, list }: EntityLayoutProps) {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => void navigate('/')}
+          onClick={close}
           aria-label={t('backToChat')}
         >
           <ArrowLeft className="h-4 w-4" />

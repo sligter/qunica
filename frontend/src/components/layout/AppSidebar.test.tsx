@@ -46,7 +46,13 @@ vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
 
 function LocationProbe() {
   const location = useLocation()
-  return <div data-testid="location">{location.pathname}</div>
+  const state = location.state as { backgroundLocation?: { pathname: string } } | null
+  return (
+    <>
+      <div data-testid="location">{location.pathname}</div>
+      <div data-testid="background-location">{state?.backgroundLocation?.pathname}</div>
+    </>
+  )
 }
 
 const initialActivity = useConversationActivityStore.getInitialState()
@@ -194,6 +200,32 @@ describe('AppSidebar terminal cleanup', () => {
     expect(screen.queryByText('Chat 01')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Groups' }))
     expect(screen.queryByText('Group one')).not.toBeInTheDocument()
+  })
+
+  it('opens the Library flyout, supports arrow keys, and preserves the current chat', async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+
+    await user.click(screen.getByRole('button', { name: 'Library' }))
+    const library = screen.getByRole('navigation', { name: 'Library' })
+    const links = within(library).getAllByRole('link')
+    expect(links.map((link) => link.textContent)).toEqual([
+      'Token usage',
+      'Agents',
+      'Providers',
+      'MCP servers',
+      'Skills',
+      'Workspaces',
+    ])
+
+    links[0]!.focus()
+    await user.keyboard('{ArrowDown}')
+    expect(links[1]).toHaveFocus()
+    await user.click(links[1]!)
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/agents')
+    expect(screen.getByTestId('background-location')).toHaveTextContent('/chats/chat-1')
+    expect(screen.getByRole('button', { name: 'Agents' })).toBeInTheDocument()
   })
 
   it('shows what each conversation is doing right now', () => {

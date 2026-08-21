@@ -19,6 +19,8 @@ describe('DetailShell', () => {
       'flex-1',
       'overflow-y-auto',
     )
+    expect(container.firstElementChild?.lastElementChild?.firstElementChild).toHaveClass('w-full')
+    expect(container.firstElementChild?.lastElementChild?.firstElementChild).not.toHaveClass('max-w-5xl')
   })
 
   it('stops the wheel chaining outward once the content reaches its end', () => {

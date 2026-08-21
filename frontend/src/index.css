@@ -29,9 +29,9 @@
   --color-warning-foreground: hsl(30 60% 32%);
   --color-success: hsl(140 30% 38%);
 
-  /* Code blocks stay warm-dark in both themes */
-  --color-code: hsl(30 10% 16%);
-  --color-code-foreground: hsl(40 20% 92%);
+  /* Code blocks follow the surface theme while staying distinct from cards. */
+  --color-code: hsl(42 22% 93%);
+  --color-code-foreground: hsl(30 12% 20%);
 
   /* Deterministic avatar palette — warm, desaturated */
   --color-avatar-1: hsl(15 55% 48%);
@@ -48,6 +48,11 @@
      surfaces. Named so it stops being an ad-hoc text-[11px] everywhere. */
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
+
+  /* Scrim behind the settings overlay. Warm-tinted like every other elevation
+     value here, so dimming the conversation underneath does not gray it out.
+     Two values because the same alpha reads as a smear on a dark background. */
+  --color-scrim: hsl(30 20% 18% / 0.42);
 
   --radius: 0.625rem;
   --radius-md: 0.4375rem;
@@ -117,6 +122,8 @@
     --color-avatar-7: hsl(320 26% 62%);
     --color-avatar-8: hsl(355 42% 66%);
     --color-avatar-foreground: hsl(30 25% 12%);
+
+    --color-scrim: hsl(20 12% 4% / 0.55);
 
     /* No dark shadow overrides: Tailwind inlines @theme shadow values into the
        utility instead of emitting var(--shadow-*), so redefining them here would
@@ -382,6 +389,29 @@
   }
 }
 
+/* Settings overlay entrance. The conversation stays mounted underneath, so the
+   panel has to read as arriving over it rather than as a page swap: a short
+   fade plus a few pixels of travel, nothing that draws the eye on its own. */
+@keyframes overlay-scrim-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes overlay-panel-in {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @layer utilities {
   .animate-startup-progress {
     animation: startup-progress 1.4s ease-in-out infinite;
@@ -443,6 +473,14 @@
   .animate-auth-aurora {
     animation: auth-aurora 18s ease-in-out infinite;
   }
+
+  .animate-overlay-scrim {
+    animation: overlay-scrim-in 140ms ease-out both;
+  }
+
+  .animate-overlay-panel {
+    animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -479,5 +517,14 @@
   .animate-brand-ring,
   .animate-auth-aurora {
     animation: none;
+  }
+
+  /* The overlay still has to end up on screen, so it settles on its last frame
+     rather than on the transparent first one. */
+  .animate-overlay-scrim,
+  .animate-overlay-panel {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 }

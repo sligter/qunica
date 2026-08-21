@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentType } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -50,6 +50,7 @@ vi.mock('@/hooks/useSkills', () => ({
   useSkills: () => ({ data: [], isLoading: false }),
   useSkill: () => ({ data: mocks.skill, isLoading: false, error: null }),
   useDeleteSkill: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateSkill: () => ({ mutate: vi.fn(), isPending: false }),
   useSkillResources: () => ({ data: [], error: null }),
   useSkillResource: () => ({ data: undefined, isLoading: false, error: null }),
   useUpdateSkillResource: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -92,5 +93,21 @@ describe('resource detail status labels', () => {
 
     expect(screen.getByText('启用')).toBeInTheDocument()
     expect(screen.queryByText('active')).not.toBeInTheDocument()
+  })
+
+  it('uses the available width when editing a skill', () => {
+    renderPage(SkillDetailPage, '/skills/skill-1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    const description = screen.getByRole('textbox', { name: 'Description' })
+
+    expect(name.closest('form')).toHaveClass(
+      'grid',
+      'xl:grid-cols-[minmax(14rem,0.7fr)_minmax(24rem,1.3fr)]',
+    )
+    expect(name).not.toHaveClass('max-w-xl')
+    expect(description).toHaveClass('min-h-28', 'max-h-64', 'resize-y')
   })
 })

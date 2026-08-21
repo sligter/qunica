@@ -1,10 +1,18 @@
 import { Suspense, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Outlet } from 'react-router-dom'
+import { useLocation, useNavigate, useRoutes, type Location } from 'react-router-dom'
 
 import { AssistantDock } from '@/components/assistant/AssistantDock'
 import { AppSidebar } from '@/components/layout/AppSidebar'
 import { RouteFallback } from '@/components/layout/RouteFallback'
+import {
+  OverlayProvider,
+  isOverlayPath,
+  overlayAreaLabelKey,
+  type OverlayLocationState,
+} from '@/components/layout/overlayRouting'
+import { SettingsOverlay } from '@/components/layout/SettingsOverlay'
+import { appChildren } from '@/routes/appRoutes'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
 import {
   TerminalRuntimeProvider,
@@ -115,10 +123,51 @@ function replaceSelection(menu: Extract<MenuState, { kind: 'field' }>, text: str
 }
 
 export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
-  const { t } = useTranslation('common')
+  const { t } = useTranslation(['common', 'navigation', 'groups'])
   const systemSettings = useSystemSettings()
   const [menu, setMenu] = useState<MenuState | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  // The settings overlay is React Router's background-location pattern: the
+  // real browser location is the overlay URL, and the conversation it was
+  // opened over rides along in `location.state.backgroundLocation`. When that
+  // state is absent but the pathname is still an overlay area — an in-overlay
+  // hop like "save → detail page", whose `navigate` did not carry the state —
+  // fall back to the last conversation `AppLayout` remembered.
+  const overlayState = location.state as OverlayLocationState | null
+  const stageRef = useRef<Location | null>(null)
+  const overlayOpen =
+    isOverlayPath(location.pathname) &&
+    (overlayState?.backgroundLocation != null || stageRef.current != null)
+  const background: Location | null = overlayOpen
+    ? (overlayState?.backgroundLocation ?? stageRef.current)
+    : null
+  const stage: Location = background ?? location
+
+  useEffect(() => {
+    // Remember the last real conversation/hub surface; overlay URLs are never
+    // stored, so a cold deep link renders full-page instead of improvising a
+    // stage out of itself.
+    if (!isOverlayPath(location.pathname)) stageRef.current = location
+  }, [location])
+
+  const closeOverlay = () => {
+    if (background) {
+      void navigate({
+        pathname: background.pathname,
+        search: background.search,
+        hash: background.hash,
+      })
+    } else {
+      void navigate('/')
+    }
+  }
+
+  const stageElement = useRoutes(appChildren, stage)
+  const overlayElement = useRoutes(appChildren, location)
+  const overlayLabel = overlayOpen ? t(overlayAreaLabelKey(location.pathname)) : undefined
 
   useEffect(() => {
     if (!menu) return
@@ -282,12 +331,16 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
       transport={terminalTransport}
       shell={systemSettings.data?.shell_preference}
     >
-      <div className="flex h-full min-h-0 overflow-hidden bg-background" onContextMenu={openMenu}>
+      <div
+        className="flex h-full min-h-0 overflow-hidden bg-background"
+        onContextMenu={openMenu}
+        inert={overlayOpen || undefined}
+      >
         <AppSidebar />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 overflow-hidden">
             <Suspense fallback={<RouteFallback />}>
-              <Outlet />
+              {stageElement}
             </Suspense>
           </div>
           <TerminalDock />
@@ -299,32 +352,43 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         {!systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false ? (
           <AssistantDock />
         ) : null}
-        {menu ? (
-          <div
-            ref={menuRef}
-            role="menu"
-            aria-label={menu.kind === 'field' ? t('textMenu.label') : t('textMenu.contentLabel')}
-            className="fixed z-[100] w-56 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg"
-            style={{ left: menu.x, top: menu.y }}
-          >
-            {menuItems.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                role="menuitem"
-                disabled={item.disabled}
-                className="flex h-9 w-full items-center justify-between rounded-lg px-3 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-40"
-                onClick={item.run}
-              >
-                <span>{item.label}</span>
-                {item.shortcut ? (
-                  <span className="ml-8 text-xs text-muted-foreground">{item.shortcut}</span>
-                ) : null}
-              </button>
-            ))}
-          </div>
-        ) : null}
       </div>
+      {menu ? (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label={menu.kind === 'field' ? t('textMenu.label') : t('textMenu.contentLabel')}
+          className="fixed z-[100] w-56 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg"
+          style={{ left: menu.x, top: menu.y }}
+        >
+          {menuItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              className="flex h-9 w-full items-center justify-between rounded-lg px-3 text-left text-sm outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-40"
+              onClick={item.run}
+            >
+              <span>{item.label}</span>
+              {item.shortcut ? (
+                <span className="ml-8 text-xs text-muted-foreground">{item.shortcut}</span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {overlayOpen ? (
+        <OverlayProvider value={{ background: stage }}>
+          <SettingsOverlay
+            label={overlayLabel ?? ''}
+            onClose={closeOverlay}
+            onContextMenu={openMenu}
+          >
+            {overlayElement}
+          </SettingsOverlay>
+        </OverlayProvider>
+      ) : null}
     </TerminalRuntimeProvider>
   )
 }

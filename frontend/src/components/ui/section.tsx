@@ -28,7 +28,7 @@ export function SectionHeading({
 }: SectionHeadingProps) {
   return (
     <div
-      className={cn('flex items-end justify-between gap-4 border-b border-border pb-2', className)}
+      className={cn('flex items-end justify-between gap-4 border-b border-border pb-1.5', className)}
     >
       <div className="min-w-0">
         <Heading className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -37,7 +37,7 @@ export function SectionHeading({
         {description ? (
           // Wraps at a reading measure even though the heading rule runs the
           // full width of the page.
-          <p className="mt-1 max-w-prose text-xs text-muted-foreground">{description}</p>
+          <p className="mt-0.5 max-w-prose text-xs text-muted-foreground">{description}</p>
         ) : null}
       </div>
       {aside ? <div className="shrink-0">{aside}</div> : null}
@@ -68,7 +68,25 @@ export function Section({
   return (
     <section className={cn('w-full', className)}>
       <SectionHeading title={title} description={description} aside={aside} as={as} />
-      <div className={cn('pt-3', contentClassName)}>{children}</div>
+      <div className={cn('pt-2.5', contentClassName)}>{children}</div>
     </section>
   )
+}
+
+/**
+ * The vertical rhythm between sections on a second-level page.
+ *
+ * One number in one place: every settings and detail surface stacks its
+ * sections through this, so the gap cannot drift page by page — and because the
+ * sections are separated by their own heading rules, the gap only has to read
+ * as a break, not carry the hierarchy on its own.
+ */
+export function SectionStack({
+  className,
+  children,
+}: {
+  className?: string
+  children: ReactNode
+}) {
+  return <div className={cn('space-y-6', className)}>{children}</div>
 }

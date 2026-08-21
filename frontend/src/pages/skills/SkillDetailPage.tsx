@@ -201,14 +201,17 @@ function EditSkillForm({
   }
 
   return (
-    <form id={EDIT_SKILL_FORM_ID} onSubmit={onSubmit} className="space-y-4">
+    <form
+      id={EDIT_SKILL_FORM_ID}
+      onSubmit={onSubmit}
+      className="grid items-start gap-5 xl:grid-cols-[minmax(14rem,0.7fr)_minmax(24rem,1.3fr)]"
+    >
       <div className="space-y-1.5">
         <Label htmlFor="skill-edit-name">{t('form.name')}</Label>
         <Input
           id="skill-edit-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="max-w-xl"
         />
       </div>
       <div className="space-y-1.5">
@@ -219,11 +222,11 @@ function EditSkillForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder={t('form.descriptionPlaceholder')}
-          className="max-w-xl"
+          className="min-h-28 max-h-64 resize-y"
         />
       </div>
       {localizedErrorText(error, t) && (
-        <p className="text-sm text-destructive" role="alert">
+        <p className="text-sm text-destructive xl:col-span-2" role="alert">
           {localizedErrorText(error, t)}
         </p>
       )}
