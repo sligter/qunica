@@ -40,6 +40,9 @@ fn is_allowed(kind: TargetKind, action: Action) -> bool {
             | (TargetKind::Workspace, Action::Update)
             | (TargetKind::Group, Action::Create)
             | (TargetKind::Group, Action::Update)
+            | (TargetKind::GroupTemplate, Action::Create)
+            | (TargetKind::GroupNote, Action::Create)
+            | (TargetKind::GroupNote, Action::Update)
             | (TargetKind::Mcp, Action::Create)
             | (TargetKind::Mcp, Action::Update)
             | (TargetKind::Chat, Action::Create)
@@ -175,6 +178,11 @@ pub(crate) fn prefill(args: &Value) -> Result<ToolResult, ToolError> {
         (TargetKind::Workspace, Action::Update) => {
             format!("/workspaces/{}", require_target(args)?)
         }
+        (TargetKind::GroupTemplate, _) | (TargetKind::GroupNote, _) => {
+            return Err(ToolError::invalid(
+                "group templates and notes are managed from a group, not a standalone form",
+            ))
+        }
         (TargetKind::Group, _) | (TargetKind::Chat, _) => {
             return Err(ToolError::invalid(
                 "groups and chats are created from the chat home screen, not a form",
@@ -291,6 +299,48 @@ async fn summarize(
     target_id: Option<&str>,
     payload: &Value,
 ) -> Result<String, ToolError> {
+    if kind == TargetKind::GroupTemplate {
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| ToolError::invalid("name is required"))?;
+        return Ok(format!("Save group as template \"{name}\""));
+    }
+
+    if kind == TargetKind::GroupNote {
+        let title = match payload
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        {
+            Some(title) => title.to_string(),
+            None if action == Action::Update => {
+                let note_id =
+                    target_id.ok_or_else(|| ToolError::invalid("target_id is required"))?;
+                sqlx::query_scalar(
+                    "SELECT n.title FROM group_notes n \
+                     JOIN groups g ON g.id = n.group_id \
+                     WHERE n.id = ? AND n.status = 'active' AND g.owner_id = ? \
+                       AND g.status = 'active' AND g.conversation_kind = 'group'",
+                )
+                .bind(note_id)
+                .bind(ctx.owner_id())
+                .fetch_optional(ctx.pool())
+                .await
+                .map_err(|_| ToolError::invalid("could not inspect the group note"))?
+                .ok_or_else(|| ToolError::invalid("group note not found"))?
+            }
+            None => return Err(ToolError::invalid("title is required")),
+        };
+        return Ok(match action {
+            Action::Create => format!("Create shared note \"{title}\""),
+            Action::Update => format!("Update shared note \"{title}\""),
+        });
+    }
+
     if kind == TargetKind::Group {
         if let Some(membership) = payload.get("membership") {
             return summarize_group_membership(ctx, target_id, membership).await;

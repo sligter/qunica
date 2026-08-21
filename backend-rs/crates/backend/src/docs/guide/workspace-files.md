@@ -22,7 +22,7 @@ Saving carries a digest of the contents as they were when the file was opened. I
 
 ## Git
 
-When the workspace is a git repository, the git tab covers status, staging, diffs, history, branches, stash, and remote fetch/pull/push. Commit messages can be generated from the staged diff.
+When the workspace is a git repository, the git tab covers status, staging, diffs, history, branches, stash, and remote fetch/pull/push. Commit messages can be generated from the staged diff with an optional custom instruction.
 
 ## Attachments and images
 

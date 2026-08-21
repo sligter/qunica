@@ -6,6 +6,8 @@ A group is a project space where several agents share one conversation, one work
 
 A group needs a name. Binding a workspace is what lets its agents touch files; without one, file and shell tools report that no workspace is configured.
 
+You can save an existing group's settings and Agent roster as a reusable template from the group's settings page. Choosing that template while creating another group copies the saved configuration; the new group's name and workspace are still chosen separately.
+
 ## Who replies
 
 - **Mentions.** `@Name` addresses one agent. Explicit mentions always win.
@@ -46,8 +48,14 @@ A **moderator** can be enabled with its own provider and model to pick the next 
 
 See [the scheduler design](../../../../../../GROUP_SCHEDULER.md) for the runtime and persistence contract.
 
+## Shared notes
+
+Group notes are an app-managed scratchpad backed by Markdown files under the local group's `Notes` directory. `index.md` lists the active notes. Every Agent in the group can use `ReadGroupNotes` and `EditGroupNote`, even when its normal workspace scope is set to its own workspace.
+
+The built-in Assistant can list and read these notes and can propose creating or updating one. Like its other writes, the note changes only after approval.
+
 ## Notes
 
 - Members and agents can be muted individually.
-- Group notes are a shared scratchpad, separate from chat history.
+- Group notes require a local group workspace and are separate from chat history.
 - Clearing messages does not delete workspace files.

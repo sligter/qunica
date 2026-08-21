@@ -247,8 +247,8 @@ describe('WorkspaceGitTab i18n', () => {
     vi.stubGlobal('fetch', fetchMock)
     renderTab()
 
-    fireEvent.click(screen.getByText('Custom generation prompt'))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Custom generation prompt' }), {
+    fireEvent.click(screen.getByText('Additional commit preferences'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Additional commit preferences' }), {
       target: { value: 'Use conventional commits with a scope.' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate commit message' }))

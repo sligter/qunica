@@ -118,6 +118,19 @@ async fn create_provider(app: &Router, token: &str, name: &str) -> String {
     provider["id"].as_str().unwrap().to_string()
 }
 
+async fn fake_provider(body: String) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().fallback(move || {
+        let body = body.clone();
+        async move { ([("content-type", "text/event-stream")], body) }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
 fn acp_capability_runtime(mode: &str, extra_env: Value) -> Value {
     let exe = std::env::current_exe().expect("current test binary path");
     let mut env = serde_json::Map::new();
@@ -136,6 +149,53 @@ fn acp_capability_runtime(mode: &str, extra_env: Value) -> Value {
         "thinking_effort": "saved-effort-must-not-apply",
         "config_options": { "saved-option": "must-not-apply" },
     })
+}
+
+#[tokio::test]
+async fn agent_system_prompt_can_be_generated_with_an_owned_provider() {
+    let app = app().await;
+    let token = register_and_login(&app, "agent-prompt-ai@example.com").await;
+    let provider_body = format!(
+        "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": "```markdown\n# Role\nReview safely.\n```"}}]})
+    );
+    let base_url = fake_provider(provider_body).await;
+    let (status, provider) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers",
+            &token,
+            json!({
+                "name": "Prompt writer",
+                "kind": "openai-compatible",
+                "base_url": base_url,
+                "api_key": "secret-prompt-writer",
+                "default_model": "test-model"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents/system-prompt/generate",
+            &token,
+            json!({
+                "name": "Reviewer",
+                "description": "Review workspace changes",
+                "system_prompt": "Be accurate.",
+                "llm_provider_id": provider["id"]
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body: {body:?}");
+    assert_eq!(body["system_prompt"], "# Role\nReview safely.");
 }
 
 #[tokio::test]

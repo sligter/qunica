@@ -175,6 +175,8 @@ async fn app_control_lists_every_kind_scoped_to_the_owner() {
         "skill",
         "workspace",
         "group",
+        "group_template",
+        "group_note",
         "chat",
     ] {
         let result = execute(&executor, "AppList", json!({ "kind": kind })).await;
@@ -196,6 +198,99 @@ async fn app_control_lists_every_kind_scoped_to_the_owner() {
             "kind {kind} leaked another owner's row"
         );
     }
+}
+
+#[tokio::test]
+async fn app_control_reads_group_templates_and_current_shared_note_content() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-group-resources@example.com").await;
+    let stranger = seed_user(pool, "app-group-resources-other@example.com").await;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = seed_workspace(pool, &owner, "Local").await;
+    sqlx::query("UPDATE workspaces SET local_path = ? WHERE id = ?")
+        .bind(root.path().to_string_lossy().as_ref())
+        .bind(&workspace)
+        .execute(pool)
+        .await
+        .unwrap();
+    let group = seed_group(pool, &owner, "Team").await;
+    sqlx::query("UPDATE groups SET workspace_id = ? WHERE id = ?")
+        .bind(&workspace)
+        .bind(&group)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let template = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO group_templates (id, owner_id, name, config_json, created_at, updated_at) \
+         VALUES (?, ?, 'Review team', '{\"free_speech\":true}', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .bind(&template)
+    .bind(&owner)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO group_templates (id, owner_id, name, config_json, created_at, updated_at) \
+         VALUES (?, ?, 'Their template', '{}', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&stranger)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let note = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO group_notes \
+         (id, group_id, author_id, title, content, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'Plan', 'stale database fallback', 'active', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .bind(&note)
+    .bind(&group)
+    .bind(&owner)
+    .execute(pool)
+    .await
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("Notes")).unwrap();
+    std::fs::write(
+        root.path().join("Notes").join(format!("{note}.md")),
+        "fresh file content",
+    )
+    .unwrap();
+
+    let executor = executor_for(pool, &owner);
+    let templates = execute(&executor, "AppList", json!({"kind": "group_template"})).await;
+    assert!(templates.output.contains("Review team"));
+    assert!(!templates.output.contains("Their template"));
+    let template_detail = execute(
+        &executor,
+        "AppGet",
+        json!({"kind": "group_template", "id": template}),
+    )
+    .await;
+    assert_eq!(
+        parsed(&template_detail)["item"]["config"]["free_speech"],
+        true
+    );
+
+    let notes = execute(&executor, "AppList", json!({"kind": "group_note"})).await;
+    assert!(notes.output.contains("Plan"));
+    let note_detail = execute(
+        &executor,
+        "AppGet",
+        json!({"kind": "group_note", "id": note}),
+    )
+    .await;
+    assert_eq!(
+        parsed(&note_detail)["item"]["content"],
+        "fresh file content"
+    );
 }
 
 #[tokio::test]

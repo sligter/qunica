@@ -65,6 +65,19 @@ pub(crate) async fn get(ctx: &AppControlContext, args: &Value) -> Result<ToolRes
         .filter(|id| !id.is_empty())
         .ok_or_else(|| ToolError::invalid("id is required"))?;
 
+    // Note content lives in the app-managed Notes directory and can be newer
+    // than the database fallback after an Agent edits it. Reuse the API's safe
+    // path checks instead of returning stale SQL content.
+    if kind == TargetKind::GroupNote {
+        let item = crate::api::groups::get_group_note_by_id_inner(ctx.pool(), ctx.owner_id(), id)
+            .await
+            .map_err(|error| ToolError::invalid(error.message_text()))?;
+        return Ok(completed(json!({
+            "kind": kind.as_str(),
+            "item": item,
+        })));
+    }
+
     let sql = format!(
         "SELECT {} FROM {} WHERE {} AND {}.id = ? LIMIT 1",
         detail_columns(kind),
@@ -189,6 +202,8 @@ fn table(kind: TargetKind) -> &'static str {
         TargetKind::Skill => "skills s",
         TargetKind::Workspace => "workspaces w",
         TargetKind::Group | TargetKind::Chat => "groups g",
+        TargetKind::GroupTemplate => "group_templates gt",
+        TargetKind::GroupNote => "group_notes n JOIN groups g ON g.id = n.group_id",
     }
 }
 
@@ -200,6 +215,8 @@ fn table_alias(kind: TargetKind) -> &'static str {
         TargetKind::Skill => "s",
         TargetKind::Workspace => "w",
         TargetKind::Group | TargetKind::Chat => "g",
+        TargetKind::GroupTemplate => "gt",
+        TargetKind::GroupNote => "n",
     }
 }
 
@@ -217,6 +234,11 @@ fn owner_filter(kind: TargetKind) -> &'static str {
         TargetKind::Group => {
             "g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'group'"
         }
+        TargetKind::GroupTemplate => "gt.owner_id = ?",
+        TargetKind::GroupNote => {
+            "g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'group' \
+             AND n.status = 'active'"
+        }
         TargetKind::Chat => {
             "g.owner_id = ? AND g.status = 'active' AND g.conversation_kind = 'direct' \
              AND COALESCE((SELECT a.is_system FROM agents a WHERE a.id = g.direct_agent_id), 0) = 0"
@@ -227,6 +249,8 @@ fn owner_filter(kind: TargetKind) -> &'static str {
 fn order_by(kind: TargetKind) -> &'static str {
     match kind {
         TargetKind::Group | TargetKind::Chat => "g.updated_at DESC, g.id DESC",
+        TargetKind::GroupTemplate => "gt.updated_at DESC, gt.id DESC",
+        TargetKind::GroupNote => "n.updated_at DESC, n.id DESC",
         _ => "created_at DESC, id DESC",
     }
 }
@@ -243,6 +267,8 @@ fn list_columns(kind: TargetKind) -> &'static str {
         TargetKind::Skill => "s.id, s.name, s.description, s.source",
         TargetKind::Workspace => "w.id, w.name, w.backend_type, w.local_path",
         TargetKind::Group => "g.id, g.name, g.description, g.workspace_id",
+        TargetKind::GroupTemplate => "gt.id, gt.name, gt.updated_at",
+        TargetKind::GroupNote => "n.id, n.group_id, g.name AS group_name, n.title, n.updated_at",
         TargetKind::Chat => "g.id, g.name, g.direct_agent_id, g.updated_at",
     }
 }
@@ -280,6 +306,14 @@ fn detail_columns(kind: TargetKind) -> &'static str {
             "g.id, g.name, g.description, g.announcement, g.workspace_id, g.free_speech, \
              g.proactive_mode, g.communication_mode, g.scheduler_mode, g.agent_mention_policy, \
              g.max_total_tokens, g.turn_timeout_seconds, g.created_at"
+        }
+        TargetKind::GroupTemplate => {
+            "gt.id, gt.name, gt.config_json AS config, gt.created_at, gt.updated_at"
+        }
+        // `get` handles this kind above so it can return the current file
+        // content. Keep the projection exhaustive for the closed enum.
+        TargetKind::GroupNote => {
+            "n.id, n.group_id, g.name AS group_name, n.title, n.created_at, n.updated_at"
         }
         TargetKind::Chat => "g.id, g.name, g.direct_agent_id, g.created_at, g.updated_at",
     }
@@ -330,6 +364,7 @@ fn postprocess(kind: TargetKind, mut row: Map<String, Value>) -> Value {
         "skill_ids",
         "metadata_json",
         "config_json",
+        "config",
         "args_json",
         "tool_filter_json",
     ] {

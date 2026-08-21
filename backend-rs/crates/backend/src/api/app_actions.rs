@@ -78,6 +78,13 @@ struct ChatMessagePayload {
 }
 
 #[derive(Deserialize)]
+struct GroupNoteCreatePayload {
+    group_id: String,
+    #[serde(flatten)]
+    note: crate::api::groups::GroupNoteCreateRequest,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum GroupMembershipChange {
     AddAgent { agent_id: String },
@@ -390,6 +397,34 @@ async fn apply(
                 crate::api::messages::send_group_inner(state, owner_id, group_id, message).await?;
             Ok(json!({ "group": updated, "group_id": group_id, "message": sent }))
         }
+        (TargetKind::GroupTemplate, Action::Create) => {
+            let body = decode(payload)?;
+            let created =
+                crate::api::groups::create_group_template_inner(state, owner_id, body).await?;
+            Ok(serde_json::to_value(created).unwrap_or_default())
+        }
+        (TargetKind::GroupNote, Action::Create) => {
+            let body: GroupNoteCreatePayload = decode(payload)?;
+            let created = crate::api::groups::create_group_note_inner(
+                state,
+                owner_id,
+                &body.group_id,
+                body.note,
+            )
+            .await?;
+            Ok(serde_json::to_value(created).unwrap_or_default())
+        }
+        (TargetKind::GroupNote, Action::Update) => {
+            let body = decode(payload)?;
+            let updated = crate::api::groups::update_group_note_by_id_inner(
+                state,
+                owner_id,
+                require(target_id)?,
+                body,
+            )
+            .await?;
+            Ok(serde_json::to_value(updated).unwrap_or_default())
+        }
         (TargetKind::Mcp, Action::Create) => {
             let body = decode(payload)?;
             let created = crate::api::mcp_servers::create_inner(state, owner_id, body).await?;
@@ -527,7 +562,10 @@ pub(crate) async fn validate_proposal(
                     "use initial_agents when creating a group",
                 ));
             }
-            decode::<crate::api::groups::CreateRequest>(payload).map_err(invalid)?;
+            decode::<crate::api::groups::CreateRequest>(payload.clone()).map_err(invalid)?;
+            if let Some(template_id) = payload.get("template_id").and_then(Value::as_str) {
+                ensure_owned(ctx, TargetKind::GroupTemplate, template_id).await?;
+            }
         }
         TargetKind::Group => {
             let (payload, message, membership) =
@@ -544,6 +582,23 @@ pub(crate) async fn validate_proposal(
                 validate_group_membership(ctx, group_id, &change).await?;
             }
             decode::<crate::api::groups::UpdateRequest>(payload).map_err(invalid)?;
+        }
+        TargetKind::GroupTemplate => {
+            decode::<crate::api::groups::GroupTemplateCreateRequest>(payload.clone())
+                .map_err(invalid)?;
+            let group_id = payload
+                .get("group_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::invalid("group_id is required"))?;
+            ensure_owned(ctx, TargetKind::Group, group_id).await?;
+        }
+        TargetKind::GroupNote if action == Action::Create => {
+            let body = decode::<GroupNoteCreatePayload>(payload.clone()).map_err(invalid)?;
+            ensure_owned(ctx, TargetKind::Group, &body.group_id).await?;
+        }
+        TargetKind::GroupNote => {
+            decode::<crate::api::groups::GroupNoteUpdateRequest>(payload.clone())
+                .map_err(invalid)?;
         }
         TargetKind::Mcp => {
             decode::<crate::api::mcp_servers::CreateRequest>(payload.clone()).map_err(invalid)?;
@@ -598,6 +653,8 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
         ("llm_provider_id", "llm_provider_id"),
         ("provider_id", "llm_provider_id"),
         ("agent_id", "agent_id"),
+        ("group_id", "group_id"),
+        ("template_id", "template_id"),
     ] {
         if let Some(raw) = object.get(key).and_then(Value::as_str) {
             uuid::Uuid::parse_str(raw.trim())
@@ -626,6 +683,12 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
                     "agent_mention_policy must be display_only or bounded_schedule",
                 ));
             }
+        }
+    }
+
+    if kind == TargetKind::GroupNote {
+        if let Some(title) = object.get("title").and_then(Value::as_str) {
+            crate::api::groups::validate_note_title(title)?;
         }
     }
 
@@ -767,6 +830,31 @@ async fn ensure_owned(
 ) -> Result<(), crate::tools::ToolError> {
     use crate::tools::ToolError;
 
+    if kind == TargetKind::GroupTemplate {
+        let found: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM group_templates WHERE id = ? AND owner_id = ?",
+        )
+        .bind(target_id)
+        .bind(ctx.owner_id())
+        .fetch_one(ctx.pool())
+        .await
+        .map_err(|_| ToolError::invalid("could not check that target"))?;
+        return ensure_target_found(found, kind);
+    }
+    if kind == TargetKind::GroupNote {
+        let found: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM group_notes n JOIN groups g ON g.id = n.group_id \
+             WHERE n.id = ? AND n.status = 'active' AND g.owner_id = ? \
+               AND g.status = 'active' AND g.conversation_kind = 'group'",
+        )
+        .bind(target_id)
+        .bind(ctx.owner_id())
+        .fetch_one(ctx.pool())
+        .await
+        .map_err(|_| ToolError::invalid("could not check that target"))?;
+        return ensure_target_found(found, kind);
+    }
+
     let (table, extra) = match kind {
         // `is_system = 0` keeps the Assistant from proposing edits to itself.
         TargetKind::Agent => ("agents", "AND is_system = 0"),
@@ -779,6 +867,7 @@ async fn ensure_owned(
              (SELECT id FROM agents WHERE is_system = 0 AND status = 'active')",
         ),
         TargetKind::Mcp => ("mcp_servers", ""),
+        TargetKind::GroupTemplate | TargetKind::GroupNote => unreachable!(),
         TargetKind::Provider => return Err(ToolError::invalid("that kind cannot be proposed")),
     };
     let sql = format!(
@@ -791,15 +880,19 @@ async fn ensure_owned(
         .fetch_one(ctx.pool())
         .await
         .map_err(|_| ToolError::invalid("could not check that target"))?;
-    if found == 0 {
-        // Same message whether it is missing or someone else's: distinguishing
-        // them would confirm the id belongs to another account.
-        return Err(ToolError::invalid(format!(
-            "no {} with that id",
-            kind.as_str()
-        )));
+    ensure_target_found(found, kind)
+}
+
+fn ensure_target_found(found: i64, kind: TargetKind) -> Result<(), crate::tools::ToolError> {
+    if found > 0 {
+        return Ok(());
     }
-    Ok(())
+    // Same message whether it is missing or someone else's: distinguishing
+    // them would confirm the id belongs to another account.
+    Err(crate::tools::ToolError::invalid(format!(
+        "no {} with that id",
+        kind.as_str()
+    )))
 }
 
 fn decode<T: serde::de::DeserializeOwned>(payload: Value) -> Result<T, ApiError> {

@@ -18,6 +18,8 @@ Pick an agent from the chat picker. The chat's title is generated from the first
 
 **Clear messages** deletes the history. Workspace files are untouched.
 
+When a conversation has several task threads, each task can also be archived, restored, deleted, or have only its own messages cleared from the task header.
+
 ## Files
 
 The workspace panel lists the agent's workspace. Dragging a file into the composer attaches a reference to it — the file is not copied and no duplicate is made. Dragging a directory inserts its relative path as text instead.

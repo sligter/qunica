@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown } from 'lucide-react'
+import { ArrowRight, ChevronDown, Sparkles } from 'lucide-react'
 
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MessageItem } from '@/components/chat/MessageItem'
@@ -34,6 +34,11 @@ const EMPTY_STREAM_RUNS: Record<string, never> = {}
 const EMPTY_STREAM_RUN_IDS: Record<string, never> = {}
 const BOTTOM_PROXIMITY_PX = 120
 const MESSAGE_SCROLL_KEY_PREFIX = 'ag-swarmer:groups:message-scroll:'
+const ASSISTANT_SUGGESTION_KEYS = [
+  'messages.assistantSuggestions.inspect',
+  'messages.assistantSuggestions.createAgent',
+  'messages.assistantSuggestions.template',
+] as const
 
 const warningKeys = {
   'No one replied': 'messages.warnings.noReply',
@@ -199,9 +204,41 @@ export function MessageList({
     >
       <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
         {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
-          <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
-            {t('messages.empty')} {t('messages.emptyHint')}
-          </div>
+          agentIsSystem ? (
+            <div className="flex flex-1 flex-col items-center justify-center px-5 py-8 text-center">
+              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-xs">
+                <Sparkles className="h-5 w-5" aria-hidden />
+              </span>
+              <h2 className="mt-4 font-serif text-lg font-semibold tracking-tight">
+                {t('messages.assistantEmpty')}
+              </h2>
+              <p className="mt-1.5 max-w-sm text-xs leading-5 text-muted-foreground">
+                {t('messages.assistantEmptyHint')}
+              </p>
+              {onSubmitHumanInput ? (
+                <div className="mt-5 grid w-full max-w-sm gap-2">
+                  {ASSISTANT_SUGGESTION_KEYS.map((key) => {
+                    const suggestion = t(key)
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => onSubmitHumanInput(suggestion)}
+                        className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/80 bg-card px-3 py-2.5 text-left text-xs leading-5 text-foreground shadow-xs transition-[border-color,background-color,transform] hover:-translate-y-px hover:border-primary/35 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <span>{suggestion}</span>
+                        <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-[color,transform] group-hover:translate-x-0.5 group-hover:text-primary" aria-hidden />
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground">
+              {t('messages.empty')} {t('messages.emptyHint')}
+            </div>
+          )
         )}
         {hasOlderMessages && (
           <div className="flex justify-center px-4 pb-3">

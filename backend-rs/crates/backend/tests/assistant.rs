@@ -6,7 +6,7 @@
 //! exactly once per owner, and it is invisible to — and unwritable through —
 //! the generic agent and direct-chat routes.
 
-use ag_swarmer_backend::api::router_for_tests;
+use ag_swarmer_backend::api::{router_for_tests, router_with_state_for_tests};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -132,6 +132,35 @@ async fn assistant_is_created_lazily_and_reused() {
     // A fresh account has no provider, so the dock must fall back to its
     // scripted checklist rather than trying to talk.
     assert_eq!(first["provider_configured"], json!(false));
+}
+
+#[tokio::test]
+async fn existing_assistant_gets_the_current_prompt_and_tools_after_an_upgrade() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "assistant-upgrade@example.com").await;
+    let assistant = get_assistant(&app, &token).await;
+    let agent_id = assistant["agent_id"].as_str().unwrap();
+
+    sqlx::query(
+        "UPDATE agents SET system_prompt = 'old prompt', tool_config_json = '{}' WHERE id = ?",
+    )
+    .bind(agent_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    get_assistant(&app, &token).await;
+    let (prompt, tools): (String, String) =
+        sqlx::query_as("SELECT system_prompt, tool_config_json FROM agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert!(prompt.contains("group_template"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&tools).unwrap()["tools"]["app_propose"]["enabled"],
+        json!(true)
+    );
 }
 
 #[tokio::test]

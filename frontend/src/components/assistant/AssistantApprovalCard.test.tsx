@@ -88,21 +88,21 @@ describe('AssistantApprovalCard', () => {
   it('shows the staged summary with both actions available', async () => {
     await renderCard()
     expect(screen.getByText('Create agent "Researcher"')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Reject' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Confirm and run' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Do not run' })).toBeEnabled()
   })
 
-  it('says plainly that nothing has changed yet', async () => {
+  it('says plainly that nothing changes before confirmation', async () => {
     await renderCard()
     // Without this the user reads a summary in past tense and assumes it is done.
-    expect(screen.getByText(/nothing has changed yet/i)).toBeVisible()
+    expect(screen.getByText(/nothing changes until you confirm/i)).toBeVisible()
   })
 
   it('approves once and refreshes the affected list', async () => {
     const user = userEvent.setup()
     const { invalidated } = await renderCard()
 
-    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm and run' }))
 
     expect(fetchJson).toHaveBeenCalledWith(
       '/app-actions/action-1/approve',
@@ -128,11 +128,11 @@ describe('AssistantApprovalCard', () => {
     const user = userEvent.setup()
     await renderCard()
 
-    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm and run' }))
 
     await waitFor(() => expect(screen.getByText('Applied')).toBeVisible())
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm and run' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Do not run' })).toBeNull()
   })
 
   it('restores an already applied card from its durable status', async () => {
@@ -140,8 +140,8 @@ describe('AssistantApprovalCard', () => {
     await renderCard()
 
     expect(await screen.findByText('Applied')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
-    expect(screen.queryByText(/nothing has changed yet/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm and run' })).toBeNull()
+    expect(screen.queryByText(/nothing changes until you confirm/i)).toBeNull()
   })
 
   it('polls a running message action until it is applied', async () => {
@@ -170,7 +170,7 @@ describe('AssistantApprovalCard', () => {
     )
     const { invalidated } = await renderCard()
 
-    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm and run' }))
 
     // A silent no-op would leave the user believing the change went through.
     expect(
@@ -184,7 +184,7 @@ describe('AssistantApprovalCard', () => {
     fetchJson.mockResolvedValue({ id: 'action-1', status: 'rejected' })
     await renderCard()
 
-    await user.click(screen.getByRole('button', { name: 'Reject' }))
+    await user.click(screen.getByRole('button', { name: 'Do not run' }))
 
     await waitFor(() =>
       expect(fetchJson).toHaveBeenCalledWith(
@@ -204,6 +204,6 @@ describe('AssistantApprovalCard', () => {
     const link = screen.getByRole('link', { name: /open the form/i })
     expect(link).toHaveAttribute('href', '/providers/new')
     // A prefill is not a staged change, so approving it would be meaningless.
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm and run' })).toBeNull()
   })
 })

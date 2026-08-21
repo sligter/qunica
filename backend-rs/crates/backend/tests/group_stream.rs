@@ -1110,7 +1110,7 @@ async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "direct-prompt@example.com").await;
     let owner = owner_id(&state, "direct-prompt@example.com").await;
-    let workspace = create_workspace(&app, &token).await;
+    let (_workspace_root, workspace) = create_local_workspace(&app, &token).await;
     let conversation = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
     let (provider_url, requests) =
         recording_fake_provider_sequence(vec![text_body("Hello privately")]).await;
@@ -1148,6 +1148,7 @@ async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
     assert!(system_prompt.contains("Private chat context:"));
     assert!(system_prompt
         .contains("This is a private one-to-one conversation with the user, not a group."));
+    assert!(system_prompt.contains("- source: conversation"));
     assert!(system_prompt.contains("- mode: conversation"));
     assert!(!system_prompt.contains("Group context:"));
 }

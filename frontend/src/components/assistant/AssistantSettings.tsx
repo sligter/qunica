@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react'
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, Settings2, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
@@ -24,7 +24,7 @@ interface AssistantSettingsProps {
 }
 
 const SELECT_CLASS =
-  'w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring'
+  'h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:border-ring/60 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60'
 
 export function AssistantSettings({ onClose }: AssistantSettingsProps) {
   const { t } = useTranslation('assistant')
@@ -90,85 +90,99 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div>
-        <h2 className="text-sm font-medium">{t('settings.title')}</h2>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {t('settings.description')}
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="assistant-provider">{t('settings.provider')}</Label>
-        <select
-          id="assistant-provider"
-          className={SELECT_CLASS}
-          value={providerId}
-          onChange={(event) => changeProvider(event.target.value)}
-        >
-          <option value="">{t('settings.noProvider')}</option>
-          {available.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {provider.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="assistant-model">{t('settings.model')}</Label>
-        <select
-          id="assistant-model"
-          className={SELECT_CLASS}
-          value={model}
-          disabled={!providerId}
-          onChange={(event) => setModel(event.target.value)}
-        >
-          <option value="">
-            {selected?.default_model
-              ? t('settings.providerDefaultNamed', { model: selected.default_model })
-              : t('settings.providerDefault')}
-          </option>
-          {models.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.id}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <Settings2 className="h-4 w-4" aria-hidden />
+        </span>
         <div className="min-w-0">
-          <Label htmlFor="assistant-auto-approve">{t('settings.autoApprove')}</Label>
+          <h2 className="font-serif text-lg font-semibold tracking-tight">
+            {t('settings.title')}
+          </h2>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {t('settings.description')}
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-3 rounded-xl border border-border/80 bg-card p-3.5 shadow-xs">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="assistant-provider">{t('settings.provider')}</Label>
+          <select
+            id="assistant-provider"
+            className={SELECT_CLASS}
+            value={providerId}
+            onChange={(event) => changeProvider(event.target.value)}
+          >
+            <option value="">{t('settings.noProvider')}</option>
+            {available.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="assistant-model">{t('settings.model')}</Label>
+          <select
+            id="assistant-model"
+            className={SELECT_CLASS}
+            value={model}
+            disabled={!providerId}
+            onChange={(event) => setModel(event.target.value)}
+          >
+            <option value="">
+              {selected?.default_model
+                ? t('settings.providerDefaultNamed', { model: selected.default_model })
+                : t('settings.providerDefault')}
+            </option>
+            {models.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.id}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <Button asChild size="sm" variant="ghost" className="h-auto px-0 py-0 text-muted-foreground hover:bg-transparent hover:text-primary">
+          <Link to="/providers/new">
+            {t('setup.addProvider')}
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+          </Link>
+        </Button>
+      </div>
+
+      <div className="flex items-start gap-3 rounded-xl border border-border/80 bg-muted/30 p-3.5">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground shadow-xs">
+          <ShieldCheck className="h-4 w-4" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="assistant-auto-approve">{t('settings.autoApprove')}</Label>
+            <Switch
+              id="assistant-auto-approve"
+              checked={autoApprove}
+              disabled={systemSettings.isLoading || updateSystemSettings.isPending}
+              onCheckedChange={(next) => void setAutoApprove(next)}
+              aria-label={t('settings.autoApprove')}
+            />
+          </div>
+          <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
             {t('settings.autoApproveDescription')}
           </p>
         </div>
-        <Switch
-          id="assistant-auto-approve"
-          checked={autoApprove}
-          disabled={systemSettings.isLoading || updateSystemSettings.isPending}
-          onCheckedChange={(next) => void setAutoApprove(next)}
-          aria-label={t('settings.autoApprove')}
-        />
       </div>
 
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
 
-      <div className="flex gap-2">
-        <Button size="sm" disabled={update.isPending} onClick={() => void save()}>
-          {update.isPending ? t('settings.saving') : t('settings.save')}
-        </Button>
+      <div className="mt-auto grid grid-cols-2 gap-2 pt-1">
         <Button size="sm" variant="outline" onClick={onClose}>
           {t('settings.cancel')}
         </Button>
+        <Button size="sm" disabled={update.isPending} onClick={() => void save()}>
+          {update.isPending ? t('settings.saving') : t('settings.save')}
+        </Button>
       </div>
-
-      <Button asChild size="sm" variant="ghost" className="mt-auto self-start">
-        <Link to="/providers/new">
-          <ExternalLink className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-          {t('setup.provider')}
-        </Link>
-      </Button>
     </div>
   )
 }

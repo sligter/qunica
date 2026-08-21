@@ -214,6 +214,97 @@ async fn wait_until_applied(state: &AppState, action_id: &str) {
 }
 
 #[tokio::test]
+async fn assistant_can_stage_group_templates_and_shared_note_changes() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "group-resources@example.com").await;
+    let owner = owner_id(&state, "group-resources@example.com").await;
+    let root = tempfile::tempdir().unwrap();
+    let (status, workspace) = send(
+        &app,
+        request(
+            "POST",
+            "/api/v2/workspaces",
+            Some(&token),
+            json!({
+                "name": "Local workspace",
+                "backend_type": "local",
+                "local_path": root.path().to_string_lossy()
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {workspace:?}");
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let (status, group) = send(
+        &app,
+        request(
+            "POST",
+            "/api/v2/groups",
+            Some(&token),
+            json!({"name": "Source team", "workspace_id": workspace_id}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {group:?}");
+    let group_id = group["id"].as_str().unwrap();
+    let executor = executor_for(&state, &owner);
+
+    stage_and_approve(
+        &app,
+        &token,
+        &executor,
+        json!({
+            "target_kind": "group_template",
+            "action": "create",
+            "payload": {"name": "Reusable team", "group_id": group_id}
+        }),
+    )
+    .await;
+    let template_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM group_templates WHERE owner_id = ?")
+            .bind(&owner)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(template_count, 1);
+
+    stage_and_approve(
+        &app,
+        &token,
+        &executor,
+        json!({
+            "target_kind": "group_note",
+            "action": "create",
+            "payload": {"group_id": group_id, "title": "Plan", "content": "first draft"}
+        }),
+    )
+    .await;
+    let note_id: String =
+        sqlx::query_scalar("SELECT id FROM group_notes WHERE group_id = ? AND status = 'active'")
+            .bind(group_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+
+    stage_and_approve(
+        &app,
+        &token,
+        &executor,
+        json!({
+            "target_kind": "group_note",
+            "action": "update",
+            "target_id": note_id,
+            "payload": {"content": "approved draft"}
+        }),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("Notes").join(format!("{note_id}.md"))).unwrap(),
+        "approved draft"
+    );
+}
+
+#[tokio::test]
 async fn proposing_stages_a_row_and_changes_nothing() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "stage-only@example.com").await;

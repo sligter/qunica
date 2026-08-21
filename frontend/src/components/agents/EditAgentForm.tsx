@@ -13,6 +13,7 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { AgentSystemPromptActions } from '@/components/agents/AgentSystemPromptActions'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
 import { ThinkingLevelControl } from '@/components/agents/ThinkingLevelControl'
@@ -188,6 +189,7 @@ export function EditAgentForm({
   const acpPresets = acpRuntimePresets.data?.presets ?? []
   const selectedProviderId = form.watch('llm_provider_id') || undefined
   const selectedProvider = providers.data?.find((provider) => provider.id === selectedProviderId)
+  const promptProvider = selectedProvider ?? providers.data?.[0]
   const configuredModels = selectedProvider?.models ?? (
     selectedProvider
       ? [{
@@ -324,7 +326,20 @@ export function EditAgentForm({
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="ea-prompt">{t('agents:fields.systemPrompt')}</Label>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Label htmlFor="ea-prompt">{t('agents:fields.systemPrompt')}</Label>
+          <AgentSystemPromptActions
+            name={form.watch('name')}
+            description={form.watch('description')}
+            prompt={form.watch('system_prompt')}
+            providerId={promptProvider?.id}
+            model={promptProvider?.id === selectedProvider?.id ? form.watch('model') : undefined}
+            onApply={(value) => form.setValue('system_prompt', value, {
+              shouldDirty: true,
+              shouldValidate: true,
+            })}
+          />
+        </div>
         <SystemPromptMentionTextarea
           id="ea-prompt"
           rows={6}

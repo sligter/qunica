@@ -64,6 +64,25 @@ afterEach(async () => {
 })
 
 describe('MessageList scheduler summary integration', () => {
+  it('gives the system Assistant useful first prompts instead of an @mention hint', async () => {
+    const user = userEvent.setup()
+    const onSubmitHumanInput = vi.fn()
+    await i18n.changeLanguage('zh-CN')
+
+    render(
+      <MessageList
+        groupId="assistant-chat"
+        agentIsSystem
+        onSubmitHumanInput={onSubmitHumanInput}
+      />,
+    )
+
+    expect(screen.getByText('今天想先处理什么？')).toBeVisible()
+    expect(screen.queryByText(/@AgentName/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '检查当前配置，告诉我还缺什么' }))
+    expect(onSubmitHumanInput).toHaveBeenCalledWith('检查当前配置，告诉我还缺什么')
+  })
+
   it('hands rows the thread its message query is keyed by', () => {
     setMessageState()
     render(<MessageList groupId="group-1" threadId="thread-1" />)

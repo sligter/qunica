@@ -23,6 +23,7 @@ import {
 
 import { avatarColorClass } from '@/lib/avatarColor'
 import { formatRelativeTime } from '@/lib/format'
+import { setConversationIdDrag } from '@/lib/conversationDrag'
 import { cn } from '@/lib/utils'
 import { normalizeLanguage } from '@/i18n'
 import { useGroups } from '@/hooks/useGroups'
@@ -511,6 +512,8 @@ export function AppSidebar() {
                       <li key={chat.id}>
                         <NavLink
                           to={`/chats/${chat.id}`}
+                          draggable
+                          onDragStart={(event) => setConversationIdDrag(event.dataTransfer, chat.id)}
                           aria-haspopup="menu"
                           aria-controls={chatMenu?.id === chat.id ? 'direct-chat-context-menu' : undefined}
                           title={t('chat:direct.contextHint')}
@@ -600,6 +603,8 @@ export function AppSidebar() {
                       <li key={g.id}>
                         <NavLink
                           to={`/groups/${g.id}`}
+                          draggable
+                          onDragStart={(event) => setConversationIdDrag(event.dataTransfer, g.id)}
                           className={({ isActive }) =>
                             cn(
                               'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',

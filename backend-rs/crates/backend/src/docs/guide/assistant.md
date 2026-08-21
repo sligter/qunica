@@ -4,15 +4,16 @@ The assistant is the floating panel that helps you configure AG Swarmer, explain
 
 ## What it can do on its own
 
-- Read your configuration: agents, providers, MCP servers, skills, workspaces, groups, and chats.
+- Read your configuration: agents, providers, MCP servers, skills, workspaces, groups, reusable group templates, shared group notes, and chats.
 - Answer questions about the app from the bundled guide.
 - Propose configuration changes for you to approve.
 - Create a group or private chat and send its first message, or message an existing conversation, after you approve the action.
 - Inspect group members and propose adding or removing an Agent or user. User accounts are selected by exact email address.
+- Save an existing group as a reusable template, or create and update shared group notes, after you approve the action.
 
 ## What it cannot do
 
-It has **no workspace, no file tools, and no shell**. It cannot read or write your files. For work that needs those, create a regular agent with a workspace bound to it.
+It has **no workspace, no general file tools, and no shell**. It cannot browse or edit arbitrary files. It can read app-managed shared group notes and propose note changes; for other file work, create a regular agent with a workspace bound to it.
 
 Every change it makes is staged, never applied directly. You see a card describing the change and approve or reject it; nothing is written until you approve. The history of everything it proposed, and what became of each one, is under **Settings → Assistant actions**.
 

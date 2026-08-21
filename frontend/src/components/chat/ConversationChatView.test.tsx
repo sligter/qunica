@@ -34,8 +34,10 @@ vi.mock('@/components/chat/Composer', () => ({
     allowMentions?: boolean
     conversationId?: string
     disabledReason?: string
+    hint?: string
     isStreaming?: boolean
     onCancel?: () => void
+    placeholder?: string
     scope?: 'groups' | 'direct-chats'
     workspaceId?: string | null
   }) => {
@@ -64,7 +66,7 @@ vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
   },
 }))
 vi.mock('@/components/chat/MessageList', () => ({
-  MessageList: (props: { stateId?: string }) => {
+  MessageList: (props: { agentIsSystem?: boolean; stateId?: string }) => {
     messageListMocks.render(props)
     return <div>message list</div>
   },
@@ -127,14 +129,20 @@ vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
 }))
 
 interface ConversationRenderOptions {
+  agentIsSystem?: boolean
+  compact?: boolean
   conversationId?: string
+  showTerminal?: boolean
   scope?: 'groups' | 'direct-chats'
   threadId?: string
   workspaceId?: string | null
 }
 
 function conversationElement({
+  agentIsSystem,
+  compact,
   conversationId = 'chat-1',
+  showTerminal,
   scope = 'direct-chats',
   threadId,
   workspaceId = 'workspace-1',
@@ -150,6 +158,8 @@ function conversationElement({
         title="Direct chat"
         subtitle="Solo"
         announcement="group only"
+        agentIsSystem={agentIsSystem}
+        compact={compact}
         renderHeaderContext={scope === 'groups' ? () => <button>Start new task</button> : undefined}
         headerActions={<button>Manage Group</button>}
         capabilities={{
@@ -157,6 +167,7 @@ function conversationElement({
           showManage: false,
           showTurnTrace: false,
           showWorkspace: true,
+          showTerminal,
           allowMentions: false,
         }}
       />
@@ -205,6 +216,20 @@ describe('ConversationChatView', () => {
       groupId: 'chat-1',
       workspaceId: 'workspace-1',
       scope: 'direct-chats',
+    }))
+  })
+
+  it('uses compact, Assistant-specific chrome and guidance when embedded', () => {
+    renderConversation({ agentIsSystem: true, compact: true, showTerminal: false })
+
+    expect(screen.getByRole('banner')).toHaveClass('h-11')
+    expect(screen.queryByRole('button', { name: 'Show terminal' })).not.toBeInTheDocument()
+    expect(composerMocks.render).toHaveBeenCalledWith(expect.objectContaining({
+      hint: undefined,
+      placeholder: 'Tell the assistant what you want to get done…',
+    }))
+    expect(messageListMocks.render).toHaveBeenCalledWith(expect.objectContaining({
+      agentIsSystem: true,
     }))
   })
 

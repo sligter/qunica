@@ -95,6 +95,16 @@ export function AssistantDock() {
     provider.data?.models?.find((model) => model.id === activeModel)?.supports_reasoning_effort,
   )
   const expanded = !placement.collapsed
+  const ready = assistant.data?.provider_configured === true
+  const status = showSettings
+    ? t('status.settings')
+    : assistant.isLoading
+      ? t('status.loading')
+      : assistant.error
+        ? t('status.error')
+        : ready
+          ? activeModel ?? t('status.ready')
+          : t('status.setup')
 
   const collapse = useCallback(() => {
     restoreFocusRef.current = true
@@ -215,9 +225,20 @@ export function AssistantDock() {
         aria-label={t('title')}
         title={t('title')}
         onClick={toggleCollapsed}
-        className="fixed bottom-4 right-4 z-[30] flex h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-background text-foreground shadow-lg outline-none transition hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        className="fixed bottom-4 right-4 z-[30] flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/30 bg-primary text-primary-foreground shadow-lg outline-none transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <Sparkles className="h-5 w-5" aria-hidden />
+        <span
+          aria-hidden
+          className={cn(
+            'absolute right-1.5 top-1.5 h-2 w-2 rounded-full border-2 border-primary',
+            assistant.error
+              ? 'bg-destructive'
+              : ready
+                ? 'bg-primary-foreground'
+                : 'bg-warning-foreground',
+          )}
+        />
       </button>,
       document.body,
     )
@@ -228,7 +249,7 @@ export function AssistantDock() {
       ref={panelRef}
       role="dialog"
       aria-label={t('title')}
-      className="fixed z-[30] flex flex-col overflow-hidden rounded-xl border border-border/70 bg-background shadow-2xl"
+      className="fixed z-[30] flex flex-col overflow-hidden rounded-2xl border border-border/80 bg-card shadow-2xl"
       style={{
         left: placement.x,
         top: placement.y,
@@ -239,18 +260,45 @@ export function AssistantDock() {
       <div
         data-testid="assistant-dock-drag-handle"
         onPointerDown={startDrag}
-        className="flex shrink-0 cursor-grab items-center justify-between gap-2 border-b border-border/70 bg-muted/40 px-3 py-2 active:cursor-grabbing"
+        className="flex shrink-0 cursor-grab items-center justify-between gap-2 border-b border-border/70 bg-card px-3 py-2.5 active:cursor-grabbing"
       >
         <div className="flex min-w-0 items-center gap-2">
-          <Bot className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="truncate text-sm font-medium">{t('title')}</span>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Bot className="h-4 w-4" aria-hidden />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate font-serif text-sm font-semibold tracking-tight">
+              {t('title')}
+            </span>
+            <span className="flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
+              <span
+                aria-hidden
+                className={cn(
+                  'h-1.5 w-1.5 shrink-0 rounded-full',
+                  assistant.isLoading
+                    ? 'bg-muted-foreground motion-safe:animate-pulse'
+                    : assistant.error
+                      ? 'bg-destructive'
+                      : ready
+                        ? 'bg-success'
+                        : 'bg-warning-foreground',
+                )}
+              />
+              <span className="truncate" title={status} aria-live="polite">
+                {status}
+              </span>
+            </span>
+          </span>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div
+          className="flex shrink-0 items-center gap-0.5"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
           <Button
             type="button"
-            variant="ghost"
+            variant={showSettings ? 'secondary' : 'ghost'}
             size="icon"
-            className="h-7 w-7"
+            className="h-8 w-8 rounded-full"
             aria-label={t('settings.title')}
             aria-pressed={showSettings}
             onClick={() => setShowSettings((open) => !open)}
@@ -261,7 +309,7 @@ export function AssistantDock() {
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7"
+            className="h-8 w-8 rounded-full"
             aria-label={t('collapse')}
             onClick={collapse}
           >
@@ -270,7 +318,7 @@ export function AssistantDock() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden bg-background">
         {showSettings ? (
           <AssistantSettings onClose={() => setShowSettings(false)} />
         ) : assistant.data?.provider_configured && assistant.data.chat_id ? (
@@ -281,7 +329,8 @@ export function AssistantDock() {
             scope="direct-chats"
             agents={[]}
             agentIsSystem
-            title={<span className="text-sm font-medium">{t('title')}</span>}
+            compact
+            title={t('chat.title')}
             capabilities={{
               showAnnouncement: false,
               showManage: false,
@@ -289,6 +338,7 @@ export function AssistantDock() {
               // The Assistant has no workspace, so a file panel would only ever
               // report that none is configured.
               showWorkspace: false,
+              showTerminal: false,
               allowMentions: false,
             }}
           />

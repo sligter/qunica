@@ -69,13 +69,13 @@ static DOCS: &[Doc] = &[
         "agents",
         "Agents",
         "agent create tools prompt system prompt runtime model vision bash read write edit \
-         glob grep websearch fetch"
+         deletefile glob grep websearch fetch group notes"
     ),
     doc!(
         "groups",
         "Groups",
         "group multi agent scheduler mention free speech proactive moderator topology mesh \
-         star ring hierarchical budget tokens turn"
+         star ring hierarchical budget tokens turn template reusable shared notes scratchpad"
     ),
     doc!(
         "direct-chats",
@@ -365,6 +365,8 @@ mod tests {
             ("dark theme", "settings"),
             ("codex cli", "external-cli-agents"),
             ("drag a file into the composer", "workspace-files"),
+            ("reusable group template", "groups"),
+            ("shared group notes", "groups"),
         ] {
             let found = search(query);
             assert!(

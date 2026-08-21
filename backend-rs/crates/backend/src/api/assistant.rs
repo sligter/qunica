@@ -48,6 +48,9 @@ Your capabilities:
   'group' or 'chat'. These actions also use the approval flow.
 - Inspect a group's current Agent and user members with AppGet, then propose \
   one add/remove membership operation at a time with target_kind 'group'.
+- List and inspect reusable group templates and shared group notes with \
+  AppList/AppGet. Propose saving a group as a template with target_kind \
+  'group_template', or creating/updating a shared note with 'group_note'.
 - For changes you are not allowed to stage — provider API keys, MCP servers \
   that launch local processes, CLI runtime installs, and resource deletion \
   (group membership removal is supported) — use AppPrefill to hand the user \
@@ -65,9 +68,9 @@ Rules:
   it takes effect once they approve.
 - Check the current state with AppList or AppGet before proposing a change, so \
   you do not propose something that already exists.
-- You have no access to the filesystem, a shell, or the user's workspaces. If a \
-  request needs those, say so and suggest the user create a regular agent with \
-  a workspace bound to it.
+- You cannot browse the filesystem, run a shell, or access arbitrary workspace \
+  files. AppGet can read app-managed group notes only. For other file work, \
+  suggest a regular agent with a workspace bound to it.
 - Be concise. The user is reading you in a small floating panel.";
 
 /// Tools mounted on the Assistant.
@@ -232,6 +235,7 @@ pub(crate) async fn ensure(
     owner_id: &str,
 ) -> Result<AssistantResponse, ApiError> {
     if let Some(found) = load(state.db.pool(), owner_id).await? {
+        sync_definition(state.db.pool(), owner_id, &found.agent_id).await?;
         return Ok(found);
     }
 
@@ -240,6 +244,7 @@ pub(crate) async fn ensure(
     // loser's chat would be orphaned.
     let _guard = state.write_lock.lock().await;
     if let Some(found) = load(state.db.pool(), owner_id).await? {
+        sync_definition(state.db.pool(), owner_id, &found.agent_id).await?;
         return Ok(found);
     }
 
@@ -279,6 +284,36 @@ pub(crate) async fn ensure(
     load(state.db.pool(), owner_id)
         .await?
         .ok_or_else(|| ApiError::internal("assistant vanished after insert"))
+}
+
+/// Keep existing system agents aligned with the build that is running.
+///
+/// The Assistant predates normal migrations for prompt/tool changes because it
+/// is created lazily. Refreshing the two fixed fields here makes an application
+/// upgrade effective for existing accounts without touching their provider or
+/// model choices.
+async fn sync_definition(
+    pool: &SqlitePool,
+    owner_id: &str,
+    agent_id: &str,
+) -> Result<(), ApiError> {
+    let tools = assistant_tool_config().to_string();
+    sqlx::query(
+        "UPDATE agents SET system_prompt = ?, tool_config_json = ?, updated_at = ? \
+         WHERE id = ? AND owner_id = ? \
+           AND (system_prompt != ? OR COALESCE(tool_config_json, '') != ?)",
+    )
+    .bind(ASSISTANT_SYSTEM_PROMPT)
+    .bind(&tools)
+    .bind(now_rfc3339())
+    .bind(agent_id)
+    .bind(owner_id)
+    .bind(ASSISTANT_SYSTEM_PROMPT)
+    .bind(&tools)
+    .execute(pool)
+    .await
+    .map_err(|_| ApiError::internal("failed to update the assistant definition"))?;
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]

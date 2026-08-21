@@ -46,6 +46,10 @@ export function queryKeysForKind(kind: string): string[][] {
       return [['workspaces']]
     case 'group':
       return [['groups']]
+    case 'group_template':
+      return [['group-templates']]
+    case 'group_note':
+      return [['groups']]
     case 'chat':
       return [['direct-chats']]
     default:

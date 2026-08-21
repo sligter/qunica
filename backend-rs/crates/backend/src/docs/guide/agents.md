@@ -27,9 +27,12 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 | `Read` | yes | Read a UTF-8 file, with offset and limit |
 | `Write` | yes | Create or overwrite a file |
 | `Edit` | yes | Exact-match replacements in one file |
+| `DeleteFile` | yes | Delete one regular file; directories and symlinks are rejected |
 | `Glob` | yes | Find files by pattern |
 | `Grep` | yes | Search file contents |
 | `Bash` | yes | Run a guarded shell command in the root |
+| `ReadGroupNotes` | group local workspace | Read the shared note index or one note |
+| `EditGroupNote` | group local workspace | Exact-match edits to one shared note |
 | `WebSearch` | no | Search the web; needs a Tavily key in Settings |
 | `Fetch` | no | Read one HTTP(S) URL, bounded |
 | `GenerateImage` | yes | Generate an image and save it under `generations/`; needs Settings → Media |
@@ -39,7 +42,7 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 | `ExitPlanMode` | no | Present a plan for approval |
 | `SkillManager` | no | List and load mounted skills |
 
-An agent with no tools configured gets `Read`, `Glob`, and `Grep`.
+An agent with no tools configured gets `Read`, `Glob`, and `Grep`. Shared-note tools are mounted automatically for members of a group that has a local workspace.
 
 `RunSubAgent` is present as a saved-only placeholder and is not exposed to the runtime yet.
 

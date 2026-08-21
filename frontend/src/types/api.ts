@@ -392,6 +392,19 @@ export interface AgentUpdate {
   skill_ids?: string[]
 }
 
+export interface AgentSystemPromptGenerateRequest {
+  name?: string
+  description?: string | null
+  /** Omit or null to generate from the role; provide it to enhance the draft. */
+  system_prompt?: string | null
+  llm_provider_id: string
+  model?: string | null
+}
+
+export interface AgentSystemPromptGenerateResponse {
+  system_prompt: string
+}
+
 export type ProviderKind =
   | 'openai-compatible'
   | 'anthropic'

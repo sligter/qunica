@@ -8,6 +8,7 @@ import i18n from '@/i18n'
 import { useAuthStore } from '@/stores/authStore'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { CONVERSATION_ID_MIME } from '@/lib/conversationDrag'
 import { AppSidebar } from './AppSidebar'
 
 const mocks = vi.hoisted(() => ({
@@ -211,5 +212,17 @@ describe('AppSidebar terminal cleanup', () => {
     // The direct chat is idle, so it says nothing at all.
     const chatRow = screen.getByText('Direct chat').closest('a')!
     expect(chatRow).not.toHaveAccessibleName(expect.stringContaining('Replying'))
+  })
+
+  it('publishes conversation IDs when a conversation is dragged', () => {
+    mocks.groups = [{ id: 'group-1', name: 'Group one', created_at: '2026-07-22T00:00:00Z' }]
+    renderSidebar()
+    const setData = vi.fn()
+    const dataTransfer = { effectAllowed: 'none', setData }
+
+    fireEvent.dragStart(screen.getByText('Group one').closest('a')!, { dataTransfer })
+
+    expect(dataTransfer.effectAllowed).toBe('copy')
+    expect(setData).toHaveBeenCalledWith(CONVERSATION_ID_MIME, 'group-1')
   })
 })

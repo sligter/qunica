@@ -22,6 +22,9 @@ use crate::acp::{
     DEFAULT_TIMEOUT_SECONDS,
 };
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
+use crate::llm::{
+    build_provider, model_reasoning_passback, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
+};
 use crate::process::tokio_command_no_window;
 
 const RUNTIME_LLM_CHAT: &str = "llm_chat";
@@ -30,6 +33,18 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful AI agent.";
 const ACP_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const ACP_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const ACP_OUTPUT_LIMIT: usize = 8 * 1024;
+const MAX_PROMPT_SOURCE_CHARS: usize = 50_000;
+const MAX_GENERATED_PROMPT_CHARS: usize = 20_000;
+const SYSTEM_PROMPT_WRITER_PROMPT: &str = "You write production system prompts for agents running inside ag-swarmer. Return only the complete system prompt in Markdown, with no code fence or commentary.\n\
+The prompt must be specific to the supplied role and usable as-is. It must tell the agent to:\n\
+- establish its role, outcomes, boundaries, and a short execution workflow;\n\
+- inspect relevant workspace context before acting and keep changes focused;\n\
+- use only tools exposed at runtime, never invent tools, and respect workspace boundaries;\n\
+- follow mounted Skills when relevant and collaborate clearly with other Agents or groups;\n\
+- verify meaningful work and report changes, checks, and remaining risks concisely;\n\
+- ask for clarification only when missing information blocks safe progress;\n\
+- use the language of the supplied role details or existing prompt when it is clear.\n\
+For an enhancement, preserve the original intent and useful constraints while removing repetition and ambiguity. Do not mention this generation request, a provider, or a model, and do not leave placeholders.";
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, \
      COALESCE((SELECT json_group_array(workspace_id) FROM agent_workspaces WHERE agent_id = agents.id), '[]') AS workspace_ids_json, \
@@ -87,6 +102,24 @@ pub struct UpdateRequest {
     llm_provider_id: Option<Option<String>>,
     #[serde(default)]
     skill_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GenerateSystemPromptRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    llm_provider_id: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GenerateSystemPromptResponse {
+    system_prompt: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +245,16 @@ struct AgentRow {
     updated_at: String,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct PromptProviderRow {
+    kind: String,
+    base_url: Option<String>,
+    api_key: String,
+    default_model: String,
+    reasoning_passback: i64,
+    models_json: Option<String>,
+}
+
 impl From<AgentRow> for AgentResponse {
     fn from(row: AgentRow) -> Self {
         let skill_ids =
@@ -245,6 +288,117 @@ pub async fn tool_catalog() -> Json<ToolCatalogResponse> {
     Json(ToolCatalogResponse {
         tools: builtin_tools(),
     })
+}
+
+pub async fn generate_system_prompt(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<GenerateSystemPromptRequest>,
+) -> Result<Json<GenerateSystemPromptResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let provider_id =
+        validate_provider(state.db.pool(), body.llm_provider_id.trim(), &owner_id).await?;
+    let provider_row: PromptProviderRow = sqlx::query_as(
+        "SELECT kind, base_url, api_key, default_model, reasoning_passback, models_json \
+         FROM llm_providers WHERE id = ?",
+    )
+    .bind(&provider_id)
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to load the prompt generation provider"))?;
+
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Agent");
+    if name.chars().count() > 100 {
+        return Err(ApiError::invalid_input(
+            "agent name must be at most 100 characters",
+        ));
+    }
+    let description = body
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if description.is_some_and(|value| value.chars().count() > 4_000) {
+        return Err(ApiError::invalid_input(
+            "agent description must be at most 4000 characters",
+        ));
+    }
+    let existing_prompt = body
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if existing_prompt.is_some_and(|value| value.chars().count() > MAX_PROMPT_SOURCE_CHARS) {
+        return Err(ApiError::invalid_input(
+            "system_prompt must be at most 50000 characters for enhancement",
+        ));
+    }
+
+    let model = prompt_generation_model(&provider_row, body.model.as_deref())?;
+    let reasoning_passback = model_reasoning_passback(
+        provider_row.models_json.as_deref(),
+        &model,
+        provider_row.reasoning_passback != 0,
+    );
+    let provider_config = ProviderConfig {
+        kind: provider_row.kind,
+        base_url: provider_row.base_url,
+        api_key: provider_row.api_key,
+        default_model: provider_row.default_model,
+        reasoning_passback,
+        context_window_tokens: None,
+        context_output_reserve_ratio: None,
+    };
+    let provider = build_provider(&provider_config).map_err(|err| {
+        ApiError::invalid_input(format!("system prompt generation failed: {err}"))
+    })?;
+    let request = ChatRequest {
+        model,
+        messages: system_prompt_generation_messages(name, description, existing_prompt),
+        temperature: Some(0.4),
+        reasoning_passback,
+        include_empty_tools: false,
+        tools: Vec::new(),
+        reasoning_effort: None,
+    };
+    let mut deltas = provider.stream(request).await.map_err(|err| {
+        ApiError::invalid_input(format!("system prompt generation failed: {err}"))
+    })?;
+
+    let mut raw = String::new();
+    let mut output_chars = 0;
+    while let Some(delta) = deltas.recv().await {
+        match delta {
+            ChatDelta::Token(text) => {
+                output_chars += text.chars().count();
+                if output_chars > MAX_GENERATED_PROMPT_CHARS {
+                    return Err(ApiError::invalid_input(
+                        "generated system prompt exceeds 20000 characters",
+                    ));
+                }
+                raw.push_str(&text);
+            }
+            ChatDelta::Done => break,
+            ChatDelta::Truncated(reason) => {
+                return Err(ApiError::invalid_input(format!(
+                    "system prompt generation failed: provider stream ended early: {reason}"
+                )));
+            }
+            ChatDelta::Reasoning(_)
+            | ChatDelta::ReasoningSignature(_)
+            | ChatDelta::ToolCall(_)
+            | ChatDelta::Usage(_) => {}
+        }
+    }
+
+    Ok(Json(GenerateSystemPromptResponse {
+        system_prompt: clean_generated_system_prompt(&raw)?,
+    }))
 }
 
 pub async fn acp_runtime_presets() -> Json<AcpRuntimePresetListResponse> {
@@ -797,6 +951,78 @@ async fn validate_provider(
         )),
         Some(_) => Ok(id),
     }
+}
+
+fn prompt_generation_model(
+    provider: &PromptProviderRow,
+    requested: Option<&str>,
+) -> Result<String, ApiError> {
+    let requested = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&provider.default_model);
+    if requested == provider.default_model {
+        return Ok(requested.to_string());
+    }
+    let offered = provider
+        .models_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.as_array().cloned())
+        .is_some_and(|models| {
+            models.iter().any(|model| {
+                model.as_str() == Some(requested)
+                    || model.get("id").and_then(Value::as_str) == Some(requested)
+            })
+        });
+    if offered {
+        Ok(requested.to_string())
+    } else {
+        Err(ApiError::invalid_input(
+            "model is not offered by that provider",
+        ))
+    }
+}
+
+fn system_prompt_generation_messages(
+    name: &str,
+    description: Option<&str>,
+    existing_prompt: Option<&str>,
+) -> Vec<ChatMessage> {
+    let task = if existing_prompt.is_some() {
+        "Enhance the existing system prompt."
+    } else {
+        "Create a new system prompt."
+    };
+    let profile = json!({
+        "name": name,
+        "description": description,
+        "existing_system_prompt": existing_prompt,
+    });
+    vec![
+        ChatMessage::text("system", SYSTEM_PROMPT_WRITER_PROMPT),
+        ChatMessage::text("user", format!("{task}\nAgent profile:\n{profile}")),
+    ]
+}
+
+fn clean_generated_system_prompt(raw: &str) -> Result<String, ApiError> {
+    let prompt = raw
+        .lines()
+        .filter(|line| !line.trim().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(ApiError::invalid_input(
+            "provider returned an empty system prompt",
+        ));
+    }
+    if prompt.chars().count() > MAX_GENERATED_PROMPT_CHARS {
+        return Err(ApiError::invalid_input(
+            "generated system prompt exceeds 20000 characters",
+        ));
+    }
+    Ok(prompt.to_string())
 }
 
 fn validate_name(raw: &str) -> Result<String, ApiError> {
@@ -1700,6 +1926,30 @@ where
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn generated_system_prompt_is_grounded_in_ag_swarmer_and_enhances_the_draft() {
+        let messages = system_prompt_generation_messages(
+            "Reviewer",
+            Some("Reviews code"),
+            Some("Be precise."),
+        );
+
+        assert!(messages[0].content.contains("inside ag-swarmer"));
+        assert!(messages[0].content.contains("mounted Skills"));
+        assert!(messages[1]
+            .content
+            .starts_with("Enhance the existing system prompt."));
+        assert!(messages[1].content.contains("Be precise."));
+    }
+
+    #[test]
+    fn generated_system_prompt_removes_markdown_fences_only() {
+        assert_eq!(
+            clean_generated_system_prompt("```markdown\n# Role\nWork carefully.\n```").unwrap(),
+            "# Role\nWork carefully."
+        );
+    }
 
     #[test]
     fn custom_install_package_specs_are_scoped_to_the_selected_preset() {

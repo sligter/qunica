@@ -81,7 +81,7 @@ describe('AppActionsPage', () => {
     expect(screen.getByText('Applied')).toBeVisible()
     expect(screen.getByText('Rejected')).toBeVisible()
     // Only the pending row offers a decision.
-    expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Confirm and run' })).toHaveLength(1)
   })
 
   it('shows why a failed apply failed', async () => {

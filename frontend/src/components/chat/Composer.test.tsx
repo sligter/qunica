@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Composer } from '@/components/chat/Composer'
 import i18n from '@/i18n'
+import { CONVERSATION_ID_MIME } from '@/lib/conversationDrag'
 import { encodeWorkspaceDragItems, WORKSPACE_ITEM_MIME } from '@/lib/workspaceDrag'
 import type {
   ConversationScope,
@@ -109,6 +110,15 @@ function operatingSystemDataTransfer(files: File[]) {
     types: ['Files'],
     dropEffect: 'none',
     getData: () => '',
+  }
+}
+
+function conversationDataTransfer(id: string) {
+  return {
+    files: [],
+    types: [CONVERSATION_ID_MIME],
+    dropEffect: 'none',
+    getData: (type: string) => type === CONVERSATION_ID_MIME ? id : '',
   }
 }
 
@@ -435,6 +445,29 @@ describe('Composer', () => {
 
     fireEvent.drop(dropZone, { dataTransfer })
     await waitFor(() => expect(textarea).toHaveAccessibleDescription('Workspace file added.'))
+  })
+
+  it('inserts a sidebar conversation ID in the Assistant composer', async () => {
+    render(
+      <Composer
+        conversationId="assistant-chat"
+        workspaceId={null}
+        scope="direct-chats"
+        allowConversationDrop
+        onSend={vi.fn()}
+      />,
+    )
+    const dropZone = screen.getByRole('group', { name: 'Message composer file drop area' })
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    const dataTransfer = conversationDataTransfer('chat-123')
+
+    fireEvent.dragEnter(dropZone, { dataTransfer })
+    expect(textarea).toHaveAccessibleDescription('Drop to insert this conversation ID.')
+    fireEvent.drop(dropZone, { dataTransfer })
+
+    expect(textarea).toHaveValue('conversation_id: chat-123')
+    expect(textarea).toHaveAccessibleDescription('Conversation ID inserted.')
+    expect(mocks.getFile).not.toHaveBeenCalled()
   })
 
   it('uploads an image and sends an attachment-only message with its workspace path', async () => {

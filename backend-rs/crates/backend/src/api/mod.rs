@@ -104,6 +104,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v2/agents/tool-catalog", get(agents::tool_catalog))
         .route(
+            "/api/v2/agents/system-prompt/generate",
+            axum::routing::post(agents::generate_system_prompt),
+        )
+        .route(
             "/api/v2/assistant",
             get(assistant::get).patch(assistant::update),
         )

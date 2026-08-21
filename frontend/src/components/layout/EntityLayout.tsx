@@ -1,6 +1,6 @@
 import { Suspense, useEffect, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
@@ -20,6 +20,7 @@ interface EntityLayoutProps {
  */
 export function EntityLayout({ titleKey, list }: EntityLayoutProps) {
   const { t } = useTranslation('navigation')
+  const location = useLocation()
   const navigate = useNavigate()
   const title = t(titleKey)
 
@@ -45,7 +46,7 @@ export function EntityLayout({ titleKey, list }: EntityLayoutProps) {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* Keeps the list column painted while the detail chunk downloads. */}
           <Suspense fallback={<RouteFallback />}>
-            <Outlet />
+            <Outlet key={location.pathname} />
           </Suspense>
         </div>
       </div>

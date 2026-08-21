@@ -18,6 +18,7 @@ import {
 import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import { MAX_RETRY_ATTEMPTS } from '@/lib/api-v2/retry'
+import { cn } from '@/lib/utils'
 import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useFileNavStore } from '@/stores/fileNavStore'
@@ -46,6 +47,7 @@ export interface ConversationChatViewProps {
     showManage: boolean
     showTurnTrace: boolean
     showWorkspace: boolean
+    showTerminal?: boolean
     allowMentions: boolean
   }
   onConversationUpdated?: (payload: ConversationUpdatedPayload) => void
@@ -70,6 +72,8 @@ export interface ConversationChatViewProps {
   agentIsSystem?: boolean
   /** Whether scheduler gaps represent a private moderator-model call. */
   moderatorEnabled?: boolean
+  /** Use tighter chrome when the conversation is embedded in a floating panel. */
+  compact?: boolean
 }
 
 function workspaceFilesOpenStorageKey(conversationId: string): string {
@@ -132,6 +136,7 @@ export function ConversationChatView({
   supportsReasoningEffort,
   agentIsSystem,
   moderatorEnabled,
+  compact = false,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
@@ -269,13 +274,25 @@ export function ConversationChatView({
     return <PageState variant="loading" title={t('messages.loading')} />
   }
 
-  const hint = agents.length === 0 ? t('composer.noAgents') : undefined
+  const hint = !agentIsSystem && agents.length === 0 ? t('composer.noAgents') : undefined
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-background px-4 lg:px-5">
+      <header
+        className={cn(
+          'flex shrink-0 items-center justify-between border-b border-border/60 bg-background',
+          compact ? 'h-11 gap-2 px-3' : 'h-14 gap-4 px-4 lg:px-5',
+        )}
+      >
         <div className="flex min-w-0 items-center gap-2">
-          <h1 className="font-serif truncate text-base font-semibold tracking-tight">{title}</h1>
+          <h1
+            className={cn(
+              'font-serif truncate font-semibold tracking-tight',
+              compact ? 'text-sm' : 'text-base',
+            )}
+          >
+            {title}
+          </h1>
           {renderHeaderContext?.(isConversationStreaming)}
           {subtitle ? <span className="hidden text-xs text-muted-foreground lg:inline">{subtitle}</span> : null}
         </div>
@@ -287,15 +304,17 @@ export function ConversationChatView({
               disabled={isConversationStreaming}
             />
           ) : null}
-          <Button
-            variant={isDockOpen ? 'secondary' : 'ghost'}
-            size="icon"
-            onClick={() => void toggleDock().catch(() => undefined)}
-            aria-label={isDockOpen ? t('terminal.hide') : t('terminal.show')}
-            aria-pressed={isDockOpen}
-          >
-            <SquareTerminal className="h-4 w-4" />
-          </Button>
+          {capabilities.showTerminal !== false ? (
+            <Button
+              variant={isDockOpen ? 'secondary' : 'ghost'}
+              size="icon"
+              onClick={() => void toggleDock().catch(() => undefined)}
+              aria-label={isDockOpen ? t('terminal.hide') : t('terminal.show')}
+              aria-pressed={isDockOpen}
+            >
+              <SquareTerminal className="h-4 w-4" />
+            </Button>
+          ) : null}
           {capabilities.showWorkspace ? (
             <Button
               variant={workspaceFilesOpen ? 'secondary' : 'ghost'}
@@ -373,6 +392,8 @@ export function ConversationChatView({
                 groupAgents={agents}
                 allowMentions={capabilities.allowMentions}
                 disabledReason={disabledComposerReason}
+                placeholder={agentIsSystem ? t('composer.assistantPlaceholder') : undefined}
+                allowConversationDrop={agentIsSystem}
               />
             </div>
           </WorkspaceEditorStage>

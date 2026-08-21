@@ -16,6 +16,11 @@ import {
   type WorkspaceErrorMessageKey,
 } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
+import {
+  CONVERSATION_ID_MIME,
+  conversationIdFromDataTransfer,
+  hasConversationIdDrag,
+} from '@/lib/conversationDrag'
 import { useAuthStore } from '@/stores/authStore'
 import {
   isWorkspaceRelativePath,
@@ -52,6 +57,8 @@ type ComposerNoticeKey =
   | 'composer.drop.ready'
   | 'composer.drop.fileAdded'
   | 'composer.drop.directoryInserted'
+  | 'composer.drop.conversationReady'
+  | 'composer.drop.conversationInserted'
   | 'composer.drop.unsupported'
   | 'composer.drop.noWorkspace'
   | 'composer.drop.unreadable'
@@ -68,6 +75,7 @@ interface ComposerProps {
   onCancel?: () => void
   isStreaming?: boolean
   hint?: string
+  placeholder?: string
   groupAgents?: GroupAgentRead[]
   conversationId?: string
   workspaceId?: string | null
@@ -82,6 +90,8 @@ interface ComposerProps {
    * it thinks is a per-question choice.
    */
   supportsReasoningEffort?: boolean
+  /** Allow the built-in Assistant to receive conversation IDs from the sidebar. */
+  allowConversationDrop?: boolean
 }
 
 /** Reasoning depth, matching the backend's five levels. */
@@ -118,12 +128,13 @@ function attachmentDetails(attachment: PendingAttachment) {
   }
 }
 
-function isRecognizedDrop(dataTransfer: DataTransfer): boolean {
+function isRecognizedDrop(dataTransfer: DataTransfer, allowConversationDrop: boolean): boolean {
   const types = Array.from(dataTransfer.types)
   return (dataTransfer.files?.length ?? 0) > 0
     || types.includes('Files')
     || types.includes(WORKSPACE_ITEM_MIME)
     || types.includes('text/plain')
+    || (allowConversationDrop && types.includes(CONVERSATION_ID_MIME))
 }
 
 function PendingAttachmentRow({
@@ -175,6 +186,7 @@ export function Composer({
   onCancel,
   isStreaming,
   hint,
+  placeholder,
   groupAgents = [],
   conversationId,
   workspaceId,
@@ -183,6 +195,7 @@ export function Composer({
   allowMentions = true,
   disabledReason,
   supportsReasoningEffort = false,
+  allowConversationDrop = false,
 }: ComposerProps) {
   const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
@@ -264,12 +277,7 @@ export function Composer({
     resizeTextarea()
   }, [value, resizeTextarea])
 
-  const insertDirectoryPaths = useCallback((paths: string[]) => {
-    const cleanPaths = Array.from(new Set(
-      paths.map((path) => path.trim()).filter((path) => path.length > 0),
-    ))
-    if (cleanPaths.length === 0) return
-
+  const insertTextAtCursor = useCallback((inserted: string) => {
     const textarea = textareaRef.current
     const draft = valueRef.current
     const hasFocus = textarea !== null && document.activeElement === textarea
@@ -277,7 +285,6 @@ export function Composer({
     const end = hasFocus ? textarea.selectionEnd : draft.length
     const before = draft.slice(0, start)
     const after = draft.slice(end)
-    const inserted = cleanPaths.join(' ')
     const leadingSpace = before.length > 0 && !/\s$/.test(before) ? ' ' : ''
     const trailingSpace = after.length > 0 && !/^\s/.test(after) ? ' ' : ''
     const next = `${before}${leadingSpace}${inserted}${trailingSpace}${after}`
@@ -285,14 +292,23 @@ export function Composer({
 
     updateValue(next)
     setShowMention(false)
-    showNotice('composer.drop.directoryInserted', 'status', { count: cleanPaths.length })
     requestAnimationFrame(() => {
       const current = textareaRef.current
       if (!current) return
       current.setSelectionRange(cursor, cursor)
       current.focus()
     })
-  }, [showNotice, updateValue])
+  }, [updateValue])
+
+  const insertDirectoryPaths = useCallback((paths: string[]) => {
+    const cleanPaths = Array.from(new Set(
+      paths.map((path) => path.trim()).filter((path) => path.length > 0),
+    ))
+    if (cleanPaths.length === 0) return
+
+    insertTextAtCursor(cleanPaths.join(' '))
+    showNotice('composer.drop.directoryInserted', 'status', { count: cleanPaths.length })
+  }, [insertTextAtCursor, showNotice])
 
   const addWorkspaceMetadata = useCallback(
     (metadata: ConversationWorkspaceFileMetadata[]) => {
@@ -601,11 +617,16 @@ export function Composer({
   const resetDragState = useCallback(() => {
     dragDepthRef.current = 0
     setIsDragActive(false)
-    setNotice((current) => current?.key === 'composer.drop.ready' ? null : current)
+    setNotice((current) => (
+      current?.key === 'composer.drop.ready'
+      || current?.key === 'composer.drop.conversationReady'
+        ? null
+        : current
+    ))
   }, [])
 
   const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isRecognizedDrop(event.dataTransfer)) return
+    if (!isRecognizedDrop(event.dataTransfer, allowConversationDrop)) return
     event.preventDefault()
     if (isDisabled) {
       event.dataTransfer.dropEffect = 'none'
@@ -614,7 +635,11 @@ export function Composer({
     dragDepthRef.current += 1
     if (dragDepthRef.current === 1) {
       setIsDragActive(true)
-      showNotice('composer.drop.ready')
+      showNotice(
+        allowConversationDrop && hasConversationIdDrag(event.dataTransfer)
+          ? 'composer.drop.conversationReady'
+          : 'composer.drop.ready',
+      )
     }
   }
 
@@ -624,12 +649,17 @@ export function Composer({
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
     if (dragDepthRef.current === 0) {
       setIsDragActive(false)
-      setNotice((current) => current?.key === 'composer.drop.ready' ? null : current)
+      setNotice((current) => (
+        current?.key === 'composer.drop.ready'
+        || current?.key === 'composer.drop.conversationReady'
+          ? null
+          : current
+      ))
     }
   }
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isRecognizedDrop(event.dataTransfer)) return
+    if (!isRecognizedDrop(event.dataTransfer, allowConversationDrop)) return
     event.preventDefault()
     if (isDisabled) {
       event.dataTransfer.dropEffect = 'none'
@@ -644,6 +674,15 @@ export function Composer({
     if (isDisabled) {
       event.dataTransfer.dropEffect = 'none'
       return
+    }
+
+    if (allowConversationDrop && hasConversationIdDrag(event.dataTransfer)) {
+      const conversationId = conversationIdFromDataTransfer(event.dataTransfer)
+      if (conversationId) {
+        insertTextAtCursor(`conversation_id: ${conversationId}`)
+        showNotice('composer.drop.conversationInserted')
+        return
+      }
     }
 
     const workspaceItems = workspaceItemsFromDataTransfer(event.dataTransfer)
@@ -742,7 +781,7 @@ export function Composer({
             onChange={handleChange}
             onKeyDown={onKeyDown}
             onPaste={handlePaste}
-            placeholder={t('composer.placeholder')}
+            placeholder={placeholder ?? t('composer.placeholder')}
             rows={1}
             aria-label={t('composer.message')}
             aria-describedby="composer-drop-status"

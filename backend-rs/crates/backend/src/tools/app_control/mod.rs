@@ -65,6 +65,8 @@ pub enum TargetKind {
     Skill,
     Workspace,
     Group,
+    GroupTemplate,
+    GroupNote,
     Chat,
 }
 
@@ -77,6 +79,8 @@ impl TargetKind {
             "skill" => Some(Self::Skill),
             "workspace" => Some(Self::Workspace),
             "group" => Some(Self::Group),
+            "group_template" => Some(Self::GroupTemplate),
+            "group_note" => Some(Self::GroupNote),
             "chat" => Some(Self::Chat),
             _ => None,
         }
@@ -90,19 +94,23 @@ impl TargetKind {
             Self::Skill => "skill",
             Self::Workspace => "workspace",
             Self::Group => "group",
+            Self::GroupTemplate => "group_template",
+            Self::GroupNote => "group_note",
             Self::Chat => "chat",
         }
     }
 
     /// Every kind, for `AppState`'s counts and for error messages that list
     /// what the caller could have asked for.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Agent,
         Self::Provider,
         Self::Mcp,
         Self::Skill,
         Self::Workspace,
         Self::Group,
+        Self::GroupTemplate,
+        Self::GroupNote,
         Self::Chat,
     ];
 }

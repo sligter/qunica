@@ -6106,16 +6106,19 @@ async fn resolve_workspaces(
     group: &GroupRuntimeConfig,
     thread_id: &str,
 ) -> anyhow::Result<ResolvedWorkspaces> {
-    let bound_group_root = if group.conversation_kind == "group" {
-        load_local_workspace_root(pool, group.workspace_id.as_deref(), &agent.owner_id).await?
+    let bound_conversation_root =
+        load_local_workspace_root(pool, group.workspace_id.as_deref(), &agent.owner_id).await?;
+    let notes_root = if group.conversation_kind == "group" {
+        bound_conversation_root
+            .as_deref()
+            .and_then(safe_group_notes_root)
     } else {
         None
     };
-    let notes_root = bound_group_root.as_deref().and_then(safe_group_notes_root);
     let group_root = if agent.workspace_mode.uses_group_workspace() {
         match load_task_worktree_root(pool, &group.id, thread_id).await? {
             Some(root) => Some(root),
-            None => bound_group_root.clone(),
+            None => bound_conversation_root.clone(),
         }
     } else {
         None
@@ -6730,7 +6733,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["agent", "provider", "mcp", "skill", "workspace", "group", "chat"],
+                        "enum": ["agent", "provider", "mcp", "skill", "workspace", "group", "group_template", "group_note", "chat"],
                         "description": "Which family of resources to list"
                     }
                 },
@@ -6739,13 +6742,13 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "AppGet" => (
-            "Read one configured resource in full. A group also includes its current Agent              and user members. Secrets are never returned: a provider reports whether an              API key is set, not the key itself.",
+            "Read one configured resource in full. A group also includes its current Agent              and user members; a group_note includes its current app-managed content. Secrets              are never returned: a provider reports whether an API key is set, not the key itself.",
             json!({
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["agent", "provider", "mcp", "skill", "workspace", "group", "chat"],
+                        "enum": ["agent", "provider", "mcp", "skill", "workspace", "group", "group_template", "group_note", "chat"],
                         "description": "Which family the id belongs to"
                     },
                     "id": { "type": "string", "description": "The resource id" }
@@ -6765,7 +6768,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                 "properties": {
                     "target_kind": {
                         "type": "string",
-                        "enum": ["agent", "skill", "workspace", "group", "mcp", "chat"],
+                        "enum": ["agent", "skill", "workspace", "group", "group_template", "group_note", "mcp", "chat"],
                         "description": "What to change. Providers, secrets and deletions                                         cannot be staged; use AppPrefill for those."
                     },
                     "action": {
@@ -6779,7 +6782,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                     },
                     "payload": {
                         "type": "object",
-                        "description": "The fields for this kind. Must not contain an API key,                                         MCP headers, or env. For group/create include a                                         workspace_id and regular group fields; initial_agents                                         and message are optional. For group/update, provide                                         target_id and {\"message\": \"...\"} to message it.                                         To change membership, propose it separately with                                         {\"membership\": {\"operation\": \"add_agent\" or                                         \"remove_agent\", \"agent_id\": \"...\"}} or                                         {\"membership\": {\"operation\": \"add_user\" or                                         \"remove_user\", \"email\": \"exact address\"}}.                                         For chat/create use {\"agent_id\": \"...\",                                         \"message\": \"optional first message\"}; for                                         chat/update provide target_id and {\"message\":                                         \"...\"}. For a workspace, prefer {\"backend_type\":                                         \"local\", \"auto_create\": true} and omit                                         local_path."
+                        "description": "The fields for this kind. Must not contain an API key,                                         MCP headers, or env. For group/create include a                                         workspace_id or template_id; initial_agents and message                                         are optional. For group/update, provide target_id and                                         {\"message\": \"...\"} to message it. To change                                         membership, propose it separately with {\"membership\":                                         {\"operation\": \"add_agent\" or \"remove_agent\",                                         \"agent_id\": \"...\"}} or {\"membership\":                                         {\"operation\": \"add_user\" or \"remove_user\",                                         \"email\": \"exact address\"}}. For                                         group_template/create use {\"name\": \"...\",                                         \"group_id\": \"...\"}. For group_note/create use                                         {\"group_id\": \"...\", \"title\": \"...\",                                         \"content\": \"optional\"}; for update provide                                         target_id and title and/or content. For chat/create use                                         {\"agent_id\": \"...\", \"message\": \"optional                                         first message\"}; for chat/update provide target_id                                         and {\"message\": \"...\"}. For a workspace, prefer                                         {\"backend_type\": \"local\", \"auto_create\":                                         true} and omit local_path."
                     }
                 },
                 "required": ["target_kind", "action"],
