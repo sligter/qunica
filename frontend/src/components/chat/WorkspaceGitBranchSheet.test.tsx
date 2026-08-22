@@ -66,6 +66,26 @@ describe('WorkspaceGitBranchSheet i18n', () => {
     expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
   })
 
+  it('does not switch away from a task-bound branch', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    queryClient.setQueryData(workspaceGitBranchesQueryKey('group-1', 'thread-1'), branches)
+    render(
+      <QueryClientProvider client={queryClient}>
+        <WorkspaceGitBranchSheet
+          groupId="group-1"
+          threadId="thread-1"
+          branchLocked
+          open
+          onOpenChange={vi.fn()}
+          onError={vi.fn()}
+          onSetRemote={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: /^feature\/RAW_原文$/ })).toBeDisabled()
+  })
+
   it('shows localized English branch-delete failure framing with the raw Error message', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('BRANCH_DELETE_RAW_ERROR')))
     renderSheet()

@@ -695,6 +695,7 @@ export interface GroupThread {
   thread_type: string | null
   title: string | null
   git_branch: string | null
+  worktree_path: string | null
   goal: string | null
   status: string
   priority: number

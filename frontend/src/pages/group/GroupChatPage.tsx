@@ -95,6 +95,8 @@ export function GroupChatPage() {
       key={`groups:${groupId}:${selectedThread?.id ?? 'no-task'}`}
       conversationId={groupId}
       threadId={selectedThread?.id}
+      threadGitBranch={selectedThread?.git_branch}
+      threadWorktreePath={selectedThread?.worktree_path}
       workspaceId={group.data.workspace_id}
       scope="groups"
       agents={agents}

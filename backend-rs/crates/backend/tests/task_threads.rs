@@ -243,6 +243,7 @@ async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
     let repository = tempfile::tempdir().unwrap();
     init_git_repo(repository.path());
     run_git(repository.path(), &["branch", "feature/existing"]);
+    let repository_root = std::fs::canonicalize(repository.path()).unwrap();
 
     let workspace_id = Uuid::new_v4().to_string();
     sqlx::query(
@@ -282,7 +283,7 @@ async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(status, StatusCode::CREATED, "{existing:?}");
     assert_eq!(existing["git_branch"], "feature/existing");
     let existing_path: String =
         sqlx::query_scalar("SELECT worktree_path FROM threads WHERE id = ?")
@@ -290,9 +291,17 @@ async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
             .fetch_one(state.db.pool())
             .await
             .unwrap();
+    assert!(
+        Path::new(&existing_path).starts_with(repository_root.join(".worktrees").join(&group_id))
+    );
+    assert_eq!(existing["worktree_path"], existing_path.as_str());
     assert_eq!(
         git_stdout(Path::new(&existing_path), &["branch", "--show-current"]),
         "feature/existing"
+    );
+    assert_eq!(
+        git_stdout(repository.path(), &["status", "--porcelain"]),
+        ""
     );
 
     let (status, created) = send(
@@ -312,6 +321,9 @@ async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
         .fetch_one(state.db.pool())
         .await
         .unwrap();
+    assert!(
+        Path::new(&created_path).starts_with(repository_root.join(".worktrees").join(&group_id))
+    );
     assert_eq!(
         git_stdout(Path::new(&created_path), &["branch", "--show-current"]),
         "task/new"
@@ -382,7 +394,6 @@ async fn task_threads_bind_existing_or_new_git_branches_to_worktrees() {
         repository.path(),
         &["worktree", "remove", "--force", &rebound_path],
     );
-    let _ = std::fs::remove_dir_all(&state.task_worktree_root);
 }
 
 #[tokio::test]

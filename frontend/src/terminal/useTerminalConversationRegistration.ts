@@ -19,6 +19,7 @@ export function resolveTerminalConversationTarget(
   workspaceId: string | null,
   workspaces: WorkspaceQueryState,
   desktop = isDesktopRuntime(),
+  cwdOverride?: string | null,
 ): TerminalConversationTarget {
   if (!desktop) {
     return { conversationId, availability: 'desktopRequired' }
@@ -38,7 +39,7 @@ export function resolveTerminalConversationTarget(
     return { conversationId, availability: 'localWorkspaceRequired' }
   }
 
-  const cwd = workspace.local_path?.trim() ?? ''
+  const cwd = cwdOverride?.trim() || workspace.local_path?.trim() || ''
   if (cwd === '' || !looksAbsolute(cwd)) {
     return { conversationId, availability: 'pathRequired' }
   }
@@ -52,6 +53,7 @@ export function resolveTerminalConversationTarget(
 export function useTerminalConversationRegistration(
   conversationId: string,
   workspaceId: string | null,
+  cwdOverride?: string | null,
 ): TerminalConversationTarget {
   const workspaces = useWorkspaces()
   const { registerConversation } = useTerminalRuntime()
@@ -60,8 +62,10 @@ export function useTerminalConversationRegistration(
       conversationId,
       workspaceId,
       { data: workspaces.data, isLoading: workspaces.isLoading },
+      undefined,
+      cwdOverride,
     ),
-    [conversationId, workspaceId, workspaces.data, workspaces.isLoading],
+    [conversationId, cwdOverride, workspaceId, workspaces.data, workspaces.isLoading],
   )
 
   useEffect(

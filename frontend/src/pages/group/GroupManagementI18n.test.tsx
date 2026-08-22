@@ -270,6 +270,7 @@ const taskThread: GroupThread = {
   thread_type: 'task_thread',
   title: 'Existing task',
   git_branch: null,
+  worktree_path: null,
   goal: null,
   status: 'active',
   priority: 0,
@@ -372,7 +373,7 @@ describe('group management i18n', () => {
     expect(screen.getByRole('button', { name: '新任务' })).toBeVisible()
     expect(screen.getByRole('button', { name: '隐藏工作区文件' })).toBeVisible()
     expect(document.title).toBe('原样 Group 42 · AG Swarmer')
-    expect(mocks.registerTerminal).toHaveBeenCalledWith('group-1', 'workspace-1')
+    expect(mocks.registerTerminal).toHaveBeenCalledWith('thread-1', 'workspace-1', null)
   })
 
   it('creates and selects a named group task', async () => {

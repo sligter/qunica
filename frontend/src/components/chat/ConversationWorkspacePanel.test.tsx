@@ -20,7 +20,12 @@ vi.mock('@/components/chat/WorkspaceFilesTab', () => ({
 }))
 
 vi.mock('@/components/chat/WorkspaceGitTab', () => ({
-  WorkspaceGitTab: (props: { groupId: string | undefined; scope: string }) => {
+  WorkspaceGitTab: (props: {
+    groupId: string | undefined
+    scope: string
+    threadId?: string
+    taskBranch?: string | null
+  }) => {
     panelMocks.git(props)
     return <div>git content</div>
   },
@@ -72,6 +77,8 @@ describe('conversation workspace panels', () => {
     renderWithClient(
       <GroupWorkspacePanel
         groupId="group-1"
+        threadId="thread-1"
+        taskBranch="ui-enhanced"
         workspaceId="workspace-group"
         width={320}
       />,
@@ -89,6 +96,8 @@ describe('conversation workspace panels', () => {
     expect(panelMocks.git).toHaveBeenCalledWith(expect.objectContaining({
       groupId: 'group-1',
       scope: 'groups',
+      threadId: 'thread-1',
+      taskBranch: 'ui-enhanced',
     }))
   })
 })

@@ -48,6 +48,7 @@ pub struct ThreadResponse {
     thread_type: Option<String>,
     title: Option<String>,
     git_branch: Option<String>,
+    worktree_path: Option<String>,
     goal: Option<String>,
     status: String,
     priority: i64,
@@ -75,6 +76,7 @@ struct ThreadAccessRow {
     agent_id: Option<String>,
     title: Option<String>,
     git_branch: Option<String>,
+    worktree_path: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -117,6 +119,7 @@ impl From<ThreadAccessRow> for ThreadResponse {
             thread_type,
             title: row.title,
             git_branch: row.git_branch,
+            worktree_path: row.worktree_path,
             goal: None,
             status: row.status,
             priority: 0,
@@ -155,7 +158,7 @@ pub async fn list_group(
     .await?;
 
     let rows: Vec<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.status, t.created_at, t.updated_at, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
          FROM threads t \
@@ -216,7 +219,7 @@ pub async fn create_group(
             ConversationRoot::conversation(ConversationScope::Groups, &group_id, &owner_id),
         )
         .await?;
-        let worktree_path = state.task_worktree_root.join(&group_id).join(&id);
+        let worktree_path = workspace.root.join(".worktrees").join(&group_id).join(&id);
         let binding =
             workspace_git::create_task_worktree(&workspace.root, &worktree_path, requested_branch)
                 .await
@@ -567,7 +570,7 @@ async fn fetch_owned_thread(
     owner_id: &str,
 ) -> Result<ThreadAccessRow, ApiError> {
     let row: Option<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.status, t.created_at, t.updated_at, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
          FROM threads t \

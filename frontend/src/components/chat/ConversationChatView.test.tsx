@@ -135,6 +135,7 @@ interface ConversationRenderOptions {
   showTerminal?: boolean
   scope?: 'groups' | 'direct-chats'
   threadId?: string
+  threadWorktreePath?: string | null
   workspaceId?: string | null
 }
 
@@ -145,6 +146,7 @@ function conversationElement({
   showTerminal,
   scope = 'direct-chats',
   threadId,
+  threadWorktreePath,
   workspaceId = 'workspace-1',
 }: ConversationRenderOptions = {}) {
   return (
@@ -152,6 +154,7 @@ function conversationElement({
       <ConversationChatView
         conversationId={conversationId}
         threadId={threadId}
+        threadWorktreePath={threadWorktreePath}
         workspaceId={workspaceId}
         scope={scope}
         agents={[]}
@@ -283,11 +286,26 @@ describe('ConversationChatView', () => {
     const user = userEvent.setup()
     renderConversation()
 
-    expect(terminalMocks.register).toHaveBeenCalledWith('chat-1', 'workspace-1')
+    expect(terminalMocks.register).toHaveBeenCalledWith('chat-1', 'workspace-1', undefined)
     const button = screen.getByRole('button', { name: 'Show terminal' })
     expect(button).toHaveAttribute('aria-pressed', 'false')
     await user.click(button)
     expect(terminalMocks.toggleDock).toHaveBeenCalledTimes(1)
+  })
+
+  it('registers a group task terminal in its worktree', () => {
+    renderConversation({
+      conversationId: 'group-1',
+      scope: 'groups',
+      threadId: 'thread-1',
+      threadWorktreePath: 'D:/projects/example/.worktrees/group-1/thread-1',
+    })
+
+    expect(terminalMocks.register).toHaveBeenCalledWith(
+      'thread-1',
+      'workspace-1',
+      'D:/projects/example/.worktrees/group-1/thread-1',
+    )
   })
 
   it('passes group conversation file scope and workspace identity to the composer', () => {

@@ -18,6 +18,8 @@ import type { ConversationScope, GroupWorkspaceGitBranch } from '@/types/api'
 interface WorkspaceGitBranchSheetProps {
   groupId: string | undefined
   scope?: ConversationScope
+  threadId?: string
+  branchLocked?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   onError: (error: string | null) => void
@@ -31,6 +33,8 @@ function displayError(error: unknown) {
 export function WorkspaceGitBranchSheet({
   groupId,
   scope = 'groups',
+  threadId,
+  branchLocked = false,
   open,
   onOpenChange,
   onError,
@@ -41,11 +45,11 @@ export function WorkspaceGitBranchSheet({
   const [renameBranch, setRenameBranch] = useState<GroupWorkspaceGitBranch | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleteBranch, setDeleteBranch] = useState<GroupWorkspaceGitBranch | null>(null)
-  const branches = useGroupWorkspaceGitBranches(groupId)
-  const create = useCreateGroupWorkspaceGitBranch(groupId)
-  const switchBranch = useSwitchGroupWorkspaceGitBranch(groupId, scope)
-  const rename = useRenameGroupWorkspaceGitBranch(groupId)
-  const remove = useDeleteGroupWorkspaceGitBranch(groupId)
+  const branches = useGroupWorkspaceGitBranches(groupId, threadId)
+  const create = useCreateGroupWorkspaceGitBranch(groupId, threadId)
+  const switchBranch = useSwitchGroupWorkspaceGitBranch(groupId, scope, threadId)
+  const rename = useRenameGroupWorkspaceGitBranch(groupId, threadId)
+  const remove = useDeleteGroupWorkspaceGitBranch(groupId, threadId)
   const local = branches.data?.branches.filter((branch) => branch.kind === 'local') ?? []
   const remote = branches.data?.branches.filter((branch) => branch.kind === 'remote') ?? []
 
@@ -54,7 +58,7 @@ export function WorkspaceGitBranchSheet({
     void operation().catch((error: unknown) => onError(displayError(error)))
   }
 
-  const branchRow = (branch: GroupWorkspaceGitBranch) => <div key={`${branch.kind}:${branch.full_name}`} className="group flex min-w-0 items-center gap-2 px-4 py-2 hover:bg-muted/70"><button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" disabled={branch.current || switchBranch.isPending} onClick={() => run(() => switchBranch.mutateAsync({ name: branch.name, kind: branch.kind }))}><GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><span className="truncate text-xs">{branch.name}</span>{branch.current ? <Check className="ml-auto h-3.5 w-3.5 text-primary" /> : null}</button>{branch.kind === 'local' && !branch.current ? <><Button type="button" variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => { setRenameBranch(branch); setRenameValue(branch.name) }} aria-label={t('chat:workspace.gitPanel.renameNamed', { name: branch.name })} title={t('chat:workspace.gitPanel.renameBranch')}><Pencil className="h-3.5 w-3.5" /></Button><Button type="button" variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => setDeleteBranch(branch)} aria-label={t('chat:workspace.gitPanel.deleteNamed', { name: branch.name })} title={t('chat:workspace.gitPanel.deleteBranch')}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></> : null}</div>
+  const branchRow = (branch: GroupWorkspaceGitBranch) => <div key={`${branch.kind}:${branch.full_name}`} className="group flex min-w-0 items-center gap-2 px-4 py-2 hover:bg-muted/70"><button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" disabled={branch.current || branchLocked || switchBranch.isPending} onClick={() => run(() => switchBranch.mutateAsync({ name: branch.name, kind: branch.kind }))}><GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><span className="truncate text-xs">{branch.name}</span>{branch.current ? <Check className="ml-auto h-3.5 w-3.5 text-primary" /> : null}</button>{branch.kind === 'local' && !branch.current ? <><Button type="button" variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => { setRenameBranch(branch); setRenameValue(branch.name) }} aria-label={t('chat:workspace.gitPanel.renameNamed', { name: branch.name })} title={t('chat:workspace.gitPanel.renameBranch')}><Pencil className="h-3.5 w-3.5" /></Button><Button type="button" variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => setDeleteBranch(branch)} aria-label={t('chat:workspace.gitPanel.deleteNamed', { name: branch.name })} title={t('chat:workspace.gitPanel.deleteBranch')}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></> : null}</div>
 
   return <>
     <Sheet open={open} onOpenChange={onOpenChange}>

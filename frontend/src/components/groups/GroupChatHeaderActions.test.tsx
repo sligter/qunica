@@ -45,6 +45,7 @@ function thread(id: string, title: string): GroupThread {
     thread_type: 'task_thread',
     title,
     git_branch: null,
+    worktree_path: null,
     goal: null,
     status: 'active',
     priority: 0,

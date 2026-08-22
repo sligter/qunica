@@ -34,6 +34,8 @@ type WorkspaceFilesOpenUpdater = boolean | ((current: boolean) => boolean)
 export interface ConversationChatViewProps {
   conversationId: string
   threadId?: string
+  threadGitBranch?: string | null
+  threadWorktreePath?: string | null
   workspaceId: string | null
   scope: ConversationScope
   agents: GroupAgentRead[]
@@ -120,6 +122,8 @@ function isEditableShortcutTarget(event: globalThis.KeyboardEvent): boolean {
 export function ConversationChatView({
   conversationId,
   threadId,
+  threadGitBranch,
+  threadWorktreePath,
   workspaceId,
   scope,
   agents,
@@ -140,7 +144,7 @@ export function ConversationChatView({
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
   const { isDockOpen, toggleDock } = useTerminalRuntime()
-  useTerminalConversationRegistration(conversationId, workspaceId)
+  useTerminalConversationRegistration(threadId ?? conversationId, workspaceId, threadWorktreePath)
   const stateId = threadId ?? conversationId
   const messagesQuery = useConversationMessages(scope, conversationId, threadId)
   const stream = useSendMessageStream(conversationId, {
@@ -412,6 +416,8 @@ export function ConversationChatView({
             <GroupWorkspacePanel
               scope={scope}
               groupId={conversationId}
+              threadId={threadId}
+              taskBranch={threadGitBranch}
               workspaceId={workspaceId}
               width={workspaceFilesPane.width}
             />

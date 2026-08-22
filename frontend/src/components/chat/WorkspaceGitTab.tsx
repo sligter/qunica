@@ -73,6 +73,8 @@ import type {
 interface WorkspaceGitTabProps {
   groupId: string | undefined
   scope?: ConversationScope
+  threadId?: string
+  taskBranch?: string | null
 }
 
 type ReviewMode = 'changes' | 'history'
@@ -515,7 +517,12 @@ async function openExternal(url: string) {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabProps) {
+export function WorkspaceGitTab({
+  groupId,
+  scope = 'groups',
+  threadId,
+  taskBranch,
+}: WorkspaceGitTabProps) {
   const { t, i18n } = useTranslation(['chat', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const [reviewMode, setReviewMode] = useState<ReviewMode>('changes')
@@ -540,29 +547,40 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
   const [query, setQuery] = useState('')
   const actionsRef = useRef<HTMLDivElement>(null)
 
-  const status = useGroupWorkspaceGitStatus(groupId)
+  const status = useGroupWorkspaceGitStatus(groupId, threadId)
   const branchDiff = useGroupWorkspaceGitDiff(
     status.data?.upstream && (status.data.ahead ?? 0) > 0 ? groupId : undefined,
     'branch',
+    undefined,
+    threadId,
   )
-  const diff = useGroupWorkspaceGitDiff(selection ? groupId : undefined, selection?.mode ?? 'worktree', selection?.path)
-  const log = useGroupWorkspaceGitLog(groupId, { limit: 50, skip: historySkip })
-  const commit = useGroupWorkspaceGitCommit(groupId, selectedCommit)
-  const commitDiff = useGroupWorkspaceGitCommitDiff(groupId, selectedCommit)
-  const stage = useStageGroupWorkspaceGit(groupId)
-  const unstage = useUnstageGroupWorkspaceGit(groupId)
-  const commitChanges = useCommitGroupWorkspaceGit(groupId)
-  const generateMessage = useGenerateGroupWorkspaceGitCommitMessage(groupId)
-  const pull = usePullGroupWorkspaceGit(groupId, scope)
-  const push = usePushGroupWorkspaceGit(groupId)
-  const forcePush = useForcePushGroupWorkspaceGit(groupId)
-  const rebase = useRebaseGroupWorkspaceGit(groupId, scope)
-  const fetch = useFetchGroupWorkspaceGit(groupId)
-  const init = useInitGroupWorkspaceGit(groupId)
-  const discard = useDiscardGroupWorkspaceGit(groupId, scope)
-  const ignore = useIgnoreGroupWorkspaceGit(groupId)
-  const setRemote = useSetGroupWorkspaceGitRemote(groupId)
-  const createBranchFromCommit = useCreateGroupWorkspaceGitBranchFromCommit(groupId, selectedCommit)
+  const diff = useGroupWorkspaceGitDiff(
+    selection ? groupId : undefined,
+    selection?.mode ?? 'worktree',
+    selection?.path,
+    threadId,
+  )
+  const log = useGroupWorkspaceGitLog(groupId, { limit: 50, skip: historySkip }, threadId)
+  const commit = useGroupWorkspaceGitCommit(groupId, selectedCommit, threadId)
+  const commitDiff = useGroupWorkspaceGitCommitDiff(groupId, selectedCommit, undefined, threadId)
+  const stage = useStageGroupWorkspaceGit(groupId, threadId)
+  const unstage = useUnstageGroupWorkspaceGit(groupId, threadId)
+  const commitChanges = useCommitGroupWorkspaceGit(groupId, threadId)
+  const generateMessage = useGenerateGroupWorkspaceGitCommitMessage(groupId, threadId)
+  const pull = usePullGroupWorkspaceGit(groupId, scope, threadId)
+  const push = usePushGroupWorkspaceGit(groupId, threadId)
+  const forcePush = useForcePushGroupWorkspaceGit(groupId, threadId)
+  const rebase = useRebaseGroupWorkspaceGit(groupId, scope, threadId)
+  const fetch = useFetchGroupWorkspaceGit(groupId, threadId)
+  const init = useInitGroupWorkspaceGit(groupId, threadId)
+  const discard = useDiscardGroupWorkspaceGit(groupId, scope, threadId)
+  const ignore = useIgnoreGroupWorkspaceGit(groupId, threadId)
+  const setRemote = useSetGroupWorkspaceGitRemote(groupId, threadId)
+  const createBranchFromCommit = useCreateGroupWorkspaceGitBranchFromCommit(
+    groupId,
+    selectedCommit,
+    threadId,
+  )
 
   const hasGroupId = Boolean(groupId)
   const files = status.data?.files ?? []
@@ -609,7 +627,7 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
     setSelectedCommit(undefined)
     setSelection(null)
     setReviewOpen(false)
-  }, [groupId])
+  }, [groupId, threadId])
 
   useEffect(() => {
     try {
@@ -1122,6 +1140,8 @@ export function WorkspaceGitTab({ groupId, scope = 'groups' }: WorkspaceGitTabPr
       <WorkspaceGitBranchSheet
         groupId={groupId}
         scope={scope}
+        threadId={threadId}
+        branchLocked={Boolean(taskBranch)}
         open={branchSheetOpen}
         onOpenChange={setBranchSheetOpen}
         onError={setGitError}

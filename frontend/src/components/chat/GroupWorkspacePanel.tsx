@@ -14,6 +14,8 @@ import type { ConversationScope } from '@/types/api'
 interface GroupWorkspacePanelProps {
   groupId: string | undefined
   scope?: ConversationScope
+  threadId?: string
+  taskBranch?: string | null
   workspaceId?: string | null
   width?: number
   className?: string
@@ -30,6 +32,8 @@ function readStoredTab(): WorkspaceTab {
 export function GroupWorkspacePanel({
   groupId,
   scope = 'groups',
+  threadId,
+  taskBranch,
   workspaceId = null,
   width,
   className,
@@ -46,7 +50,7 @@ export function GroupWorkspacePanel({
     // Refresh the data behind the tab being opened (polling stays as-is).
     if (!groupId) return
     if (next === 'git') {
-      void queryClient.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId) })
+      void queryClient.invalidateQueries({ queryKey: workspaceGitQueryKey(groupId, threadId) })
     } else {
       void queryClient.invalidateQueries({
         queryKey: conversationWorkspaceFilesQueryKey(scope, groupId),
@@ -87,7 +91,12 @@ export function GroupWorkspacePanel({
           />
         </TabsContent>
         <TabsContent value="git" className="mt-0 min-h-0 flex-1">
-          <WorkspaceGitTab groupId={groupId} scope={scope} />
+          <WorkspaceGitTab
+            groupId={groupId}
+            scope={scope}
+            threadId={threadId}
+            taskBranch={taskBranch}
+          />
         </TabsContent>
       </Tabs>
     </aside>

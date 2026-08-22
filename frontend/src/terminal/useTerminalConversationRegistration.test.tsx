@@ -76,6 +76,17 @@ describe('resolveTerminalConversationTarget', () => {
       )).toEqual({ conversationId: 'chat-1', availability: 'ready', cwd })
     }
   })
+
+  it('uses a task worktree as the terminal directory', () => {
+    expect(resolveTerminalConversationTarget(
+      'thread-1', 'workspace-1', { data: [workspace()], isLoading: false }, true,
+      'D:/projects/example/.worktrees/group-1/thread-1',
+    )).toEqual({
+      conversationId: 'thread-1',
+      availability: 'ready',
+      cwd: 'D:/projects/example/.worktrees/group-1/thread-1',
+    })
+  })
 })
 
 describe('useTerminalConversationRegistration', () => {

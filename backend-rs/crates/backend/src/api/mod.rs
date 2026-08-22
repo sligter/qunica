@@ -48,8 +48,6 @@ pub struct AppState {
     pub active_turns: ActiveTurnRegistry,
     /// Root directory for extracted skill package resources.
     pub skill_storage_root: PathBuf,
-    /// Root directory for task-scoped Git worktrees.
-    pub task_worktree_root: PathBuf,
     /// Pooled MCP connections, shared with the group runtime so editing a
     /// server's row can evict the connection the runtime would otherwise reuse.
     pub mcp: Arc<McpManager>,
@@ -608,10 +606,6 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: std::env::temp_dir()
             .join(format!("ag-swarmer-test-skills-{}", uuid::Uuid::new_v4())),
-        task_worktree_root: std::env::temp_dir().join(format!(
-            "ag-swarmer-test-worktrees-{}",
-            uuid::Uuid::new_v4()
-        )),
         // A private pool per test router: the shared one would carry live
         // connections between tests that each build their own database.
         mcp: Arc::new(McpManager::new()),

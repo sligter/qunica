@@ -42,21 +42,6 @@ impl ServerConfig {
             .unwrap_or_else(|| PathBuf::from(".ag-swarmer"))
             .join("skills")
     }
-
-    pub fn task_worktree_root(&self) -> PathBuf {
-        let root = self
-            .app_data_dir
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(".ag-swarmer"));
-        if root.is_absolute() {
-            root.join("task-worktrees")
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(root)
-                .join("task-worktrees")
-        }
-    }
 }
 
 pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -79,7 +64,6 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         write_lock,
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: config.skill_storage_root(),
-        task_worktree_root: config.task_worktree_root(),
         // The same pool the group runtime uses, so a settings edit evicts the
         // connection a turn would otherwise reuse.
         mcp: McpManager::shared(),

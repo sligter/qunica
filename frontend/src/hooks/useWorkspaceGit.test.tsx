@@ -77,12 +77,12 @@ describe('workspace Git mutations', () => {
     })
   })
 
-  it('stores a returned Git status immediately after staging', async () => {
+  it('targets and caches the selected task worktree when staging', async () => {
     const client = new QueryClient()
     const status = { available: true, files: [] }
     mockedFetchJson.mockResolvedValueOnce(status as never)
     const mutation = renderHook(
-      () => useStageGroupWorkspaceGit('group-1'),
+      () => useStageGroupWorkspaceGit('group-1', 'thread-1'),
       { wrapper: wrapper(client) },
     )
 
@@ -90,7 +90,12 @@ describe('workspace Git mutations', () => {
       await mutation.result.current.mutateAsync({ paths: [] })
     })
 
-    expect(client.getQueryData(workspaceGitQueryKey('group-1'))).toBe(status)
+    expect(mockedFetchJson).toHaveBeenCalledWith(
+      '/groups/group-1/workspace-git/stage?thread_id=thread-1',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(client.getQueryData(workspaceGitQueryKey('group-1', 'thread-1'))).toBe(status)
+    expect(client.getQueryData(workspaceGitQueryKey('group-1'))).toBeUndefined()
   })
 
   it('posts the force-push and rebase operations', async () => {

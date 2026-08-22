@@ -3525,6 +3525,113 @@ async fn workspace_git_status_stage_unstage_and_commit() {
 }
 
 #[tokio::test]
+async fn workspace_git_targets_the_selected_task_worktree() {
+    if !git_available() {
+        return;
+    }
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "workspace-git-task@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Task Workspace Git").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    let (status, task) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "UI enhancement", "git_branch": "ui-enhanced"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{task:?}");
+    let thread_id = task["id"].as_str().unwrap();
+    let worktree_path: String =
+        sqlx::query_scalar("SELECT worktree_path FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    std::fs::write(
+        Path::new(&worktree_path).join("tracked.txt"),
+        b"task change",
+    )
+    .unwrap();
+
+    let (status, shared) = send(
+        &app,
+        authed("GET", &workspace_git_url(group_id, "status"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shared["clean"], true);
+
+    let task_status_url = format!(
+        "{}?thread_id={thread_id}",
+        workspace_git_url(group_id, "status")
+    );
+    let (status, task_status) = send(&app, authed("GET", &task_status_url, &token)).await;
+    assert_eq!(status, StatusCode::OK, "{task_status:?}");
+    assert_eq!(task_status["branch"], "ui-enhanced");
+    assert_eq!(
+        git_status_file(&task_status, "tracked.txt")["unstaged"],
+        true
+    );
+
+    let (status, staged) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!(
+                "{}?thread_id={thread_id}",
+                workspace_git_url(group_id, "stage")
+            ),
+            &token,
+            json!({"paths": ["tracked.txt"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{staged:?}");
+    assert_eq!(git_status_file(&staged, "tracked.txt")["staged"], true);
+
+    let (status, error) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!(
+                "{}?thread_id={thread_id}",
+                workspace_git_url(group_id, "branches/switch")
+            ),
+            &token,
+            json!({"name": shared["branch"], "kind": "local"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error:?}");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("bound to its current branch"));
+
+    let _ = send(
+        &app,
+        authed(
+            "POST",
+            &format!("/api/v2/threads/{thread_id}/archive"),
+            &token,
+        ),
+    )
+    .await;
+    let _ = send(
+        &app,
+        authed("DELETE", &format!("/api/v2/threads/{thread_id}"), &token),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn workspace_git_branch_and_repository_operations() {
     if !git_available() {
         return;

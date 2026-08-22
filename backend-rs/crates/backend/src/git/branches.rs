@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
 
 use super::{
     ops::GitOperationError,
@@ -68,14 +69,13 @@ pub async fn create_task_worktree(
     if path.exists() {
         return Err(GitOperationError::new("task worktree path already exists"));
     }
-    let path = path
-        .to_str()
-        .ok_or_else(|| GitOperationError::new("task worktree path is not valid UTF-8"))?;
-    if let Some(parent) = Path::new(path).parent() {
+    ensure_task_worktree_ignored(root).await?;
+    if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|_| GitOperationError::new("failed to create task worktree directory"))?;
     }
+    let path = git_path_argument(path)?;
 
     let listed = branches(root).await?.branches;
     let local = listed.iter().find(|branch| {
@@ -94,7 +94,7 @@ pub async fn create_task_worktree(
             vec![
                 "worktree".to_string(),
                 "add".to_string(),
-                path.to_string(),
+                path.clone(),
                 local.name.clone(),
             ],
         )
@@ -108,7 +108,7 @@ pub async fn create_task_worktree(
                 "add".to_string(),
                 "-b".to_string(),
                 requested_branch.to_string(),
-                path.to_string(),
+                path,
                 "HEAD".to_string(),
             ],
         )
@@ -122,21 +122,88 @@ pub async fn create_task_worktree(
 }
 
 pub async fn remove_task_worktree(root: &Path, path: &Path) -> Result<(), GitOperationError> {
-    let path = path
-        .to_str()
-        .ok_or_else(|| GitOperationError::new("task worktree path is not valid UTF-8"))?;
+    let path = git_path_argument(path)?;
     run_git(
         root,
         vec![
             "worktree".to_string(),
             "remove".to_string(),
             "--force".to_string(),
-            path.to_string(),
+            path,
         ],
         "git task worktree cleanup failed",
     )
     .await?;
     Ok(())
+}
+
+fn git_path_argument(path: &Path) -> Result<String, GitOperationError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| GitOperationError::new("task worktree path is not valid UTF-8"))?;
+    #[cfg(windows)]
+    {
+        if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+            return Ok(format!(r"\\{path}"));
+        }
+        if let Some(path) = path.strip_prefix(r"\\?\") {
+            return Ok(path.to_string());
+        }
+    }
+    Ok(path.to_string())
+}
+
+async fn ensure_task_worktree_ignored(root: &Path) -> Result<(), GitOperationError> {
+    let exclude = run_git(
+        root,
+        vec![
+            "rev-parse".to_string(),
+            "--git-path".to_string(),
+            "info/exclude".to_string(),
+        ],
+        "git exclude path lookup failed",
+    )
+    .await?
+    .stdout;
+    let exclude = PathBuf::from(exclude.trim());
+    let exclude = if exclude.is_absolute() {
+        exclude
+    } else {
+        root.join(exclude)
+    };
+    let prefix = run_git(
+        root,
+        vec!["rev-parse".to_string(), "--show-prefix".to_string()],
+        "git workspace prefix lookup failed",
+    )
+    .await?
+    .stdout;
+    let pattern = format!("/{}.worktrees/", prefix.trim().replace('\\', "/"));
+    let current = match tokio::fs::read_to_string(&exclude).await {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err(GitOperationError::new("failed to read git exclude file")),
+    };
+    if current.lines().any(|line| line.trim() == pattern) {
+        return Ok(());
+    }
+    if let Some(parent) = exclude.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| GitOperationError::new("failed to create git exclude directory"))?;
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(exclude)
+        .await
+        .map_err(|_| GitOperationError::new("failed to open git exclude file"))?;
+    let separator = (!current.is_empty() && !current.ends_with('\n'))
+        .then_some("\n")
+        .unwrap_or("");
+    file.write_all(format!("{separator}{pattern}\n").as_bytes())
+        .await
+        .map_err(|_| GitOperationError::new("failed to update git exclude file"))
 }
 
 pub async fn switch_branch(
