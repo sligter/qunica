@@ -1092,17 +1092,35 @@ export function WorkspaceFilesTab({
       <Dialog open={isPreviewOpen && previewFile !== null} onOpenChange={setIsPreviewOpen}>
         <DialogContent
           closeLabel={t('common:actions.close')}
-          className="max-h-[88vh] max-w-4xl overflow-hidden p-0"
+          className="flex h-[min(88vh,52rem)] w-[min(94vw,72rem)] max-w-none flex-col gap-0 overflow-hidden p-0"
         >
-          <DialogHeader className="border-b border-border px-6 py-4 pr-12">
-            <DialogTitle className="truncate text-base">
-              {previewFile?.path ?? t('chat:workspace.preview')}
+          <DialogHeader className="shrink-0 border-b border-border px-5 py-3.5 pr-12">
+            <DialogTitle
+              aria-label={previewFile?.path ?? t('chat:workspace.preview')}
+              className="flex min-w-0 items-center gap-2 text-base"
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                <File className="h-4 w-4" aria-hidden="true" />
+              </span>
+              <span className="truncate" title={previewFile?.path}>
+                {previewFile?.name ?? t('chat:workspace.preview')}
+              </span>
             </DialogTitle>
-            <DialogDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              {previewFile?.size != null ? <span>{formatSize(previewFile.size, language)}</span> : null}
+            <DialogDescription className="flex min-w-0 items-center gap-2 pl-10 text-xs">
+              {previewFile?.path ? (
+                <span className="min-w-0 truncate font-mono text-2xs" title={previewFile.path}>
+                  {previewFile.path}
+                </span>
+              ) : null}
+              {previewFile?.size != null ? (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="shrink-0">{formatSize(previewFile.size, language)}</span>
+                </>
+              ) : null}
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-40 overflow-y-auto px-6 py-4">
+          <div className="min-h-0 flex-1 overflow-y-auto bg-muted/15 p-4 sm:p-5">
             {previewFile && activeConversationId ? (
               <WorkspacePreviewRouter
                 scope={scope}

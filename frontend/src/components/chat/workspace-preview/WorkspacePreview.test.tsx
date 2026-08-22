@@ -246,7 +246,7 @@ describe('WorkspacePreviewRouter secure Blob previews', () => {
     const open = await screen.findByRole('button', {
       name: 'Open full-size preview of photo.png',
     })
-    expect(open.querySelector('img')).toHaveClass('max-h-[55vh]')
+    expect(open.querySelector('img')).toHaveClass('max-h-full')
     fireEvent.error(screen.getByRole('img', { name: 'photo.png' }))
 
     expect(await screen.findByText(

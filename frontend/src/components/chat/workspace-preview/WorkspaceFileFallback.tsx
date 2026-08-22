@@ -53,11 +53,11 @@ export function WorkspaceFileFallback({
 
   return (
     <div
-      className={className ?? 'rounded-lg border border-border bg-muted/25 p-4'}
+      className={className ?? 'mx-auto flex min-h-80 w-full max-w-xl flex-col justify-center rounded-xl border border-border bg-card p-6 shadow-sm'}
       data-preview-kind="fallback"
     >
       <div className="flex items-start gap-3">
-        <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
           <FileQuestion className="h-5 w-5" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
@@ -68,7 +68,7 @@ export function WorkspaceFileFallback({
         </div>
       </div>
 
-      <dl className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+      <dl className="mt-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 border-t border-border pt-4 text-xs">
         <dt className="text-muted-foreground">{t('workspace.previewPanel.mime')}</dt>
         <dd className="min-w-0 break-all font-mono text-2xs">
           {metadata.mime_type || t('workspace.previewPanel.unknownMime')}

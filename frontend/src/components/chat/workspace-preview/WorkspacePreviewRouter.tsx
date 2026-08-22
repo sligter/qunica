@@ -17,6 +17,7 @@ import {
   type WorkspaceAgentScope,
 } from '@/hooks/useConversationWorkspaceFiles'
 import { workspaceErrorMessageKey } from '@/i18n/localizedError'
+import { cn } from '@/lib/utils'
 import type {
   ConversationScope,
   ConversationWorkspaceFileRead,
@@ -126,6 +127,12 @@ export function WorkspacePreviewRouter({
     agentId,
   )
   const objectUrl = useWorkspaceObjectUrl(needsBlob ? blob.data : undefined)
+  const previewViewportClass = cn(
+    'overflow-hidden rounded-xl border border-border bg-card shadow-sm',
+    presentation === 'editor'
+      ? 'h-full min-h-[28rem]'
+      : 'h-[min(66vh,44rem)] min-h-80',
+  )
 
   useEffect(() => setFailedPreview(null), [previewIdentity])
 
@@ -152,7 +159,14 @@ export function WorkspacePreviewRouter({
 
   if (text.isLoading) {
     return (
-      <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+      <div
+        className={cn(
+          previewViewportClass,
+          'flex items-center justify-center gap-2 text-sm text-muted-foreground',
+        )}
+        role="status"
+        aria-live="polite"
+      >
         <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
         {t('workspace.previewLoading')}
       </div>
@@ -204,15 +218,18 @@ export function WorkspacePreviewRouter({
   if (kind === 'markdown') {
     return (
       <div
-        className={presentation === 'editor'
-          ? 'h-full overflow-auto bg-background p-5'
-          : 'max-h-[60vh] overflow-auto rounded-md border border-border bg-background p-5'}
+        className={cn(
+          'overflow-y-auto rounded-xl border border-border bg-card shadow-sm',
+          presentation === 'editor' ? 'h-full min-h-[28rem]' : 'max-h-[66vh] min-h-80',
+        )}
         data-preview-kind="markdown"
       >
-        <MarkdownMessage
-          content={text.data.content ?? ''}
-          groupId={scope === 'groups' ? conversationId : undefined}
-        />
+        <article className="mx-auto max-w-3xl p-5 sm:p-8">
+          <MarkdownMessage
+            content={text.data.content ?? ''}
+            groupId={scope === 'groups' ? conversationId : undefined}
+          />
+        </article>
       </div>
     )
   }
@@ -276,7 +293,14 @@ export function WorkspacePreviewRouter({
 
   if (blob.isLoading || !objectUrl) {
     return (
-      <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+      <div
+        className={cn(
+          previewViewportClass,
+          'flex items-center justify-center gap-2 text-sm text-muted-foreground',
+        )}
+        role="status"
+        aria-live="polite"
+      >
         <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
         {t('workspace.previewLoading')}
       </div>
@@ -285,20 +309,37 @@ export function WorkspacePreviewRouter({
 
   if (kind === 'image') {
     return (
-      <WorkspaceImagePreview
-        scope={scope}
-        conversationId={conversationId}
-        agentId={agentId}
-        metadata={metadata}
-        objectUrl={objectUrl}
-        onPreviewError={() => setFailedPreview(previewIdentity)}
-      />
+      <div className={previewViewportClass}>
+        <WorkspaceImagePreview
+          scope={scope}
+          conversationId={conversationId}
+          agentId={agentId}
+          metadata={metadata}
+          objectUrl={objectUrl}
+          onPreviewError={() => setFailedPreview(previewIdentity)}
+        />
+      </div>
     )
   }
 
   if (kind === 'html') {
     return (
-      <WorkspaceHtmlPreview
+      <div className={previewViewportClass}>
+        <WorkspaceHtmlPreview
+          scope={scope}
+          conversationId={conversationId}
+          agentId={agentId}
+          metadata={metadata}
+          objectUrl={objectUrl}
+          onPreviewError={() => setFailedPreview(previewIdentity)}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className={previewViewportClass}>
+      <WorkspacePdfPreview
         scope={scope}
         conversationId={conversationId}
         agentId={agentId}
@@ -306,17 +347,6 @@ export function WorkspacePreviewRouter({
         objectUrl={objectUrl}
         onPreviewError={() => setFailedPreview(previewIdentity)}
       />
-    )
-  }
-
-  return (
-    <WorkspacePdfPreview
-      scope={scope}
-      conversationId={conversationId}
-      agentId={agentId}
-      metadata={metadata}
-      objectUrl={objectUrl}
-      onPreviewError={() => setFailedPreview(previewIdentity)}
-    />
+    </div>
   )
 }

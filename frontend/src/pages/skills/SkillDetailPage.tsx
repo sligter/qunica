@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
+import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { SkillResourcesPanel } from '@/components/skills/SkillResourcesPanel'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
@@ -10,9 +11,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PageState } from '@/components/ui/page-state'
+import { Section, SectionStack } from '@/components/ui/section'
 import { DetailSkeleton } from '@/components/ui/skeleton'
-import { ProseBlock } from '@/components/ui/prose-block'
-import { Section } from '@/components/ui/section'
 import { Textarea } from '@/components/ui/textarea'
 import { useDeleteSkill, useSkill, useUpdateSkill } from '@/hooks/useSkills'
 import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
@@ -89,9 +89,10 @@ export function SkillDetailPage() {
       title={s.name}
       subtitle={
         <>
-          {s.description ? <span>{s.description}</span> : null}
-          <Badge variant="outline" className="text-[10px] uppercase">
-            {t('skills:detail.source', { source: s.source })}
+          {s.description ? <span className="max-w-prose text-foreground/80">{s.description}</span> : null}
+          <Badge variant="outline" className="gap-1 font-mono text-[10px] uppercase tracking-wide">
+            {t('skills:detail.sourceShort')}
+            <span className="font-semibold">{s.source}</span>
           </Badge>
           <Badge
             variant={s.status === 'active' ? 'default' : 'secondary'}
@@ -125,13 +126,19 @@ export function SkillDetailPage() {
         </>
       }
     >
-      <div className="space-y-8">
-        <Section title={t('skills:detail.body')} as="h3">
-          <ProseBlock maxHeight="lg">{s.body_markdown}</ProseBlock>
+      <SectionStack>
+        <Section
+          title={t('skills:detail.body')}
+          as="h3"
+          description={t('skills:detail.bodyDescription')}
+        >
+          <article className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
+            <MarkdownMessage content={s.body_markdown} />
+          </article>
         </Section>
 
         <SkillResourcesPanel skill={s} />
-      </div>
+      </SectionStack>
 
       <ConfirmDialog
         open={confirmOpen}

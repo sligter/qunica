@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentType } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -67,12 +68,15 @@ vi.mock('@/hooks/useGroups', () => ({
 function renderPage(Page: ComponentType, path: string) {
   const section = path.split('/')[1]
   const param = section === 'agents' ? 'agentId' : section === 'providers' ? 'providerId' : section === 'skills' ? 'skillId' : 'workspaceId'
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route path={`/${section}/:${param}`} element={<Page />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path={`/${section}/:${param}`} element={<Page />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -97,6 +101,7 @@ describe('resource detail status labels', () => {
 
   it('uses the available width when editing a skill', () => {
     renderPage(SkillDetailPage, '/skills/skill-1')
+    expect(document.title).toBe('Skill one · AG Swarmer')
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
 

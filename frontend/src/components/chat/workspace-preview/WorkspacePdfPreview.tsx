@@ -52,7 +52,7 @@ export function WorkspacePdfPreview({
       type="application/pdf"
       title={title}
       aria-label={title}
-      className="h-[min(65vh,720px)] w-full rounded-lg border border-border bg-background"
+      className="h-full min-h-80 w-full bg-background"
       data-preview-kind="pdf"
       onError={handlePreviewError}
     >

@@ -51,20 +51,20 @@ export function WorkspaceImagePreview({
   }
 
   return (
-    <div data-preview-kind="image">
+    <div className="h-full" data-preview-kind="image">
       <button
         type="button"
-        className="group relative mx-auto block max-w-full overflow-hidden rounded-lg border border-border bg-muted/30 p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        className="group relative grid h-full min-h-80 w-full place-items-center overflow-hidden bg-muted/20 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={() => setLightboxOpen(true)}
         aria-label={t('workspace.previewPanel.openImage', { name: metadata.name })}
       >
         <img
           src={objectUrl}
           alt={metadata.name}
-          className="max-h-[55vh] max-w-full object-contain"
+          className="max-h-full max-w-full object-contain drop-shadow-sm"
           onError={handlePreviewError}
         />
-        <span className="absolute bottom-3 right-3 rounded-md border border-white/15 bg-black/65 p-1.5 text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <span className="absolute bottom-4 right-4 rounded-md border border-white/15 bg-black/65 p-2 text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
         </span>
       </button>

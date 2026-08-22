@@ -1,19 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Binary,
+  FileCode2,
+  FileText,
+  FolderOpen,
+  Search,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { PageState } from '@/components/ui/page-state'
 import { Section } from '@/components/ui/section'
-import { Separator } from '@/components/ui/separator'
+import { Textarea } from '@/components/ui/textarea'
 import {
   useSkillResource,
   useSkillResources,
   useUpdateSkillResource,
 } from '@/hooks/useSkills'
+import {
+  useUnsavedChangesAction,
+  useUnsavedChangesGuard,
+} from '@/hooks/useUnsavedChangesGuard'
 import { ApiError } from '@/lib/api-v2/client'
-import { cn } from '@/lib/utils'
-import type { SkillRead } from '@/types/api'
-import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
+import { navItemClass } from '@/lib/navItemClass'
+import type { SkillFileInfo, SkillRead } from '@/types/api'
+import {
+  localizedErrorText,
+  messageError,
+  translatedError,
+  type LocalizedError,
+} from '@/i18n/localizedError'
 
 interface SkillResourcesPanelProps {
   skill: SkillRead
@@ -22,54 +40,32 @@ interface SkillResourcesPanelProps {
 export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
   const { t } = useTranslation('skills')
   const resources = useSkillResources(skill.id)
+  const requestAction = useUnsavedChangesAction()
+  // Metadata comes with the skill; the resources query only adds editability
+  // and content. Merging keeps the browser responsive before that fetch
+  // resolves instead of flashing an empty list.
+  const rows: SkillFileInfo[] = useMemo(
+    () => resources.data ?? skill.files ?? [],
+    [resources.data, skill.files],
+  )
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const selected = useSkillResource(skill.id, selectedPath)
-  const update = useUpdateSkillResource(skill.id, selectedPath)
-  const [draft, setDraft] = useState('')
-  const [saveError, setSaveError] = useState<LocalizedError | null>(null)
+  const [query, setQuery] = useState('')
 
-  const resourceRows = resources.data ?? skill.files?.map((file) => ({
-    ...file,
-    is_text: isLikelyTextResource(file.path, file.size),
-    content: null,
-  })) ?? []
-  const firstResourcePath = resourceRows[0]?.path
-
+  // Default to the first file once rows exist, without pinning state to a
+  // value that changes between renders.
   useEffect(() => {
-    if (!selectedPath && firstResourcePath) {
-      setSelectedPath(firstResourcePath)
-    }
-  }, [firstResourcePath, selectedPath])
+    setSelectedPath((current) =>
+      current && rows.some((row) => row.path === current) ? current : rows[0]?.path ?? null,
+    )
+  }, [rows])
 
-  useEffect(() => {
-    if (selected.data?.content !== null && selected.data?.content !== undefined) {
-      setDraft(selected.data.content)
-      setSaveError(null)
-    } else {
-      setDraft('')
-    }
-  }, [selected.data])
+  const selectedMeta = rows.find((row) => row.path === selectedPath) ?? null
 
-  const selectedInfo = selected.data ?? resourceRows.find((row) => row.path === selectedPath)
-  const canEditSelected =
-    !selected.isLoading &&
-    !selected.error &&
-    selected.data?.is_text === true &&
-    selected.data.content !== null &&
-    selected.data.content !== undefined
-
-  const onSave = async () => {
-    setSaveError(null)
-    try {
-      await update.mutateAsync(draft)
-    } catch (err) {
-      setSaveError(
-        err instanceof ApiError
-          ? messageError(err.message, 'resources.saveErrorDetail')
-          : translatedError('resources.saveError'),
-      )
-    }
-  }
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter((file) => file.path.toLowerCase().includes(q))
+  }, [query, rows])
 
   if (!skill.files || skill.files.length === 0) {
     return (
@@ -84,143 +80,208 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
       title={t('resources.title')}
       as="h3"
       aside={
-        <Badge variant="outline" className="text-[10px]">
+        <Badge variant="outline" className="text-[10px] font-medium">
           {t('resources.file', { count: skill.files.length })}
         </Badge>
       }
       contentClassName="space-y-3"
     >
       {resources.error && (
-        <p className="text-xs text-destructive">
-          {t('resources.metadataError')}
-        </p>
+        <p className="text-xs text-destructive">{t('resources.metadataError')}</p>
       )}
 
-      <div className="grid min-h-72 gap-3 md:grid-cols-[minmax(0,240px),minmax(0,1fr)]">
-        <div className="overflow-hidden rounded-md border border-border bg-card">
-          <div className="max-h-80 overflow-y-auto p-1">
-            {resourceRows.map((file) => (
-              <button
-                key={file.path}
-                type="button"
-                onClick={() => setSelectedPath(file.path)}
-                className={cn(
-                  'flex w-full flex-col items-start gap-1 rounded-sm px-2 py-1.5 text-left text-xs transition-colors',
-                  file.path === selectedPath ? 'bg-primary/10' : 'hover:bg-card-hover',
-                )}
-              >
-                <span className="w-full truncate font-medium">{file.path}</span>
-                <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                  <Badge variant="outline" className="px-1 py-0 text-[9px]">
-                    {file.category}
-                  </Badge>
-                  <span>{formatSize(file.size)}</span>
-                  <span>{file.is_text ? t('resources.text') : t('resources.binaryUnknown')}</span>
-                </span>
-              </button>
-            ))}
+      <div className="grid min-h-80 gap-3 lg:grid-cols-[minmax(0,17rem),minmax(0,1fr)]">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+          <div className="shrink-0 border-b border-border p-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={t('resources.search')}
+                className="h-8 border-none bg-muted pl-8 text-xs focus-visible:bg-background"
+                aria-label={t('resources.search')}
+              />
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1">
+            {visibleRows.map((file) => {
+              const active = file.path === selectedPath
+              return (
+                <button
+                  key={file.path}
+                  type="button"
+                  aria-current={active ? 'true' : undefined}
+                  title={file.path}
+                  onClick={() => requestAction(() => setSelectedPath(file.path))}
+                  className={navItemClass(active, 'items-center gap-2 px-2 py-1.5')}
+                >
+                  <ResourceFileIcon category={file.category} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs leading-5">
+                      {resourceFileName(file.path)}
+                    </span>
+                    <span className="block truncate text-[10px] font-normal leading-4 text-muted-foreground">
+                      {resourceDirName(file.path)}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+            {visibleRows.length === 0 && (
+              <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+                {t('resources.noMatches')}
+              </p>
+            )}
           </div>
         </div>
 
-        <div className="min-w-0 rounded-md border border-border bg-card p-3">
-          {!selectedInfo && (
-            <p className="text-sm text-muted-foreground">{t('resources.select')}</p>
-          )}
-          {selectedInfo && (
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <p className="break-all text-sm font-medium">{selectedInfo.path}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  <Badge variant="outline" className="text-[10px]">
-                    {selectedInfo.category}
-                  </Badge>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {formatSize(selectedInfo.size)}
-                  </Badge>
-                  <Badge variant={selectedInfo.is_text ? 'default' : 'secondary'} className="text-[10px]">
-                    {selectedInfo.is_text ? t('resources.editable') : t('resources.notEditable')}
-                  </Badge>
-                </div>
-              </div>
-
-              <Separator />
-
-              {selected.isLoading && (
-                <p className="text-sm text-muted-foreground">{t('resources.loading')}</p>
-              )}
-              {selected.error && (
-                <p className="text-sm text-destructive">
-                  {selected.error instanceof ApiError
-                    ? t('resources.loadErrorDetail', { message: selected.error.message })
-                    : t('resources.loadError')}
-                </p>
-              )}
-              {canEditSelected && (
-                  <div className="space-y-2">
-                    <textarea
-                      value={draft}
-                      onChange={(event) => setDraft(event.target.value)}
-                      className="h-64 w-full resize-y rounded-md border border-input bg-background p-3 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
-                      spellCheck={false}
-                    />
-                    {localizedErrorText(saveError, t) && (
-                      <p className="text-xs text-destructive" role="alert">
-                        {localizedErrorText(saveError, t)}
-                      </p>
-                    )}
-                    <Button size="sm" onClick={onSave} disabled={update.isPending || !canEditSelected}>
-                      {update.isPending ? t('resources.saving') : t('resources.save')}
-                    </Button>
-                  </div>
-                )}
-              {!selected.isLoading && !selectedInfo.is_text && (
-                <p className="text-sm text-muted-foreground">
-                  {t('resources.binaryHint')}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+        <ResourceViewer skillId={skill.id} path={selectedPath} meta={selectedMeta} />
       </div>
     </Section>
   )
 }
 
-const TEXT_RESOURCE_EXTENSIONS = new Set([
-  '.md',
-  '.markdown',
-  '.txt',
-  '.json',
-  '.yaml',
-  '.yml',
-  '.toml',
-  '.xml',
-  '.html',
-  '.css',
-  '.js',
-  '.jsx',
-  '.ts',
-  '.tsx',
-  '.py',
-  '.sh',
-  '.bash',
-  '.zsh',
-  '.fish',
-  '.ps1',
-  '.sql',
-  '.csv',
-  '.ini',
-  '.cfg',
-])
+interface ResourceViewerProps {
+  skillId: string
+  path: string | null
+  /** File metadata for the viewer header while content loads (or fails). */
+  meta: SkillFileInfo | null
+}
 
-const MAX_TEXT_RESOURCE_BYTES = 1_000_000
+function ResourceViewer({ skillId, path, meta }: ResourceViewerProps) {
+  const { t } = useTranslation('skills')
+  const resource = useSkillResource(skillId, path)
+  const update = useUpdateSkillResource(skillId, path)
+  const [draft, setDraft] = useState('')
+  const [saveError, setSaveError] = useState<LocalizedError | null>(null)
+  const savedContent = resource.data?.content ?? ''
 
-function isLikelyTextResource(path: string, size: number) {
-  if (size > MAX_TEXT_RESOURCE_BYTES) return false
-  const fileName = path.split('/').pop() ?? path
-  const dotIndex = fileName.lastIndexOf('.')
-  if (dotIndex < 0) return false
-  return TEXT_RESOURCE_EXTENSIONS.has(fileName.slice(dotIndex).toLowerCase())
+  const canEdit =
+    !resource.isLoading &&
+    !resource.error &&
+    resource.data?.is_text === true &&
+    typeof resource.data.content === 'string'
+  const dirty = canEdit && draft !== savedContent
+  useUnsavedChangesGuard(dirty)
+
+  // The draft follows whichever file is selected; resetting on change is what
+  // stops one file's unsaved edits leaking into another.
+  useEffect(() => {
+    setDraft(resource.data?.content ?? '')
+    setSaveError(null)
+  }, [path, resource.data])
+
+  if (!path || !meta) {
+    return (
+      <div className="grid flex-1 place-items-center rounded-lg border border-dashed border-border bg-card/50 text-sm text-muted-foreground">
+        <PageState inset title={t('resources.select')} icon={FolderOpen} />
+      </div>
+    )
+  }
+
+  const loadErrorMessage =
+    resource.error instanceof ApiError
+      ? t('resources.loadErrorDetail', { message: resource.error.message })
+      : resource.error
+        ? t('resources.loadError')
+        : null
+
+  return (
+    <div className="flex min-h-72 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+      {/* Only the name is bold here; the directory stays in the list row, so a
+          deep path can't crowd out the actions on narrow panes. */}
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <ResourceFileIcon category={meta.category} />
+          <p className="truncate text-sm font-medium">{resourceFileName(meta.path)}</p>
+        </div>
+        <Badge variant="outline" className="shrink-0 text-[10px] font-medium">
+          {meta.category}
+        </Badge>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {resource.isLoading ? (
+          <p className="px-4 py-6 text-sm text-muted-foreground">{t('resources.loading')}</p>
+        ) : loadErrorMessage ? (
+          <PageState
+            variant="error"
+            title={loadErrorMessage}
+            description={t('resources.loadError')}
+          />
+        ) : canEdit ? (
+          <Textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            spellCheck={false}
+            aria-label={t('resources.editable')}
+            className="h-full min-h-64 resize-none rounded-none border-none bg-code font-mono text-xs text-code-foreground shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+          />
+        ) : (
+          <PageState
+            inset
+            title={t('resources.binaryHint')}
+            icon={Binary}
+            description={t('resources.notEditable')}
+          />
+        )}
+      </div>
+
+      {(canEdit || localizedErrorText(saveError, t)) && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-background/60 px-3 py-2">
+          <p className="min-w-0 truncate text-xs text-muted-foreground">
+            {formatSize(meta.size)}
+            {' · '}
+            {canEdit ? t('resources.text') : t('resources.notEditable')}
+          </p>
+          {localizedErrorText(saveError, t) && (
+            <p className="truncate text-xs text-destructive" role="alert">
+              {localizedErrorText(saveError, t)}
+            </p>
+          )}
+          <Button
+            size="sm"
+            className="ml-auto shrink-0"
+            disabled={update.isPending || !dirty}
+            onClick={() => {
+              setSaveError(null)
+              update.mutate(draft, {
+                onError: (err) => {
+                  setSaveError(
+                    err instanceof ApiError
+                      ? messageError(err.message, 'resources.saveErrorDetail')
+                      : translatedError('resources.saveError'),
+                  )
+                },
+              })
+            }}
+          >
+            {update.isPending ? t('resources.saving') : t('resources.save')}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const RESOURCE_ICON_CLASS = 'h-3.5 w-3.5 shrink-0 text-primary'
+
+function ResourceFileIcon({ category }: { category: string }) {
+  if (/script|tool|code/i.test(category)) {
+    return <FileCode2 className={RESOURCE_ICON_CLASS} />
+  }
+  return <FileText className={RESOURCE_ICON_CLASS} />
+}
+
+function resourceFileName(path: string) {
+  return path.split('/').pop() ?? path
+}
+
+function resourceDirName(path: string) {
+  const parts = path.split('/')
+  parts.pop()
+  return parts.join('/') || '/'
 }
 
 function formatSize(bytes: number) {

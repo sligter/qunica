@@ -45,13 +45,13 @@ export function WorkspaceHtmlPreview({
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-background" data-preview-kind="html">
+    <div className="h-full overflow-hidden bg-white" data-preview-kind="html">
       <iframe
         src={objectUrl}
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         title={t('workspace.previewPanel.htmlTitle', { name: metadata.name })}
-        className="h-[min(60vh,640px)] w-full bg-white"
+        className="h-full min-h-80 w-full bg-white"
         onError={handlePreviewError}
       />
     </div>
