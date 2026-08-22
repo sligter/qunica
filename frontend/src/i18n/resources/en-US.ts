@@ -634,6 +634,12 @@ export const enUS = {
       title: 'Consumption over time',
       ariaLabel: 'Daily total token usage chart',
     },
+    attributionTrend: {
+      eyebrow: 'Attribution over time',
+      title: 'Daily usage by owner',
+      description: 'Compare how each group, provider, model, or Agent contributes over time.',
+      ariaLabel: 'Daily token usage by {{dimension}}',
+    },
     breakdown: {
       eyebrow: 'Attribution',
       title: 'Where tokens went',

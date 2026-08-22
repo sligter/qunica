@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
@@ -44,6 +44,7 @@ vi.mock('@/pages/group/GroupChatPage', async () => {
           onChange={(event) => setDraft(event.target.value)}
         />
         <OverlayLink to="/settings">Open settings</OverlayLink>
+        <OverlayLink to="/usage">Open usage</OverlayLink>
       </>
     )
   }
@@ -56,6 +57,36 @@ vi.mock('@/pages/settings/SystemSettingsPage', () => ({
 
 vi.mock('@/pages/settings/MediaSettingsPage', () => ({
   MediaSettingsPage: () => <div>Media settings content</div>,
+}))
+
+vi.mock('@/hooks/useTokenUsage', () => ({
+  useTokenUsage: () => ({
+    data: {
+      summary: { input_tokens: 120, output_tokens: 30, total_tokens: 150, calls: 2, active_agents: 2 },
+      timeline: [
+        { date: '2026-08-21', input_tokens: 80, output_tokens: 20, total_tokens: 100, calls: 1 },
+        { date: '2026-08-22', input_tokens: 40, output_tokens: 10, total_tokens: 50, calls: 1 },
+      ],
+      by_group: [
+        {
+          id: 'group-1', name: 'Research', input_tokens: 80, output_tokens: 20, total_tokens: 100, calls: 1,
+          timeline: [{ date: '2026-08-21', input_tokens: 80, output_tokens: 20, total_tokens: 100, calls: 1 }],
+        },
+        {
+          id: 'group-2', name: 'Build', input_tokens: 40, output_tokens: 10, total_tokens: 50, calls: 1,
+          timeline: [{ date: '2026-08-22', input_tokens: 40, output_tokens: 10, total_tokens: 50, calls: 1 }],
+        },
+      ],
+      by_provider: [],
+      by_model: [],
+      by_agent: [],
+      filters: { groups: [], providers: [], models: [], agents: [] },
+    },
+    error: null,
+    isFetching: false,
+    isLoading: false,
+    refetch: vi.fn(),
+  }),
 }))
 
 async function renderApp(entry = '/groups/group-1') {
@@ -132,6 +163,23 @@ describe('settings overlay keeps the conversation mounted', () => {
     expect(router.state.location.pathname).toBe('/groups/group-1')
     expect(state.conversationUnmounts).toBe(0)
     expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('still typing')
+  })
+
+  it('closes token usage back to the original conversation', async () => {
+    const { router } = await renderApp()
+
+    fireEvent.click(screen.getByRole('link', { name: 'Open usage' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Token usage' })
+    const trend = within(dialog).getByRole('heading', { name: 'Daily usage by owner' }).closest('section')!
+
+    expect(within(trend).getAllByRole('tab')).toHaveLength(4)
+    expect(within(trend).getByRole('img', { name: 'Daily token usage by Group' }).querySelectorAll('path')).toHaveLength(2)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(router.state.location.pathname).toBe('/groups/group-1')
+    expect(state.conversationUnmounts).toBe(0)
   })
 
   it('closes on Escape and hands focus back to the conversation', async () => {

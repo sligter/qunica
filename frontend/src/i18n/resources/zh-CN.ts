@@ -544,6 +544,12 @@ export const zhCN: TranslationShape<typeof enUS> = {
       title: 'Token 消耗走势',
       ariaLabel: '每日 Token 总用量趋势图',
     },
+    attributionTrend: {
+      eyebrow: '归属趋势',
+      title: '按归属查看每日用量',
+      description: '对比群组、供应商、模型或智能体每天贡献的 Token 用量。',
+      ariaLabel: '按{{dimension}}统计的每日 Token 用量趋势图',
+    },
     breakdown: {
       eyebrow: '用量归属',
       title: 'Token 用在哪里',

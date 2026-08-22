@@ -75,6 +75,7 @@ pub struct UsageBreakdown {
     name: String,
     #[serde(flatten)]
     totals: UsageTotals,
+    timeline: Vec<UsageTimelinePoint>,
 }
 
 #[derive(Debug, Serialize)]
@@ -206,18 +207,29 @@ fn breakdown(
     rows: &[&UsageRow],
     key: impl Fn(&UsageRow) -> (String, String),
 ) -> Vec<UsageBreakdown> {
-    let mut grouped = BTreeMap::<String, UsageBreakdown>::new();
+    let mut grouped =
+        BTreeMap::<String, (String, UsageTotals, BTreeMap<String, UsageTotals>)>::new();
     for row in rows {
         let (id, name) = key(row);
-        let item = grouped.entry(id.clone()).or_insert_with(|| UsageBreakdown {
-            id,
-            name: name.clone(),
-            totals: UsageTotals::default(),
-        });
-        item.name = name;
-        item.totals.add(row);
+        let item = grouped
+            .entry(id)
+            .or_insert_with(|| (name.clone(), UsageTotals::default(), BTreeMap::new()));
+        item.0 = name;
+        item.1.add(row);
+        item.2.entry(row.day.clone()).or_default().add(row);
     }
-    let mut items = grouped.into_values().collect::<Vec<_>>();
+    let mut items = grouped
+        .into_iter()
+        .map(|(id, (name, totals, timeline))| UsageBreakdown {
+            id,
+            name,
+            totals,
+            timeline: timeline
+                .into_iter()
+                .map(|(date, totals)| UsageTimelinePoint { date, totals })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
     items.sort_by(|left, right| {
         right
             .totals
@@ -328,9 +340,9 @@ fn normalize_date(value: Option<&str>, field: &str) -> Result<Option<String>, Ap
 mod tests {
     use super::{filter_options, matches_query, response, TokenUsageQuery, UsageRow};
 
-    fn row(agent: &str, provider: &str, model: &str, total: i64) -> UsageRow {
+    fn row(day: &str, agent: &str, provider: &str, model: &str, total: i64) -> UsageRow {
         UsageRow {
-            day: "2026-08-12".to_string(),
+            day: day.to_string(),
             group_id: Some("group-1".to_string()),
             group_name: "Research".to_string(),
             agent_id: Some(agent.to_string()),
@@ -347,8 +359,9 @@ mod tests {
     #[test]
     fn filters_and_groups_usage_once() {
         let rows = vec![
-            row("agent-1", "provider-1", "model-a", 100),
-            row("agent-2", "provider-2", "model-b", 50),
+            row("2026-08-12", "agent-1", "provider-1", "model-a", 100),
+            row("2026-08-13", "agent-1", "provider-1", "model-a", 25),
+            row("2026-08-12", "agent-2", "provider-2", "model-b", 50),
         ];
         let query = TokenUsageQuery {
             provider_id: Some("provider-1".to_string()),
@@ -360,10 +373,12 @@ mod tests {
             .collect::<Vec<_>>();
         let result = response(&filtered, filter_options(&rows));
 
-        assert_eq!(result.summary.totals.total_tokens, 100);
-        assert_eq!(result.summary.totals.calls, 1);
+        assert_eq!(result.summary.totals.total_tokens, 125);
+        assert_eq!(result.summary.totals.calls, 2);
         assert_eq!(result.summary.active_agents, 1);
         assert_eq!(result.by_provider[0].id, "provider-1");
+        assert_eq!(result.by_provider[0].timeline.len(), 2);
+        assert_eq!(result.by_provider[0].timeline[1].totals.total_tokens, 25);
         assert_eq!(result.filters.providers.len(), 2);
     }
 }

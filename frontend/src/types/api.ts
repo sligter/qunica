@@ -342,6 +342,7 @@ export interface TokenUsageTimelinePoint extends TokenUsageTotals {
 export interface TokenUsageBreakdown extends TokenUsageTotals {
   id: string
   name: string
+  timeline: TokenUsageTimelinePoint[]
 }
 
 export interface TokenUsageFilterOption {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import {
+  ArrowLeft,
   ArrowDownToLine,
   ArrowUpFromLine,
   Bot,
@@ -12,6 +13,7 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
+import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -35,7 +37,24 @@ import type {
 type RangePreset = 'today' | 'yesterday' | '7d' | '30d' | '90d' | 'custom'
 type Dimension = 'group' | 'provider' | 'model' | 'agent'
 
+interface UsageSeries {
+  id: string
+  name: string
+  points: TokenUsageTimelinePoint[]
+}
+
 const ALL = '__all__'
+
+const SERIES_COLORS = [
+  'var(--color-primary)',
+  'var(--color-avatar-3)',
+  'var(--color-avatar-5)',
+  'var(--color-avatar-2)',
+  'var(--color-avatar-4)',
+  'var(--color-avatar-6)',
+  'var(--color-avatar-7)',
+  'var(--color-avatar-8)',
+]
 
 const RANGE_PRESETS: RangePreset[] = ['today', 'yesterday', '7d', '30d', '90d', 'custom']
 
@@ -132,17 +151,22 @@ function MetricCard({
 }
 
 function UsageChart({
-  points,
+  series,
   locale,
   emptyLabel,
   ariaLabel,
+  area = false,
+  legend = false,
 }: {
-  points: TokenUsageTimelinePoint[]
+  series: UsageSeries[]
   locale: string
   emptyLabel: string
   ariaLabel: string
+  area?: boolean
+  legend?: boolean
 }) {
-  if (points.length === 0) {
+  const dates = [...new Set(series.flatMap((item) => item.points.map((point) => point.date)))].sort()
+  if (dates.length === 0) {
     return <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">{emptyLabel}</div>
   }
 
@@ -154,63 +178,93 @@ function UsageChart({
   const bottom = 34
   const chartWidth = width - left - right
   const chartHeight = height - top - bottom
-  const max = Math.max(...points.map((point) => point.total_tokens), 1)
-  const x = (index: number) => left + (points.length === 1 ? chartWidth / 2 : (index / (points.length - 1)) * chartWidth)
+  const plotted = series.map((item, index) => ({
+    ...item,
+    color: SERIES_COLORS[index % SERIES_COLORS.length],
+    total: item.points.reduce((sum, point) => sum + point.total_tokens, 0),
+    values: new Map(item.points.map((point) => [point.date, point.total_tokens])),
+  }))
+  const max = Math.max(...plotted.flatMap((item) => [...item.values.values()]), 1)
+  const x = (index: number) => left + (dates.length === 1 ? chartWidth / 2 : (index / (dates.length - 1)) * chartWidth)
   const y = (value: number) => top + chartHeight - (value / max) * chartHeight
-  const line = points.map((point, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(point.total_tokens)}`).join(' ')
-  const area = `${line} L ${x(points.length - 1)} ${top + chartHeight} L ${x(0)} ${top + chartHeight} Z`
-  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])]
+  const path = (values: Map<string, number>) => dates
+    .map((date, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(values.get(date) ?? 0)}`)
+    .join(' ')
+  const labelIndexes = [...new Set([0, Math.floor((dates.length - 1) / 2), dates.length - 1])]
   const date = new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' })
+  const firstPath = path(plotted[0].values)
 
   return (
-    <svg className="h-64 w-full overflow-visible" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
-      <defs>
-        <linearGradient id="token-usage-area" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="var(--color-primary)" stopOpacity="0.28" />
-          <stop offset="1" stopColor="var(--color-primary)" stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      {[0, 0.5, 1].map((ratio) => (
-        <g key={ratio}>
-          <line
-            x1={left}
-            x2={width - right}
-            y1={top + chartHeight * ratio}
-            y2={top + chartHeight * ratio}
-            stroke="var(--color-border)"
-            strokeDasharray="3 6"
-          />
+    <div>
+      <svg className="h-64 w-full overflow-visible" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
+        <defs>
+          <linearGradient id="token-usage-area" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="var(--color-primary)" stopOpacity="0.28" />
+            <stop offset="1" stopColor="var(--color-primary)" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        {[0, 0.5, 1].map((ratio) => (
+          <g key={ratio}>
+            <line
+              x1={left}
+              x2={width - right}
+              y1={top + chartHeight * ratio}
+              y2={top + chartHeight * ratio}
+              stroke="var(--color-border)"
+              strokeDasharray="3 6"
+            />
+            <text
+              x={left - 10}
+              y={top + chartHeight * ratio + 4}
+              textAnchor="end"
+              fill="var(--color-muted-foreground)"
+              fontSize="11"
+            >
+              {formatTokens(Math.round(max * (1 - ratio)), locale, true)}
+            </text>
+          </g>
+        ))}
+        {area ? (
+          <path d={`${firstPath} L ${x(dates.length - 1)} ${top + chartHeight} L ${x(0)} ${top + chartHeight} Z`} fill="url(#token-usage-area)" />
+        ) : null}
+        {plotted.map((item) => (
+          <g key={item.id}>
+            <path d={path(item.values)} fill="none" stroke={item.color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+            {dates.map((day, index) => {
+              const value = item.values.get(day) ?? 0
+              return (
+                <circle key={day} cx={x(index)} cy={y(value)} r="3" fill="var(--color-card)" stroke={item.color} strokeWidth="2">
+                  <title>{`${item.name} · ${day}: ${formatTokens(value, locale)}`}</title>
+                </circle>
+              )
+            })}
+          </g>
+        ))}
+        {labelIndexes.map((index) => (
           <text
-            x={left - 10}
-            y={top + chartHeight * ratio + 4}
-            textAnchor="end"
+            key={dates[index]}
+            x={x(index)}
+            y={height - 8}
+            textAnchor={index === 0 ? 'start' : index === dates.length - 1 ? 'end' : 'middle'}
             fill="var(--color-muted-foreground)"
             fontSize="11"
           >
-            {formatTokens(Math.round(max * (1 - ratio)), locale, true)}
+            {date.format(new Date(`${dates[index]}T00:00:00`))}
           </text>
-        </g>
-      ))}
-      <path d={area} fill="url(#token-usage-area)" />
-      <path d={line} fill="none" stroke="var(--color-primary)" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-      {points.map((point, index) => (
-        <circle key={point.date} cx={x(index)} cy={y(point.total_tokens)} r="3" fill="var(--color-card)" stroke="var(--color-primary)" strokeWidth="2">
-          <title>{`${point.date}: ${formatTokens(point.total_tokens, locale)}`}</title>
-        </circle>
-      ))}
-      {labelIndexes.map((index) => (
-        <text
-          key={points[index].date}
-          x={x(index)}
-          y={height - 8}
-          textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'}
-          fill="var(--color-muted-foreground)"
-          fontSize="11"
-        >
-          {date.format(new Date(`${points[index].date}T00:00:00`))}
-        </text>
-      ))}
-    </svg>
+        ))}
+      </svg>
+      {legend ? (
+        <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-4" aria-label={ariaLabel}>
+          {plotted.map((item) => (
+            <li key={item.id} className="flex min-w-32 items-center gap-2 text-xs">
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} aria-hidden />
+              <span className="max-w-48 truncate text-muted-foreground" title={item.name}>{item.name}</span>
+              <span className="ml-auto font-medium tabular-nums">{formatTokens(item.total, locale, true)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }
 
@@ -265,8 +319,9 @@ function BreakdownList({
 }
 
 export function TokenUsagePage() {
-  const { t, i18n } = useTranslation('usage')
+  const { t, i18n } = useTranslation(['usage', 'navigation'])
   const locale = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
+  const close = useCloseOverlay()
   const initialDates = useMemo(() => presetDates('30d'), [])
   const [range, setRange] = useState<RangePreset>('30d')
   const [filters, setFilters] = useState<TokenUsageFilters>(initialDates)
@@ -305,12 +360,23 @@ export function TokenUsagePage() {
     active_agents: 0,
   }
   const dimensionFilters = filters.group_id || filters.provider_id || filters.model || filters.agent_id
+  const breakdowns: [Dimension, TokenUsageBreakdown[]][] = [
+    ['group', data?.by_group ?? []],
+    ['provider', data?.by_provider ?? []],
+    ['model', data?.by_model ?? []],
+    ['agent', data?.by_agent ?? []],
+  ]
 
   return (
     <DetailShell
       title={t('title')}
       subtitle={t('subtitle')}
       contentClassName="max-w-[90rem]"
+      leading={
+        <Button variant="ghost" size="icon" aria-label={t('navigation:backToChat')} onClick={close}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       actions={
         <Button variant="outline" size="sm" disabled={usage.isFetching || !validRange} onClick={() => void usage.refetch()}>
           <RefreshCw className={cn('h-4 w-4', usage.isFetching && 'animate-spin')} />
@@ -394,9 +460,50 @@ export function TokenUsagePage() {
               {usage.isLoading ? (
                 <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">{t('loading')}</div>
               ) : (
-                <UsageChart points={data?.timeline ?? []} locale={locale} emptyLabel={t('empty')} ariaLabel={t('trend.ariaLabel')} />
+                <UsageChart
+                  series={[{ id: 'total', name: t('summary.total'), points: data?.timeline ?? [] }]}
+                  locale={locale}
+                  emptyLabel={t('empty')}
+                  ariaLabel={t('trend.ariaLabel')}
+                  area
+                />
               )}
             </div>
+          </section>
+        </Card>
+
+        <Card asChild>
+          <section className="overflow-hidden">
+            <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border px-6 py-5">
+              <div>
+                <p className="text-2xs font-semibold uppercase tracking-[0.2em] text-primary">{t('attributionTrend.eyebrow')}</p>
+                <h2 className="mt-1 font-serif text-xl font-semibold">{t('attributionTrend.title')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{t('attributionTrend.description')}</p>
+              </div>
+              <p className="text-xs text-muted-foreground">{filters.from} — {filters.to}</p>
+            </header>
+            <Tabs defaultValue="group" className="p-6">
+              <TabsList className="grid w-full grid-cols-4 sm:w-auto">
+                {breakdowns.map(([dimension]) => (
+                  <TabsTrigger key={dimension} value={dimension}>{t(`dimensions.${dimension}`)}</TabsTrigger>
+                ))}
+              </TabsList>
+              {breakdowns.map(([dimension, items]) => (
+                <TabsContent key={dimension} value={dimension} className="mt-4">
+                  {usage.isLoading ? (
+                    <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">{t('loading')}</div>
+                  ) : (
+                    <UsageChart
+                      series={items.map((item) => ({ id: item.id, name: item.name, points: item.timeline }))}
+                      locale={locale}
+                      emptyLabel={t('empty')}
+                      ariaLabel={t('attributionTrend.ariaLabel', { dimension: t(`dimensions.${dimension}`) })}
+                      legend
+                    />
+                  )}
+                </TabsContent>
+              ))}
+            </Tabs>
           </section>
         </Card>
 
@@ -414,12 +521,7 @@ export function TokenUsagePage() {
                 <TabsTrigger value="model">{t('dimensions.model')}</TabsTrigger>
                 <TabsTrigger value="agent">{t('dimensions.agent')}</TabsTrigger>
               </TabsList>
-              {([
-                ['group', data?.by_group ?? []],
-                ['provider', data?.by_provider ?? []],
-                ['model', data?.by_model ?? []],
-                ['agent', data?.by_agent ?? []],
-              ] as [Dimension, TokenUsageBreakdown[]][]).map(([dimension, items]) => (
+              {breakdowns.map(([dimension, items]) => (
                 <TabsContent key={dimension} value={dimension} className="mt-4">
                   <BreakdownList
                     items={items}
