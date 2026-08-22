@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { Sparkles } from 'lucide-react'
 
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { SkillResourcesPanel } from '@/components/skills/SkillResourcesPanel'
@@ -29,11 +30,22 @@ export function SkillDetailPage() {
   const skill = useSkill(skillId)
   const del = useDeleteSkill()
   const navigate = useNavigate()
-  const [editing, setEditing] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Deep link: /skills/:id?edit=1 opens straight into the edit form, so the
+  // hover pencil on a gallery card is one click to editable fields.
+  const [editing, setEditing] = useState(searchParams.get('edit') === '1')
   const [saving, setSaving] = useState(false)
   const [canSave, setCanSave] = useState(false)
   const saveReady = useEditSaveGuard(editing)
   const [confirmOpen, setConfirmOpen] = useState(false)
+
+  useEffect(() => {
+    if (editing) {
+      setSearchParams(new URLSearchParams({ edit: '1' }), { replace: true })
+    } else {
+      setSearchParams({}, { replace: true })
+    }
+  }, [editing, setSearchParams])
 
   if (skill.isLoading) {
     return <DetailSkeleton label={t('skills:detail.loading')} />
@@ -88,7 +100,7 @@ export function SkillDetailPage() {
     <DetailShell
       title={s.name}
       subtitle={
-        <>
+        <div className="flex flex-wrap items-center gap-2">
           {s.description ? <span className="max-w-prose text-foreground/80">{s.description}</span> : null}
           <Badge variant="outline" className="gap-1 font-mono text-[10px] uppercase tracking-wide">
             {t('skills:detail.sourceShort')}
@@ -100,7 +112,7 @@ export function SkillDetailPage() {
           >
             {formatResourceStatus(s.status, t)}
           </Badge>
-        </>
+        </div>
       }
       actions={
         <>
@@ -126,19 +138,41 @@ export function SkillDetailPage() {
         </>
       }
     >
-      <SectionStack>
-        <Section
-          title={t('skills:detail.body')}
-          as="h3"
-          description={t('skills:detail.bodyDescription')}
-        >
-          <article className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
-            <MarkdownMessage content={s.body_markdown} />
-          </article>
-        </Section>
+      <div className="space-y-6">
+        {/* Hero Card */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
+          <div className="flex items-center gap-3.5">
+            <span className="flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-xs">
+              <Sparkles className="h-6 w-6" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold">{s.name}</h2>
+                <Badge variant="outline" className="text-[10px] font-mono uppercase">
+                  {s.source}
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {s.description || t('skills:detail.bodyDescription')}
+              </p>
+            </div>
+          </div>
+        </div>
 
-        <SkillResourcesPanel skill={s} />
-      </SectionStack>
+        <SectionStack>
+          <Section
+            title={t('skills:detail.body')}
+            as="h3"
+            description={t('skills:detail.bodyDescription')}
+          >
+            <article className="rounded-xl border border-border/80 bg-card p-5 shadow-xs sm:p-6">
+              <MarkdownMessage content={s.body_markdown} />
+            </article>
+          </Section>
+
+          <SkillResourcesPanel skill={s} />
+        </SectionStack>
+      </div>
 
       <ConfirmDialog
         open={confirmOpen}
@@ -158,9 +192,9 @@ export function SkillDetailPage() {
 
 interface EditSkillFormProps {
   skill: SkillRead
-  onSaved: () => void
   onCanSaveChange: (canSave: boolean) => void
   onSavingChange: (saving: boolean) => void
+  onSaved: () => void
 }
 
 function EditSkillForm({

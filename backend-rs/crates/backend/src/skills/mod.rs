@@ -216,6 +216,33 @@ pub fn resource_storage_path(
     Ok(target)
 }
 
+/// Metadata-only lookup that tolerates a file missing on disk.
+///
+/// A package can be partially extracted (interrupted import, data-directory
+/// migration, manual cleanup). The manifest still lists the path, but one dead
+/// entry must not fail the whole `list_resources` response — the frontend uses
+/// this list to render its file browser, and a 500 there makes every skill
+/// look broken. Missing files fall back to their recorded size/category with
+/// `is_text: false` so they stay visible and read as non-editable.
+pub fn resource_metadata(
+    storage_root: &Path,
+    skill_storage: &Path,
+    file: &SkillFileInfo,
+) -> (u64, bool) {
+    match resource_storage_path(storage_root, skill_storage, &file.path) {
+        Ok(path) => match path.metadata() {
+            Ok(metadata) => {
+                let size = metadata.len();
+                (size, is_text_resource(&path, size))
+            }
+            Err(_) => (file.size, false),
+        },
+        // Path escaped validation or the whole storage directory is gone:
+        // keep the manifest row, mark it non-editable.
+        Err(_) => (file.size, false),
+    }
+}
+
 pub fn is_text_resource(path: &Path, size: u64) -> bool {
     if size > MAX_TEXT_FILE_BYTES {
         return false;

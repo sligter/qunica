@@ -16,7 +16,12 @@ import {
   readRememberedPrefix,
   saveRememberedPrefix,
 } from '@/lib/folderPicker'
-import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
+import {
+  localizedErrorText,
+  messageError,
+  translatedError,
+  type LocalizedError,
+} from '@/i18n/localizedError'
 
 const PICKER_SCOPE = 'workspace-management-root'
 
@@ -84,7 +89,11 @@ export function WorkspaceCreatePage() {
           void navigate(`/workspaces/${created.id}`)
         },
         onError: (err) => {
-          setError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.create'))
+          setError(
+            err instanceof ApiError
+              ? messageError(err.message)
+              : translatedError('errors.create'),
+          )
         },
       },
     )
@@ -95,49 +104,67 @@ export function WorkspaceCreatePage() {
       title={t('form.createTitle')}
       subtitle={t('form.createSubtitle')}
     >
-      <form onSubmit={onSubmit} className="space-y-4">
-        <div className="space-y-1.5">
-          <Label htmlFor="workspace-new-name">{t('fields.name')}</Label>
-          <Input
-            id="workspace-new-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder={t('form.namePlaceholder')}
-            className="max-w-xl"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="workspace-new-path">{t('fields.backendLocalPath')}</Label>
-          <div className="flex max-w-xl gap-2">
+      <form onSubmit={onSubmit} className="space-y-6">
+        <div className="rounded-xl border border-border/80 bg-card p-6 shadow-xs space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="workspace-new-name" className="text-sm font-medium">
+              {t('fields.name')}
+            </Label>
             <Input
-              id="workspace-new-path"
-              value={localPath}
-              onChange={(event) => onPathChange(event.target.value)}
-              placeholder={t('validation.pathPlaceholder')}
-              className={
-                trimmedPath && !looksAbsolute(trimmedPath)
-                  ? 'border-destructive'
-                  : undefined
-              }
+              id="workspace-new-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={t('form.namePlaceholder')}
+              className="w-full"
             />
-            <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
-              {t('actions.pickFolder')}
-            </Button>
           </div>
-          {trimmedPath && !looksAbsolute(trimmedPath) ? (
-            <p className="text-xs text-destructive">
-              {t('validation.absolutePath')}
-            </p>
+
+          <div className="space-y-2">
+            <Label htmlFor="workspace-new-path" className="text-sm font-medium">
+              {t('fields.backendLocalPath')}
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                id="workspace-new-path"
+                value={localPath}
+                onChange={(event) => onPathChange(event.target.value)}
+                placeholder={t('validation.pathPlaceholder')}
+                className={
+                  trimmedPath && !looksAbsolute(trimmedPath)
+                    ? 'border-destructive'
+                    : undefined
+                }
+              />
+              <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
+                {t('actions.pickFolder')}
+              </Button>
+            </div>
+            {trimmedPath && !looksAbsolute(trimmedPath) ? (
+              <p className="text-xs text-destructive">
+                {t('validation.absolutePath')}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {t('fields.backendLocalPathDescription')}
+              </p>
+            )}
+          </div>
+
+          {localizedErrorText(error, t) ? (
+            <div className="rounded-lg bg-destructive/10 p-3 text-xs text-destructive" role="alert">
+              {localizedErrorText(error, t)}
+            </div>
           ) : null}
         </div>
-        {localizedErrorText(error, t) ? (
-          <p className="text-sm text-destructive" role="alert">
-            {localizedErrorText(error, t)}
-          </p>
-        ) : null}
-        <Button type="submit" disabled={!canCreate}>
-          {createWorkspace.isPending ? t('actions.creating') : t('actions.create')}
-        </Button>
+
+        <div className="flex items-center gap-3">
+          <Button type="submit" disabled={!canCreate}>
+            {createWorkspace.isPending ? t('actions.creating') : t('actions.create')}
+          </Button>
+          <Button type="button" variant="ghost" onClick={() => void navigate('/workspaces')}>
+            {t('common:actions.cancel', '取消')}
+          </Button>
+        </div>
       </form>
     </DetailShell>
   )

@@ -21,8 +21,8 @@ use crate::{
     api::{auth::current_user_id, error::ApiError, AppState},
     skills::{
         files_to_json, find_file, is_text_resource, parse_files_json, parse_skill_markdown,
-        parse_skill_package, resource_storage_path, validate_resource_path, write_package_files,
-        SkillFileInfo,
+        parse_skill_package, resource_metadata, resource_storage_path, validate_resource_path,
+        write_package_files, SkillFileInfo,
     },
 };
 
@@ -440,10 +440,26 @@ pub async fn list_resources(
     let row = load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;
     let files = parse_files_json(row.files_json.as_deref());
 
+    // Per-file failures degrade that row (recorded size, not editable) instead
+    // of failing the whole listing — the browser renders from this response.
     let resources = files
         .iter()
-        .map(|file| resource_response(&state.skill_storage_root, &row, file, None))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|file| {
+            // An empty skill_storage makes resource_metadata's canonicalize
+            // fail, which the helper already treats as "not editable" — the
+            // right degradation for a row whose storage directory is gone.
+            let storage_dir = FsPath::new(row.storage_path.as_deref().unwrap_or(""));
+            let (size, is_text) =
+                resource_metadata(&state.skill_storage_root, storage_dir, file);
+            SkillResourceResponse {
+                path: file.path.clone(),
+                size,
+                category: file.category.clone(),
+                is_text,
+                content: None,
+            }
+        })
+        .collect::<Vec<_>>();
     Ok(Json(resources))
 }
 
@@ -628,23 +644,6 @@ async fn prune_agent_skill_ids(
     }
 
     Ok(())
-}
-
-fn resource_response(
-    storage_root: &FsPath,
-    row: &SkillRow,
-    file: &SkillFileInfo,
-    content: Option<String>,
-) -> Result<SkillResourceResponse, ApiError> {
-    let path = skill_resource_path(storage_root, row, &file.path)?;
-    let size = file_size(&path)?;
-    Ok(SkillResourceResponse {
-        path: file.path.clone(),
-        size,
-        category: file.category.clone(),
-        is_text: is_text_resource(&path, size),
-        content,
-    })
 }
 
 fn skill_resource_path(

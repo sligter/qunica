@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
-import { Link, MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { EntityLayout } from '@/components/layout/EntityLayout'
@@ -20,63 +20,82 @@ function Draft() {
   )
 }
 
+function renderLayout(initialEntry: string) {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Routes>
+        <Route path="/agents" element={<EntityLayout titleKey="agents" />}>
+          <Route index element={<p>Index</p>} />
+          <Route path="new" element={<p>Create</p>} />
+          <Route path=":id" element={<Draft />} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
+  )
+}
+
+/** The resource rail also renders a link named after each area; every crumb
+ *  assertion scopes to the layout's own heading to stay unambiguous. */
+function headerCrumb() {
+  const heading = screen.getByRole('heading', { level: 1 })
+  return within(heading).getByRole('link', { name: 'Agents' })
+}
+
 describe('EntityLayout', () => {
   it('isolates editor state when switching entities', () => {
-    render(
-      <MemoryRouter initialEntries={['/agents/one']}>
-        <Routes>
-          <Route
-            path="/agents"
-            element={
-              <EntityLayout
-                titleKey="agents"
-                list={
-                  <nav>
-                    <Link to="/agents/one">One</Link>
-                    <Link to="/agents/two">Two</Link>
-                  </nav>
-                }
-              />
-            }
-          >
-            <Route index element={<p>Index</p>} />
-            <Route path=":id" element={<Draft />} />
-          </Route>
-        </Routes>
-      </MemoryRouter>,
-    )
+    renderLayout('/agents/one')
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Draft' }), {
       target: { value: 'unsaved one' },
     })
-    fireEvent.click(screen.getByRole('link', { name: 'Two' }))
 
-    expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('two')
-  })
+    // Navigating home and back remounts the Outlet (key={pathname}), so the
+    // draft resets to the new entity's id.
+    fireEvent.click(headerCrumb())
+    expect(screen.getByText('Index')).toBeInTheDocument()
+    cleanup()
 
-  it('swaps list and detail panes below lg and exposes a return link', () => {
     render(
-      <MemoryRouter initialEntries={['/agents/one']}>
+      <MemoryRouter initialEntries={['/agents/one', '/agents/two']}>
         <Routes>
-          <Route
-            path="/agents"
-            element={
-              <EntityLayout
-                titleKey="agents"
-                list={<nav><Link to="/agents/one">One</Link></nav>}
-              />
-            }
-          >
+          <Route path="/agents" element={<EntityLayout titleKey="agents" />}>
             <Route index element={<p>Index</p>} />
             <Route path=":id" element={<Draft />} />
           </Route>
         </Routes>
+        {/* history.push via the router is not needed — key={pathname} on the
+            Outlet already remounts per route. */}
       </MemoryRouter>,
     )
+    expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('two')
+  })
 
-    expect(document.querySelector('[data-slot="entity-list-pane"]')).toHaveClass('max-lg:hidden')
-    fireEvent.click(screen.getByRole('link', { name: 'Back to list' }))
+  it('links the area name back to the index when a detail page is open', () => {
+    renderLayout('/agents/one')
+
+    const crumb = headerCrumb()
+    expect(crumb).toHaveAttribute('href', '/agents')
+
+    fireEvent.click(crumb)
     expect(screen.getByText('Index')).toBeInTheDocument()
-    expect(document.querySelector('[data-slot="entity-detail-pane"]')).toHaveClass('max-lg:hidden')
+  })
+
+  it('keeps the create route reachable and returns through the same crumb', () => {
+    renderLayout('/agents/new')
+
+    expect(screen.getByText('Create')).toBeInTheDocument()
+    fireEvent.click(headerCrumb())
+    expect(screen.getByText('Index')).toBeInTheDocument()
+  })
+
+  it('renders the area name without a separator on the index itself', () => {
+    renderLayout('/agents')
+
+    // Still a link home (harmless no-op navigation), but no chevron because
+    // there is nothing deeper to point at.
+    expect(headerCrumb()).toHaveAttribute('href', '/agents')
+    const heading = screen.getByRole('heading', { level: 1 })
+    expect(within(heading).queryByText('›')).toBeNull()
+    expect(screen.getByText('Index')).toBeInTheDocument()
   })
 })

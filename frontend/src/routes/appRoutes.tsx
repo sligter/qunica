@@ -1,15 +1,10 @@
 import { lazy } from 'react'
 import { Navigate, type RouteObject } from 'react-router-dom'
 
-import { AgentsListColumn } from '@/components/layout/AgentsListColumn'
 import { EntityLayout } from '@/components/layout/EntityLayout'
 import { LegacyDetailRedirect } from '@/components/layout/LegacyDetailRedirect'
-import { McpServersListColumn } from '@/components/layout/McpServersListColumn'
 import { OverlayRedirect } from '@/components/layout/overlayRouting'
-import { ProvidersListColumn } from '@/components/layout/ProvidersListColumn'
 import { SettingsLayout } from '@/components/layout/SettingsLayout'
-import { SkillsListColumn } from '@/components/layout/SkillsListColumn'
-import { WorkspacesListColumn } from '@/components/layout/WorkspacesListColumn'
 import { GroupChatPage } from '@/pages/group/GroupChatPage'
 import { DirectChatPage } from '@/pages/chat/DirectChatPage'
 import { ChatHomePage } from '@/pages/home/ChatHomePage'
@@ -108,7 +103,7 @@ export const appChildren: RouteObject[] = [
   // entries.
   {
     path: '/agents',
-    element: <EntityLayout titleKey="agents" list={<AgentsListColumn />} />,
+    element: <EntityLayout titleKey="agents" />,
     children: [
       { index: true, element: <AgentsIndexPage /> },
       { path: 'new', element: <AgentCreatePage /> },
@@ -117,7 +112,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/providers',
-    element: <EntityLayout titleKey="providers" list={<ProvidersListColumn />} />,
+    element: <EntityLayout titleKey="providers" />,
     children: [
       { index: true, element: <ProvidersIndexPage /> },
       { path: 'new', element: <ProviderCreatePage /> },
@@ -126,7 +121,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/mcp-servers',
-    element: <EntityLayout titleKey="mcpServers" list={<McpServersListColumn />} />,
+    element: <EntityLayout titleKey="mcpServers" />,
     children: [
       { index: true, element: <McpServersIndexPage /> },
       { path: 'new', element: <McpServerCreatePage /> },
@@ -135,7 +130,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/skills',
-    element: <EntityLayout titleKey="skills" list={<SkillsListColumn />} />,
+    element: <EntityLayout titleKey="skills" />,
     children: [
       { index: true, element: <SkillsIndexPage /> },
       { path: 'new', element: <SkillCreatePage /> },
@@ -144,7 +139,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/workspaces',
-    element: <EntityLayout titleKey="workspaces" list={<WorkspacesListColumn />} />,
+    element: <EntityLayout titleKey="workspaces" />,
     children: [
       { index: true, element: <WorkspacesIndexPage /> },
       { path: 'new', element: <WorkspaceCreatePage /> },

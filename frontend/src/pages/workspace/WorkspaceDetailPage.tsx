@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Bot, Users } from 'lucide-react'
+import {
+  ArrowRight,
+  Bot,
+  Check,
+  Copy,
+  Users,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
@@ -28,7 +34,14 @@ import {
 } from '@/lib/folderPicker'
 import type { GroupRead, WorkspaceRead, WorkspaceUpdate } from '@/types/api'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
-import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
+import {
+  localizedErrorText,
+  messageError,
+  translatedError,
+  type LocalizedError,
+} from '@/i18n/localizedError'
+import { avatarColorClass } from '@/lib/avatarColor'
+import { cn } from '@/lib/utils'
 
 const PICKER_SCOPE = 'workspace-management-root'
 
@@ -78,6 +91,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
   const [sandboxRef, setSandboxRef] = useState(workspace.sandbox_ref ?? '')
   const [error, setError] = useState<LocalizedError | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [copiedPath, setCopiedPath] = useState(false)
 
   useEffect(() => {
     setName(workspace.name)
@@ -137,8 +151,25 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     setError(null)
     updateWorkspace.mutate(payload, {
       onError: (err) => {
-        setError(err instanceof ApiError ? messageError(err.message) : translatedError('workspaces:errors.update'))
+        setError(
+          err instanceof ApiError
+            ? messageError(err.message)
+            : translatedError('workspaces:errors.update'),
+        )
       },
+    })
+  }
+
+  const activePath =
+    workspace.backend_type === 'local'
+      ? workspace.local_path || t('workspaces:noLocalPath')
+      : workspace.sandbox_ref || t('workspaces:noSandboxReference')
+
+  const onCopyPath = () => {
+    if (!navigator.clipboard || !activePath) return
+    void navigator.clipboard.writeText(activePath).then(() => {
+      setCopiedPath(true)
+      setTimeout(() => setCopiedPath(false), 2000)
     })
   }
 
@@ -146,12 +177,17 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     <DetailShell
       title={workspace.name}
       subtitle={
-        <>
-          <Badge variant="outline">{workspace.backend_type}</Badge>
-          <Badge variant={workspace.status === 'active' ? 'default' : 'secondary'}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="text-[10px] font-mono uppercase">
+            {workspace.backend_type}
+          </Badge>
+          <Badge
+            variant={workspace.status === 'active' ? 'default' : 'secondary'}
+            className="text-[10px]"
+          >
             {formatResourceStatus(workspace.status, t)}
           </Badge>
-        </>
+        </div>
       }
       actions={
         <Button
@@ -164,7 +200,42 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
         </Button>
       }
     >
-      <div className="space-y-10">
+      <div className="space-y-6">
+        {/* Hero Card */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
+          <div className="flex items-center gap-3.5">
+            <span
+              className={cn(
+                'flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-2xl text-base font-semibold shadow-xs',
+                avatarColorClass(workspace.id),
+              )}
+            >
+              {workspace.name.slice(0, 1).toUpperCase()}
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold">{workspace.name}</h2>
+                <span className="inline-block rounded-md border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                  {workspace.backend_type}
+                </span>
+              </div>
+              <code className="text-xs font-mono text-muted-foreground mt-0.5 block truncate max-w-md">
+                {activePath}
+              </code>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCopyPath}
+            className="h-8 gap-1.5 text-xs text-muted-foreground"
+          >
+            {copiedPath ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+            <span>{copiedPath ? t('common:actions.copied', '已复制') : t('common:actions.copy', '复制路径')}</span>
+          </Button>
+        </div>
+
+        {/* Configuration Section */}
         <SettingsSection
           title={t('workspaces:detail.title')}
           aside={
@@ -226,6 +297,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
           ) : null}
         </SettingsSection>
 
+        {/* Usage Section */}
         <WorkspaceUsageSection workspaceId={workspace.id} />
       </div>
 
@@ -249,15 +321,6 @@ interface WorkspaceUsageSectionProps {
   workspaceId: string
 }
 
-/**
- * Which groups and agents are bound to this workspace, with a way to act on
- * each. A read-only list makes you hunt for the entity's own screen to change
- * anything, which is the wrong direction of travel when you got here by asking
- * "who is using this folder?".
- *
- * A group can be unbound in place. An agent cannot: the API requires every
- * agent to have a workspace, so the only honest action is to go and rebind it.
- */
 function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
   const { t } = useTranslation(['workspaces', 'common'])
   const groups = useGroups()
@@ -280,24 +343,30 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
             {t('workspaces:detail.unused')}
           </p>
         ) : (
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {boundGroups.map((group) => (
               <BoundGroupRow key={group.id} group={group} />
             ))}
             {boundAgents.map((agent) => (
-              <li key={agent.id} className="flex items-center gap-2 text-sm">
-                <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <Link to={`/agents/${agent.id}`} className="truncate hover:underline">
-                  {agent.name}
-                </Link>
-                <Badge variant="outline" className="text-[10px]">
-                  {t('workspaces:detail.agent')}
-                </Badge>
+              <li
+                key={agent.id}
+                className="flex items-center justify-between rounded-xl border border-border/80 bg-card p-3 text-sm shadow-xs transition-colors hover:border-primary/40"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Bot className="h-4 w-4 shrink-0 text-primary" />
+                  <Link to={`/agents/${agent.id}`} className="truncate font-medium hover:underline text-foreground">
+                    {agent.name}
+                  </Link>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {t('workspaces:detail.agent')}
+                  </Badge>
+                </div>
                 <Link
                   to={`/agents/${agent.id}`}
-                  className="ml-auto shrink-0 text-xs text-muted-foreground hover:underline"
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline ml-2 shrink-0 font-medium"
                 >
                   {t('workspaces:detail.rebind')}
+                  <ArrowRight className="h-3 w-3" />
                 </Link>
               </li>
             ))}
@@ -314,23 +383,25 @@ function BoundGroupRow({ group }: { group: GroupRead }) {
   const [error, setError] = useState<LocalizedError | null>(null)
 
   return (
-    <li className="flex items-center gap-2 text-sm">
-      <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <Link to={`/groups/${group.id}`} className="truncate hover:underline">
-        {group.name}
-      </Link>
-      <Badge variant="outline" className="text-[10px]">
-        {t('workspaces:detail.group')}
-      </Badge>
-      {error ? (
-        <span className="truncate text-xs text-destructive" role="alert">
-          {localizedErrorText(error, t)}
-        </span>
-      ) : null}
+    <li className="flex items-center justify-between rounded-xl border border-border/80 bg-card p-3 text-sm shadow-xs transition-colors hover:border-primary/40">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <Users className="h-4 w-4 shrink-0 text-primary" />
+        <Link to={`/groups/${group.id}`} className="truncate font-medium hover:underline text-foreground">
+          {group.name}
+        </Link>
+        <Badge variant="secondary" className="text-[10px]">
+          {t('workspaces:detail.group')}
+        </Badge>
+        {error ? (
+          <span className="truncate text-xs text-destructive ml-2" role="alert">
+            {localizedErrorText(error, t)}
+          </span>
+        ) : null}
+      </div>
       <Button
         size="sm"
         variant="ghost"
-        className="ml-auto h-7 shrink-0 text-xs"
+        className="ml-auto h-7 shrink-0 text-xs text-muted-foreground hover:text-foreground"
         disabled={update.isPending}
         onClick={() => {
           setError(null)

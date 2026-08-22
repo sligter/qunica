@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Check, Key, Plug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -20,6 +21,18 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { formatNumber } from '@/lib/format'
 import type { Language } from '@/i18n'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
+import type { ProviderKind } from '@/types/api'
+import { cn } from '@/lib/utils'
+
+function kindBadgeClass(kind: ProviderKind): string {
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') {
+    return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+  }
+  if (kind === 'gemini') {
+    return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
+  }
+  return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+}
 
 export function ProviderDetailPage() {
   const { t, i18n } = useTranslation(['providers', 'common'])
@@ -27,12 +40,23 @@ export function ProviderDetailPage() {
   const provider = useProvider(providerId)
   const del = useDeleteProvider()
   const navigate = useNavigate()
-  const [editing, setEditing] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Deep link: /providers/:id?edit=1 opens straight into the edit form.
+  const [editing, setEditing] = useState(searchParams.get('edit') === '1')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [copiedKey, setCopiedKey] = useState(false)
   const saveReady = useEditSaveGuard(editing)
   useUnsavedChangesGuard(editing && dirty)
+
+  useEffect(() => {
+    if (editing) {
+      setSearchParams(new URLSearchParams({ edit: '1' }), { replace: true })
+    } else {
+      setSearchParams({}, { replace: true })
+    }
+  }, [editing, setSearchParams])
 
   if (provider.isLoading) {
     return <DetailSkeleton label={t('providers:detail.loading')} />
@@ -86,10 +110,25 @@ export function ProviderDetailPage() {
     )
   }
 
+  const onCopyKey = () => {
+    if (!navigator.clipboard) return
+    void navigator.clipboard.writeText(p.api_key_masked).then(() => {
+      setCopiedKey(true)
+      setTimeout(() => setCopiedKey(false), 2000)
+    })
+  }
+
   return (
     <DetailShell
       title={p.name}
-      subtitle={`${p.kind} · ${p.default_model}`}
+      subtitle={
+        <div className="flex flex-wrap items-center gap-2">
+          <span>{`${p.kind} · ${p.default_model}`}</span>
+          <Badge variant={p.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">
+            {formatResourceStatus(p.status, t)}
+          </Badge>
+        </div>
+      }
       actions={
         <>
           <Button
@@ -114,8 +153,41 @@ export function ProviderDetailPage() {
         </>
       }
     >
-      <div className="space-y-8">
-        <FieldGrid columns={4}>
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
+          <div className="flex items-center gap-3.5">
+            <span className="flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-xs">
+              <Plug className="h-6 w-6" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold">{p.name}</h2>
+                <span
+                  className={cn(
+                    'inline-block rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none',
+                    kindBadgeClass(p.kind),
+                  )}
+                >
+                  {p.kind}
+                </span>
+              </div>
+              <p className="text-xs font-mono text-muted-foreground mt-0.5">
+                {p.base_url || t('providers:kinds.openai.baseHint', '默认云端端点')}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCopyKey}
+            className="h-8 gap-1.5 text-xs text-muted-foreground"
+          >
+            {copiedKey ? <Check className="h-3.5 w-3.5 text-success" /> : <Key className="h-3.5 w-3.5" />}
+            <span className="font-mono text-2xs">{p.api_key_masked}</span>
+          </Button>
+        </div>
+
+        <FieldGrid columns={3}>
           <Field label={t('providers:fields.kind')} value={p.kind} />
           <Field label={t('providers:fields.defaultModel')} value={p.default_model} />
           <Field
@@ -134,47 +206,66 @@ export function ProviderDetailPage() {
                 : '30%'
             }
           />
-          <Field label={t('providers:fields.baseUrl')} value={p.base_url ?? '-'} />
+          <Field label={t('providers:fields.baseUrl')} value={p.base_url ?? '-'} mono />
           <Field label={t('providers:fields.apiKey')} value={p.api_key_masked} mono />
-          <Field label={t('providers:fields.status')}>
-            <Badge variant={p.status === 'active' ? 'default' : 'secondary'} className="mt-1">
-              {formatResourceStatus(p.status, t)}
-            </Badge>
-          </Field>
         </FieldGrid>
 
-        <Section title={t('providers:models.title')} as="h3">
+        <Section
+          title={t('providers:models.title')}
+          as="h3"
+          description={t('providers:models.description')}
+        >
           <div className="grid gap-3 sm:grid-cols-2">
-            {(p.models ?? []).map((model) => (
-              <div
-                key={model.id}
-                className="rounded-md border border-border bg-card p-3 text-sm"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{model.id}</span>
-                  {model.id === p.default_model && (
-                    <Badge variant="secondary">{t('providers:models.default')}</Badge>
-                  )}
+            {(p.models ?? []).map((model) => {
+              const isDefault = model.id === p.default_model
+              const contextTokens = model.context_window_tokens !== null
+                ? formatNumber(model.context_window_tokens, i18n.resolvedLanguage as Language)
+                : t('providers:states.auto')
+              const reserveRatio = model.context_output_reserve_ratio !== null
+                ? `${Math.round(model.context_output_reserve_ratio * 100)}%`
+                : '30%'
+
+              return (
+                <div
+                  key={model.id}
+                  className="rounded-xl border border-border/80 bg-card p-4 text-sm shadow-xs transition-colors hover:border-primary/40"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-semibold truncate text-foreground">{model.id}</span>
+                      {isDefault && (
+                        <Badge variant="default" className="text-[10px] shrink-0">
+                          {t('providers:models.default')}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground border-t border-border/50 pt-2.5">
+                    <div>
+                      <span className="text-2xs uppercase text-muted-foreground/80 block">
+                        {t('providers:fields.contextWindow')}
+                      </span>
+                      <span className="font-mono text-xs text-foreground font-medium">{contextTokens}</span>
+                    </div>
+                    <div>
+                      <span className="text-2xs uppercase text-muted-foreground/80 block">
+                        {t('providers:fields.outputReserve')}
+                      </span>
+                      <span className="font-mono text-xs text-foreground font-medium">{reserveRatio}</span>
+                    </div>
+                  </div>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t('providers:fields.contextWindow')}: {
-                    model.context_window_tokens !== null
-                      ? formatNumber(model.context_window_tokens, i18n.resolvedLanguage as Language)
-                      : t('providers:states.auto')
-                  } · {t('providers:fields.outputReserve')}: {
-                    model.context_output_reserve_ratio !== null
-                      ? `${Math.round(model.context_output_reserve_ratio * 100)}%`
-                      : '30%'
-                  }
-                </p>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </Section>
 
         {p.description && (
           <Section title={t('providers:detail.description')} as="h3">
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{p.description}</p>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground bg-card p-4 rounded-xl border border-border/80">
+              {p.description}
+            </p>
           </Section>
         )}
       </div>
