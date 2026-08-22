@@ -1,3 +1,4 @@
+import { Plug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
@@ -36,6 +37,7 @@ export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
       loadError={!!providers.error}
       errorText={t('loadError')}
       emptyText={t('empty')}
+      icon={Plug}
       width={width}
       items={(providers.data ?? []).map((p) => ({
         id: p.id,

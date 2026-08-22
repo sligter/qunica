@@ -1,3 +1,4 @@
+import { Folder } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
@@ -33,6 +34,7 @@ export function WorkspacesListColumn({ width }: WorkspacesListColumnProps) {
       loadError={!!workspaces.error}
       errorText={t('loadError')}
       emptyText={t('empty')}
+      icon={Folder}
       width={width}
       items={(workspaces.data ?? []).map((w) => ({
         id: w.id,

@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { ArrowLeft, Images, ScrollText, Sparkles, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, Images, ScrollText, Settings, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
@@ -24,9 +24,22 @@ export function SettingsLayout() {
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="font-serif text-base font-semibold tracking-tight">
-          {t('settings')}
-        </h1>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            aria-hidden
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+          >
+            <Settings className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 leading-tight">
+            <h1 className="truncate font-serif text-base font-semibold tracking-tight">
+              {t('settings')}
+            </h1>
+            <p className="truncate text-xs text-muted-foreground">
+              {t('settings:description')}
+            </p>
+          </div>
+        </div>
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
         <aside className="shrink-0 border-b border-border bg-card p-2 md:w-52 md:border-b-0 md:border-r md:p-3">

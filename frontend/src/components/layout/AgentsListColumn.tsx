@@ -1,3 +1,4 @@
+import { Bot } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
@@ -22,6 +23,7 @@ export function AgentsListColumn({ width }: AgentsListColumnProps) {
       loadError={!!agents.error}
       errorText={t('loadError')}
       emptyText={t('empty')}
+      icon={Bot}
       width={width}
       items={(agents.data ?? []).map((a) => ({
         id: a.id,

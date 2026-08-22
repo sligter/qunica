@@ -48,6 +48,13 @@ export const enUS = {
       loading: 'Loading…',
       unavailable: 'Unavailable',
       noMatches: 'No matches.',
+      clearSearch: 'Clear search',
+      emptyHint: 'Create the first one to get started.',
+      matchCount_one: '{{count}} match',
+      matchCount_other: '{{count}} matches',
+      totalCount_one: '{{count}} item',
+      totalCount_other: '{{count}} items',
+      filteredCount: 'Showing {{shown}} of {{total}}',
     },
     errors: { unexpected: 'Something went wrong. Try again.', detail: 'Error: {{message}}' },
     wireLabels: {
@@ -145,6 +152,15 @@ export const enUS = {
     logout: 'Log out',
     backToChat: 'Back to chat',
     openingWorkspace: 'Opening workspace…',
+    // One-line intros for the library areas, rendered under the EntityLayout
+    // title so each area explains itself instead of relying on a bare label.
+    libraryDescriptions: {
+      agents: 'Reusable AI members — prompts, runtimes, tools, and skills.',
+      providers: 'Model endpoints shared by every chat and agent.',
+      mcpServers: 'External services exposed to agents as tools.',
+      skills: 'Prompt fragments injectable into any agent.',
+      workspaces: 'Local directories bound to groups and agents.',
+    },
   },
   chat: {
     gitActions: { expandDiff: 'Expand diff', collapseDiff: 'Collapse diff', stagedCount_one: '{{formattedCount}} staged', stagedCount_other: '{{formattedCount}} staged' },
@@ -630,6 +646,7 @@ export const enUS = {
   settings: {
     title: 'System settings',
     subtitle: 'Account-level preferences and integrations.',
+    description: 'Account-level preferences and integrations.',
     tabs: { preferences: 'Preferences', system: 'System', media: 'Media', logs: 'Runtime logs' },
     appearance: 'Appearance',
     theme: 'Theme',
