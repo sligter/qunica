@@ -301,6 +301,7 @@ function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
     case 'turn_completed':
       return true
     case 'turn_started':
+    case 'moderator_started':
     case 'speaker_selected':
     case 'dispatch_failed':
     case 'moderator_fallback':

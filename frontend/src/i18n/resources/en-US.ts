@@ -17,6 +17,7 @@ export const enUS = {
       saving: 'Saving…',
       cancel: 'Cancel',
       close: 'Close',
+      backToList: 'Back to list',
       clear: 'Clear',
       edit: 'Edit',
       delete: 'Delete',
@@ -27,6 +28,23 @@ export const enUS = {
       confirm: 'Confirm',
       working: 'Working…',
     },
+    unsavedChanges: {
+      title: 'Discard unsaved changes?',
+      description: 'Your buffered edits will be lost if you leave this panel.',
+      discard: 'Discard and leave',
+    },
+    entityMenu: {
+      actionsLabel: 'Actions for {{name}}',
+      rename: 'Rename',
+      renameTitle: 'Rename {{name}}',
+      renameDescription: 'Enter a new name for this resource.',
+      name: 'Name',
+      copyId: 'Copy ID',
+      copiedId: 'ID copied',
+      deleteTitle: 'Delete {{name}}?',
+      deleteDescription: 'This removes it from the resource library.',
+    },
+    advancedScheduling: 'Advanced scheduling',
     picker: {
       search: 'Search',
       summary_one: '{{total}} item · {{selected}} selected',
@@ -49,6 +67,7 @@ export const enUS = {
       unavailable: 'Unavailable',
       noMatches: 'No matches.',
       clearSearch: 'Clear search',
+      resizeList: 'Resize the list column',
       emptyHint: 'Create the first one to get started.',
       matchCount_one: '{{count}} match',
       matchCount_other: '{{count}} matches',
@@ -135,6 +154,14 @@ export const enUS = {
     newDirectChat: 'New chat',
     searchConversations: 'Search conversations',
     loadMore: 'Load more',
+    commandPalette: {
+      trigger: 'Command menu',
+      title: 'Command menu',
+      description: 'Jump to an area, create something, or switch theme and language.',
+      placeholder: 'Search commands…',
+      empty: 'No matching commands.',
+      groups: { navigate: 'Go to', create: 'Create new', preferences: 'Preferences' },
+    },
     groups: 'Groups',
     usage: 'Token usage',
     agents: 'Agents',
@@ -152,14 +179,11 @@ export const enUS = {
     logout: 'Log out',
     backToChat: 'Back to chat',
     openingWorkspace: 'Opening workspace…',
-    // One-line intros for the library areas, rendered under the EntityLayout
-    // title so each area explains itself instead of relying on a bare label.
-    libraryDescriptions: {
-      agents: 'Reusable AI members — prompts, runtimes, tools, and skills.',
-      providers: 'Model endpoints shared by every chat and agent.',
-      mcpServers: 'External services exposed to agents as tools.',
-      skills: 'Prompt fragments injectable into any agent.',
-      workspaces: 'Local directories bound to groups and agents.',
+    // Headings over the resource rail's two groups: the things you create and
+    // edit, then the read-only report.
+    rail: {
+      resources: 'Resources',
+      insights: 'Insights',
     },
   },
   chat: {
@@ -406,7 +430,7 @@ export const enUS = {
     create: { title: 'Create a new group', description: 'A group is the shared context where users and agents collaborate. Choose an existing workspace, create a local workspace, or let the app auto-create one under your configured group workspace root.', name: 'Name', required: 'Required', nameTooLong: 'Must be 100 characters or fewer', template: 'Group template', noTemplate: 'Start from scratch', templateDescription: 'A template fills collaboration settings and the initial agent roster; workspace files and history are never copied.', workspace: 'Group workspace', workspaceDescription: 'Choose an existing workspace or create a local one. Leave it empty to auto-create from the system root.', workspaceSelected: 'The selected workspace will be used for this group.', workspaceLoading: 'Loading system settings…', workspaceAutoCreate: 'A new dedicated workspace will be created under', workspaceMissing: 'Group workspace root is not configured.', workspaceSettingsLink: 'Set it in system settings', workspaceMissingSuffix: 'before creating a group.', optionalDescription: 'Description (optional)', optionalAnnouncement: 'Announcement (optional)', announcementPlaceholder: "A short statement included in every agent's system prompt.", communicationMode: 'Communication mode', initialAgents: 'Initial agents (optional)', noAgents: 'No agents yet. Create one in the Agents tab first.', submit: 'Create group', creating: 'Creating…', cancel: 'Cancel' },
     manage: { title: 'Manage group', documentTitle: '{{name}} · Manage · AG Swarmer', back: 'Back to group chat', members: 'Members', settings: 'Settings', notes: 'Notes', loading: 'Loading…', loadError: 'Failed to load group.', loadErrorDetail: 'Failed to load group: {{message}}', notFound: 'Group not found.' },
     templates: { title: 'Group templates', description: 'Snapshot this group’s collaboration settings and agents for quick reuse.', saveCurrent: 'Save current group', saveCurrentDescription: 'Workspace files, messages, and tasks are not copied.', name: 'Template name', save: 'Save template', saving: 'Saving…', empty: 'No group templates yet.', agentCount_one: '{{count}} agent', agentCount_other: '{{count}} agents', delete: 'Delete template', deleteNamed: 'Delete template {{name}}', deleteTitle: 'Delete template “{{name}}”?', deleteDescription: 'Existing groups created from this template are unchanged.' },
-    members: { title: 'Members', count_one: '{{formattedCount}} person or agent in this group.', count_other: '{{formattedCount}} people and agents in this group.', search: 'Search members', all: 'All', human: 'Human', agents: 'Agents', muted: 'Muted', workspace: 'Workspace', leader: 'Leader', noMatches: 'No matching members.', details: 'Member details', detailsHint: 'Select a member to manage access, mute status, and agent topology.', topology: 'Communication topology', currentMode: 'Current mode: {{mode}}. Select an agent to configure its role or order.', addHuman: 'Add human member', searchUsers: 'Search users', addAgent: 'Add agent', noAgents: 'No available agents to add.', noDescription: 'No description.', loadError: 'Failed to load members.', loading: 'Loading…', add: 'Add', adding: 'Adding…', allowWorkspace: 'Allow workspace', agentId: 'Agent ID: {{id}}', userId: 'User ID: {{id}}', groupWorkspace: 'Group workspace', sharedWorkspaceAccess: 'Shared workspace access.', share: 'Share', unshare: 'Unshare', workspaceAccess: 'Workspace access', workspaceAccessDescription: 'Which folders this agent can read and write during a turn.', workspacePrimary: 'Plain paths resolve in: {{location}}', workspaceMount: 'Mounted at ~self/: {{location}}', workspaceNotConfigured: 'not configured', workspaceModes: { group: 'Group workspace', groupAndSelf: 'Group + its own folder', self: 'Its own folder only', groupHint: 'Reads and writes the group workspace, like every other member.', groupAndSelfHint: 'Works in the group workspace and can also reach its own folder under the ~self/ prefix.', selfHint: 'Isolated: group files and message attachments are out of reach, and its output stays out of the group workspace.' }, starTopology: 'Star topology', setAsHub: 'Set this agent as hub.', makeHub: 'Make hub', hierarchyRole: 'Hierarchy role', noTopologyRole: 'No topology role', unknownTopologyRole: 'Unknown topology role: {{value}}', mute: 'Mute', unmute: 'Unmute', remove: 'Remove', removeTitle: 'Remove {{name}}?', removeDescription: 'This member will no longer be part of the group.', workspaceSharing: 'Share group workspace', topologyRole: 'Topology role', speakingOrder: 'Speaking order', member: 'Member', owner: 'Owner', admin: 'Admin', agent: 'Agent', worker: 'Worker', hub: 'Hub', participant: 'Participant', modes: { mesh: 'Mesh', star: 'Star', hierarchical: 'Hierarchical', ring: 'Ring' }, errors: { topology: 'Failed to update topology', agentMute: 'Failed to update agent mute', memberMute: 'Failed to update member mute', removeAgent: 'Failed to remove agent', removeMember: 'Failed to remove member', workspace: 'Failed to update workspace sharing', detail: '{{message}}: {{detail}}' } },
+    members: { title: 'Members', count_one: '{{formattedCount}} person or agent in this group.', count_other: '{{formattedCount}} people and agents in this group.', search: 'Search members', all: 'All', human: 'Human', agents: 'Agents', muted: 'Muted', workspace: 'Workspace', leader: 'Leader', noMatches: 'No matching members.', details: 'Member details', detailsHint: 'Select a member to manage access, mute status, and agent topology.', backToList: 'Back to member list', topology: 'Communication topology', currentMode: 'Current mode: {{mode}}. Select an agent to configure its role or order.', addHuman: 'Add human member', searchUsers: 'Search users', addAgent: 'Add agent', noAgents: 'No available agents to add.', noDescription: 'No description.', loadError: 'Failed to load members.', loading: 'Loading…', add: 'Add', adding: 'Adding…', allowWorkspace: 'Allow workspace', agentId: 'Agent ID: {{id}}', userId: 'User ID: {{id}}', groupWorkspace: 'Group workspace', sharedWorkspaceAccess: 'Shared workspace access.', share: 'Share', unshare: 'Unshare', workspaceAccess: 'Workspace access', workspaceAccessDescription: 'Which folders this agent can read and write during a turn.', workspacePrimary: 'Plain paths resolve in: {{location}}', workspaceMount: 'Mounted at ~self/: {{location}}', workspaceNotConfigured: 'not configured', workspaceModes: { group: 'Group workspace', groupAndSelf: 'Group + its own folder', self: 'Its own folder only', groupHint: 'Reads and writes the group workspace, like every other member.', groupAndSelfHint: 'Works in the group workspace and can also reach its own folder under the ~self/ prefix.', selfHint: 'Isolated: group files and message attachments are out of reach, and its output stays out of the group workspace.' }, starTopology: 'Star topology', setAsHub: 'Set this agent as hub.', makeHub: 'Make hub', hierarchyRole: 'Hierarchy role', noTopologyRole: 'No topology role', unknownTopologyRole: 'Unknown topology role: {{value}}', mute: 'Mute', unmute: 'Unmute', remove: 'Remove', removeTitle: 'Remove {{name}}?', removeDescription: 'This member will no longer be part of the group.', workspaceSharing: 'Share group workspace', topologyRole: 'Topology role', speakingOrder: 'Speaking order', member: 'Member', owner: 'Owner', admin: 'Admin', agent: 'Agent', worker: 'Worker', hub: 'Hub', participant: 'Participant', modes: { mesh: 'Mesh', star: 'Star', hierarchical: 'Hierarchical', ring: 'Ring' }, errors: { topology: 'Failed to update topology', agentMute: 'Failed to update agent mute', memberMute: 'Failed to update member mute', removeAgent: 'Failed to remove agent', removeMember: 'Failed to remove member', workspace: 'Failed to update workspace sharing', detail: '{{message}}: {{detail}}' } },
     scheduler: { title: 'Scheduler', description: 'Configure how agent collaboration is routed and completed. Changes apply together.', mode: 'Scheduler mode', modeDescription: 'Automatic lets the moderator decide when the turn is complete. Work limits are ignored; failure limits and timeout remain active.', boundedMode: 'Bounded', automaticMode: 'Automatic', mentionPolicy: 'Agent mention policy', mentionPolicyDescription: 'Controls whether agent mentions can schedule follow-up work.', displayOnly: 'Display only', boundedSchedule: 'Allow scheduling', unknownMentionPolicy: 'Unknown mention policy: {{value}}', maximumSteps: 'Maximum agent steps', maximumStepsDescription: 'Automatic budget uses the selected candidate count for one-pass profiles; otherwise {{factor}}× active agents, from {{minimum}} to {{maximum}}.', maximumStepsMode: 'Maximum agent steps mode', autoSteps: 'Automatic budget', custom: 'Custom', customMaximumSteps: 'Custom maximum agent steps', stepsPerAgent: 'Steps per agent', stepsPerAgentDescription: 'Maximum visible scheduler steps for one agent.', hops: 'Scheduler hops', moderatorCalls: 'Moderator calls', consecutiveFailures: 'Consecutive failures', totalFailures: 'Total failures', totalTokens: 'Total tokens', timeout: 'Moderator timeout', timeoutDescription: 'Maximum seconds for each moderator call, from {{minimum}} to {{maximum}}. Agent execution is not timed out by this setting.', enableModerator: 'Enable moderator', enableModeratorDescription: 'Ask a provider to select among legal candidates.', moderatorProvider: 'Moderator provider', moderatorModel: 'Moderator model', loadingProviders: 'Loading providers…', chooseProvider: 'Choose provider', noProvider: 'No provider', loadingModels: 'Loading models…', chooseModel: 'Choose model', noModel: 'No model', savedProvider: 'Saved provider ({{id}})', savedModel: 'Saved model ({{id}})', unavailable: 'unavailable', reviewMembers: 'Review group members', validation: { minOne: 'Must be at least 1', minZero: 'Must be 0 or greater', minOneSecond: 'Must be at least 1 second', maxSeconds: 'Must be 3600 seconds or less', provider: 'Choose an active provider for the moderator', model: 'Choose a model for the moderator', detail: 'Invalid value: {{message}}' }, errors: { update: 'Failed to update scheduler settings' } },
     settings: { basic: 'Basic information', basicDescription: 'Identity, shared context, and working location for this group.', unsaved: 'Unsaved changes', saved: 'All changes saved', name: 'Group name', announcement: 'Announcement', announcementDescription: 'Shown to agents as shared group context.', workspace: 'Workspace', workspaceDescription: 'Group files live in this workspace. Choose another existing workspace or create a local workspace to move future group file operations to that folder.', autoShareWorkspace: 'Automatically share group workspace', autoShareWorkspaceDescription: 'Grant the current group workspace to newly invited agents; existing members are unchanged.', communication: 'Communication', mode: 'Communication mode', freeSpeech: 'Free speech', freeSpeechDescription: 'When enabled, all agents respond freely without needing @mention.', proactive: 'Proactive mode', proactiveDescription: 'When enabled, agents decide for themselves whether to reply (they may stay silent if they have nothing to add).', replyMultiplier: 'Reply multiplier', replyMultiplierDescription: 'Tells agents in their prompt that roughly routed agents × {{formattedCount}} visible replies are welcome. This is guidance, not a hard cap — a turn is actually bounded by the scheduler step budget.', freeMention: 'Allow agent free @mention', freeMentionDescription: 'Allow agents to freely @ any group member in replies.', followUp: 'Follow-up limit', followUpDescription: 'Allows up to {{formattedCount}} agent-to-agent @mention follow-up turns per send. Set 0 to disable follow-ups.', danger: 'Danger', history: 'Chat history', historyDescription: 'Clear visible chat records for this group.', clearHistory: 'Clear history', clearing: 'Clearing…', clearTitle: 'Clear chat history?', clearDescription: 'Clear all visible chat records for this group? This cannot be undone.', deleteDescription: 'Soft-delete: messages and threads stay in the database, but the group disappears from your list.', deleteTitle: 'Delete group "{{name}}"?', deleteConfirmDescription: "This is a soft-delete; messages and threads stay in the database but the group won't appear in your list anymore.", modes: { mesh: 'Mesh', meshDescription: 'Peer collaboration for creative or dynamic work.', star: 'Star', starDescription: 'Admin hub agents speak first, then other routed agents.', hierarchical: 'Hierarchical', hierarchicalDescription: 'Admin agents lead before worker agents.', ring: 'Ring', ringDescription: 'Agents take turns in a stable pipeline order.' }, errors: { clearHistory: 'Failed to clear chat history: {{message}}', delete: 'Failed to delete group: {{message}}' } },
     errors: { create: 'Failed to create group', createDetail: 'Failed to create group: {{message}}', update: 'Failed to update group', updateDetail: 'Failed to update group: {{message}}', delete: 'Failed to delete group', members: 'Failed to update group members' },
@@ -653,7 +677,8 @@ export const enUS = {
     title: 'System settings',
     subtitle: 'Account-level preferences and integrations.',
     description: 'Account-level preferences and integrations.',
-    tabs: { preferences: 'Preferences', system: 'System', media: 'Media', logs: 'Runtime logs' },
+    groups: { preferences: 'Preferences', diagnostics: 'Diagnostics' },
+    tabs: { system: 'System', media: 'Media', logs: 'Runtime logs' },
     appearance: 'Appearance',
     theme: 'Theme',
     themeDescription: 'Choose the app theme for this account. Saved instantly.',

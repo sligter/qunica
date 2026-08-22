@@ -105,6 +105,7 @@ function optionalText(value: string | undefined): string | null {
 interface EditAgentFormProps {
   agent: AgentRead
   onSaved?: () => void
+  onDirtyChange?: (dirty: boolean) => void
   onSavingChange?: (saving: boolean) => void
 }
 
@@ -113,6 +114,7 @@ export const EDIT_AGENT_FORM_ID = 'edit-agent-form'
 export function EditAgentForm({
   agent,
   onSaved,
+  onDirtyChange,
   onSavingChange,
 }: EditAgentFormProps) {
   const { t, i18n } = useTranslation(['agents', 'common'])
@@ -177,6 +179,15 @@ export function EditAgentForm({
     onSavingChange?.(update.isPending)
   }, [onSavingChange, update.isPending])
 
+  const dirty =
+    form.formState.isDirty ||
+    JSON.stringify(selectedSkillIds) !== JSON.stringify(agent.skill_ids) ||
+    JSON.stringify(toolConfig) !== JSON.stringify(agent.tool_config)
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
+
   useEffect(() => {
     if (validationLanguage.current === i18n.resolvedLanguage) return
     validationLanguage.current = i18n.resolvedLanguage
@@ -232,15 +243,15 @@ export function EditAgentForm({
       const argsText = formatAcpArgs(preset.args)
       const envText = formatAcpEnv(preset.env)
       const model = preset.default_model ?? ''
-      form.setValue('acp_profile', preset.profile)
-      form.setValue('acp_command', command)
-      form.setValue('acp_args', argsText)
-      form.setValue('acp_env', envText)
-      form.setValue('acp_timeout_seconds', preset.timeout_seconds)
-      form.setValue('acp_permission_policy', preset.permission_policy)
-      form.setValue('acp_model', model)
-      form.setValue('acp_mode', preset.default_mode ?? '')
-      form.setValue('acp_thinking_effort', preset.default_thinking_effort ?? '')
+      form.setValue('acp_profile', preset.profile, { shouldDirty: true })
+      form.setValue('acp_command', command, { shouldDirty: true })
+      form.setValue('acp_args', argsText, { shouldDirty: true })
+      form.setValue('acp_env', envText, { shouldDirty: true })
+      form.setValue('acp_timeout_seconds', preset.timeout_seconds, { shouldDirty: true })
+      form.setValue('acp_permission_policy', preset.permission_policy, { shouldDirty: true })
+      form.setValue('acp_model', model, { shouldDirty: true })
+      form.setValue('acp_mode', preset.default_mode ?? '', { shouldDirty: true })
+      form.setValue('acp_thinking_effort', preset.default_thinking_effort ?? '', { shouldDirty: true })
       acpCapabilities.commit({
         profile: preset.profile,
         command,
@@ -376,7 +387,7 @@ export function EditAgentForm({
               <button
                 key={value}
                 type="button"
-                onClick={() => form.setValue('runtime_kind', value as AgentRuntimeKind)}
+                onClick={() => form.setValue('runtime_kind', value as AgentRuntimeKind, { shouldDirty: true })}
                 className={cn(
                   'rounded-md border px-3 py-2 text-left transition-colors',
                   checked
@@ -400,11 +411,11 @@ export function EditAgentForm({
         <WorkspaceField
           value={form.watch('workspace_id')}
           additionalValues={form.watch('workspace_ids')}
-          onAdditionalChange={(workspaceIds) => form.setValue('workspace_ids', workspaceIds)}
+          onAdditionalChange={(workspaceIds) => form.setValue('workspace_ids', workspaceIds, { shouldDirty: true })}
           allowQuickCreate
           onChange={(workspaceId) => {
-            form.setValue('workspace_id', workspaceId, { shouldValidate: true })
-            form.setValue('workspace_ids', form.getValues('workspace_ids').filter((id) => id !== workspaceId))
+            form.setValue('workspace_id', workspaceId, { shouldDirty: true, shouldValidate: true })
+            form.setValue('workspace_ids', form.getValues('workspace_ids').filter((id) => id !== workspaceId), { shouldDirty: true })
           }}
           error={form.formState.errors.workspace_id?.message}
         />
@@ -439,30 +450,30 @@ export function EditAgentForm({
               : null)
           }
           onProfileChange={(value: AcpRuntimeProfile) => {
-            form.setValue('acp_profile', value)
+            form.setValue('acp_profile', value, { shouldDirty: true })
             acpCapabilities.commitProfile(value)
           }}
           onPresetSelect={applyAcpPreset}
           onCommandChange={(value) => {
-            form.setValue('acp_command', value)
+            form.setValue('acp_command', value, { shouldDirty: true })
             acpCapabilities.markStale()
           }}
           onArgsTextChange={(value) => {
-            form.setValue('acp_args', value)
+            form.setValue('acp_args', value, { shouldDirty: true })
             acpCapabilities.markStale()
           }}
           onEnvTextChange={(value) => {
-            form.setValue('acp_env', value)
+            form.setValue('acp_env', value, { shouldDirty: true })
             acpCapabilities.markStale()
           }}
-          onTimeoutSecondsChange={(value) => form.setValue('acp_timeout_seconds', value)}
+          onTimeoutSecondsChange={(value) => form.setValue('acp_timeout_seconds', value, { shouldDirty: true })}
           onPermissionPolicyChange={(value: AcpPermissionPolicy) =>
-            form.setValue('acp_permission_policy', value)
+            form.setValue('acp_permission_policy', value, { shouldDirty: true })
           }
-          onModelChange={(value) => form.setValue('acp_model', value)}
+          onModelChange={(value) => form.setValue('acp_model', value, { shouldDirty: true })}
           onModelCommit={acpCapabilities.commitModel}
-          onModeChange={(value) => form.setValue('acp_mode', value)}
-          onThinkingEffortChange={(value) => form.setValue('acp_thinking_effort', value)}
+          onModeChange={(value) => form.setValue('acp_mode', value, { shouldDirty: true })}
+          onThinkingEffortChange={(value) => form.setValue('acp_thinking_effort', value, { shouldDirty: true })}
           onRefreshCapabilities={acpCapabilities.refresh}
         />
       )}
@@ -494,7 +505,7 @@ export function EditAgentForm({
               label: model.name,
             }))}
             placeholder={t('agents:states.providerDefault')}
-            onChange={(value) => form.setValue('model', value)}
+            onChange={(value) => form.setValue('model', value, { shouldDirty: true })}
             isLoading={providerCatalog.isFetching}
             warning={
               providerCatalog.isError
@@ -529,7 +540,7 @@ export function EditAgentForm({
                     id="ea-vision"
                     aria-label="Enable image input"
                     checked={form.watch('vision')}
-                    onCheckedChange={(value) => form.setValue('vision', value)}
+                    onCheckedChange={(value) => form.setValue('vision', value, { shouldDirty: true })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -545,7 +556,7 @@ export function EditAgentForm({
                     step={AGENT_TEMPERATURE_STEP}
                     value={[form.watch('temperature') ?? DEFAULT_AGENT_TEMPERATURE]}
                     onValueChange={([v]) =>
-                      form.setValue('temperature', normalizeAgentTemperature(v))
+                      form.setValue('temperature', normalizeAgentTemperature(v), { shouldDirty: true })
                     }
                   />
                 </div>
@@ -561,12 +572,12 @@ export function EditAgentForm({
                     max={1}
                     step={0.01}
                     value={[form.watch('top_p') ?? 1]}
-                    onValueChange={([v]) => form.setValue('top_p', v)}
+                    onValueChange={([v]) => form.setValue('top_p', v, { shouldDirty: true })}
                   />
                 </div>
                 <ThinkingLevelControl
                   value={form.watch('reasoning_effort')}
-                  onChange={(value) => form.setValue('reasoning_effort', value)}
+                  onChange={(value) => form.setValue('reasoning_effort', value, { shouldDirty: true })}
                 />
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">

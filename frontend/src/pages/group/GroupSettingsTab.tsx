@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
@@ -12,6 +13,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useDeleteGroup } from '@/hooks/useDeleteGroup'
 import { useUpdateGroup } from '@/hooks/useGroups'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
 import { ApiError } from '@/lib/api-v2/client'
 import { normalizeLanguage } from '@/i18n'
@@ -169,6 +171,7 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
     name.trim() !== group.name ||
     (selectedWorkspaceId !== '' && selectedWorkspaceId !== (group.workspace_id ?? '')) ||
     announcement !== (group.announcement ?? '')
+  useUnsavedChangesGuard(basicsDirty)
 
   const onSaveBasics = async () => {
     setBasicsError(undefined)
@@ -385,7 +388,20 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
         ) : null}
       </SettingsSection>
 
-      <GroupSchedulerSettingsSection group={group} />
+      <details className="group w-full border-y border-border">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-sm py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            {t('common:advancedScheduling')}
+          </span>
+          <ChevronDown
+            aria-hidden
+            className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
+          />
+        </summary>
+        <div className="pb-2 pt-6">
+          <GroupSchedulerSettingsSection group={group} />
+        </div>
+      </details>
 
       <GroupTemplatesSection group={group} />
 

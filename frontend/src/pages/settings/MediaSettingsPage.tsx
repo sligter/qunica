@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/useSystemSettings'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { ApiError } from '@/lib/api-v2/client'
 import type { SystemSettingsUpdate } from '@/types/api'
 
@@ -78,6 +79,7 @@ export function MediaSettingsPage() {
       draft.videoContentEndpoint.trim() !== server.video_content_endpoint
     )
   )
+  useUnsavedChangesGuard(dirty)
 
   const change = (patch: Partial<MediaDraft>) => {
     setDraft((current) => ({ ...current, ...patch }))
@@ -117,7 +119,6 @@ export function MediaSettingsPage() {
     <DetailShell
       title={t('media.title')}
       subtitle={t('media.subtitle')}
-      contentClassName="max-w-none"
       actions={
         <Button size="sm" onClick={() => void onSave()} disabled={!dirty || update.isPending}>
           {update.isPending ? t('common:actions.saving') : t('common:actions.save')}

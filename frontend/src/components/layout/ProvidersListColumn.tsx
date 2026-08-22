@@ -2,12 +2,9 @@ import { Plug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
-import { useProviders } from '@/hooks/useProviders'
+import { useDeleteProvider, useProviders } from '@/hooks/useProviders'
+import { useRenameResource } from '@/hooks/useRenameResource'
 import type { ProviderKind } from '@/types/api'
-
-interface ProvidersListColumnProps {
-  width?: number
-}
 
 function kindColor(kind: ProviderKind): string {
   if (kind === 'anthropic') return 'bg-avatar-1 text-avatar-foreground'
@@ -23,9 +20,11 @@ function kindInitial(kind: ProviderKind, name: string): string {
   return name.slice(0, 1).toUpperCase()
 }
 
-export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
+export function ProvidersListColumn() {
   const { t } = useTranslation('providers')
   const providers = useProviders()
+  const rename = useRenameResource('/llm-providers', ['llm-providers'])
+  const del = useDeleteProvider()
 
   return (
     <ListColumn
@@ -38,7 +37,6 @@ export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
       errorText={t('loadError')}
       emptyText={t('empty')}
       icon={Plug}
-      width={width}
       items={(providers.data ?? []).map((p) => ({
         id: p.id,
         to: `/providers/${p.id}`,
@@ -46,7 +44,11 @@ export function ProvidersListColumn({ width }: ProvidersListColumnProps) {
         summary: `${p.kind} · ${p.default_model}`,
         avatarClass: kindColor(p.kind),
         avatarInitial: kindInitial(p.kind, p.name),
+        deleteTitle: t('detail.deleteTitle', { name: p.name }),
+        deleteDescription: t('detail.deleteDescription'),
       }))}
+      onRename={(item, name) => rename.mutateAsync({ id: item.id, name })}
+      onDelete={(item) => del.mutateAsync(item.id)}
     />
   )
 }

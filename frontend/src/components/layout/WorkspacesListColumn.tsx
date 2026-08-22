@@ -2,13 +2,10 @@ import { Folder } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
-import { useWorkspaces } from '@/hooks/useWorkspaces'
+import { useDeleteWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
+import { useRenameResource } from '@/hooks/useRenameResource'
 import { avatarColorClass } from '@/lib/avatarColor'
 import type { WorkspaceRead } from '@/types/api'
-
-interface WorkspacesListColumnProps {
-  width?: number
-}
 
 function workspaceSummary(
   workspace: WorkspaceRead,
@@ -20,9 +17,11 @@ function workspaceSummary(
   return workspace.sandbox_ref ?? missing.sandbox
 }
 
-export function WorkspacesListColumn({ width }: WorkspacesListColumnProps) {
+export function WorkspacesListColumn() {
   const { t } = useTranslation('workspaces')
   const workspaces = useWorkspaces()
+  const rename = useRenameResource('/workspaces', ['workspaces'])
+  const del = useDeleteWorkspace()
 
   return (
     <ListColumn
@@ -35,7 +34,6 @@ export function WorkspacesListColumn({ width }: WorkspacesListColumnProps) {
       errorText={t('loadError')}
       emptyText={t('empty')}
       icon={Folder}
-      width={width}
       items={(workspaces.data ?? []).map((w) => ({
         id: w.id,
         to: `/workspaces/${w.id}`,
@@ -46,7 +44,11 @@ export function WorkspacesListColumn({ width }: WorkspacesListColumnProps) {
         }),
         avatarClass: avatarColorClass(w.id),
         avatarInitial: w.name.slice(0, 1).toUpperCase(),
+        deleteTitle: t('detail.deleteTitle', { name: w.name }),
+        deleteDescription: t('detail.deleteDescription'),
       }))}
+      onRename={(item, name) => rename.mutateAsync({ id: item.id, name })}
+      onDelete={(item) => del.mutateAsync(item.id)}
     />
   )
 }

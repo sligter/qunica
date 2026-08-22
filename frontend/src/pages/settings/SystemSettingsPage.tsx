@@ -354,7 +354,6 @@ export function SystemSettingsPage() {
     <DetailShell
       title={t('title')}
       subtitle={t('subtitle')}
-      contentClassName="max-w-none"
     >
       <div className="space-y-10">
         <SettingsSection title={t('appearance')}>

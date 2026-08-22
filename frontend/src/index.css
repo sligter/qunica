@@ -28,6 +28,12 @@
   --color-warning: hsl(40 60% 90%);
   --color-warning-foreground: hsl(30 60% 32%);
   --color-success: hsl(140 30% 38%);
+  /* Semantic status hues for badges and quiet indicators. Foregrounds are the
+     shared warm off-white — these surfaces are mid-tone in both themes, so the
+     light badge text never wants the near-black the avatars use. */
+  --color-info: hsl(210 32% 42%);
+  --color-success-foreground: hsl(40 40% 98%);
+  --color-info-foreground: hsl(40 40% 98%);
 
   /* Code blocks follow the surface theme while staying distinct from cards. */
   --color-code: hsl(42 22% 93%);
@@ -109,6 +115,9 @@
     --color-warning: hsl(35 28% 20%);
     --color-warning-foreground: hsl(38 55% 68%);
     --color-success: hsl(140 25% 55%);
+    --color-info: hsl(210 30% 58%);
+    --color-success-foreground: hsl(30 25% 12%);
+    --color-info-foreground: hsl(30 25% 12%);
 
     --color-code: hsl(30 10% 9%);
     --color-code-foreground: hsl(40 20% 90%);

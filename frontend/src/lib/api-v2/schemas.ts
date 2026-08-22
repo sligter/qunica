@@ -231,6 +231,10 @@ const schedulerEventSchema = z.discriminatedUnion('kind', [
       .strict(),
   }),
   schedulerEventBaseSchema.extend({
+    kind: z.literal('moderator_started'),
+    payload: z.object({ turn_id: z.string() }).strict(),
+  }),
+  schedulerEventBaseSchema.extend({
     kind: z.literal('speaker_selected'),
     payload: z
       .object({
@@ -367,6 +371,7 @@ type SchedulerParseEventKind = SchedulerStreamEventKind | 'done'
 
 const schedulerStreamEventKinds = new Set<StreamEventKind>([
   'turn_started',
+  'moderator_started',
   'speaker_selected',
   'dispatch_failed',
   'moderator_fallback',

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Bot, Search, UserRound } from 'lucide-react'
+import { ArrowLeft, Bot, Search, UserRound } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
@@ -19,6 +19,7 @@ import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
+import { navItemClass } from '@/lib/navItemClass'
 import { cn } from '@/lib/utils'
 import type { AgentRead, GroupAgentRead, GroupCommunicationMode, GroupMemberRead, GroupTopologyRole, GroupWorkspaceMode, UserRead } from '@/types/api'
 
@@ -153,7 +154,7 @@ function EntryRow({ entry, active, mode, onSelect }: { entry: Entry; active: boo
   const rawRole = agent ? entry.agent.role : entry.member.role
   const knownRole = rawRole === 'owner' || rawRole === 'admin' || rawRole === 'worker' || rawRole === 'hub' || rawRole === 'participant' || rawRole === 'member' || rawRole === 'agent'
   const role = knownRole ? t(`members.${rawRole}`) : rawRole
-  return <li><button type="button" onClick={onSelect} className={cn('flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-0', active ? 'bg-primary/10' : 'hover:bg-card-hover')}><div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>{agent ? <Bot className="h-4 w-4" /> : <UserRound className="h-4 w-4" />}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{entryName(entry)}</span><Badge variant="outline" className="shrink-0">{role || t('members.agent')}</Badge></div>{tags.length > 0 ? <div className="mt-1 flex flex-wrap gap-1">{tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}</div> : null}</div></button></li>
+  return <li><button type="button" onClick={onSelect} aria-current={active || undefined} className={navItemClass(active, 'items-center gap-3 px-3 py-2.5')}><div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>{agent ? <Bot className="h-4 w-4" /> : <UserRound className="h-4 w-4" />}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className={cn('truncate text-sm', active ? 'font-semibold' : 'font-medium')}>{entryName(entry)}</span><Badge variant="outline" className="shrink-0">{role || t('members.agent')}</Badge></div>{tags.length > 0 ? <div className="mt-1 flex flex-wrap gap-1">{tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}</div> : null}</div></button></li>
 }
 
 function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: string; mode: GroupCommunicationMode; onRemoved: () => void }) {
@@ -254,6 +255,13 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
   const [userQuery, setUserQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [selected, setSelected] = useState<string | null>(null)
+  // Below xl the two-column grid stacks, which drops a selected member's
+  // details far below the fold; there the panes swap instead — selecting a
+  // member replaces the list, and the explicit back control restores it.
+  // Keyed off selection state rather than matchMedia: jsdom's is always false,
+  // and `max-xl:` variants keep wide windows side-by-side either way.
+  const [panesSwapped, setPanesSwapped] = useState(false)
+  const exclusive = selected !== null && panesSwapped
   const group = useGroup(groupId)
   const humans = useGroupMembers(groupId)
   const groupAgents = useGroupAgents(groupId)
@@ -311,7 +319,9 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
 
   return (
     <div className="grid min-h-[34rem] w-full grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <Card asChild className="flex min-h-0 flex-col">
+      {/* Swapped out only below xl, where the details would otherwise stack
+          a screen away; wide windows keep the master/detail grid. */}
+      <Card asChild className={cn('flex min-h-0 flex-col', exclusive && 'max-xl:hidden')}>
         <section>
         <div className="space-y-3 border-b border-border p-4">
           <div>
@@ -331,13 +341,27 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
             {filters.map(([value, label]) => <Button key={value} size="sm" variant={filter === value ? 'secondary' : 'ghost'} className="h-7" onClick={() => setFilter(value)}>{label}</Button>)}
           </div>
         </div>
-        <ul className="min-h-0 flex-1 overflow-y-auto">
-          {visible.map((entry) => <EntryRow key={entryKey(entry)} entry={entry} active={entryKey(entry) === selected} mode={mode} onSelect={() => setSelected(entryKey(entry))} />)}
+        <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 py-1">
+          {visible.map((entry) => <EntryRow key={entryKey(entry)} entry={entry} active={entryKey(entry) === selected} mode={mode} onSelect={() => { setSelected(entryKey(entry)); setPanesSwapped(true) }} />)}
           {visible.length === 0 ? <li className="p-6 text-center text-sm text-muted-foreground">{t('members.noMatches')}</li> : null}
         </ul>
         </section>
       </Card>
       <aside className="space-y-4">
+        {exclusive ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-2 h-7 gap-1.5 text-xs xl:hidden"
+            onClick={() => {
+              setSelected(null)
+              setPanesSwapped(false)
+            }}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t('members.backToList')}
+          </Button>
+        ) : null}
         {current ? (
           <Details entry={current} groupId={groupId} mode={mode} onRemoved={() => setSelected(null)} />
         ) : (

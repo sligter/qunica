@@ -26,6 +26,7 @@ pub enum StreamEventKind {
     AcpAgentRun,
     Silence,
     TurnStarted,
+    ModeratorStarted,
     SpeakerSelected,
     DispatchFailed,
     ModeratorFallback,

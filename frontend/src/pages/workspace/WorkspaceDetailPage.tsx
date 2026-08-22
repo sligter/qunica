@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { PageState } from '@/components/ui/page-state'
+import { DetailSkeleton } from '@/components/ui/skeleton'
 import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroups, useUpdateGroup } from '@/hooks/useGroups'
@@ -38,7 +39,7 @@ export function WorkspaceDetailPage() {
   const navigate = useNavigate()
 
   if (workspaces.isLoading) {
-    return <PageState variant="loading" title={t('detail.loading')} />
+    return <DetailSkeleton label={t('detail.loading')} />
   }
   if (workspaces.error) {
     return (

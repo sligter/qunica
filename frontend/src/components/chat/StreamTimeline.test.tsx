@@ -32,6 +32,7 @@ function run(events: StreamTimelineEvent[], status: StreamRun['status'] = 'compl
     status,
     turn_id: null,
     scheduler_status: null,
+    moderator_active: false,
     terminal_reason: null,
     criticalSummaries: [],
     created_at: '2026-07-16T10:00:00Z',
@@ -147,7 +148,27 @@ describe('StreamTimeline activity rendering', () => {
     expect(screen.getByText('等待 Agent 开始…')).toBeVisible()
   })
 
-  it('shows moderator scheduling after the latest agent activity finishes', () => {
+  it('does not infer moderator scheduling from a finished reasoning segment', () => {
+    const reasoning = event({
+      id: 'reasoning-1',
+      stream_id: 'stream-1',
+      type: 'reasoning' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      content: 'Finished one reasoning segment.',
+      status: 'done' as const,
+      created_at: '2026-07-16T10:00:04Z',
+    })
+    render(<StreamTimeline moderatorEnabled run={{
+      ...run([reasoning], 'active'),
+      turn_id: 'turn-1',
+      scheduler_status: 'running',
+    }} />)
+
+    expect(screen.queryByText('Moderator')).toBeNull()
+  })
+
+  it('shows moderator scheduling after an explicit moderator event', () => {
     const finished = event({
       id: 'draft-1',
       stream_id: 'stream-1',
@@ -162,6 +183,7 @@ describe('StreamTimeline activity rendering', () => {
       ...run([finished], 'active'),
       turn_id: 'turn-1',
       scheduler_status: 'running',
+      moderator_active: true,
     }} />)
 
     expect(screen.getByText('Moderator')).toBeVisible()

@@ -12,6 +12,11 @@ const badgeVariants = cva(
         secondary: 'border-transparent bg-secondary text-secondary-foreground',
         destructive: 'border-transparent bg-destructive text-destructive-foreground shadow',
         outline: 'text-foreground',
+        /* Quiet status chips: tinted surface, matching foreground, no shadow.
+           Status reads at a glance without competing with primary actions. */
+        success: 'border-transparent bg-success text-success-foreground',
+        warning: 'border-transparent bg-warning text-warning-foreground',
+        info: 'border-transparent bg-info text-info-foreground',
       },
     },
     defaultVariants: {

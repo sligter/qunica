@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useRoutes, type Location } from 'react-router
 
 import { AssistantDock } from '@/components/assistant/AssistantDock'
 import { AppSidebar } from '@/components/layout/AppSidebar'
+import { CommandPaletteProvider } from '@/components/layout/CommandPalette'
 import { RouteFallback } from '@/components/layout/RouteFallback'
 import {
   OverlayProvider,
@@ -12,6 +13,7 @@ import {
   type OverlayLocationState,
 } from '@/components/layout/overlayRouting'
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay'
+import { UnsavedChangesProvider } from '@/components/layout/UnsavedChangesProvider'
 import { appChildren } from '@/routes/appRoutes'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
 import {
@@ -327,10 +329,15 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
           ]
 
   return (
-    <TerminalRuntimeProvider
-      transport={terminalTransport}
-      shell={systemSettings.data?.shell_preference}
-    >
+    // Wrapping the unsaved-changes context rather than inside it: a language
+    // switch re-renders this tree, and the palette must survive as a stable
+    // element so its global chord listener is never torn down mid-typing.
+    <CommandPaletteProvider>
+    <UnsavedChangesProvider>
+      <TerminalRuntimeProvider
+        transport={terminalTransport}
+        shell={systemSettings.data?.shell_preference}
+      >
       <div
         className="flex h-full min-h-0 overflow-hidden bg-background"
         onContextMenu={openMenu}
@@ -389,6 +396,8 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
           </SettingsOverlay>
         </OverlayProvider>
       ) : null}
-    </TerminalRuntimeProvider>
+      </TerminalRuntimeProvider>
+    </UnsavedChangesProvider>
+    </CommandPaletteProvider>
   )
 }

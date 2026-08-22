@@ -1,5 +1,7 @@
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 
+import { useUnsavedChangesAction } from '@/hooks/useUnsavedChangesGuard'
+
 const FOCUSABLE = [
   'a[href]',
   'button:not([disabled])',
@@ -45,7 +47,10 @@ export interface SettingsOverlayProps {
 export function SettingsOverlay({ label, onClose, onContextMenu, children }: SettingsOverlayProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
+  const requestAction = useUnsavedChangesAction()
+  const requestActionRef = useRef(requestAction)
   closeRef.current = onClose
+  requestActionRef.current = requestAction
 
   useEffect(() => {
     const panel = panelRef.current
@@ -60,7 +65,7 @@ export function SettingsOverlay({ label, onClose, onContextMenu, children }: Set
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        closeRef.current()
+        requestActionRef.current(closeRef.current)
         return
       }
       if (event.key !== 'Tab') return

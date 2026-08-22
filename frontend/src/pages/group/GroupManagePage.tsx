@@ -14,14 +14,6 @@ import { useGroup } from '@/hooks/useGroups'
 import { GroupMembersTab } from '@/pages/group/GroupMembersTab'
 import { GroupSettingsTab } from '@/pages/group/GroupSettingsTab'
 
-/**
- * Full pane width: the members tab is a two-column master/detail, and the
- * settings tab's section rules have to end where the header's rule does — a
- * narrower cap leaves a band of dead space down the right of every setting.
- * Rows stay readable because inline controls share one right-flushed column.
- */
-const MANAGE_CONTENT_WIDTH = 'max-w-none'
-
 type ManageTab = 'settings' | 'members' | 'notes'
 
 function parseTab(value: string | null): ManageTab {
@@ -61,7 +53,7 @@ export function GroupManagePage() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
       }
-      contentClassName={MANAGE_CONTENT_WIDTH}
+      measure="wide"
     >
       {group.error ? (
         <PageState
@@ -74,7 +66,12 @@ export function GroupManagePage() {
         <PageState inset variant="loading" className="px-0" title={t('manage.loading')} />
       ) : group.data ? (
         <Tabs value={tab} onValueChange={onTabChange} className="min-h-0 w-full">
-          <TabsList>
+          {/* Underline tabs are the page-level section form; sticky so they
+              stay reachable from anywhere in a long settings form. The scroll
+              container is DetailShell's overflow-y-auto div, hence top-0.
+              Full-bleed via -mx-6/px-6 so the background covers scrolled
+              content in the page gutters, not just behind the labels. */}
+          <TabsList variant="underline" className="sticky top-0 z-10 -mx-6 bg-background px-6">
             <TabsTrigger value="settings">{t('manage.settings')}</TabsTrigger>
             <TabsTrigger value="members">{t('manage.members')}</TabsTrigger>
             <TabsTrigger value="notes">{t('manage.notes')}</TabsTrigger>

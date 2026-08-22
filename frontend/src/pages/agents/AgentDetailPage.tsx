@@ -12,11 +12,13 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Field, FieldGrid } from '@/components/ui/field'
 import { PageState } from '@/components/ui/page-state'
+import { DetailSkeleton } from '@/components/ui/skeleton'
 import { ProseBlock } from '@/components/ui/prose-block'
 import { Section } from '@/components/ui/section'
 import { useAgent } from '@/hooks/useAgents'
 import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
@@ -34,12 +36,14 @@ export function AgentDetailPage() {
   const del = useDeleteAgent()
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [showAllSkills, setShowAllSkills] = useState(false)
   const saveReady = useEditSaveGuard(editing)
+  useUnsavedChangesGuard(editing && dirty)
 
   if (agent.isLoading) {
-    return <PageState variant="loading" title={t('agents:detail.loading')} />
+    return <DetailSkeleton label={t('agents:detail.loading')} />
   }
   if (agent.error) {
     return (
@@ -81,8 +85,12 @@ export function AgentDetailPage() {
       >
         <EditAgentForm
           agent={a}
+          onDirtyChange={setDirty}
           onSavingChange={setSaving}
-          onSaved={() => setEditing(false)}
+          onSaved={() => {
+            setDirty(false)
+            setEditing(false)
+          }}
         />
       </DetailShell>
     )
@@ -106,6 +114,7 @@ export function AgentDetailPage() {
             variant="ghost"
             onClick={() => {
               setSaving(false)
+              setDirty(false)
               setEditing(true)
             }}
           >

@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PageState } from '@/components/ui/page-state'
+import { DetailSkeleton } from '@/components/ui/skeleton'
 import { ProseBlock } from '@/components/ui/prose-block'
 import { Section } from '@/components/ui/section'
 import { Textarea } from '@/components/ui/textarea'
@@ -35,7 +36,7 @@ export function SkillDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (skill.isLoading) {
-    return <PageState variant="loading" title={t('skills:detail.loading')} />
+    return <DetailSkeleton label={t('skills:detail.loading')} />
   }
   if (skill.error) {
     return (

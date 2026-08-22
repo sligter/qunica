@@ -34,6 +34,7 @@ type FormValues = z.infer<ReturnType<typeof createSchema>>
 interface EditProviderFormProps {
   provider: LLMProviderRead
   onSaved?: (providerId: string) => void
+  onDirtyChange?: (dirty: boolean) => void
   onSavingChange?: (saving: boolean) => void
 }
 
@@ -50,9 +51,26 @@ function baseUrlPlaceholder(kind: ProviderKind): string {
   return 'https://api.openai.com/v1'
 }
 
+function providerModelsToDrafts(provider: LLMProviderRead): ProviderModelDraft[] {
+  return (provider.models ?? [{
+    id: provider.default_model,
+    context_window_tokens: provider.context_window_tokens,
+    context_output_reserve_ratio: provider.context_output_reserve_ratio,
+  }]).map((model) => ({
+    id: model.id,
+    context_window_tokens: model.context_window_tokens ?? undefined,
+    context_output_reserve_percent:
+      model.context_output_reserve_ratio !== null
+        ? Math.round(model.context_output_reserve_ratio * 100)
+        : 30,
+    reasoning_passback: model.reasoning_passback ?? provider.reasoning_passback,
+  }))
+}
+
 export function EditProviderForm({
   provider,
   onSaved,
+  onDirtyChange,
   onSavingChange,
 }: EditProviderFormProps) {
   const { t, i18n } = useTranslation('providers')
@@ -60,20 +78,8 @@ export function EditProviderForm({
   const catalog = useProviderModels(provider.id)
   const testProviderModel = useTestProviderModel()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
-  const [models, setModels] = useState<ProviderModelDraft[]>(
-    (provider.models ?? [{
-      id: provider.default_model,
-      context_window_tokens: provider.context_window_tokens,
-      context_output_reserve_ratio: provider.context_output_reserve_ratio,
-    }]).map((model) => ({
-      id: model.id,
-      context_window_tokens: model.context_window_tokens ?? undefined,
-      context_output_reserve_percent:
-        model.context_output_reserve_ratio !== null
-          ? Math.round(model.context_output_reserve_ratio * 100)
-          : 30,
-      reasoning_passback: model.reasoning_passback ?? provider.reasoning_passback,
-    })),
+  const [models, setModels] = useState<ProviderModelDraft[]>(() =>
+    providerModelsToDrafts(provider),
   )
   const [defaultModel, setDefaultModel] = useState(provider.default_model)
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
@@ -101,6 +107,16 @@ export function EditProviderForm({
   useEffect(() => {
     onSavingChange?.(update.isPending)
   }, [onSavingChange, update.isPending])
+
+  const initialModels = providerModelsToDrafts(provider)
+  const dirty =
+    form.formState.isDirty ||
+    defaultModel !== provider.default_model ||
+    JSON.stringify(models) !== JSON.stringify(initialModels)
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   const kind = form.watch('kind')
 

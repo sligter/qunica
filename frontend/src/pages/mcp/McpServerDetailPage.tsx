@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Field, FieldGrid } from '@/components/ui/field'
 import { PageState } from '@/components/ui/page-state'
+import { DetailSkeleton } from '@/components/ui/skeleton'
 import { Section } from '@/components/ui/section'
 import {
   useDeleteMcpServer,
@@ -41,7 +42,7 @@ export function McpServerDetailPage() {
   const saveReady = useEditSaveGuard(editing)
 
   if (server.isLoading) {
-    return <PageState variant="loading" title={t('mcp:detail.loading')} />
+    return <DetailSkeleton label={t('mcp:detail.loading')} />
   }
   if (server.error) {
     return (

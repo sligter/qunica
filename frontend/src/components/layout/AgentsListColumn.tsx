@@ -3,15 +3,15 @@ import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
 import { useAgents } from '@/hooks/useAgents'
+import { useDeleteAgent } from '@/hooks/useDeleteAgent'
+import { useRenameResource } from '@/hooks/useRenameResource'
 import { avatarColorClass } from '@/lib/avatarColor'
 
-interface AgentsListColumnProps {
-  width?: number
-}
-
-export function AgentsListColumn({ width }: AgentsListColumnProps) {
+export function AgentsListColumn() {
   const { t } = useTranslation('agents')
   const agents = useAgents()
+  const rename = useRenameResource('/agents', ['agents'])
+  const del = useDeleteAgent()
 
   return (
     <ListColumn
@@ -24,7 +24,6 @@ export function AgentsListColumn({ width }: AgentsListColumnProps) {
       errorText={t('loadError')}
       emptyText={t('empty')}
       icon={Bot}
-      width={width}
       items={(agents.data ?? []).map((a) => ({
         id: a.id,
         to: `/agents/${a.id}`,
@@ -35,7 +34,11 @@ export function AgentsListColumn({ width }: AgentsListColumnProps) {
             : a.description || a.system_prompt,
         avatarClass: avatarColorClass(a.id),
         avatarInitial: a.name.slice(0, 1).toUpperCase(),
+        deleteTitle: t('detail.deleteTitle', { name: a.name }),
+        deleteDescription: t('detail.deleteDescription'),
       }))}
+      onRename={(item, name) => rename.mutateAsync({ id: item.id, name })}
+      onDelete={(item) => del.mutateAsync(item.id)}
     />
   )
 }

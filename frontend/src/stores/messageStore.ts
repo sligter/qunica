@@ -220,6 +220,7 @@ export interface StreamRun {
   status: StreamRunStatus
   turn_id: string | null
   scheduler_status: GroupTurnStatus | null
+  moderator_active: boolean
   terminal_reason: GroupTurnTerminationReason | null
   criticalSummaries: SchedulerCriticalSummary[]
   created_at: string
@@ -397,6 +398,7 @@ function emptyStreamRun(groupId: string, streamId: string, timestamp: string): S
     status: 'active',
     turn_id: null,
     scheduler_status: null,
+    moderator_active: false,
     terminal_reason: null,
     criticalSummaries: [],
     created_at: timestamp,
@@ -541,6 +543,7 @@ function schedulerSummary(
       return null
     }
     case 'turn_started':
+    case 'moderator_started':
     case 'done':
       return null
   }
@@ -591,6 +594,7 @@ function schedulerTerminalFields(update: SchedulerStreamUpdate): {
       return { status: update.payload.status, reason: update.payload.reason }
     case 'speaker_selected':
     case 'dispatch_failed':
+    case 'moderator_started':
     case 'moderator_fallback':
     case 'done':
       return { status: null, reason: null }
@@ -1105,6 +1109,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         status: 'active',
         turn_id: existing?.turn_id ?? userMessage.turn_id,
         scheduler_status: existing?.scheduler_status ?? userMessage.turn_summary?.status ?? null,
+        moderator_active: existing?.moderator_active ?? false,
         terminal_reason:
           existing?.terminal_reason ?? userMessage.turn_summary?.termination_reason ?? null,
         criticalSummaries: existing?.criticalSummaries ?? [],
@@ -1595,6 +1600,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       ...run,
       turn_id: turnId,
       scheduler_status: terminal.status ?? run.scheduler_status,
+      moderator_active: update.kind === 'moderator_started',
       terminal_reason: terminal.status === null ? run.terminal_reason : terminal.reason,
       criticalSummaries: appendOrFoldSchedulerSummary(run.criticalSummaries, summary),
       updated_at: timestamp,
@@ -1660,6 +1666,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           ...run,
           status: streamStatusFromSchedulerStatus(trace.turn.status),
           scheduler_status: trace.turn.status,
+          moderator_active: false,
           terminal_reason: trace.turn.termination_reason,
           criticalSummaries: appendOrFoldSchedulerSummary(
             run.criticalSummaries,

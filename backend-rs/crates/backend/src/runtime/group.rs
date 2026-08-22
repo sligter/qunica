@@ -1012,6 +1012,22 @@ async fn run_scheduled_turn(
                     group.moderator_provider_id.as_deref(),
                     group.moderator_model.as_deref(),
                 ) {
+                    if let Err(error) = ctx
+                        .emit_durable_event(
+                            StreamEventKind::ModeratorStarted,
+                            json!({ "turn_id": turn_id }),
+                        )
+                        .await
+                    {
+                        return match error {
+                            StepErr::Cancelled => {
+                                cancel_scheduled_turn(ctx, &store, &turn_id).await
+                            }
+                            StepErr::Db(_) | StepErr::SchedulerPersistence => {
+                                fail_scheduled_persistence(ctx, &store, &turn_id).await
+                            }
+                        };
+                    }
                     let attempt = match select_moderator_until_cancelled(
                         ctx,
                         &services.pool,

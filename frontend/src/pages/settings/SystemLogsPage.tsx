@@ -209,7 +209,7 @@ export function SystemLogsPage() {
     <DetailShell
       title={t('logs.title')}
       subtitle={t('logs.subtitle')}
-      contentClassName="max-w-none"
+      measure="wide"
     >
       <div className="space-y-10">
         {!desktop ? (

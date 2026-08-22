@@ -35,6 +35,8 @@ import {
   type LinkProps,
 } from 'react-router-dom'
 
+import { useUnsavedChangesAction } from '@/hooks/useUnsavedChangesGuard'
+
 /** Top-level areas that render as an overlay over the conversation stage. */
 const OVERLAY_PREFIXES = [
   '/settings',
@@ -127,17 +129,20 @@ export function useIsOverlayModal(): boolean {
 export function useCloseOverlay(fallback = '/'): () => void {
   const { background } = useContext(OverlayContext)
   const navigate = useNavigate()
+  const requestAction = useUnsavedChangesAction()
   return useCallback(() => {
-    if (!background) {
-      void navigate(fallback)
-      return
-    }
-    void navigate({
-      pathname: background.pathname,
-      search: background.search,
-      hash: background.hash,
+    requestAction(() => {
+      if (!background) {
+        void navigate(fallback)
+        return
+      }
+      void navigate({
+        pathname: background.pathname,
+        search: background.search,
+        hash: background.hash,
+      })
     })
-  }, [background, fallback, navigate])
+  }, [background, fallback, navigate, requestAction])
 }
 
 /** `Link` that opens the overlay without losing the conversation behind it. */

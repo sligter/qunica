@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import i18n from '@/i18n'
 import { ListColumn, type ListColumnItem } from '@/components/layout/ListColumn'
@@ -122,7 +122,47 @@ describe('ListColumn', () => {
   it('highlights the row matching the active route', () => {
     renderColumn('/agents/a2')
     const active = screen.getByRole('link', { name: /Writer/ })
-    expect(active.className).toContain('bg-primary/10')
+    // Three signals, not one: the raised surface, the accent bar and the
+    // weight. Colour alone would not survive a palette with two adjacent steps.
+    expect(active).toHaveAttribute('aria-current', 'page')
+    expect(active.className).toContain('bg-accent')
+    expect(active.className).toContain('font-semibold')
+    expect(active.className).toContain('before:bg-primary')
+    expect(screen.getByRole('link', { name: /Reviewer/ })).not.toHaveAttribute('aria-current')
+  })
+
+  it('keeps one create action: the header while there is a list', () => {
+    renderColumn()
+    expect(screen.getAllByRole('link', { name: /new agent/i })).toHaveLength(1)
+  })
+
+  it('hands the create action to the empty state once the list is empty', () => {
+    renderColumnWith({ items: [] })
+    // The header button would sit a few pixels from the empty state's own, so
+    // it stands down rather than offering the same thing twice.
+    const links = screen.getAllByRole('link', { name: /new agent/i })
+    expect(links).toHaveLength(1)
+    fireEvent.click(links[0]!)
+    expect(screen.getByText('at /agents/new')).toBeInTheDocument()
+  })
+
+  it('moves focus through the rows with the arrow keys', () => {
+    renderColumn()
+    const list = screen.getByRole('list', { name: 'Agents' })
+    fireEvent.keyDown(list, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: /Reviewer/ }))
+    fireEvent.keyDown(list, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: /Writer/ }))
+    fireEvent.keyDown(list, { key: 'Home' })
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: /Reviewer/ }))
+  })
+
+  it('drops into the list from the search box', () => {
+    renderColumn()
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search agents' }), {
+      key: 'ArrowDown',
+    })
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: /Reviewer/ }))
   })
 
   it('renders skeleton rows while loading', () => {
@@ -137,17 +177,30 @@ describe('ListColumn', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Failed to load.')
   })
 
-  it('offers the create action in the empty state', () => {
-    renderColumnWith({ items: [] })
-    fireEvent.click(screen.getAllByRole('link', { name: /new agent/i })[0]!)
-    expect(screen.getByText('at /agents/new')).toBeInTheDocument()
-  })
-
   it('labels the header create link for assistive tech', () => {
     renderColumn()
     expect(screen.getByRole('link', { name: 'New agent' })).toHaveAttribute(
       'aria-label',
       'New agent',
     )
+  })
+
+  it('opens the row menu and renames from its dialog', async () => {
+    const onRename = vi.fn().mockResolvedValue(undefined)
+    renderColumnWith({ items, onRename, onDelete: vi.fn() })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Reviewer' }))
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Copy ID' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const input = screen.getByRole('textbox', { name: 'Name' })
+    fireEvent.change(input, { target: { value: 'Review bot' } })
+    fireEvent.submit(input.closest('form')!)
+
+    await waitFor(() => {
+      expect(onRename).toHaveBeenCalledWith(items[0], 'Review bot')
+    })
   })
 })

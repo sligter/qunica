@@ -57,10 +57,10 @@ function LocationProbe() {
 
 const initialActivity = useConversationActivityStore.getInitialState()
 
-function renderSidebar() {
+function renderSidebar(initialEntry = '/chats/chat-1') {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <MemoryRouter initialEntries={['/chats/chat-1']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <TooltipProvider>
           <AppSidebar />
           <LocationProbe />
@@ -202,30 +202,33 @@ describe('AppSidebar terminal cleanup', () => {
     expect(screen.queryByText('Group one')).not.toBeInTheDocument()
   })
 
-  it('opens the Library flyout, supports arrow keys, and preserves the current chat', async () => {
+  it('opens the library straight into the panel, over the current chat', async () => {
     const user = userEvent.setup()
     renderSidebar()
 
     await user.click(screen.getByRole('button', { name: 'Library' }))
-    const library = screen.getByRole('navigation', { name: 'Library' })
-    const links = within(library).getAllByRole('link')
-    expect(links.map((link) => link.textContent)).toEqual([
-      'Token usage',
-      'Agents',
-      'Providers',
-      'MCP servers',
-      'Skills',
-      'Workspaces',
-    ])
-
-    links[0]!.focus()
-    await user.keyboard('{ArrowDown}')
-    expect(links[1]).toHaveFocus()
-    await user.click(links[1]!)
 
     expect(screen.getByTestId('location')).toHaveTextContent('/agents')
+    // The conversation underneath survives the jump — same overlay contract
+    // as every other link out of the sidebar.
     expect(screen.getByTestId('background-location')).toHaveTextContent('/chats/chat-1')
-    expect(screen.getByRole('button', { name: 'Agents' })).toBeInTheDocument()
+  })
+
+  it('marks the library entry active only inside a library area, and re-enters to its first area', async () => {
+    renderSidebar('/skills')
+
+    // The entry always says "Library" — the area is named by the rail — but
+    // it does show that you are inside the library right now.
+    const entry = screen.getByRole('button', { name: 'Library' })
+    expect(entry).toHaveAttribute('aria-current', 'page')
+
+    await userEvent.setup().click(entry)
+    expect(screen.getByTestId('location')).toHaveTextContent('/agents')
+  })
+
+  it('leaves the library entry inactive while chatting', () => {
+    renderSidebar('/chats/chat-1')
+    expect(screen.getByRole('button', { name: 'Library' })).not.toHaveAttribute('aria-current')
   })
 
   it('shows what each conversation is doing right now', () => {

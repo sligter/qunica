@@ -3,22 +3,16 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
-  BarChart3,
-  Bot,
   ChevronDown,
-  ChevronUp,
-  Folder,
+  Command,
   Library,
   LogOut,
   MessageSquarePlus,
   PanelLeft,
   PanelLeftClose,
   Pencil,
-  Plug,
   Search,
-  Server,
   Settings,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
@@ -36,7 +30,11 @@ import {
 } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
-import { OverlayNavLink } from '@/components/layout/overlayRouting'
+import { OverlayNavLink, useOverlayLinkState } from '@/components/layout/overlayRouting'
+import {
+  commandShortcutHint,
+  useOpenCommandPalette,
+} from '@/components/layout/CommandPalette'
 import { useAuthStore } from '@/stores/authStore'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -50,11 +48,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
@@ -127,11 +120,15 @@ const GroupFormDialog = lazy(() =>
   import('@/components/groups/GroupFormDialog').then((m) => ({ default: m.GroupFormDialog })),
 )
 
-interface LibraryItem {
-  to: string
-  key: 'usage' | 'agents' | 'providers' | 'mcpServers' | 'skills' | 'workspaces'
-  icon: typeof Bot
-}
+/** Route prefixes that count as "inside the library", for the entry's state. */
+const LIBRARY_PREFIXES = [
+  '/usage',
+  '/agents',
+  '/providers',
+  '/mcp-servers',
+  '/skills',
+  '/workspaces',
+]
 
 interface DirectChatMenuState {
   id: string
@@ -140,15 +137,6 @@ interface DirectChatMenuState {
   y: number
   trigger: HTMLElement
 }
-
-const libraryItems: LibraryItem[] = [
-  { to: '/usage', key: 'usage', icon: BarChart3 },
-  { to: '/agents', key: 'agents', icon: Bot },
-  { to: '/providers', key: 'providers', icon: Plug },
-  { to: '/mcp-servers', key: 'mcpServers', icon: Server },
-  { to: '/skills', key: 'skills', icon: Sparkles },
-  { to: '/workspaces', key: 'workspaces', icon: Folder },
-]
 
 function readCollapsed(): boolean {
   try {
@@ -188,7 +176,6 @@ export function AppSidebar() {
   const [query, setQuery] = useState('')
   const [directChatsExpanded, setDirectChatsExpanded] = useState(true)
   const [groupsExpanded, setGroupsExpanded] = useState(true)
-  const [libraryOpen, setLibraryOpen] = useState(false)
   const [chatMenu, setChatMenu] = useState<DirectChatMenuState | null>(null)
   const [pendingRenameChat, setPendingRenameChat] = useState<{ id: string; title: string } | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -197,6 +184,9 @@ export function AppSidebar() {
   const chatMenuRef = useRef<HTMLDivElement>(null)
   const chatMenuFirstItemRef = useRef<HTMLButtonElement>(null)
   const navigate = useNavigate()
+  // Carried on the library jump so the conversation underneath stays mounted,
+  // exactly as the sidebar's OverlayLinks do.
+  const overlayState = useOverlayLinkState()
   const location = useLocation()
   const groups = useGroups()
   const directChats = useDirectChats()
@@ -267,32 +257,13 @@ export function AppSidebar() {
     }
   }, [chatMenu])
 
-  // The library area the current route lives under, if any. Drives the entry
-  // row's active state and the echoed name.
-  const activeLibraryItem = libraryItems.find(
-    (item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`),
+  // Whether the current route lives inside the library. Drives the entry
+  // row's active state; the area itself is named only by the rail — the
+  // entry always says "Library" and always lands on /agents.
+  const libraryActive = LIBRARY_PREFIXES.some(
+    (prefix) =>
+      location.pathname === prefix || location.pathname.startsWith(`${prefix}/`),
   )
-
-  // Arrow-key roving through the library flyout. Escape, outside-click and
-  // focus restore are Radix Popover's own job; this only adds the grid keys.
-  const onLibraryKeys = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-    event.preventDefault()
-    const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>('[data-library-item]'),
-    )
-    if (items.length === 0) return
-    const current = items.indexOf(document.activeElement as HTMLElement)
-    const next =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? items.length - 1
-          : event.key === 'ArrowDown'
-            ? (current + 1) % items.length
-            : (current - 1 + items.length) % items.length
-    items[next]?.focus()
-  }
 
   return (
     <aside
@@ -726,99 +697,65 @@ export function AppSidebar() {
         </div>
       ) : null}
 
-      {/* Library — six areas behind a single entry. They were six always-on
-          rows that pushed the conversation list short; now they live in a
-          flyout so expanding them never steals vertical space from chats. */}
+      {/* Library — one entry, straight into the panel. The flyout menu that
+          used to live here duplicated the ResourceRail 1:1 (same targets, same
+          arrow keys); the rail is now the only place that names the areas.
+          Landing on /agents gives the click a predictable target — the rail's
+          first item — and switching areas from there is a single click. */}
       <nav
         className={cn(
           'shrink-0 border-t border-border py-2',
           collapsed ? 'flex flex-col items-center' : 'px-2',
         )}
       >
-        <Popover open={libraryOpen} onOpenChange={setLibraryOpen}>
-          {collapsed ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={t('navigation:library')}
-                    className={cn(
-                      'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
-                      activeLibraryItem
-                        ? 'bg-primary/10 text-primary'
-                        : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
-                    )}
-                  >
-                    <Library className="h-4 w-4" />
-                  </button>
-                </PopoverTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                {activeLibraryItem
-                  ? t(`navigation:${activeLibraryItem.key}`)
-                  : t('navigation:library')}
-              </TooltipContent>
-            </Tooltip>
-          ) : (
-            <PopoverTrigger asChild>
+        {collapsed ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
               <button
                 type="button"
+                onClick={() => navigate('/agents', { state: overlayState })}
+                aria-label={t('navigation:library')}
+                aria-current={libraryActive ? 'page' : undefined}
                 className={cn(
-                  'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-                  activeLibraryItem
-                    ? 'bg-primary/10 font-medium text-primary'
+                  'flex h-8 w-8 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                  libraryActive
+                    ? 'bg-primary/10 text-primary'
                     : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
                 )}
               >
                 <Library className="h-4 w-4" />
-                <span className="min-w-0 flex-1 truncate text-left">
-                  {activeLibraryItem
-                    ? t(`navigation:${activeLibraryItem.key}`)
-                    : t('navigation:library')}
-                </span>
-                <ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               </button>
-            </PopoverTrigger>
-          )}
-          <PopoverContent
-            side={collapsed ? 'right' : 'top'}
-            align="start"
-            sideOffset={collapsed ? 4 : 2}
-            className={collapsed ? 'ml-2 min-w-44 p-1.5' : 'w-56 p-1.5'}
+            </TooltipTrigger>
+            <TooltipContent side="right">{t('navigation:library')}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <button
+            type="button"
+            onClick={() => navigate('/agents', { state: overlayState })}
+            aria-current={libraryActive ? 'page' : undefined}
+            className={cn(
+              'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              libraryActive
+                ? 'bg-primary/10 font-medium text-primary'
+                : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
+            )}
           >
-            <nav aria-label={t('navigation:library')} onKeyDown={onLibraryKeys}>
-              {libraryItems.map(({ to, key, icon: Icon }) => (
-                <OverlayNavLink
-                  key={to}
-                  to={to}
-                  data-library-item=""
-                  onClick={() => setLibraryOpen(false)}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
-                      isActive
-                        ? 'bg-accent font-medium text-accent-foreground'
-                        : 'text-foreground hover:bg-card-hover',
-                    )
-                  }
-                >
-                  <Icon className="h-4 w-4 text-muted-foreground" />
-                  {t(`navigation:${key}`)}
-                </OverlayNavLink>
-              ))}
-            </nav>
-          </PopoverContent>
-        </Popover>
+            <Library className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-left">
+              {t('navigation:library')}
+            </span>
+          </button>
+        )}
       </nav>
 
-      {/* Bottom: Settings + user menu */}
+      {/* Bottom: ⌘K launcher above Settings + user menu */}
       <div
         className={cn(
           'shrink-0 border-t border-border py-2',
           collapsed ? 'flex flex-col items-center gap-1' : 'px-2',
         )}
       >
+        <CommandTrigger collapsed={collapsed} />
         {collapsed ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -858,6 +795,49 @@ export function AppSidebar() {
         <SidebarUserMenu collapsed={collapsed} />
       </div>
     </aside>
+  )
+}
+
+/**
+ * Sidebar affordance for the global Ctrl/Cmd+K palette. Discoverability is the
+ * whole point — the chord alone hides the feature from anyone who has not been
+ * told about it.
+ */
+function CommandTrigger({ collapsed }: { collapsed: boolean }) {
+  const openPalette = useOpenCommandPalette()
+  const { t } = useTranslation('navigation')
+  const hint = commandShortcutHint()
+  const button = (
+    <button
+      type="button"
+      onClick={openPalette}
+      aria-label={`${t('commandPalette.trigger')} (${hint})`}
+      className={cn(
+        'flex items-center rounded-md text-muted-foreground transition-colors hover:bg-card-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        collapsed ? 'h-8 w-8 justify-center' : 'w-full gap-2.5 px-3 py-1.5 text-sm',
+      )}
+    >
+      <Command className="h-4 w-4 shrink-0" />
+      {!collapsed ? (
+        <>
+          <span className="min-w-0 flex-1 truncate text-left">
+            {t('commandPalette.trigger')}
+          </span>
+          <kbd className="rounded border border-border bg-muted px-1 py-px font-sans text-[10px] leading-4">
+            {hint}
+          </kbd>
+        </>
+      ) : null}
+    </button>
+  )
+  if (!collapsed) return button
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent side="right">
+        {`${t('commandPalette.trigger')} · ${hint}`}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 

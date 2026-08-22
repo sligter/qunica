@@ -20,6 +20,7 @@ export type LegacyStreamEventKind =
 
 export type SchedulerStreamEventKind =
   | 'turn_started'
+  | 'moderator_started'
   | 'speaker_selected'
   | 'dispatch_failed'
   | 'moderator_fallback'
@@ -214,6 +215,10 @@ export interface TurnStartedPayload {
   budget: GroupTurnBudgetLimits
 }
 
+export interface ModeratorStartedPayload {
+  turn_id: string
+}
+
 export interface SpeakerSelectedPayload {
   turn_id: string
   dispatch_id: string
@@ -273,6 +278,7 @@ type TurnCompletedPayload =
 
 export type SchedulerStreamUpdate =
   | SchedulerEvent<'turn_started', TurnStartedPayload>
+  | SchedulerEvent<'moderator_started', ModeratorStartedPayload>
   | SchedulerEvent<'speaker_selected', SpeakerSelectedPayload>
   | SchedulerEvent<'dispatch_failed', DispatchFailedPayload>
   | SchedulerEvent<'moderator_fallback', ModeratorFallbackPayload>

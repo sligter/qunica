@@ -131,6 +131,36 @@ describe('messageStore scheduler state', () => {
     expect(state.acceptsStreamEvent('group-1', 'stream-2')).toBe(true)
   })
 
+  it('tracks moderator activity only between its start and routing result', () => {
+    const store = useMessageStore.getState()
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.applySchedulerEvent(
+      'group-1',
+      'stream-1',
+      update('moderator_started', { turn_id: 'turn-1' }, 1),
+    )
+    expect(
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].moderator_active,
+    ).toBe(true)
+
+    store.applySchedulerEvent(
+      'group-1',
+      'stream-1',
+      update('speaker_selected', {
+        turn_id: 'turn-1',
+        dispatch_id: 'dispatch-1',
+        source_agent_id: null,
+        target_agent_id: 'agent-1',
+        reason: 'moderator',
+        action_kind: 'speak',
+        hop: 0,
+      }, 2),
+    )
+    expect(
+      useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].moderator_active,
+    ).toBe(false)
+  })
+
   it('folds routine selections while retaining bounded critical summaries', () => {
     const store = useMessageStore.getState()
     store.startStreamRun('group-1', 'stream-1', message('message-1'))

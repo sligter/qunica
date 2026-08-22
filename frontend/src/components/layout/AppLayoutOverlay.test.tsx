@@ -170,7 +170,17 @@ describe('settings overlay keeps the conversation mounted', () => {
 
     fireEvent.click(screen.getByRole('link', { name: 'Open usage' }))
     const dialog = await screen.findByRole('dialog', { name: 'Token usage' })
-    const trend = within(dialog).getByRole('heading', { name: 'Daily usage by owner' }).closest('section')!
+    // The library shell is eager and the report behind it is lazy, so the panel
+    // is on screen with its rail and its back button before the chart arrives.
+    // The extra Suspense boundary is a real await, and under a loaded full-suite
+    // run it outlasts the 1s default — hence the explicit budget.
+    const trend = (
+      await within(dialog).findByRole(
+        'heading',
+        { name: 'Daily usage by owner' },
+        { timeout: 5000 },
+      )
+    ).closest('section')!
 
     expect(within(trend).getAllByRole('tab')).toHaveLength(4)
     expect(within(trend).getByRole('img', { name: 'Daily token usage by Group' }).querySelectorAll('path')).toHaveLength(2)

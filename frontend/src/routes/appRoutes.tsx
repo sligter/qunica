@@ -83,8 +83,6 @@ const GroupManagePage = lazy(() =>
   import('@/pages/group/GroupManagePage').then((m) => ({ default: m.GroupManagePage })),
 )
 
-const ENTITY_LIST_WIDTH = 240
-
 /**
  * Every route reachable under `AppLayout`.
  *
@@ -99,16 +97,18 @@ export const appChildren: RouteObject[] = [
   { path: '/groups/:groupId/manage', element: <GroupManagePage /> },
   { path: '/groups/:groupId', element: <GroupChatPage /> },
   { path: '/chats/:chatId', element: <DirectChatPage /> },
-  { path: '/usage', element: <TokenUsagePage /> },
-  // Top-level entity areas: the sidebar Library is their only entry.
+  // Token usage is a report rather than a collection, so it takes the library
+  // shell without a list column — the rail is what it needs from here.
+  {
+    path: '/usage',
+    element: <EntityLayout titleKey="usage" />,
+    children: [{ index: true, element: <TokenUsagePage /> }],
+  },
+  // Top-level entity areas: the sidebar Library and the resource rail are their
+  // entries.
   {
     path: '/agents',
-    element: (
-      <EntityLayout
-        titleKey="agents"
-        list={<AgentsListColumn width={ENTITY_LIST_WIDTH} />}
-      />
-    ),
+    element: <EntityLayout titleKey="agents" list={<AgentsListColumn />} />,
     children: [
       { index: true, element: <AgentsIndexPage /> },
       { path: 'new', element: <AgentCreatePage /> },
@@ -117,12 +117,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/providers',
-    element: (
-      <EntityLayout
-        titleKey="providers"
-        list={<ProvidersListColumn width={ENTITY_LIST_WIDTH} />}
-      />
-    ),
+    element: <EntityLayout titleKey="providers" list={<ProvidersListColumn />} />,
     children: [
       { index: true, element: <ProvidersIndexPage /> },
       { path: 'new', element: <ProviderCreatePage /> },
@@ -131,12 +126,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/mcp-servers',
-    element: (
-      <EntityLayout
-        titleKey="mcpServers"
-        list={<McpServersListColumn width={ENTITY_LIST_WIDTH} />}
-      />
-    ),
+    element: <EntityLayout titleKey="mcpServers" list={<McpServersListColumn />} />,
     children: [
       { index: true, element: <McpServersIndexPage /> },
       { path: 'new', element: <McpServerCreatePage /> },
@@ -145,12 +135,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/skills',
-    element: (
-      <EntityLayout
-        titleKey="skills"
-        list={<SkillsListColumn width={ENTITY_LIST_WIDTH} />}
-      />
-    ),
+    element: <EntityLayout titleKey="skills" list={<SkillsListColumn />} />,
     children: [
       { index: true, element: <SkillsIndexPage /> },
       { path: 'new', element: <SkillCreatePage /> },
@@ -159,12 +144,7 @@ export const appChildren: RouteObject[] = [
   },
   {
     path: '/workspaces',
-    element: (
-      <EntityLayout
-        titleKey="workspaces"
-        list={<WorkspacesListColumn width={ENTITY_LIST_WIDTH} />}
-      />
-    ),
+    element: <EntityLayout titleKey="workspaces" list={<WorkspacesListColumn />} />,
     children: [
       { index: true, element: <WorkspacesIndexPage /> },
       { path: 'new', element: <WorkspaceCreatePage /> },

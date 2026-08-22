@@ -1,6 +1,21 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
+
+/**
+ * One place decides the tab title: `<页面> · AG Swarmer`, restored to the app's
+ * base title on unmount. Pages pass their already-translated label; the suffix
+ * is not translated — it is the product name.
+ */
+export function useDocumentTitle(title: string | null): void {
+  useEffect(() => {
+    const previous = document.title
+    document.title = title ? `${title} · AG Swarmer` : 'AG Swarmer'
+    return () => {
+      document.title = previous
+    }
+  }, [title])
+}
 
 interface SectionHeadingProps {
   /** Uppercase micro heading text. */

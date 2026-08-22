@@ -113,6 +113,7 @@ function traceFixture(childArtifact: unknown = {
 describe('parseSchedulerStreamEvent', () => {
   it.each([
     ['turn_started', { turn_id: 'turn-1', budget: budgetLimits }],
+    ['moderator_started', { turn_id: 'turn-1' }],
     [
       'speaker_selected',
       {

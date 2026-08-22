@@ -2,12 +2,9 @@ import { Server } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ListColumn } from '@/components/layout/ListColumn'
-import { useMcpServers } from '@/hooks/useMcpServers'
+import { useDeleteMcpServer, useMcpServers } from '@/hooks/useMcpServers'
+import { useRenameResource } from '@/hooks/useRenameResource'
 import type { McpTransport } from '@/types/api'
-
-interface McpServersListColumnProps {
-  width?: number
-}
 
 /** One colour per transport, so the list reads at a glance. */
 function transportColor(transport: McpTransport): string {
@@ -22,9 +19,11 @@ function transportInitial(transport: McpTransport): string {
   return 'H'
 }
 
-export function McpServersListColumn({ width }: McpServersListColumnProps) {
+export function McpServersListColumn() {
   const { t } = useTranslation('mcp')
   const servers = useMcpServers()
+  const rename = useRenameResource('/mcp-servers', ['mcp-servers'])
+  const del = useDeleteMcpServer()
 
   return (
     <ListColumn
@@ -37,7 +36,6 @@ export function McpServersListColumn({ width }: McpServersListColumnProps) {
       errorText={t('loadError')}
       emptyText={t('empty')}
       icon={Server}
-      width={width}
       items={(servers.data ?? []).map((server) => ({
         id: server.id,
         to: `/mcp-servers/${server.id}`,
@@ -47,7 +45,11 @@ export function McpServersListColumn({ width }: McpServersListColumnProps) {
         }`,
         avatarClass: transportColor(server.transport),
         avatarInitial: transportInitial(server.transport),
+        deleteTitle: t('detail.deleteTitle', { name: server.name }),
+        deleteDescription: t('detail.deleteDescription'),
       }))}
+      onRename={(item, name) => rename.mutateAsync({ id: item.id, name })}
+      onDelete={(item) => del.mutateAsync(item.id)}
     />
   )
 }

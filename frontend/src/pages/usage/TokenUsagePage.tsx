@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import {
-  ArrowLeft,
   ArrowDownToLine,
   ArrowUpFromLine,
   Bot,
@@ -13,7 +12,6 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import { DetailShell } from '@/components/layout/DetailShell'
-import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -321,7 +319,6 @@ function BreakdownList({
 export function TokenUsagePage() {
   const { t, i18n } = useTranslation(['usage', 'navigation'])
   const locale = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const close = useCloseOverlay()
   const initialDates = useMemo(() => presetDates('30d'), [])
   const [range, setRange] = useState<RangePreset>('30d')
   const [filters, setFilters] = useState<TokenUsageFilters>(initialDates)
@@ -371,12 +368,8 @@ export function TokenUsagePage() {
     <DetailShell
       title={t('title')}
       subtitle={t('subtitle')}
+      measure="wide"
       contentClassName="max-w-[90rem]"
-      leading={
-        <Button variant="ghost" size="icon" aria-label={t('navigation:backToChat')} onClick={close}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-      }
       actions={
         <Button variant="outline" size="sm" disabled={usage.isFetching || !validRange} onClick={() => void usage.refetch()}>
           <RefreshCw className={cn('h-4 w-4', usage.isFetching && 'animate-spin')} />

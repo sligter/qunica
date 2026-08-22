@@ -11,10 +11,10 @@ import { Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { AssistantApprovalCard } from '@/components/assistant/AssistantApprovalCard'
+import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { PageState } from '@/components/ui/page-state'
-import { SectionHeading } from '@/components/ui/section'
 import {
   useAppActions,
   useClearAppActions,
@@ -57,124 +57,126 @@ export function AppActionsPage() {
   const actions = useAppActions({ limit: APP_ACTIONS_PAGE_SIZE, skip: page * APP_ACTIONS_PAGE_SIZE })
   const deleteAction = useDeleteAppAction()
   const clearActions = useClearAppActions()
-
-  if (actions.isLoading) return <PageState variant="loading" title={t('setup.loading')} />
-  if (actions.error) return <PageState variant="error" title={String(actions.error)} />
-
   const items = actions.data?.items ?? []
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6">
-      <SectionHeading
-        title={t('actions.title')}
-        description={t('actions.description')}
-        aside={
-          items.length > 0 ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              disabled={clearActions.isPending}
-              onClick={() => setClearOpen(true)}
-            >
-              <Trash2 className="h-4 w-4" aria-hidden />
-              {t('actions.clear')}
-            </Button>
-          ) : null
-        }
-      />
-
-      {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t('actions.empty')}</p>
+    <DetailShell
+      title={t('actions.title')}
+      subtitle={t('actions.description')}
+      actions={
+        !actions.isLoading && !actions.error && items.length > 0 ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            disabled={clearActions.isPending}
+            onClick={() => setClearOpen(true)}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+            {t('actions.clear')}
+          </Button>
+        ) : null
+      }
+    >
+      {actions.isLoading ? (
+        <PageState inset className="px-0" variant="loading" title={t('setup.loading')} />
+      ) : actions.error ? (
+        <PageState inset className="px-0" variant="error" title={String(actions.error)} />
       ) : (
-        <ul className="flex flex-col gap-3">
-          {items.map((item) => {
-            const reason = failureReason(item)
-            return (
-              <li
-                key={item.id}
-                className="rounded-lg border border-border/70 bg-card p-3 text-sm"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="leading-6">{item.summary}</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {item.target_kind} · {item.action} · {item.created_at}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <span
-                      className={cn(
-                        'rounded-full border px-2 py-0.5 text-2xs font-medium',
-                        statusClasses(item.status),
-                      )}
-                    >
-                      {t(`actions.${item.status}`)}
-                    </span>
-                    {item.status !== 'pending' && item.status !== 'approved' ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        disabled={deleteAction.isPending || clearActions.isPending}
-                        onClick={() => setDeleteTarget(item)}
-                        aria-label={t('actions.deleteEntry')}
-                        title={t('actions.delete')}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                      </Button>
+        <div className="space-y-4">
+          {items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t('actions.empty')}</p>
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {items.map((item) => {
+                const reason = failureReason(item)
+                return (
+                  <li
+                    key={item.id}
+                    className="rounded-lg border border-border/70 bg-card p-3 text-sm"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="leading-6">{item.summary}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {item.target_kind} · {item.action} · {item.created_at}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <span
+                          className={cn(
+                            'rounded-full border px-2 py-0.5 text-2xs font-medium',
+                            statusClasses(item.status),
+                          )}
+                        >
+                          {t(`actions.${item.status}`)}
+                        </span>
+                        {item.status !== 'pending' && item.status !== 'approved' ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            disabled={deleteAction.isPending || clearActions.isPending}
+                            onClick={() => setDeleteTarget(item)}
+                            aria-label={t('actions.deleteEntry')}
+                            title={t('actions.delete')}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {reason ? (
+                      <p className="mt-2 text-xs text-destructive">{reason}</p>
                     ) : null}
-                  </div>
-                </div>
 
-                {reason ? (
-                  <p className="mt-2 text-xs text-destructive">{reason}</p>
-                ) : null}
+                    {item.status === 'pending' ? (
+                      <div className="mt-3">
+                        <AssistantApprovalCard
+                          hideSummary
+                          action={{
+                            action_id: item.id,
+                            target_kind: item.target_kind,
+                            action: item.action,
+                            summary: item.summary,
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
 
-                {item.status === 'pending' ? (
-                  <div className="mt-3">
-                    <AssistantApprovalCard
-                      hideSummary
-                      action={{
-                        action_id: item.id,
-                        target_kind: item.target_kind,
-                        action: item.action,
-                        summary: item.summary,
-                      }}
-                    />
-                  </div>
-                ) : null}
-              </li>
-            )
-          })}
-        </ul>
+          {page > 0 || actions.data?.has_more ? (
+            <nav className="flex shrink-0 items-center justify-center gap-3 border-t border-border pt-3" aria-label={t('actions.pagination')}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={page === 0 || actions.isFetching}
+                onClick={() => setPage((value) => value - 1)}
+              >
+                {t('actions.previous')}
+              </Button>
+              <span className="text-xs text-muted-foreground">{t('actions.page', { page: page + 1 })}</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!actions.data?.has_more || actions.isFetching}
+                onClick={() => setPage((value) => value + 1)}
+              >
+                {t('actions.next')}
+              </Button>
+            </nav>
+          ) : null}
+        </div>
       )}
-
-      {page > 0 || actions.data?.has_more ? (
-        <nav className="flex shrink-0 items-center justify-center gap-3 border-t border-border pt-3" aria-label={t('actions.pagination')}>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={page === 0 || actions.isFetching}
-            onClick={() => setPage((value) => value - 1)}
-          >
-            {t('actions.previous')}
-          </Button>
-          <span className="text-xs text-muted-foreground">{t('actions.page', { page: page + 1 })}</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!actions.data?.has_more || actions.isFetching}
-            onClick={() => setPage((value) => value + 1)}
-          >
-            {t('actions.next')}
-          </Button>
-        </nav>
-      ) : null}
 
       <ConfirmDialog
         open={deleteTarget !== null}
@@ -200,6 +202,6 @@ export function AppActionsPage() {
           setPage(0)
         }}
       />
-    </div>
+    </DetailShell>
   )
 }

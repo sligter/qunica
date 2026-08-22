@@ -49,6 +49,6 @@ Cancellation writes the terminal state before notifying the in-process cancellat
 
 ## Stream contract
 
-Every conversation emits scheduler events such as `turn_started`, `speaker_selected`, dispatch events, terminal events, and `done`. The frontend does not select a legacy protocol by conversation type or feature flag. Cancellation always uses the scheduler turn id and reconciles the returned trace.
+Every conversation emits scheduler events such as `turn_started`, `moderator_started`, `speaker_selected`, dispatch events, terminal events, and `done`. The frontend does not select a legacy protocol by conversation type or feature flag. Cancellation always uses the scheduler turn id and reconciles the returned trace.
 
 `turn_timeout_seconds` currently limits moderator calls only. Agent provider streams do not yet have a server-side execution timeout.

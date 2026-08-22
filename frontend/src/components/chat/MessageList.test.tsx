@@ -135,6 +135,7 @@ describe('MessageList scheduler summary integration', () => {
       status: 'active',
       turn_id: 'turn-summary',
       scheduler_status: 'running',
+      moderator_active: false,
       terminal_reason: null,
       criticalSummaries: [
         {
@@ -242,6 +243,7 @@ describe('MessageList scheduler summary integration', () => {
       status: 'active',
       turn_id: 'turn-live',
       scheduler_status: 'running',
+      moderator_active: false,
       terminal_reason: null,
       criticalSummaries: [
         {

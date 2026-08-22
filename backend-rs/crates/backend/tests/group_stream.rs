@@ -4622,6 +4622,13 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
     assert!(events.iter().any(|event| {
         event["kind"] == "turn_started" && event["payload"]["budget"]["unbounded"] == true
     }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["kind"] == "moderator_started")
+            .count(),
+        3
+    );
     assert!(events.iter().any(|event| {
         event["kind"] == "turn_completed" && event["payload"]["reason"] == "moderator_finished"
     }));
@@ -4697,7 +4704,7 @@ async fn moderator_sole_legal_candidate_skips_provider_request() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let _ = stream_events(
+    let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
         &token,
@@ -4706,6 +4713,9 @@ async fn moderator_sole_legal_candidate_skips_provider_request() {
     .await;
 
     assert!(moderator_requests.lock().await.is_empty());
+    assert!(events
+        .iter()
+        .all(|event| event["kind"] != "moderator_started"));
     assert_eq!(
         only_dispatch(&state, &group).await,
         (alice, "deterministic_order".to_owned())

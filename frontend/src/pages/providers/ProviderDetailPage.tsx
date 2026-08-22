@@ -12,9 +12,11 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Field, FieldGrid } from '@/components/ui/field'
 import { PageState } from '@/components/ui/page-state'
+import { DetailSkeleton } from '@/components/ui/skeleton'
 import { Section } from '@/components/ui/section'
 import { useDeleteProvider, useProvider } from '@/hooks/useProviders'
 import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { formatNumber } from '@/lib/format'
 import type { Language } from '@/i18n'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
@@ -27,11 +29,13 @@ export function ProviderDetailPage() {
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const saveReady = useEditSaveGuard(editing)
+  useUnsavedChangesGuard(editing && dirty)
 
   if (provider.isLoading) {
-    return <PageState variant="loading" title={t('providers:detail.loading')} />
+    return <DetailSkeleton label={t('providers:detail.loading')} />
   }
   if (provider.error) {
     return (
@@ -71,8 +75,12 @@ export function ProviderDetailPage() {
       >
         <EditProviderForm
           provider={p}
+          onDirtyChange={setDirty}
           onSavingChange={setSaving}
-          onSaved={() => setEditing(false)}
+          onSaved={() => {
+            setDirty(false)
+            setEditing(false)
+          }}
         />
       </DetailShell>
     )
@@ -89,6 +97,7 @@ export function ProviderDetailPage() {
             size="sm"
             onClick={() => {
               setSaving(false)
+              setDirty(false)
               setEditing(true)
             }}
           >

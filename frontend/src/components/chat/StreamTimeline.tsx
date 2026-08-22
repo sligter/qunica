@@ -585,7 +585,9 @@ export function StreamTimeline({
   const blocks = buildBlocks(run.events, t('messages.agent'))
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
-    if (run.turn_id && moderatorEnabled) return <SchedulerWaiting since={run.created_at} />
+    if (run.moderator_active && moderatorEnabled) {
+      return <SchedulerWaiting since={run.updated_at} />
+    }
     return (
       <div className="flex min-w-0 w-full gap-2 px-3 py-2.5">
         <AgentAvatar
@@ -609,8 +611,7 @@ export function StreamTimeline({
   }
   const schedulerWaiting = run.status === 'active'
     && moderatorEnabled
-    && Boolean(run.turn_id)
-    && run.scheduler_status !== 'waiting_for_user'
+    && run.moderator_active
     && blocks.every((block) => block.kind === 'notice' || blockStatus(block) === null)
   return (
     <div className="flex w-full flex-col">
