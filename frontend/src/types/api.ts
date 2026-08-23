@@ -311,6 +311,8 @@ export interface AppActionRead {
 export interface AppActionList {
   items: AppActionRead[]
   has_more: boolean
+  /** Rows matching the filters, ignoring the page window. */
+  total: number
 }
 
 export interface ContextUsage {
@@ -712,12 +714,21 @@ export type Appearance = 'light' | 'dark' | 'system'
 /** Which interpreter the app starts for shell tools and integrated terminals. */
 export type ShellPreference = 'auto' | 'powershell' | 'bash' | 'cmd'
 export type Language = 'zh-CN' | 'en-US'
+/**
+ * What the composer does with a message typed while a reply is still running.
+ *
+ * `instant` sends it straight away, so it lands inside the turn in flight and
+ * steers it. `queue` holds it until that reply finishes and then sends it as
+ * its own turn.
+ */
+export type ReplyInsertMode = 'instant' | 'queue'
 
 export interface SystemSettingsRead {
   id: string
   owner_id: string
   appearance: Appearance
   language: Language
+  reply_insert_mode: ReplyInsertMode
   assistant_enabled: boolean
   assistant_auto_approve: boolean
   group_workspace_root: string | null
@@ -744,6 +755,7 @@ export interface SystemSettingsRead {
 export interface SystemSettingsUpdate {
   appearance?: Appearance | null
   language?: Language | null
+  reply_insert_mode?: ReplyInsertMode | null
   assistant_enabled?: boolean | null
   assistant_auto_approve?: boolean | null
   group_workspace_root?: string | null

@@ -70,6 +70,48 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     )
 }
 
+/// A fake ACP agent that reports its context occupancy twice in one turn.
+///
+/// `usage_update` is a gauge, so a turn that makes two model calls ends on the
+/// second reading — which is what the meter should show and emphatically not
+/// what the turn cost.
+#[cfg(windows)]
+fn write_reporting_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
+    let script = root.join("reporting-fake-acp.ps1");
+    std::fs::write(
+        &script,
+        r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq "initialize") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/new") {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ sessionId = "s1" } } | ConvertTo-Json -Compress
+  } elseif ($request.method -eq "session/prompt") {
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "usage_update"; used = 60000; size = 200000 } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "agent_message_chunk"; content = @{ type = "text"; text = "ACP hello" } } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "usage_update"; used = 90000; size = 200000 } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{ stopReason = "end_turn" } } | ConvertTo-Json -Compress
+    break
+  } else {
+    @{ jsonrpc = "2.0"; id = $request.id; result = @{} } | ConvertTo-Json -Compress
+  }
+}
+"#,
+    )
+    .unwrap();
+    (
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.to_string_lossy().to_string(),
+        ],
+    )
+}
+
 #[cfg(windows)]
 fn write_failing_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
     let script = root.join("failing-fake-acp.ps1");
@@ -120,6 +162,43 @@ while IFS= read -r line; do
       ;;
     *'"method":"session/prompt"'*)
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ACP hello"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+      break
+      ;;
+    *)
+      printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    ("sh".to_string(), vec![script.to_string_lossy().to_string()])
+}
+
+/// A fake ACP agent that reports its context occupancy twice in one turn.
+///
+/// `usage_update` is a gauge, so a turn that makes two model calls ends on the
+/// second reading — which is what the meter should show and emphatically not
+/// what the turn cost.
+#[cfg(not(windows))]
+fn write_reporting_fake_acp_agent(root: &std::path::Path) -> (String, Vec<String>) {
+    let script = root.join("reporting-fake-acp.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}'
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":60000,"size":200000}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ACP hello"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":90000,"size":200000}}}'
       printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
       break
       ;;
@@ -3735,6 +3814,58 @@ async fn group_stream_continues_past_24_tool_rounds() {
     let messages = payloads_of_kind(&events, StreamEventKind::AgentMessage);
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["content"], "Finished after 25 tool rounds.");
+}
+
+/// Every `usage_update` in an ACP turn is billed, not just the last one.
+///
+/// The runtime reports how full the window is after each model call, so a turn
+/// that made several ends on one occupancy figure. Recording that figure alone
+/// billed the turn for its last request and dropped the rest, which is what put
+/// the token page far below what the provider charged.
+#[tokio::test]
+async fn group_stream_bills_every_acp_usage_update_once() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "group-acp-usage@example.com").await;
+    let owner = owner_id(&state, "group-acp-usage@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let (command, args) = write_reporting_fake_acp_agent(root.path());
+    let agent_id = seed_acp_agent(
+        &state,
+        &owner,
+        &workspace,
+        &group,
+        "ACP",
+        json!({ "command": command, "args": args, "timeout_seconds": 10 }),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "run acp"}),
+    )
+    .await;
+
+    // The meter the user watches stays a gauge: the last reading, not the sum,
+    // because the sum would show a window more than full.
+    let usage = payloads_of_kind(&events, StreamEventKind::ContextUsage);
+    assert_eq!(usage.len(), 2);
+    let last = &usage[1]["context_usage"];
+    assert_eq!(last["total_tokens"], 90_000);
+    assert_eq!(last["context_window_tokens"], 200_000);
+
+    // The ledger is one row per turn holding what the turn cost.
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT input_tokens, total_tokens FROM token_usage_records WHERE agent_id = ?",
+    )
+    .bind(&agent_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![(150_000, 150_000)]);
 }
 
 #[tokio::test]

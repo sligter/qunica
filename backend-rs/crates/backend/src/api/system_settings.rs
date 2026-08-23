@@ -22,9 +22,10 @@ const DEFAULT_VIDEO_STATUS_ENDPOINT: &str = "/v1/videos/{id}";
 const DEFAULT_VIDEO_CONTENT_ENDPOINT: &str = "/v1/videos/{id}/content";
 const DEFAULT_APPEARANCE: &str = "system";
 const DEFAULT_LANGUAGE: &str = "en-US";
+const DEFAULT_REPLY_INSERT_MODE: &str = "instant";
 
 const SETTINGS_COLUMNS: &str =
-    "id, owner_id, appearance, language, assistant_enabled, assistant_auto_approve, group_workspace_root, shell_preference, web_search_provider, \
+    "id, owner_id, appearance, language, reply_insert_mode, assistant_enabled, assistant_auto_approve, group_workspace_root, shell_preference, web_search_provider, \
      tavily_api_key, tavily_search_url, tavily_max_results, tavily_search_depth, \
      tavily_include_answer, tavily_include_raw_content, media_base_url, media_api_key, \
      image_generation_model, image_generation_endpoint, video_generation_model, \
@@ -36,6 +37,8 @@ pub struct UpdateRequest {
     appearance: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     language: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    reply_insert_mode: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     assistant_enabled: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -82,6 +85,7 @@ pub struct SettingsResponse {
     owner_id: String,
     appearance: String,
     language: String,
+    reply_insert_mode: String,
     assistant_enabled: bool,
     assistant_auto_approve: bool,
     group_workspace_root: Option<String>,
@@ -111,6 +115,7 @@ struct SettingsRow {
     owner_id: String,
     appearance: String,
     language: String,
+    reply_insert_mode: String,
     assistant_enabled: i64,
     assistant_auto_approve: i64,
     group_workspace_root: Option<String>,
@@ -141,6 +146,7 @@ impl From<SettingsRow> for SettingsResponse {
             owner_id: row.owner_id,
             appearance: row.appearance,
             language: row.language,
+            reply_insert_mode: row.reply_insert_mode,
             assistant_enabled: row.assistant_enabled != 0,
             assistant_auto_approve: row.assistant_auto_approve != 0,
             group_workspace_root: row.group_workspace_root,
@@ -259,6 +265,10 @@ pub async fn update(
         Some(ref value) => normalize_language(value.as_deref())?,
         None => existing.language.clone(),
     };
+    let reply_insert_mode = match body.reply_insert_mode {
+        Some(ref value) => normalize_reply_insert_mode(value.as_deref())?,
+        None => existing.reply_insert_mode.clone(),
+    };
     let assistant_enabled = match body.assistant_enabled {
         Some(Some(value)) => value,
         Some(None) => true,
@@ -363,7 +373,7 @@ pub async fn update(
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE system_settings SET \
-         appearance = ?, language = ?, assistant_enabled = ?, assistant_auto_approve = ?, group_workspace_root = ?, shell_preference = ?, web_search_provider = ?, tavily_api_key = ?, \
+         appearance = ?, language = ?, reply_insert_mode = ?, assistant_enabled = ?, assistant_auto_approve = ?, group_workspace_root = ?, shell_preference = ?, web_search_provider = ?, tavily_api_key = ?, \
          tavily_search_url = ?, tavily_max_results = ?, tavily_search_depth = ?, \
          tavily_include_answer = ?, tavily_include_raw_content = ?, media_base_url = ?, media_api_key = ?, \
          image_generation_model = ?, image_generation_endpoint = ?, video_generation_model = ?, \
@@ -372,6 +382,7 @@ pub async fn update(
     )
     .bind(&appearance)
     .bind(&language)
+    .bind(&reply_insert_mode)
     .bind(if assistant_enabled { 1_i64 } else { 0_i64 })
     .bind(if assistant_auto_approve { 1_i64 } else { 0_i64 })
     .bind(&group_workspace_root)
@@ -507,6 +518,25 @@ fn normalize_language(raw: Option<&str>) -> Result<String, ApiError> {
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_input",
             "language must be 'zh-CN' or 'en-US'",
+        )),
+    }
+}
+
+/// What the composer does with a message typed while a reply is still running.
+///
+/// Unknown values are refused rather than coerced: the two modes send the
+/// message to different turns, so silently picking one would answer a question
+/// the user did not ask.
+fn normalize_reply_insert_mode(raw: Option<&str>) -> Result<String, ApiError> {
+    let mode = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_REPLY_INSERT_MODE)
+        .to_lowercase();
+    match mode.as_str() {
+        "instant" | "queue" => Ok(mode),
+        _ => Err(ApiError::invalid_input(
+            "reply_insert_mode must be 'instant' or 'queue'",
         )),
     }
 }

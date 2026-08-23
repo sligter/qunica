@@ -3,17 +3,27 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson } from '@/lib/api-v2/client'
 import { queryKeysForKind } from '@/lib/appActions'
 import { useAuthStore } from '@/stores/authStore'
-import type { AppActionList, AppActionRead } from '@/types/api'
+import type { AppActionList, AppActionRead, AppActionStatus } from '@/types/api'
 
 export const appActionsQueryKey = ['app-actions'] as const
 
-export function useAppActions(options: { limit?: number; skip?: number } = {}) {
+export interface AppActionListOptions {
+  limit?: number
+  skip?: number
+  /** Free text matched against summary, target kind, and action. */
+  q?: string
+  status?: AppActionStatus
+}
+
+export function useAppActions(options: AppActionListOptions = {}) {
   const token = useAuthStore((state) => state.token)
-  const { limit = 50, skip = 0 } = options
+  const { limit = 50, skip = 0, q, status } = options
   return useQuery({
-    queryKey: [...appActionsQueryKey, limit, skip],
+    queryKey: [...appActionsQueryKey, { limit, skip, q: q ?? null, status: status ?? null }],
     queryFn: () => {
       const search = new URLSearchParams({ limit: String(limit), skip: String(skip) })
+      if (q) search.set('q', q)
+      if (status) search.set('status', status)
       return fetchJson<AppActionList>(`/app-actions?${search.toString()}`, { token })
     },
     enabled: token !== null,

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { I18nextProvider } from 'react-i18next'
@@ -37,6 +37,7 @@ vi.mock('@/components/chat/Composer', () => ({
     hint?: string
     isStreaming?: boolean
     onCancel?: () => void
+    onSend?: (input: string) => void | Promise<void>
     placeholder?: string
     scope?: 'groups' | 'direct-chats'
     workspaceId?: string | null
@@ -47,7 +48,14 @@ vi.mock('@/components/chat/Composer', () => ({
       <div>
         composer:{String(props.allowMentions)}:{props.disabledReason ?? 'enabled'}
         <span data-testid="composer-instance">{mountedConversationId}</span>
-        <input aria-label="Message" />
+        <input
+          aria-label="Message"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            void props.onSend?.((event.target as HTMLInputElement).value)
+          }}
+        />
         <textarea aria-label="Message draft" />
         <select aria-label="Message mode"><option>default</option></select>
         <div aria-label="Rich message" contentEditable />
@@ -109,8 +117,20 @@ vi.mock('@/hooks/usePersistentPaneWidth', () => ({
     resizeBy: vi.fn(),
   }),
 }))
+const systemSettingsMocks = vi.hoisted(() => ({ replyInsertMode: 'instant' as string }))
+vi.mock('@/hooks/useSystemSettings', () => ({
+  useSystemSettings: () => ({
+    data: { reply_insert_mode: systemSettingsMocks.replyInsertMode },
+  }),
+}))
+const sendStreamMocks = vi.hoisted(() => ({ isStreaming: false, send: vi.fn() }))
 vi.mock('@/hooks/useSendMessageStream', () => ({
-  useSendMessageStream: () => ({ error: null, isStreaming: false, send: vi.fn(), cancel: vi.fn() }),
+  useSendMessageStream: () => ({
+    error: null,
+    isStreaming: sendStreamMocks.isStreaming,
+    send: sendStreamMocks.send,
+    cancel: vi.fn(),
+  }),
 }))
 vi.mock('@/stores/fileNavStore', () => ({ useFileNavStore: () => null }))
 vi.mock('@/stores/messageStore', () => ({
@@ -196,6 +216,9 @@ describe('ConversationChatView', () => {
     messageStoreMocks.clearGroupMessages.mockReset()
     messageStoreMocks.clearWarnings.mockReset()
     messageStoreMocks.activeResumesByMessageId = {}
+    systemSettingsMocks.replyInsertMode = 'instant'
+    sendStreamMocks.isStreaming = false
+    sendStreamMocks.send.mockReset().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
   })
 
@@ -417,5 +440,52 @@ describe('ConversationChatView', () => {
 
     expect(event.defaultPrevented).toBe(false)
     expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
+  })
+
+  it('queues a message sent mid-reply and releases it when the stream ends', async () => {
+    systemSettingsMocks.replyInsertMode = 'queue'
+    sendStreamMocks.isStreaming = true
+    const user = userEvent.setup()
+    const view = renderConversation()
+
+    await user.type(screen.getByLabelText('Message'), 'next question{Enter}')
+    // The send never reached the wire while the reply is running.
+    expect(sendStreamMocks.send).not.toHaveBeenCalled()
+    expect(screen.getByText(/1 message queued/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Clear queue' })).toBeVisible()
+
+    // The queue drains on its own once the current reply finishes. Flipping the
+    // mock alone does not re-render; a rerender stands in for the stream ending.
+    sendStreamMocks.isStreaming = false
+    view.rerender(conversationElement())
+    await waitFor(() => expect(sendStreamMocks.send).toHaveBeenCalledWith('next question'))
+    expect(screen.queryByText(/message queued/)).not.toBeInTheDocument()
+  })
+
+  it('sends immediately while streaming in the default instant mode', async () => {
+    systemSettingsMocks.replyInsertMode = 'instant'
+    sendStreamMocks.isStreaming = true
+    const user = userEvent.setup()
+    renderConversation()
+
+    await user.type(screen.getByLabelText('Message'), 'steer now{Enter}')
+    expect(sendStreamMocks.send).toHaveBeenCalledWith('steer now')
+    expect(screen.queryByText(/message queued/)).not.toBeInTheDocument()
+  })
+
+  it('clears queued messages without sending them', async () => {
+    systemSettingsMocks.replyInsertMode = 'queue'
+    sendStreamMocks.isStreaming = true
+    const user = userEvent.setup()
+    const view = renderConversation()
+
+    await user.type(screen.getByLabelText('Message'), 'hold this{Enter}')
+    await user.click(screen.getByRole('button', { name: 'Clear queue' }))
+
+    expect(screen.queryByText(/message queued/)).not.toBeInTheDocument()
+    sendStreamMocks.isStreaming = false
+    view.rerender(conversationElement())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sendStreamMocks.send).not.toHaveBeenCalled()
   })
 })

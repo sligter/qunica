@@ -43,13 +43,36 @@ pub struct AppActionListQuery {
     limit: usize,
     #[serde(default)]
     skip: usize,
+    /// Free text matched against the summary, the target kind, and the action.
+    #[serde(default)]
+    q: Option<String>,
+    /// One status to keep, or absent for every status.
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AppActionListResponse {
     items: Vec<AppActionResponse>,
     has_more: bool,
+    /// Rows matching the filters, ignoring the page window.
+    ///
+    /// A history worth searching is one worth knowing the size of: without it
+    /// the pager can only say "there is more", never how much more.
+    total: i64,
 }
+
+const MAX_APP_ACTION_SEARCH_CHARS: usize = 200;
+
+/// Statuses a row can hold, and therefore the only values worth filtering on.
+const APP_ACTION_STATUSES: [&str; 6] = [
+    "pending",
+    "approved",
+    "applied",
+    "rejected",
+    "failed",
+    "expired",
+];
 
 fn default_app_action_limit() -> usize {
     DEFAULT_APP_ACTION_LIMIT
@@ -103,21 +126,87 @@ pub async fn list(
             "app action pagination is out of bounds",
         ));
     }
+    let search = normalize_search(query.q.as_deref())?;
+    let status = normalize_status_filter(query.status.as_deref())?;
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let mut items = sqlx::query_as::<_, AppActionResponse>(
-        "SELECT id, conversation_id, target_kind, action, target_id, summary, status, \
-                result_json, created_at, resolved_at \
-         FROM app_actions WHERE owner_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-    )
+
+    // `LIKE` with an escaped pattern rather than FTS: the history is a page of
+    // recent proposals, not a corpus, and an index would cost more to keep than
+    // the scan it saves.
+    let predicate = "WHERE owner_id = ? \
+         AND (? IS NULL OR status = ?) \
+         AND (? IS NULL OR summary LIKE ? ESCAPE '\\' OR target_kind LIKE ? ESCAPE '\\' \
+              OR action LIKE ? ESCAPE '\\')";
+    let pattern = search.map(|value| format!("%{value}%"));
+
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM app_actions {predicate}"
+    ))
     .bind(&owner_id)
-    .bind((query.limit + 1) as i64)
-    .bind(query.skip as i64)
-    .fetch_all(state.db.pool())
+    .bind(&status)
+    .bind(&status)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_one(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("database error"))?;
+
+    let sql = format!(
+        "SELECT id, conversation_id, target_kind, action, target_id, summary, status, \
+                result_json, created_at, resolved_at \
+         FROM app_actions {predicate} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+    );
+    let mut items = sqlx::query_as::<_, AppActionResponse>(&sql)
+        .bind(&owner_id)
+        .bind(&status)
+        .bind(&status)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind((query.limit + 1) as i64)
+        .bind(query.skip as i64)
+        .fetch_all(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
     let has_more = items.len() > query.limit;
     items.truncate(query.limit);
-    Ok(Json(AppActionListResponse { items, has_more }))
+    Ok(Json(AppActionListResponse {
+        items,
+        has_more,
+        total,
+    }))
+}
+
+/// Escape the wildcards a person types so a summary containing `%` is findable
+/// rather than a pattern that matches everything.
+fn normalize_search(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.chars().count() > MAX_APP_ACTION_SEARCH_CHARS {
+        return Err(ApiError::invalid_input(format!(
+            "search must be at most {MAX_APP_ACTION_SEARCH_CHARS} characters"
+        )));
+    }
+    Ok(Some(
+        value
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_"),
+    ))
+}
+
+fn normalize_status_filter(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !APP_ACTION_STATUSES.contains(&value) {
+        return Err(ApiError::invalid_input("unknown app action status"));
+    }
+    Ok(Some(value.to_string()))
 }
 
 pub async fn delete(

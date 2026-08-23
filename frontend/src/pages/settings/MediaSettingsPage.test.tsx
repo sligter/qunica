@@ -16,6 +16,7 @@ const settings: SystemSettingsRead = {
   owner_id: 'user-1',
   appearance: 'system',
   language: 'en-US',
+  reply_insert_mode: 'instant',
   assistant_enabled: true,
   assistant_auto_approve: false,
   group_workspace_root: null,

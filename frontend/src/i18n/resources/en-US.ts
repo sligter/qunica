@@ -261,9 +261,9 @@ export const enUS = {
       cleanupError: 'Terminal cleanup failed: {{message}}',
     },
     composer: {
-      placeholder: 'Message your agents…', assistantPlaceholder: 'Tell the assistant what you want to get done…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', uploadUnsupportedTitle: 'External file uploads are not supported in direct chats', dropZone: 'Message composer file drop area', showMore: 'Show {{count}} more agents', closeAgents: 'Close agent list',
+      placeholder: 'Message your agents…', assistantPlaceholder: 'Tell the assistant what you want to get done…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', uploadUnsupportedTitle: 'External file uploads are not supported in direct chats', dropZone: 'Message composer file drop area', showMore: 'Show {{count}} more agents', mentionTitle: 'Insert @{{name}} into the composer', membersList: 'Group members', closeAgents: 'Close agent list',
       effort: { label: 'Thinking effort', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
-      drop: { ready: 'Drop workspace files to attach them or folders to insert their paths.', conversationReady: 'Drop to insert this conversation ID.', conversationInserted: 'Conversation ID inserted.', fileAdded_one: 'Workspace file added.', fileAdded_other: '{{count}} workspace files added.', directoryInserted_one: 'Folder path inserted.', directoryInserted_other: '{{count}} folder paths inserted.', unsupported: 'This dropped item is not supported.', uploadUnsupported: 'External file uploads are not supported in direct chats.', noWorkspace: 'This conversation has no local workspace.', unreadable: 'Unable to read that workspace item.', limitReached: 'You can attach up to {{count}} files.' },
+      drop: { ready: 'Drop workspace files to attach them or folders to insert their paths.', conversationReady: 'Drop to insert this conversation ID.', conversationInserted: 'Conversation ID inserted.', fileAdded_one: 'Workspace file added.', fileAdded_other: '{{count}} workspace files added.', directoryInserted_one: 'Folder path inserted.', directoryInserted_other: '{{count}} folder paths inserted.', unsupported: 'This dropped item is not supported.', uploadUnsupported: 'External file uploads are not supported in direct chats.', noWorkspace: 'This conversation has no local workspace.', unreadable: 'Unable to read that workspace item.', limitReached: 'You can attach up to {{count}} files.' }, queued_one: '{{count}} message queued — it sends when the current reply finishes', queued_other: '{{count}} messages queued — they send when the current reply finishes', clearQueued: 'Clear queue',
     },
     attachments: { uploading: 'Uploading…', uploaded: 'Uploaded', failed: 'Upload failed', workspace: 'Workspace file', unknownType: 'Unknown type', retry: 'Retry upload', remove: 'Remove attachment', open: 'Open attachment', retryNamed: 'Retry upload {{name}}', removeNamed: 'Remove {{name}}', openNamed: 'Open {{name}}', previewNamed: 'Preview {{name}}' },
     messages: {
@@ -606,6 +606,15 @@ export const enUS = {
       openLink: 'Open the form',
       prefillHint: 'This step needs details only you can provide. I filled in everything else.',
       nothingChangedYet: 'Nothing changes until you confirm.',
+      search: 'Search history',
+      searchPlaceholder: 'Search summaries, kinds, actions…',
+      statusFilter: 'Filter by status',
+      allStatuses: 'All statuses',
+      clearFilters: 'Clear filters',
+      noMatches: 'No matching entries. Try loosening the filters.',
+      total_one: '{{formattedCount}} entry',
+      total_other: '{{formattedCount}} entries',
+      pageOf: 'Page {{page}} of {{count}}',
       pagination: 'Assistant action history pagination',
       previous: 'Previous',
       next: 'Next',
@@ -693,6 +702,20 @@ export const enUS = {
     chinese: '中文',
     english: 'English',
     languageDescription: 'Choose the interface language for this account. Saved instantly.',
+    composer: {
+      title: 'Composer',
+      replyInsertMode: 'Messages sent during a reply',
+      replyInsertModeDescription:
+        'What happens to a message you send while the previous reply is still being written. Saved instantly.',
+      replyInsertModes: {
+        instant: 'Insert now',
+        queue: 'Queue',
+      },
+      replyInsertModeHints: {
+        instant: 'The message goes out immediately and joins the turn in flight, steering the reply being written.',
+        queue: 'The message waits, then sends itself as a new turn once the current reply finishes.',
+      },
+    },
     assistant: {
       title: 'Assistant',
       enabled: 'Enable assistant',

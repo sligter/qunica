@@ -833,9 +833,15 @@ export function Composer({
               <div className="relative min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1 px-1 text-2xs text-muted-foreground">
                   {groupAgents.slice(0, 3).map((agent) => (
-                    <span key={agent.id} className="truncate whitespace-nowrap">
+                    <button
+                      key={agent.id}
+                      type="button"
+                      className="truncate whitespace-nowrap rounded hover:text-foreground"
+                      title={t('composer.mentionTitle', { name: agent.display_name })}
+                      onClick={() => insertTextAtCursor(`@${agent.display_name}`)}
+                    >
                       @{agent.display_name}
-                    </span>
+                    </button>
                   ))}
                   {groupAgents.length > 3 ? (
                     <Button
@@ -860,11 +866,22 @@ export function Composer({
                       aria-label={t('composer.closeAgents')}
                       onClick={() => setAgentSummaryOpen(false)}
                     />
-                    <div className="absolute bottom-full left-0 z-50 mb-2 max-h-48 w-64 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md">
+                    <div
+                      role="listbox"
+                      aria-label={t('composer.membersList')}
+                      className="absolute bottom-full left-0 z-50 mb-2 max-h-48 w-64 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md"
+                    >
                       {groupAgents.map((agent) => (
-                        <div key={agent.id} className="truncate px-2 py-1.5 text-xs text-foreground">
+                        <button
+                          key={agent.id}
+                          type="button"
+                          role="option"
+                          className="block w-full truncate rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+                          title={t('composer.mentionTitle', { name: agent.display_name })}
+                          onClick={() => insertTextAtCursor(`@${agent.display_name}`)}
+                        >
                           @{agent.display_name}
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </>

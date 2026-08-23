@@ -27,6 +27,11 @@ export interface ConfirmDialogProps {
 /**
  * Shared confirmation dialog replacing native confirm(). Keeps the dialog
  * open while an async onConfirm is running, then closes on success.
+ *
+ * Escape and Cancel stay live while the work is in flight. The dialog is modal,
+ * so refusing to close it while a request hangs takes the whole app down with
+ * it — and a request that is already on the wire is not undone by holding the
+ * user hostage to its answer.
  */
 export function ConfirmDialog({
   open,
@@ -43,7 +48,6 @@ export function ConfirmDialog({
   const [error, setError] = useState<string | null>(null)
 
   const handleOpenChange = (next: boolean) => {
-    if (pending) return
     if (!next) setError(null)
     onOpenChange(next)
   }
@@ -76,7 +80,7 @@ export function ConfirmDialog({
           </p>
         ) : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>
+          <AlertDialogCancel>
             {cancelLabel ?? t('actions.cancel')}
           </AlertDialogCancel>
           <Button

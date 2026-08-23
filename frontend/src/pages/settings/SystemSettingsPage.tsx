@@ -20,6 +20,7 @@ import { writeLanguageMirror } from '@/i18n'
 import type {
   Appearance,
   Language,
+  ReplyInsertMode,
   ShellPreference,
   SystemSettingsUpdate,
   TavilySearchDepth,
@@ -36,6 +37,7 @@ const PICKER_SCOPE = 'group-workspace-root'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
 const LANGUAGE_OPTIONS: Language[] = ['zh-CN', 'en-US']
 const SHELL_OPTIONS: ShellPreference[] = ['auto', 'powershell', 'bash', 'cmd']
+const REPLY_INSERT_MODES: ReplyInsertMode[] = ['instant', 'queue']
 
 export function SystemSettingsPage() {
   const { t, i18n } = useTranslation('settings')
@@ -46,6 +48,7 @@ export function SystemSettingsPage() {
   const [appearance, setAppearance] = useState<Appearance>('system')
   const [language, setLanguage] = useState<Language>('en-US')
   const [assistantEnabled, setAssistantEnabled] = useState(true)
+  const [replyInsertMode, setReplyInsertMode] = useState<ReplyInsertMode>('instant')
   const [replyNotifications, setReplyNotifications] = useState(readReplyNotificationsEnabled)
   const [notificationError, setNotificationError] = useState<string | null>(null)
   const [notificationTested, setNotificationTested] = useState(false)
@@ -64,6 +67,7 @@ export function SystemSettingsPage() {
   const [languageError, setLanguageError] = useState<string | null>(null)
   const [assistantError, setAssistantError] = useState<string | null>(null)
   const [shellError, setShellError] = useState<string | null>(null)
+  const [replyInsertError, setReplyInsertError] = useState<string | null>(null)
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
@@ -71,6 +75,7 @@ export function SystemSettingsPage() {
   const serverAppearance = settings.data?.appearance
   const serverLanguage = settings.data?.language
   const serverAssistantEnabled = settings.data?.assistant_enabled
+  const serverReplyInsertMode = settings.data?.reply_insert_mode
   const serverRoot = settings.data?.group_workspace_root ?? ''
   const serverShellPreference = settings.data?.shell_preference
   const serverTavilyUrl = settings.data?.tavily_search_url ?? 'https://api.tavily.com/search'
@@ -88,6 +93,9 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (serverAssistantEnabled !== undefined) setAssistantEnabled(serverAssistantEnabled)
   }, [serverAssistantEnabled])
+  useEffect(() => {
+    if (serverReplyInsertMode !== undefined) setReplyInsertMode(serverReplyInsertMode)
+  }, [serverReplyInsertMode])
   useEffect(() => {
     if (loaded) setRoot(serverRoot)
   }, [loaded, serverRoot])
@@ -159,8 +167,20 @@ export function SystemSettingsPage() {
     }
   }
 
-  const onRootChange = (next: string) => {
-    setRoot(next)
+  const onReplyInsertModeChange = async (next: ReplyInsertMode) => {
+    if (next === replyInsertMode || update.isPending) return
+    const previous = replyInsertMode
+    setReplyInsertMode(next)
+    setReplyInsertError(null)
+    try {
+      await update.mutateAsync({ reply_insert_mode: next })
+    } catch (err) {
+      setReplyInsertMode(previous)
+      setReplyInsertError(errorMessage(err, t('errors.network')))
+    }
+  }
+
+  const onRootChange = (next: string) => {    setRoot(next)
     saveRememberedPrefix(PICKER_SCOPE, next)
   }
 
@@ -417,6 +437,43 @@ export function SystemSettingsPage() {
           {languageError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
               {languageError}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        <SettingsSection title={t('composer.title')}>
+          <SettingsRow
+            label={t('composer.replyInsertMode')}
+            description={t('composer.replyInsertModeDescription')}
+          >
+            <div
+              className="inline-flex rounded-md border border-border bg-background p-1"
+              role="radiogroup"
+              aria-label={t('composer.replyInsertMode')}
+            >
+              {REPLY_INSERT_MODES.map((option) => (
+                <Button
+                  key={option}
+                  type="button"
+                  variant={replyInsertMode === option ? 'default' : 'ghost'}
+                  size="sm"
+                  className="min-w-24"
+                  role="radio"
+                  aria-checked={replyInsertMode === option}
+                  disabled={update.isPending || settings.isLoading}
+                  onClick={() => void onReplyInsertModeChange(option)}
+                >
+                  {t(`composer.replyInsertModes.${option}`)}
+                </Button>
+              ))}
+            </div>
+          </SettingsRow>
+          <p className="pb-1 text-xs text-muted-foreground">
+            {t(`composer.replyInsertModeHints.${replyInsertMode}`)}
+          </p>
+          {replyInsertError ? (
+            <p className="py-2 text-sm text-destructive" role="alert">
+              {replyInsertError}
             </p>
           ) : null}
         </SettingsSection>

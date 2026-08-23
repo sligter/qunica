@@ -11,6 +11,17 @@ export interface TokenUsageFilters {
   provider_id?: string
   model?: string
   agent_id?: string
+  /** Minutes east of UTC the from/to dates are expressed in. */
+  tz_offset_minutes?: number
+}
+
+/**
+ * The viewer's UTC offset, so the backend buckets records by the days the user
+ * actually lives in. Records are stored with UTC timestamps; without this a
+ * UTC+8 user's "today" opened missing everything before 08:00 local.
+ */
+function localTzOffsetMinutes(): number {
+  return -new Date().getTimezoneOffset()
 }
 
 export function useTokenUsage(filters: TokenUsageFilters, enabled = true) {
@@ -19,6 +30,7 @@ export function useTokenUsage(filters: TokenUsageFilters, enabled = true) {
   Object.entries(filters).forEach(([key, value]) => {
     if (value) query.set(key, value)
   })
+  query.set('tz_offset_minutes', String(localTzOffsetMinutes()))
 
   return useQuery({
     queryKey: ['token-usage', filters],

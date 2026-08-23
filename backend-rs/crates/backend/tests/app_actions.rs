@@ -1200,6 +1200,7 @@ async fn the_action_list_shows_history_newest_first() {
     let (status, list) = send(&app, authed("GET", "/api/v2/app-actions?limit=1", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["has_more"], true);
+    assert_eq!(list["total"], 2);
     let items = list["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     for item in items {
@@ -1216,6 +1217,69 @@ async fn the_action_list_shows_history_newest_first() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["has_more"], false);
     assert_eq!(list["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_action_list_can_be_searched_and_filtered_by_status() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "search-history@example.com").await;
+    let owner = owner_id(&state, "search-history@example.com").await;
+    let executor = executor_for(&state, &owner);
+
+    for name in ["Ledger report", "Weather widget", "100% coverage"] {
+        executor
+            .execute(
+                "AppPropose",
+                json!({
+                    "target_kind": "skill",
+                    "action": "create",
+                    "payload": {"name": name, "body_markdown": "# Body"}
+                }),
+            )
+            .await;
+    }
+
+    let (status, list) = send(
+        &app,
+        authed("GET", "/api/v2/app-actions?q=weather", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["total"], 1);
+    assert!(list["items"][0]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("Weather widget")));
+
+    // A wildcard the user typed is a literal, not a match-everything pattern.
+    let (status, list) = send(&app, authed("GET", "/api/v2/app-actions?q=%25", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["total"], 1);
+
+    // Nothing has been resolved yet, so an applied filter finds none of them.
+    let (status, list) = send(
+        &app,
+        authed("GET", "/api/v2/app-actions?status=applied", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["total"], 0);
+    assert!(list["items"].as_array().unwrap().is_empty());
+
+    let (status, list) = send(
+        &app,
+        authed("GET", "/api/v2/app-actions?status=pending", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["total"], 3);
+
+    let (status, error) = send(
+        &app,
+        authed("GET", "/api/v2/app-actions?status=nonsense", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["error"]["code"], "invalid_input");
 }
 
 #[tokio::test]

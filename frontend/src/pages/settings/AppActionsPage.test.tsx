@@ -42,7 +42,7 @@ async function renderPage(
   response?: (path: string, options?: { method?: string }) => unknown,
 ) {
   if (response) fetchJson.mockImplementation(response)
-  else fetchJson.mockResolvedValue({ items: actions, has_more: hasMore })
+  else fetchJson.mockResolvedValue({ items: actions, has_more: hasMore, total: actions.length })
   const i18n = i18next.createInstance()
   await i18n.use(initReactI18next).init({
     lng: 'en-US',
@@ -112,17 +112,18 @@ describe('AppActionsPage', () => {
 
     await renderPage([first], true, (path: string) =>
       path.includes('skip=50')
-        ? { items: [second], has_more: false }
-        : { items: [first], has_more: true },
+        ? { items: [second], has_more: false, total: 51 }
+        : { items: [first], has_more: true, total: 51 },
     )
 
     expect(await screen.findByText('Create agent "First"')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Next' }))
-    await waitFor(() => expect(screen.getByText('Create agent "Second"')).toBeVisible())
-    expect(fetchJson).toHaveBeenCalledWith('/app-actions?limit=50&skip=50', expect.anything())
+    // The click fires the page-2 request; wait for its data to land rather than
+    // for the request alone, so a slow render cannot read as a missed click.
+    await screen.findByText('Create agent "Second"')
 
     await user.click(screen.getByRole('button', { name: 'Previous' }))
-    await waitFor(() => expect(screen.getByText('Create agent "First"')).toBeVisible())
+    await screen.findByText('Create agent "First"')
   })
 
   it('deletes a resolved history entry after confirmation', async () => {

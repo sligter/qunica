@@ -3743,6 +3743,17 @@ async fn run_acp_agent_turn(
     // Everything the agent said, kept only to size the fallback estimate below.
     let mut reasoning = String::new();
     let mut agent_reported_usage = false;
+    // What this turn has cost the token ledger so far.
+    //
+    // An ACP `usage_update` reports how full the context window is *right now*,
+    // not what the last request consumed — so a turn that made forty model
+    // calls still ends on a single occupancy figure. Recording that figure
+    // alone billed the turn for its last request and nothing else, which is why
+    // the ledger read far below what the provider charged. Each update is added
+    // instead, matching what `record_scheduled_usage` already counts against
+    // the turn budget, and the row is rewritten with the running total so an
+    // ACP turn stays one ledger entry rather than one per update.
+    let mut acp_ledger_tokens: i64 = 0;
     // Whether the model ran at all. A run can fail before the prompt is ever
     // delivered — a rejected `session/set_model`, say — and that turn cost
     // nothing, so it must not be estimated as though the prompt were consumed.
@@ -3847,9 +3858,19 @@ async fn run_acp_agent_turn(
                 last_was_reasoning = false;
                 agent_reported_usage = true;
                 let usage = acp_context_usage(&event.data);
-                persist_token_usage(&services.pool, &usage_record_id, &usage_dimensions, &usage)
-                    .await
-                    .map_err(StepErr::Db)?;
+                acp_ledger_tokens = acp_ledger_tokens
+                    .saturating_add(usage.total_tokens.unwrap_or(0).max(0));
+                persist_token_usage(
+                    &services.pool,
+                    &usage_record_id,
+                    &usage_dimensions,
+                    &acp_ledger_usage(acp_ledger_tokens),
+                )
+                .await
+                .map_err(StepErr::Db)?;
+                // The meter the user watches is the gauge itself, not the
+                // running total: it answers "how full is the window", which the
+                // sum would overstate the moment a second request lands.
                 let usage_json = context_usage_to_json(&usage);
                 turn.set_context_usage(usage_json.clone());
                 ctx.record_scheduled_usage(&usage_json);
@@ -3984,6 +4005,23 @@ fn acp_context_usage(data: &Value) -> ag_swarmer_domain::runtime::ContextUsage {
         output_reserve_tokens: None,
         ratio,
         source: ratio.map(|_| "provider".to_string()),
+    }
+}
+
+/// The ledger entry for an ACP turn that has consumed `total` tokens so far.
+///
+/// Carries no context window or ratio: this is a running cost, and dressing it
+/// up as an occupancy would render a meter that climbs past 100% on any turn
+/// with more than one model call.
+fn acp_ledger_usage(total: i64) -> ag_swarmer_domain::runtime::ContextUsage {
+    ag_swarmer_domain::runtime::ContextUsage {
+        input_tokens: Some(total),
+        output_tokens: None,
+        total_tokens: Some(total),
+        context_window_tokens: None,
+        output_reserve_tokens: None,
+        ratio: None,
+        source: Some("acp_usage_updates".to_string()),
     }
 }
 

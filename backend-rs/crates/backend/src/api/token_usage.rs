@@ -6,12 +6,15 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use time::{Date, Month};
+use time::{Date, Duration, Month};
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 
 const EXTERNAL_PROVIDER_ID: &str = "__external__";
 const MODERATOR_AGENT_ID: &str = "__moderator__";
+/// The widest real UTC offset, in minutes. Anything past it is a typo or an
+/// attempt to page in the whole ledger under the guise of a timezone.
+const MAX_TZ_OFFSET_MINUTES: i64 = 14 * 60;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct TokenUsageQuery {
@@ -21,6 +24,13 @@ pub struct TokenUsageQuery {
     provider_id: Option<String>,
     model: Option<String>,
     agent_id: Option<String>,
+    /// Minutes east of UTC the caller's `from`/`to` dates are expressed in.
+    ///
+    /// Records are stored with a UTC timestamp, so bucketing them by the first
+    /// ten characters put a UTC+8 user's whole morning on the previous day —
+    /// "today" opened missing every request made before 08:00 local. Absent, or
+    /// zero, keeps the old UTC behaviour.
+    tz_offset_minutes: Option<i64>,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -114,6 +124,7 @@ pub async fn get(
     if matches!((&from, &to), (Some(from), Some(to)) if from > to) {
         return Err(ApiError::invalid_input("from must not be after to"));
     }
+    let tz_offset_minutes = normalize_tz_offset(query.tz_offset_minutes)?;
 
     let query = TokenUsageQuery {
         from: from.clone(),
@@ -122,12 +133,18 @@ pub async fn get(
         provider_id: normalize_filter(query.provider_id, "provider_id")?,
         model: normalize_filter(query.model, "model")?,
         agent_id: normalize_filter(query.agent_id, "agent_id")?,
+        tz_offset_minutes: Some(tz_offset_minutes),
     };
+
+    // A local day straddles two UTC days, so the scan is widened by one on each
+    // side and the exact boundary is enforced on the local day computed below.
+    let scan_from = from.as_deref().and_then(|day| shift_day(day, -1));
+    let scan_to = to.as_deref().and_then(|day| shift_day(day, 1));
 
     // ponytail: one owner/time scan keeps four groupings simple; move the
     // groupings into SQL if a user's usage history becomes too large for RAM.
     let rows = sqlx::query_as::<_, UsageRow>(
-        "SELECT substr(created_at, 1, 10) AS day, group_id, group_name, agent_id, agent_name, \
+        "SELECT created_at AS day, group_id, group_name, agent_id, agent_name, \
                 provider_id, provider_name, model, input_tokens, output_tokens, total_tokens \
          FROM token_usage_records \
          WHERE owner_id = ? \
@@ -136,13 +153,23 @@ pub async fn get(
          ORDER BY created_at ASC",
     )
     .bind(owner_id)
-    .bind(from.as_deref())
-    .bind(from.as_deref())
-    .bind(to.as_deref())
-    .bind(to.as_deref())
+    .bind(scan_from.as_deref())
+    .bind(scan_from.as_deref())
+    .bind(scan_to.as_deref())
+    .bind(scan_to.as_deref())
     .fetch_all(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("failed to load token usage"))?;
+
+    let rows = rows
+        .into_iter()
+        .filter_map(|mut row| {
+            row.day = local_day(&row.day, tz_offset_minutes)?;
+            let within = from.as_deref().is_none_or(|from| row.day.as_str() >= from)
+                && to.as_deref().is_none_or(|to| row.day.as_str() <= to);
+            within.then_some(row)
+        })
+        .collect::<Vec<_>>();
 
     let filters = filter_options(&rows);
     let filtered = rows
@@ -302,6 +329,52 @@ fn matches_query(row: &UsageRow, query: &TokenUsageQuery) -> bool {
             .is_none_or(|id| row.agent_id.as_deref().unwrap_or(MODERATOR_AGENT_ID) == id)
 }
 
+fn normalize_tz_offset(value: Option<i64>) -> Result<i64, ApiError> {
+    let offset = value.unwrap_or(0);
+    if offset.abs() > MAX_TZ_OFFSET_MINUTES {
+        return Err(ApiError::invalid_input(
+            "tz_offset_minutes must be within ±840",
+        ));
+    }
+    Ok(offset)
+}
+
+/// Parse a `YYYY-MM-DD` string this module already validated.
+fn parse_day(value: &str) -> Option<Date> {
+    let year = value.get(0..4)?.parse::<i32>().ok()?;
+    let month = value.get(5..7)?.parse::<u8>().ok()?;
+    let day = value.get(8..10)?.parse::<u8>().ok()?;
+    Date::from_calendar_date(year, Month::try_from(month).ok()?, day).ok()
+}
+
+fn format_day(date: Date) -> String {
+    format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
+}
+
+fn shift_day(value: &str, days: i64) -> Option<String> {
+    parse_day(value)?
+        .checked_add(Duration::days(days))
+        .map(format_day)
+}
+
+/// The calendar day a UTC `created_at` falls on for a reader `offset_minutes`
+/// east of UTC.
+///
+/// Hand-rolled rather than parsed: the stored form is always the RFC 3339 this
+/// crate writes, and `time`'s parser is not compiled in.
+fn local_day(created_at: &str, offset_minutes: i64) -> Option<String> {
+    let date = parse_day(created_at)?;
+    let hour = created_at.get(11..13)?.parse::<i64>().ok()?;
+    let minute = created_at.get(14..16)?.parse::<i64>().ok()?;
+    let shift = (hour * 60 + minute + offset_minutes).div_euclid(24 * 60);
+    date.checked_add(Duration::days(shift)).map(format_day)
+}
+
 fn normalize_filter(value: Option<String>, field: &str) -> Result<Option<String>, ApiError> {
     let Some(value) = value else { return Ok(None) };
     let value = value.trim();
@@ -313,22 +386,7 @@ fn normalize_filter(value: Option<String>, field: &str) -> Result<Option<String>
 
 fn normalize_date(value: Option<&str>, field: &str) -> Result<Option<String>, ApiError> {
     let Some(value) = value else { return Ok(None) };
-    let parts = value.split('-').collect::<Vec<_>>();
-    let valid = match parts.as_slice() {
-        [year, month, day] => year
-            .parse::<i32>()
-            .ok()
-            .zip(month.parse::<u8>().ok())
-            .zip(day.parse::<u8>().ok())
-            .and_then(|((year, month), day)| {
-                Month::try_from(month)
-                    .ok()
-                    .and_then(|month| Date::from_calendar_date(year, month, day).ok())
-            })
-            .is_some(),
-        _ => false,
-    };
-    if !valid || value.len() != 10 {
+    if value.len() != 10 || value.split('-').count() != 3 || parse_day(value).is_none() {
         return Err(ApiError::invalid_input(format!(
             "{field} must be a YYYY-MM-DD date"
         )));
@@ -338,7 +396,7 @@ fn normalize_date(value: Option<&str>, field: &str) -> Result<Option<String>, Ap
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_options, matches_query, response, TokenUsageQuery, UsageRow};
+    use super::{filter_options, local_day, matches_query, response, shift_day, TokenUsageQuery, UsageRow};
 
     fn row(day: &str, agent: &str, provider: &str, model: &str, total: i64) -> UsageRow {
         UsageRow {
@@ -380,5 +438,29 @@ mod tests {
         assert_eq!(result.by_provider[0].timeline.len(), 2);
         assert_eq!(result.by_provider[0].timeline[1].totals.total_tokens, 25);
         assert_eq!(result.filters.providers.len(), 2);
+    }
+
+    #[test]
+    fn buckets_records_by_the_readers_calendar_day() {
+        // 16:10 UTC is already tomorrow morning at UTC+8, and 03:20 UTC is
+        // still the previous evening at UTC-5.
+        assert_eq!(
+            local_day("2026-08-22T16:10:15.5680336Z", 480).as_deref(),
+            Some("2026-08-23"),
+        );
+        assert_eq!(
+            local_day("2026-08-22T03:20:47.0347287Z", -300).as_deref(),
+            Some("2026-08-21"),
+        );
+        assert_eq!(
+            local_day("2026-08-22T03:20:47Z", 0).as_deref(),
+            Some("2026-08-22"),
+        );
+    }
+
+    #[test]
+    fn widens_the_scan_across_month_and_year_ends() {
+        assert_eq!(shift_day("2026-09-01", -1).as_deref(), Some("2026-08-31"));
+        assert_eq!(shift_day("2026-12-31", 1).as_deref(), Some("2027-01-01"));
     }
 }

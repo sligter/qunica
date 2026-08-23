@@ -17,6 +17,7 @@ import {
 } from '@/hooks/useGroupMessages'
 import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
+import { useSystemSettings } from '@/hooks/useSystemSettings'
 import { MAX_RETRY_ATTEMPTS } from '@/lib/api-v2/retry'
 import { cn } from '@/lib/utils'
 import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
@@ -25,7 +26,7 @@ import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 import { useTerminalConversationRegistration } from '@/terminal/useTerminalConversationRegistration'
-import type { GroupAgentRead } from '@/types/api'
+import type { GroupAgentRead, MessageSendInput } from '@/types/api'
 
 const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-files-open:'
 
@@ -171,6 +172,42 @@ export function ConversationChatView({
     if (stream.isStreaming) void stream.cancel()
     for (const resume of activeResumes) void resume.cancel()
   }, [activeResumes, stream])
+
+  // What to do with a message typed while the previous reply is still running.
+  // `instant` is the original behaviour: the send goes out now and joins the
+  // turn in flight. `queue` parks it here and releases it once the stream ends,
+  // so a follow-up meant as the *next* question does not rewrite the answer
+  // being written.
+  const systemSettings = useSystemSettings()
+  const replyInsertMode = systemSettings.data?.reply_insert_mode ?? 'instant'
+  const queuedRef = useRef<MessageSendInput[]>([])
+  const [queuedCount, setQueuedCount] = useState(0)
+  const sendOrQueueMessage = useCallback(
+    (input: MessageSendInput) => {
+      if (replyInsertMode !== 'queue' || !isConversationStreaming) return sendMessage(input)
+      queuedRef.current = [...queuedRef.current, input]
+      setQueuedCount(queuedRef.current.length)
+    },
+    [isConversationStreaming, replyInsertMode, sendMessage],
+  )
+  const clearQueuedMessages = useCallback(() => {
+    queuedRef.current = []
+    setQueuedCount(0)
+  }, [])
+
+  // One at a time: releasing the whole queue at once would put every message
+  // into a single turn, which is the behaviour queueing exists to avoid. The
+  // next release is triggered by this send's own stream ending.
+  useEffect(() => {
+    if (isConversationStreaming || queuedRef.current.length === 0) return
+    const [next, ...rest] = queuedRef.current
+    queuedRef.current = rest
+    setQueuedCount(rest.length)
+    void sendMessage(next).catch(() => undefined)
+  }, [isConversationStreaming, sendMessage])
+
+  // A queue belongs to the conversation it was typed in.
+  useEffect(() => clearQueuedMessages, [clearQueuedMessages, conversationId, threadId])
   const fileNavRequest = useFileNavStore((state) => state.request)
   const registerConversationTitles = useConversationActivityStore(
     (state) => state.registerConversationTitles,
@@ -383,6 +420,30 @@ export function ConversationChatView({
                 </div>
               ) : null}
 
+              {queuedCount > 0 ? (
+                <div className="shrink-0 px-4">
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+                  >
+                    <span>
+                      {t('composer.queued', {
+                        count: queuedCount,
+                        formattedCount: queuedCount,
+                      })}
+                    </span>
+                    <button
+                      type="button"
+                      className="font-medium text-foreground hover:underline"
+                      onClick={clearQueuedMessages}
+                    >
+                      {t('composer.clearQueued')}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               <Composer
                 supportsReasoningEffort={supportsReasoningEffort}
                 key={`${scope}:${conversationId}:${threadId ?? 'no-thread'}:${workspaceId ?? 'no-workspace'}`}
@@ -390,7 +451,7 @@ export function ConversationChatView({
                 workspaceId={workspaceId}
                 scope={scope}
                 isStreaming={isConversationStreaming}
-                onSend={sendMessage}
+                onSend={sendOrQueueMessage}
                 onCancel={cancelConversationStream}
                 hint={hint}
                 groupAgents={agents}

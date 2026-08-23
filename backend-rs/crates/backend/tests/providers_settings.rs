@@ -1178,6 +1178,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(status, StatusCode::OK);
     assert!(defaults["owner_id"].as_str().is_some());
     assert_eq!(defaults["appearance"], "system");
+    assert_eq!(defaults["reply_insert_mode"], "instant");
     assert_eq!(defaults["assistant_enabled"], true);
     assert_eq!(defaults["assistant_auto_approve"], false);
     assert_eq!(defaults["group_workspace_root"], Value::Null);
@@ -1222,6 +1223,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             &token,
             json!({
                 "appearance": "dark",
+                "reply_insert_mode": "queue",
                 "assistant_enabled": false,
                 "assistant_auto_approve": true,
                 "group_workspace_root": raw_root,
@@ -1247,6 +1249,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["appearance"], "dark");
+    assert_eq!(updated["reply_insert_mode"], "queue");
     assert_eq!(updated["assistant_enabled"], false);
     assert_eq!(updated["assistant_auto_approve"], true);
     assert_eq!(updated["group_workspace_root"], expected_root);
@@ -1272,6 +1275,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     let (status, fetched) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["appearance"], "dark");
+    assert_eq!(fetched["reply_insert_mode"], "queue");
     assert_eq!(fetched["assistant_enabled"], false);
     assert_eq!(fetched["assistant_auto_approve"], true);
     assert_eq!(fetched["tavily_api_key_configured"], true);
@@ -1289,6 +1293,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
             &token,
             json!({
                 "appearance": Value::Null,
+                "reply_insert_mode": Value::Null,
                 "assistant_enabled": Value::Null,
                 "assistant_auto_approve": Value::Null,
                 "group_workspace_root": "",
@@ -1313,6 +1318,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reset["appearance"], "system");
+    assert_eq!(reset["reply_insert_mode"], "instant");
     assert_eq!(reset["assistant_enabled"], true);
     assert_eq!(reset["assistant_auto_approve"], false);
     assert_eq!(reset["group_workspace_root"], Value::Null);
@@ -1434,6 +1440,7 @@ async fn providers_settings_system_settings_validation_rejects_invalid_values() 
 
     let invalid_cases = [
         json!({"appearance": "sepia"}),
+        json!({"reply_insert_mode": "later"}),
         json!({"web_search_provider": "other"}),
         json!({"tavily_search_depth": "deep"}),
         json!({"shell_preference": "fish"}),

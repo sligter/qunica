@@ -319,8 +319,11 @@ function BreakdownList({
 export function TokenUsagePage() {
   const { t, i18n } = useTranslation(['usage', 'navigation'])
   const locale = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
-  const initialDates = useMemo(() => presetDates('30d'), [])
-  const [range, setRange] = useState<RangePreset>('30d')
+  // Today by default: the page exists to answer "what has this cost me", and
+  // the answer the user is after is almost always about right now, not a
+  // month ago.
+  const initialDates = useMemo(() => presetDates('today'), [])
+  const [range, setRange] = useState<RangePreset>('today')
   const [filters, setFilters] = useState<TokenUsageFilters>(initialDates)
   const validRange = Boolean(filters.from && filters.to && filters.from <= filters.to)
   const usage = useTokenUsage(filters, validRange)
