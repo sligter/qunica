@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use crate::acp::{
     canonicalize_acp_runtime, dsh, normalize_acp_runtime, probe_acp_runtime_capabilities,
-    AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities, AcpRuntimeConfig, PermissionPolicy,
-    DEFAULT_TIMEOUT_SECONDS,
+    shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities,
+    AcpRuntimeConfig, PermissionPolicy, DEFAULT_TIMEOUT_SECONDS,
 };
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::llm::{
@@ -441,6 +441,9 @@ pub async fn install_acp_runtime_version(
     // never end up half-present, which surfaces only as a startup failure.
     let mut args = vec!["install", "--global", "--include=optional", &package_spec];
     args.extend(preset.install_specs.iter().skip(1).copied());
+    // Windows cannot replace a runtime executable while a reusable ACP session
+    // still has it open. Sessions resume from their persisted IDs on next use.
+    shutdown_reusable_acp_sessions().await;
     let output = run_command(&npm, &args, ACP_INSTALL_TIMEOUT)
         .await
         .map_err(|message| {
@@ -1429,7 +1432,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             args: if dsh_acp.installed {
                 Vec::new()
             } else {
-                vec!["-y", dsh::DSH_ACP_PINNED_SPEC]
+                vec!["-y", dsh::DSH_ACP_INSTALL_SPEC]
             },
             env: BTreeMap::new(),
             timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
@@ -1473,7 +1476,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
                 choice("high", "High", Some("High reasoning effort (the dsh default).")),
                 choice("max", "Max", Some("Maximum reasoning effort.")),
             ],
-            install_hint: "Install the pinned dsh packages so dsh-acp-demo is on PATH. \
+            install_hint: "Install the dsh preview packages so dsh-acp-demo is on PATH. \
                            Set DEEPSEEK_API_KEY in the runtime environment. Requires \
                            Node 22.19+ or 24+.",
             source: Some("fallback"),
@@ -1679,9 +1682,9 @@ async fn npm_latest_package_version(package_name: &str, dist_tag: &str) -> Optio
 
 /// The spec the plain Install button installs the primary package at.
 ///
-/// A preset that pins its own versions defaults to the pin; everything else
-/// tracks its dist-tag. Never the bare package name: npm would resolve that
-/// through `latest`, which for dsh is an older, incompatible release.
+/// Multi-package runtimes provide their primary spec; everything else tracks
+/// its dist-tag. Never the bare package name: npm would resolve that through
+/// `latest`, which for dsh is an older, incompatible release.
 fn default_install_spec(preset: AcpRuntimeVersionPreset) -> String {
     preset
         .install_specs

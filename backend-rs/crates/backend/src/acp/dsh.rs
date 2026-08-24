@@ -51,13 +51,7 @@ pub const DSH_ACP_PACKAGE: &str = "@deepseek-ai/dsh-acp-demo";
 /// `provider`/`model` to, and the plugin tree fails to settle at boot.
 pub const DSH_LLM_PACKAGE: &str = "@deepseek-ai/dsh-llm-deepseek";
 
-/// The version both packages are pinned to.
-///
-/// `dsh` is a developer preview that documents breaking changes between
-/// releases, so the version is exact rather than a range.
-pub const DSH_PINNED_VERSION: &str = "0.1.0-rc.6";
-
-/// The npm dist-tag carrying [`DSH_PINNED_VERSION`].
+/// The npm dist-tag carrying the compatible preview releases.
 ///
 /// The `latest` tag on both packages still points at `0.0.1-rc.1`, an older
 /// release with a different peer-dependency graph. Anything that resolves a
@@ -71,16 +65,10 @@ pub const DSH_DEFAULT_MODEL: &str = "deepseek-v4-pro";
 /// The executable name the packages install onto `PATH`.
 pub const DSH_ACP_COMMAND: &str = "dsh-acp-demo";
 
-/// [`DSH_ACP_PACKAGE`] pinned to [`DSH_PINNED_VERSION`].
-///
-/// Spelled out as a literal so it can be used where a `&'static str` is
-/// required; `dsh_specs_agree_with_their_parts` keeps it honest.
-pub const DSH_ACP_PINNED_SPEC: &str = "@deepseek-ai/dsh-acp-demo@0.1.0-rc.6";
+/// [`DSH_ACP_PACKAGE`] on the preview channel tracked by the version panel.
+pub const DSH_ACP_INSTALL_SPEC: &str = "@deepseek-ai/dsh-acp-demo@next";
 
-/// [`DSH_LLM_PACKAGE`] pinned to [`DSH_PINNED_VERSION`].
-pub const DSH_LLM_PINNED_SPEC: &str = "@deepseek-ai/dsh-llm-deepseek@0.1.0-rc.6";
-
-/// The pinned specs a working `dsh` runtime needs, primary first.
+/// The specs a working `dsh` runtime needs, primary first.
 ///
 /// Everything past the LLM adapter serves the tool tiers. They are installed
 /// unconditionally, including the shell backend for the other platform: a
@@ -88,16 +76,16 @@ pub const DSH_LLM_PINNED_SPEC: &str = "@deepseek-ai/dsh-llm-deepseek@0.1.0-rc.6"
 /// mode whose plugins are missing, which surfaces only as a failed plugin
 /// tree at launch.
 pub const DSH_INSTALL_SPECS: &[&str] = &[
-    DSH_ACP_PINNED_SPEC,
-    DSH_LLM_PINNED_SPEC,
-    "@deepseek-ai/dsh-sandbox-local@0.1.0-rc.6",
-    "@deepseek-ai/dsh-subprocess-local@0.1.0-rc.6",
-    "@deepseek-ai/dsh-bash-sandbox@0.1.0-rc.6",
-    "@deepseek-ai/dsh-pwsh-sandbox@0.1.0-rc.6",
-    "@deepseek-ai/dsh-tool-pwsh@0.1.0-rc.6",
-    "@deepseek-ai/dsh-fs-sandbox@0.1.0-rc.6",
-    "@deepseek-ai/dsh-fs-observation-policy@0.1.0-rc.6",
-    "@deepseek-ai/dsh-tool-fs@0.1.0-rc.6",
+    DSH_ACP_INSTALL_SPEC,
+    "@deepseek-ai/dsh-llm-deepseek@next",
+    "@deepseek-ai/dsh-sandbox-local@next",
+    "@deepseek-ai/dsh-subprocess-local@next",
+    "@deepseek-ai/dsh-bash-sandbox@next",
+    "@deepseek-ai/dsh-pwsh-sandbox@next",
+    "@deepseek-ai/dsh-tool-pwsh@next",
+    "@deepseek-ai/dsh-fs-sandbox@next",
+    "@deepseek-ai/dsh-fs-observation-policy@next",
+    "@deepseek-ai/dsh-tool-fs@next",
 ];
 
 /// How much of the workspace a `dsh` agent may touch, and whether it gets tools
@@ -686,19 +674,19 @@ mod tests {
     }
 
     #[test]
-    fn dsh_specs_agree_with_their_parts() {
+    fn dsh_specs_track_the_version_panel_channel() {
         assert_eq!(
             DSH_INSTALL_SPECS[0],
-            format!("{DSH_ACP_PACKAGE}@{DSH_PINNED_VERSION}")
+            format!("{DSH_ACP_PACKAGE}@{DSH_DIST_TAG}")
         );
         assert_eq!(
             DSH_INSTALL_SPECS[1],
-            format!("{DSH_LLM_PACKAGE}@{DSH_PINNED_VERSION}")
+            format!("{DSH_LLM_PACKAGE}@{DSH_DIST_TAG}")
         );
         for spec in DSH_INSTALL_SPECS {
             assert!(
-                spec.ends_with(&format!("@{DSH_PINNED_VERSION}")),
-                "unpinned spec: {spec}"
+                spec.ends_with(&format!("@{DSH_DIST_TAG}")),
+                "spec does not track {DSH_DIST_TAG}: {spec}"
             );
         }
         // Every plugin the tool tiers mount has to be installed too, or

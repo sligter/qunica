@@ -1031,17 +1031,14 @@ async fn acp_runtime_presets_include_pi_opencode_and_dsh() {
     if dsh["installed"].as_bool().unwrap_or(false) {
         assert_eq!(dsh["args"], json!([]));
     } else {
-        // The npx fallback must pin an exact version: the `latest` dist-tag on
-        // this package points at an older, incompatible release.
+        // The npx fallback must follow `next`: the `latest` dist-tag on this
+        // package points at an older, incompatible release.
         let args = dsh["args"].as_array().expect("dsh args");
         let spec = args
             .last()
             .and_then(Value::as_str)
             .expect("dsh package spec");
-        assert!(
-            spec.starts_with("@deepseek-ai/dsh-acp-demo@"),
-            "spec: {spec}"
-        );
+        assert_eq!(spec, "@deepseek-ai/dsh-acp-demo@next");
     }
 }
 

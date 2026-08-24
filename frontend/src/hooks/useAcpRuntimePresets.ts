@@ -136,9 +136,9 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
     profile: 'dsh',
     installed: false,
     command: 'npx',
-    // Pinned deliberately: the `latest` dist-tag on this package still points
-    // at an older release with a different dependency graph.
-    args: ['-y', '@deepseek-ai/dsh-acp-demo@0.1.0-rc.6'],
+    // `latest` still points at an older release with a different dependency
+    // graph, so fallback launches must follow the same channel as updates.
+    args: ['-y', '@deepseek-ai/dsh-acp-demo@next'],
     env: {},
     timeout_seconds: DEFAULT_ACP_TIMEOUT_SECONDS,
     permission_policy: 'deny',
@@ -178,7 +178,7 @@ export const FALLBACK_ACP_RUNTIME_PRESETS = [
       { value: 'max', label: 'Max', description: 'Maximum reasoning effort.' },
     ],
     install_hint:
-      'Install the pinned dsh packages so dsh-acp-demo is on PATH. Set DEEPSEEK_API_KEY in the runtime environment. Requires Node 22.19+ or 24+.',
+      'Install the dsh preview packages so dsh-acp-demo is on PATH. Set DEEPSEEK_API_KEY in the runtime environment. Requires Node 22.19+ or 24+.',
     source: 'fallback',
   },
 ] satisfies AcpRuntimePresetRead[]
