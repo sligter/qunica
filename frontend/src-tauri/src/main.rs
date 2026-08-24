@@ -18,11 +18,12 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::PageLoadEvent;
 use tauri::window::{Color, Monitor};
-use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 #[cfg(not(windows))]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::oneshot;
 
 use terminal::manager::TerminalManager;
@@ -331,6 +332,113 @@ fn clear_system_logs() -> Result<(), String> {
 #[tauri::command]
 fn open_system_logs_folder(app: tauri::AppHandle) -> Result<(), String> {
     open_logs_dir(&app)
+}
+
+/// Identity of the running build, for the settings About section.
+#[derive(serde::Serialize)]
+struct AboutInfo {
+    name: String,
+    version: String,
+    identifier: String,
+    tauri_version: String,
+    os: String,
+    arch: String,
+}
+
+#[tauri::command]
+fn app_about(app: tauri::AppHandle) -> AboutInfo {
+    let package = app.package_info();
+    AboutInfo {
+        name: package.name.clone(),
+        version: package.version.to_string(),
+        identifier: app.config().identifier.clone(),
+        tauri_version: tauri::VERSION.to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+    }
+}
+
+/// The release the updater endpoint advertises for this machine.
+#[derive(serde::Serialize)]
+struct UpdateAvailable {
+    version: String,
+    current_version: String,
+    notes: Option<String>,
+    pub_date: Option<String>,
+    /// Updater target the manifest is keyed by (`windows-x86_64`,
+    /// `darwin-aarch64`, ...), so the About section can name the package it is
+    /// about to install rather than claiming a generic "update".
+    target: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+const UPDATE_PROGRESS_EVENT: &str = "app://update-progress";
+
+async fn pending_update(
+    app: &tauri::AppHandle,
+) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    app.updater()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<Option<UpdateAvailable>, String> {
+    Ok(pending_update(&app).await?.map(|update| UpdateAvailable {
+        version: update.version.clone(),
+        current_version: update.current_version.clone(),
+        notes: update.body.clone(),
+        // `date` is a `time::OffsetDateTime` and this crate has no `time`
+        // dependency to format it with; the manifest already carries the
+        // string the publisher wrote.
+        pub_date: update
+            .raw_json
+            .get("pub_date")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        target: update.target.clone(),
+    }))
+}
+
+/// Download the release built for this machine and hand it to the platform
+/// installer.
+///
+/// The manifest is keyed by target triple, so each machine gets its own
+/// artifact: Windows re-runs the NSIS installer, macOS and Linux swap the
+/// bundle in place. Windows never returns from `install` — the plugin launches
+/// the installer and exits this process, and the passive installer brings the
+/// app back up. `restart` is how the other targets come back on the new
+/// version.
+///
+/// Re-checking instead of caching the `Update` from [`check_for_update`] keeps
+/// the download honest: the button can sit untouched for hours, and installing
+/// a release the endpoint has since replaced would be worse than a second
+/// manifest fetch.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(update) = pending_update(&app).await? else {
+        return Err("No update is available to install.".to_string());
+    };
+    let mut downloaded: u64 = 0;
+    let package = update
+        .download(
+            |chunk, total| {
+                downloaded += chunk as u64;
+                let _ = app.emit(UPDATE_PROGRESS_EVENT, UpdateProgress { downloaded, total });
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    update.install(package).map_err(|error| error.to_string())?;
+    app.restart()
 }
 
 fn shutdown_backend(app: &tauri::AppHandle) {
@@ -874,6 +982,9 @@ fn main() {
             set_system_log_filter,
             clear_system_logs,
             open_system_logs_folder,
+            app_about,
+            check_for_update,
+            install_update,
             terminal_create,
             terminal_write,
             terminal_resize,

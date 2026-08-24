@@ -11,6 +11,10 @@ import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
 import { useAuthStore } from '@/stores/authStore'
 import type { SystemSettingsRead } from '@/types/api'
 
+const tauri = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }))
+vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }))
+vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }))
+
 const settings: SystemSettingsRead = {
   id: 'settings-1',
   owner_id: 'user-1',
@@ -223,5 +227,113 @@ describe('SystemSettingsPage preferences', () => {
     rejectPatch(new Error('offline'))
     await waitFor(() => expect(select).toHaveValue('auto'))
     expect(screen.getByRole('alert')).toBeVisible()
+  })
+})
+
+describe('SystemSettingsPage about and updates', () => {
+  const about = {
+    name: 'AG Swarmer',
+    version: '0.1.1-alpha',
+    identifier: 'ag-swarmer.desktop',
+    tauri_version: '2.11.2',
+    os: 'windows',
+    arch: 'x86_64',
+  }
+
+  const release = {
+    version: '0.2.0',
+    current_version: '0.1.1-alpha',
+    notes: 'Faster startup.',
+    pub_date: '2026-08-20T10:00:00Z',
+    target: 'windows-x86_64',
+  }
+
+  function enterDesktop() {
+    useAuthStore.setState({ token: 'token' })
+    vi.stubGlobal('__TAURI_INTERNALS__', {})
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(settings)))
+  }
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    useAuthStore.setState({ token: null, user: null, hydrated: false })
+    localStorage.clear()
+  })
+
+  it('names the running build and reports it as current', async () => {
+    enterDesktop()
+    tauri.invoke.mockImplementation((command: string) =>
+      command === 'app_about'
+        ? Promise.resolve(about)
+        : command === 'check_for_update'
+          ? Promise.resolve(null)
+          : Promise.reject(new Error(`unexpected command ${command}`)),
+    )
+    const user = userEvent.setup()
+
+    await renderSettingsPage()
+
+    expect(await screen.findByText('0.1.1-alpha')).toBeVisible()
+    expect(screen.getByText('windows · x86_64')).toBeVisible()
+    expect(screen.getByText('ag-swarmer.desktop')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Check for updates' }))
+    expect(await screen.findByText('You are on the latest version.')).toBeVisible()
+  })
+
+  it('offers the package built for this device and installs it', async () => {
+    enterDesktop()
+    const unlisten = vi.fn()
+    tauri.listen.mockResolvedValue(unlisten)
+    let rejectInstall!: (reason: unknown) => void
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'app_about') return Promise.resolve(about)
+      if (command === 'check_for_update') return Promise.resolve(release)
+      if (command === 'install_update') {
+        return new Promise((_resolve, reject) => {
+          rejectInstall = reject
+        })
+      }
+      return Promise.reject(new Error(`unexpected command ${command}`))
+    })
+    const user = userEvent.setup()
+
+    await renderSettingsPage()
+    await user.click(await screen.findByRole('button', { name: 'Check for updates' }))
+
+    expect(await screen.findByText('Version 0.2.0 is available.')).toBeVisible()
+    // The manifest is keyed by target, so the row has to name the artifact this
+    // machine gets rather than promising a generic "update".
+    expect(screen.getByText('Package for this device: windows-x86_64')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Download and install' }))
+    await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith('install_update'))
+
+    // A successful install never resolves — it replaces this process. A failed
+    // one must release the progress UI and say why, or the user is stranded on
+    // "Installing…" with no way to retry.
+    rejectInstall('signature mismatch')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Update install failed: signature mismatch',
+    )
+    expect(unlisten).toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Download and install' })).toBeEnabled()
+  })
+
+  it('sends browser tabs to the desktop app instead of offering an installer', async () => {
+    useAuthStore.setState({ token: 'token' })
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(settings)))
+
+    await renderSettingsPage()
+
+    expect(
+      await screen.findByText(
+        'Updates are handled by the desktop app. A browser tab loads the latest version on reload.',
+      ),
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull()
+    expect(tauri.invoke).not.toHaveBeenCalled()
   })
 })

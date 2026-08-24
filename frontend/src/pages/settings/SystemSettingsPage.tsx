@@ -13,11 +13,22 @@ import {
 } from '@/hooks/useSystemSettings'
 import { useAuth, useUpdateCurrentUser } from '@/hooks/useAuth'
 import { ApiError } from '@/lib/api-v2/client'
+import {
+  checkForUpdate,
+  formatBytes,
+  installUpdate,
+  onUpdateProgress,
+  readAbout,
+  type AboutInfo,
+  type UpdateCheck,
+  type UpdateProgress,
+} from '@/lib/appUpdate'
 import { notificationsSupported, requestNotificationPermission, showNotification } from '@/lib/notifications'
 import {
   readReplyNotificationsEnabled,
   writeReplyNotificationsEnabled,
 } from '@/lib/replyNotifications'
+import { isDesktopRuntime } from '@/lib/runtime'
 import { writeLanguageMirror } from '@/i18n'
 import type {
   Appearance,
@@ -74,6 +85,13 @@ export function SystemSettingsPage() {
   const [replyInsertError, setReplyInsertError] = useState<string | null>(null)
   const [profileName, setProfileName] = useState('')
   const [profileError, setProfileError] = useState<string | null>(null)
+  const [about, setAbout] = useState<AboutInfo | null>(null)
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState<UpdateProgress | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  const desktop = isDesktopRuntime()
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
@@ -130,6 +148,15 @@ export function SystemSettingsPage() {
   useEffect(() => {
     document.title = t('title')
   }, [i18n.resolvedLanguage, t])
+  useEffect(() => {
+    let active = true
+    void readAbout().then((info) => {
+      if (active) setAbout(info)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const errorMessage = (err: unknown, fallback: string): string =>
     err instanceof ApiError ? err.message : fallback
@@ -387,6 +414,50 @@ export function SystemSettingsPage() {
     } catch (err) {
       setProfileError(errorMessage(err, t('profile.saveError')))
     }
+  }
+
+  const onCheckForUpdate = async () => {
+    setCheckingUpdate(true)
+    setUpdateError(null)
+    const result = await checkForUpdate()
+    setUpdateCheck(result)
+    if (result.kind === 'error') {
+      setUpdateError(t('about.checkFailed', { message: result.message }))
+    }
+    setCheckingUpdate(false)
+  }
+
+  /**
+   * Only failures come back from here.
+   *
+   * The shell installs the package built for this machine and then either
+   * relaunches itself or hands off to the platform installer, so a successful
+   * install tears down this page mid-await. Everything after the call is the
+   * error path: unwind the progress UI and say why it did not happen.
+   */
+  const onInstallUpdate = async () => {
+    setInstallingUpdate(true)
+    setUpdateError(null)
+    setDownloadProgress(null)
+    const unlisten = await onUpdateProgress(setDownloadProgress)
+    const failure = await installUpdate()
+    unlisten()
+    setDownloadProgress(null)
+    setInstallingUpdate(false)
+    if (failure.kind === 'error') {
+      setUpdateError(t('about.installFailed', { message: failure.message }))
+    }
+  }
+
+  const downloadLabel = () => {
+    if (downloadProgress === null) return t('about.installing')
+    const downloaded = formatBytes(downloadProgress.downloaded)
+    return downloadProgress.total === null
+      ? t('about.downloadingUnknownTotal', { downloaded })
+      : t('about.downloading', {
+          downloaded,
+          total: formatBytes(downloadProgress.total),
+        })
   }
 
   const normalizedProfileName = profileName.trim()
@@ -824,6 +895,99 @@ export function SystemSettingsPage() {
           {tavilyError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
               {tavilyError}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        <SettingsSection
+          title={t('about.title')}
+          description={t('about.description')}
+          aside={
+            desktop ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void onCheckForUpdate()}
+                disabled={checkingUpdate || installingUpdate}
+              >
+                {checkingUpdate ? t('about.checking') : t('about.checkNow')}
+              </Button>
+            ) : undefined
+          }
+        >
+          {about ? (
+            <>
+              <SettingsRow label={t('about.version')} description={about.name}>
+                <span className="text-sm text-muted-foreground">{about.version}</span>
+              </SettingsRow>
+              <SettingsRow label={t('about.platform')}>
+                <span className="text-sm text-muted-foreground">
+                  {`${about.os} · ${about.arch}`}
+                </span>
+              </SettingsRow>
+              <SettingsRow label={t('about.identifier')}>
+                <span className="text-sm text-muted-foreground">{about.identifier}</span>
+              </SettingsRow>
+              <SettingsRow label={t('about.framework')}>
+                <span className="text-sm text-muted-foreground">
+                  {`Tauri ${about.tauri_version}`}
+                </span>
+              </SettingsRow>
+            </>
+          ) : null}
+
+          {desktop ? null : (
+            <p className="py-2.5 text-sm text-muted-foreground">{t('about.desktopOnly')}</p>
+          )}
+
+          {updateCheck?.kind === 'current' ? (
+            <p className="py-2.5 text-sm text-muted-foreground" role="status">
+              {t('about.upToDate')}
+            </p>
+          ) : null}
+
+          {updateCheck?.kind === 'available' ? (
+            <div className="space-y-2 py-2.5">
+              <p className="text-sm font-medium" role="status">
+                {t('about.updateAvailable', { version: updateCheck.release.version })}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t('about.packageTarget', { target: updateCheck.release.target })}
+              </p>
+              {updateCheck.release.pub_date ? (
+                <p className="text-xs text-muted-foreground">
+                  {t('about.published', { date: updateCheck.release.pub_date })}
+                </p>
+              ) : null}
+              {updateCheck.release.notes ? (
+                <details className="text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">{t('about.releaseNotes')}</summary>
+                  <p className="mt-1 whitespace-pre-wrap">{updateCheck.release.notes}</p>
+                </details>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void onInstallUpdate()}
+                  disabled={installingUpdate}
+                >
+                  {installingUpdate ? t('about.installing') : t('about.install')}
+                </Button>
+                {installingUpdate ? (
+                  <span className="text-xs text-muted-foreground" role="status">
+                    {downloadLabel()}
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-xs text-muted-foreground">{t('about.restartNotice')}</p>
+            </div>
+          ) : null}
+
+          {updateError ? (
+            <p className="py-2 text-sm text-destructive" role="alert">
+              {updateError}
             </p>
           ) : null}
         </SettingsSection>
