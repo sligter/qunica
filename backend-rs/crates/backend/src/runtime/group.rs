@@ -64,8 +64,9 @@ use crate::runtime::approval;
 use crate::runtime::compaction::{estimate_text_tokens, estimate_tool_schema_tokens};
 use crate::runtime::compaction_hook::ProviderSummarizer;
 use crate::runtime::conversation_context::{
-    load_conversation, load_conversation_for_resume, render_conversation, sanitize_acp_agent_brief,
-    to_acp_incremental_prompt, to_acp_prompt, AttachmentAccess,
+    load_context_checkpoint, load_conversation, load_conversation_after,
+    load_conversation_for_resume, render_conversation, sanitize_acp_agent_brief,
+    save_context_checkpoint, to_acp_incremental_prompt, to_acp_prompt, AttachmentAccess,
 };
 use crate::runtime::group_scheduler::{
     allows_agent_edge,
@@ -3012,7 +3013,7 @@ async fn run_agent_turn(
     let conversation_workspace_root = resolve_group_workspace_root(&services.pool, group)
         .await
         .map_err(StepErr::Db)?;
-    let (mut messages, image_warnings) = build_vision_messages(
+    let (mut messages, image_warnings, loaded_through_seq) = build_vision_messages(
         &services.pool,
         &ctx.thread_id,
         &invocation.system_prompt,
@@ -3105,13 +3106,19 @@ async fn run_agent_turn(
     // summarizer's counter is cumulative, so each pass records only what it
     // just spent.
     let mut summarizer_accounted = 0u64;
+    // A delegated or resumed prompt contains synthetic messages that must not
+    // leak into later turns. A normal prompt stays checkpoint-safe only until
+    // this turn appends its first model/tool exchange.
+    let mut checkpoint_safe =
+        delegated_input.is_none() && ctx.resume.is_none() && !ctx.private_execution;
 
     loop {
         // `pre_step` is where compaction runs: the message list is reduced
         // before a request is derived from it, not after the provider rejects
         // it. Notices are surfaced so a shrinking context is visible rather than
         // something the user discovers by noticing the agent forgot.
-        for notice in services.hooks.pre_step(&step, &mut messages).await {
+        let notices = services.hooks.pre_step(&step, &mut messages).await;
+        for notice in &notices {
             tracing::info!(agent_id = %agent.agent_id, notice = %notice, "pre-step hook");
             ctx.emit(StreamEventKind::Warning, json!({ "message": notice }))
                 .await?;
@@ -3124,6 +3131,16 @@ async fn run_agent_turn(
             &mut summarizer_accounted,
         )
         .await?;
+        if checkpoint_safe && !notices.is_empty() {
+            persist_compacted_context(
+                &services.pool,
+                &ctx.thread_id,
+                &agent.agent_id,
+                loaded_through_seq,
+                &messages,
+            )
+            .await?;
+        }
 
         let usage_record_id = Uuid::new_v4().to_string();
         let request = ChatRequest {
@@ -3167,6 +3184,16 @@ async fn run_agent_turn(
                             &mut summarizer_accounted,
                         )
                         .await?;
+                        if checkpoint_safe {
+                            persist_compacted_context(
+                                &services.pool,
+                                &ctx.thread_id,
+                                &agent.agent_id,
+                                loaded_through_seq,
+                                &messages,
+                            )
+                            .await?;
+                        }
                         continue;
                     }
                     RequestRecovery::Propagate => {
@@ -3368,6 +3395,8 @@ async fn run_agent_turn(
             )
             .await;
         }
+
+        checkpoint_safe = false;
 
         if let Some(call) = agent_as_tool_call(&tool_calls) {
             let outcome = handle_agent_as_tool(
@@ -4884,6 +4913,25 @@ fn complete_scheduled_usage(ctx: &mut StreamCtx, budget: &mut TurnBudget) {
         .saturating_sub(ctx.scheduled_accounted_tokens);
     budget.record_completion(unaccounted);
     ctx.scheduled_accounted_tokens = ctx.scheduled_total_tokens;
+}
+
+/// Save the compacted provider prompt without touching the visible transcript.
+async fn persist_compacted_context(
+    pool: &SqlitePool,
+    thread_id: &str,
+    agent_id: &str,
+    through_seq: Option<i64>,
+    messages: &[ChatMessage],
+) -> Result<(), StepErr> {
+    let Some(through_seq) = through_seq else {
+        return Ok(());
+    };
+    // The system prompt is rebuilt from current agent/group configuration on
+    // every turn; freezing it in the checkpoint would make prompt edits stale.
+    let history = messages.get(1..).unwrap_or_default();
+    save_context_checkpoint(pool, thread_id, agent_id, through_seq, history)
+        .await
+        .map_err(StepErr::Db)
 }
 
 /// Bill and budget tokens the summarizer spent since it was last accounted.
@@ -7150,11 +7198,25 @@ async fn build_vision_messages(
     access: AttachmentAccess,
     use_native_images: bool,
     interrupted_message_id: Option<&str>,
-) -> anyhow::Result<(Vec<ChatMessage>, Vec<String>)> {
-    let rows = match interrupted_message_id {
-        Some(message_id) => load_conversation_for_resume(pool, thread_id, message_id).await?,
-        None => load_conversation(pool, thread_id).await?,
+) -> anyhow::Result<(Vec<ChatMessage>, Vec<String>, Option<i64>)> {
+    // Resumes replay one interrupted row specially and therefore use the full
+    // transcript. Normal turns can start from the last compacted model prompt
+    // and render only durable rows appended since it was saved.
+    let checkpoint = match interrupted_message_id {
+        Some(_) => None,
+        None => load_context_checkpoint(pool, thread_id, current_agent_id).await?,
     };
+    let rows = match (interrupted_message_id, checkpoint.as_ref()) {
+        (Some(message_id), _) => load_conversation_for_resume(pool, thread_id, message_id).await?,
+        (None, Some(checkpoint)) => {
+            load_conversation_after(pool, thread_id, checkpoint.through_seq).await?
+        }
+        (None, None) => load_conversation(pool, thread_id).await?,
+    };
+    let loaded_through_seq = rows
+        .last()
+        .map(|row| row.seq)
+        .or_else(|| checkpoint.as_ref().map(|checkpoint| checkpoint.through_seq));
     let (mut messages, warnings) = vision_messages_from_rows(
         system_prompt,
         current_agent_id,
@@ -7163,13 +7225,18 @@ async fn build_vision_messages(
         access,
         use_native_images,
     );
+    if let Some(checkpoint) = checkpoint {
+        let tail = messages.split_off(1);
+        messages.extend(checkpoint.messages);
+        messages.extend(tail);
+    }
     if interrupted_message_id.is_some() {
         messages.push(ChatMessage::text(
             "user",
             RESUME_CONTINUATION_PROMPT.to_string(),
         ));
     }
-    Ok((messages, warnings))
+    Ok((messages, warnings, loaded_through_seq))
 }
 
 fn vision_messages_from_rows(
@@ -8010,6 +8077,7 @@ mod tests {
     fn human_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {
         ConversationMessage {
             id: Uuid::new_v4().to_string(),
+            seq: 1,
             actor: ConversationActor::Human {
                 id: id.to_string(),
                 display_name: display_name.to_string(),
@@ -8027,6 +8095,7 @@ mod tests {
     fn agent_message(id: &str, display_name: &str, content: &str) -> ConversationMessage {
         ConversationMessage {
             id: Uuid::new_v4().to_string(),
+            seq: 1,
             actor: ConversationActor::Agent {
                 id: id.to_string(),
                 display_name: display_name.to_string(),

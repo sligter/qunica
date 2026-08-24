@@ -124,6 +124,16 @@ function errorMessage(payload: unknown): string {
   return parsed.success ? parsed.data.message ?? 'Resume failed' : 'Resume failed'
 }
 
+function resumeTriggerMessageId(messages: readonly Message[], messageId: string): string | undefined {
+  const checkpointIndex = messages.findIndex((message) => message.id === messageId)
+  const checkpoint = messages[checkpointIndex]
+  if (checkpoint?.reply_to_message_id) return checkpoint.reply_to_message_id
+  for (let index = checkpointIndex - 1; index >= 0; index -= 1) {
+    if (messages[index].sender_type === 'user') return messages[index].id
+  }
+  return undefined
+}
+
 /**
  * Continue the interrupted message `messageId` in the conversation `stateId`.
  *
@@ -305,14 +315,13 @@ export function useResumeStream(
           // idempotent and a no-op until the run exists, so it is safe to
           // attempt after anything that may have created one.
           const linkRun = () => {
-            const interrupted = useMessageStore
-              .getState()
-              .byGroup[stateId]?.find((message) => message.id === messageId)
-            if (interrupted?.reply_to_message_id) {
+            const messages = useMessageStore.getState().byGroup[stateId] ?? []
+            const triggerMessageId = resumeTriggerMessageId(messages, messageId)
+            if (triggerMessageId) {
               linkStreamRunToUserMessage(
                 stateId,
                 streamId,
-                interrupted.reply_to_message_id,
+                triggerMessageId,
               )
             }
           }

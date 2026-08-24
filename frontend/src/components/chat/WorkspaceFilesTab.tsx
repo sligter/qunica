@@ -1120,7 +1120,7 @@ export function WorkspaceFilesTab({
               ) : null}
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto bg-muted/15 p-4 sm:p-5">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-muted/15 p-4 sm:p-5">
             {previewFile && activeConversationId ? (
               <WorkspacePreviewRouter
                 scope={scope}

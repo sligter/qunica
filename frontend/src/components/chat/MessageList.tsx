@@ -70,9 +70,16 @@ function maxScrollTop(node: HTMLDivElement): number {
   return Math.max(0, node.scrollHeight - node.clientHeight)
 }
 
-function timelineMessageIds(runs: Record<string, StreamRun>): Set<string> {
+function timelineMessageIds(
+  runs: Record<string, StreamRun>,
+  runIdsByUserMessageId: Record<string, string>,
+  skippedRunIds: Set<string>,
+): Set<string> {
   const ids = new Set<string>()
-  for (const run of Object.values(runs)) {
+  for (const runId of new Set(Object.values(runIdsByUserMessageId))) {
+    if (skippedRunIds.has(runId)) continue
+    const run = runs[runId]
+    if (!run) continue
     for (const event of run.events) {
       if (event.type === 'response_draft' && event.message_id) {
         ids.add(event.message_id)
@@ -83,6 +90,44 @@ function timelineMessageIds(runs: Record<string, StreamRun>): Set<string> {
     }
   }
   return ids
+}
+
+function checkpointedRunIds(
+  messages: readonly Message[],
+  runs: Record<string, StreamRun>,
+  runIdsByUserMessageId: Record<string, string>,
+): Set<string> {
+  const drafts = new Map<string, string>()
+  for (const [runId, run] of Object.entries(runs)) {
+    if (run.status === 'active') continue
+    for (const event of run.events) {
+      if (event.type !== 'response_draft' || event.status !== 'streaming' || event.message_id) {
+        continue
+      }
+      const key = `${runId}:${event.agent_id}`
+      drafts.set(key, (drafts.get(key) ?? '') + event.content)
+    }
+  }
+
+  const checkpointed = new Set<string>()
+  let latestUserMessageId: string | undefined
+  for (const message of messages) {
+    if (message.sender_type === 'user') {
+      latestUserMessageId = message.id
+      continue
+    }
+    if (message.sender_type !== 'agent') continue
+    const linkedRunId = message.reply_to_message_id
+      ? runIdsByUserMessageId[message.reply_to_message_id]
+      : undefined
+    const runId = linkedRunId ?? (
+      latestUserMessageId ? runIdsByUserMessageId[latestUserMessageId] : undefined
+    )
+    if (!runId) continue
+    const draft = drafts.get(`${runId}:${message.sender_id}`)
+    if (draft && (message.content ?? '').startsWith(draft)) checkpointed.add(runId)
+  }
+  return checkpointed
 }
 
 export function MessageList({
@@ -116,7 +161,14 @@ export function MessageList({
   const restoredScrollRef = useRef(false)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
 
-  const hiddenMessageIds = useMemo(() => timelineMessageIds(streamRuns), [streamRuns])
+  const checkpointedRuns = useMemo(
+    () => checkpointedRunIds(messages, streamRuns, streamRunIdsByUserMessageId),
+    [messages, streamRuns, streamRunIdsByUserMessageId],
+  )
+  const hiddenMessageIds = useMemo(
+    () => timelineMessageIds(streamRuns, streamRunIdsByUserMessageId, checkpointedRuns),
+    [checkpointedRuns, streamRuns, streamRunIdsByUserMessageId],
+  )
   const latestWarning = warnings[warnings.length - 1]
   const warningInputRequest = humanInputRequestFromText(latestWarning)
   const warningLabel = latestWarning && isKnownWarning(latestWarning)
@@ -280,7 +332,7 @@ export function MessageList({
                   onViewTrace={onViewTurnTrace}
                 />
               ) : null}
-              {run ? (
+              {run && !checkpointedRuns.has(run.id) ? (
                 <StreamTimeline
                   run={run}
                   groupId={groupId}

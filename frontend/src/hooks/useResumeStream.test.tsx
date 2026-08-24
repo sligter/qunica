@@ -442,8 +442,11 @@ describe('useResumeStream scheduler events', () => {
     })
   })
 
-  it('maps a resumed scheduler run back to the persisted trigger user message', () => {
-    useMessageStore.getState().setHistory('thread-1', [triggerMessage, interruptedMessage])
+  it('maps a resumed scheduler run back to the preceding user message for legacy checkpoints', () => {
+    useMessageStore.getState().setHistory('thread-1', [
+      triggerMessage,
+      { ...interruptedMessage, reply_to_message_id: null },
+    ])
     const queryClient = new QueryClient()
     const hook = renderHook(
       () => useResumeStream('group-1', 'thread-1', 'message-1'),

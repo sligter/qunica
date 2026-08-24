@@ -384,7 +384,14 @@ describe('WorkspaceTextEditor', () => {
 
     expect(container.querySelector('pre[data-language="typescript"]')).toBeVisible()
     expect(container.querySelector('.hljs-keyword')).toHaveTextContent('const')
-    expect(screen.getByRole('textbox', { name: 'Edit main.ts' })).toHaveValue(
+    expect(container.querySelector('[data-preview-kind="text"]')).toHaveClass(
+      'h-full',
+      'min-h-0',
+      'flex-1',
+    )
+    const editor = screen.getByRole('textbox', { name: 'Edit main.ts' })
+    expect(editor).toHaveClass('absolute', 'inset-0')
+    expect(editor).toHaveValue(
       'const answer: number = 42',
     )
   })

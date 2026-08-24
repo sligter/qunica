@@ -206,7 +206,7 @@ describe('MessageItem', () => {
   })
 
   it('keeps the resume stream owner mounted until the resumed message finishes', () => {
-    const interrupted = message({ status: 'interrupted' })
+    const interrupted = message({ status: 'interrupted', reasoning: ['Checked the workspace'] })
     const { rerender } = render(
       <MessageItem groupId="group-1" message={interrupted} />,
     )
@@ -225,6 +225,7 @@ describe('MessageItem', () => {
       />,
     )
     expect(screen.getByTestId('interrupted-message-actions')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: /Activity:/ })).toBeInTheDocument()
 
     act(() => useMessageStore.getState().endResume(interrupted.id))
     expect(screen.queryByTestId('interrupted-message-actions')).not.toBeInTheDocument()

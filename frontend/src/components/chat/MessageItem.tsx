@@ -172,7 +172,7 @@ export function MessageItemView({
             />
           )}
         </div>
-        {!isUser && !showStreamingDot && (
+        {!isUser && (!showStreamingDot || isResuming) && (
           <PersistedTurnDetails
             reasoning={message.reasoning}
             toolCalls={message.tool_calls}

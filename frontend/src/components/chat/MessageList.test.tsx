@@ -40,9 +40,9 @@ const userMessage: Message = {
   created_at: '2026-07-15T10:00:00Z',
 }
 
-function setMessageState(run?: StreamRun) {
+function setMessageState(run?: StreamRun, messages: Message[] = [userMessage]) {
   useMessageStore.setState({
-    byGroup: { 'group-1': [userMessage] },
+    byGroup: { 'group-1': messages },
     warningsByGroup: {},
     streamRunsByGroup: run ? { 'group-1': { [run.id]: run } } : {},
     streamRunIdByUserMessageIdByGroup: run
@@ -264,5 +264,70 @@ describe('MessageList scheduler summary integration', () => {
     const summary = screen.getByRole('region', { name: 'Scheduler turn summary' })
     expect(summary).toHaveTextContent('Running')
     expect(summary).toHaveTextContent('Agent handoff scheduled')
+  })
+
+  it('renders an interrupted checkpoint instead of its duplicate unfinished draft', () => {
+    const run: StreamRun = {
+      id: 'stream-interrupted',
+      group_id: 'group-1',
+      user_message_id: userMessage.id,
+      status: 'error',
+      turn_id: 'turn-interrupted',
+      scheduler_status: 'failed',
+      moderator_active: false,
+      terminal_reason: 'persistence_failed',
+      criticalSummaries: [],
+      created_at: '2026-07-15T10:00:00Z',
+      updated_at: '2026-07-15T10:00:02Z',
+      events: [
+        {
+          id: 'completed-1',
+          type: 'agent_message',
+          stream_id: 'stream-interrupted',
+          message_id: 'completed-1',
+          agent_id: 'agent-2',
+          display_name: 'Agent Two',
+          content: 'Earlier reply',
+          created_at: '2026-07-15T10:00:00Z',
+        },
+        {
+          id: 'draft-1',
+          type: 'response_draft',
+          stream_id: 'stream-interrupted',
+          agent_id: 'agent-1',
+          display_name: 'Agent One',
+          content: 'Partial reply',
+          status: 'streaming',
+          created_at: '2026-07-15T10:00:01Z',
+        },
+      ],
+    }
+    const checkpoint: Message = {
+      ...userMessage,
+      id: 'checkpoint-1',
+      sender_type: 'agent',
+      sender_id: 'agent-1',
+      content: 'Partial reply continued',
+      status: 'interrupted',
+      reply_to_message_id: null,
+      turn_summary: null,
+    }
+    const completed: Message = {
+      ...checkpoint,
+      id: 'completed-1',
+      sender_id: 'agent-2',
+      content: 'Earlier reply',
+      status: 'visible',
+      reply_to_message_id: userMessage.id,
+    }
+    setMessageState(run, [userMessage, completed, checkpoint])
+
+    render(<MessageList groupId="group-1" />)
+
+    expect(screen.getByTestId('message-checkpoint-1')).toHaveTextContent(
+      'Partial reply continued',
+    )
+    expect(screen.getByTestId('message-completed-1')).toHaveTextContent('Earlier reply')
+    expect(screen.queryByTestId('stream-timeline')).not.toBeInTheDocument()
   })
 })

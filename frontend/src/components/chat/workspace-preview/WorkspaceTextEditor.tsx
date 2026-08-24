@@ -340,8 +340,8 @@ export function WorkspaceTextEditor({
   return (
     <div
       className={cn(
-        'flex flex-col',
-        presentation === 'editor' ? 'h-full min-h-[28rem]' : 'min-h-[22rem]',
+        'flex h-full min-h-0 flex-1 flex-col',
+        presentation === 'editor' && 'min-h-[28rem]',
       )}
       data-preview-kind="text"
     >
@@ -529,7 +529,7 @@ export function WorkspaceTextEditor({
             }}
             spellCheck={false}
             wrap="off"
-            className="workspace-code-input relative z-10 h-full min-h-full resize-none whitespace-pre border-0 bg-transparent font-mono text-xs leading-5 shadow-none focus-visible:ring-0"
+            className="workspace-code-input absolute inset-0 z-10 resize-none whitespace-pre border-0 bg-transparent font-mono text-xs leading-5 shadow-none focus-visible:ring-0"
           />
         </div>
       ) : (

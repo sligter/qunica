@@ -3764,7 +3764,7 @@ async fn group_files_workspace_root(
 fn validate_git_paths(root: &FsPath, raw_paths: &[String]) -> Result<Vec<String>, ApiError> {
     let mut paths = Vec::with_capacity(raw_paths.len());
     for raw in raw_paths {
-        let path = raw.trim();
+        let path = raw.trim().trim_end_matches(['/', '\\']);
         if path.is_empty() {
             return Err(ApiError::invalid_input("git path must be non-empty"));
         }
@@ -5461,6 +5461,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_paths_accept_the_directory_suffix_from_status() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".ag-swarmer")).unwrap();
+
+        assert_eq!(
+            validate_git_paths(root.path(), &[".ag-swarmer/".to_string()]).unwrap(),
+            [".ag-swarmer"]
+        );
+    }
 
     #[test]
     fn custom_commit_message_prompt_keeps_the_mandatory_rules() {

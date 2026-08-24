@@ -1185,6 +1185,93 @@ async fn only_dispatch(state: &AppState, group_id: &str) -> (String, String) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn compacted_context_is_reused_on_the_next_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "compaction-checkpoint@example.com").await;
+    let owner = owner_id(&state, "compaction-checkpoint@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, requests) = recording_fake_provider_sequence(vec![
+        text_body("durable summary"),
+        text_body("first answer"),
+        text_body("second answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    sqlx::query(
+        "UPDATE llm_providers SET context_window_tokens = 100000, \
+         context_output_reserve_ratio = 0.1 WHERE id = ?",
+    )
+    .bind(&provider)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Compactor",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "active").await;
+
+    for seq in 1..=100 {
+        let sender_type = if seq % 2 == 0 { "agent" } else { "user" };
+        let sender_id = if sender_type == "agent" {
+            agent.as_str()
+        } else {
+            owner.as_str()
+        };
+        seed_message(
+            &state,
+            &group,
+            &thread,
+            seq,
+            "visible",
+            sender_type,
+            Some(sender_id),
+            &format!("old-history-{seq} {}", "x".repeat(4_000)),
+            None,
+        )
+        .await;
+    }
+
+    for content in ["first new turn", "second new turn"] {
+        let events = stream_events(
+            &app,
+            &format!("/api/v2/groups/{group}/messages/stream"),
+            &token,
+            json!({"content": content, "thread_id": thread}),
+        )
+        .await;
+        assert_eq!(events.last().unwrap()["kind"], "done");
+    }
+
+    let checkpoint_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM context_checkpoints WHERE thread_id = ? AND agent_id = ?",
+    )
+    .bind(&thread)
+    .bind(&agent)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(checkpoint_count, 1);
+
+    let requests = requests.lock().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "the second turn must reuse the summary instead of requesting another one"
+    );
+    assert!(requests[0].to_string().contains("old-history-1 "));
+    assert!(requests[1].to_string().contains("durable summary"));
+    assert!(requests[2].to_string().contains("durable summary"));
+    assert!(!requests[2].to_string().contains("old-history-1 "));
+}
+
+#[tokio::test]
 async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "direct-prompt@example.com").await;

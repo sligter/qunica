@@ -43,6 +43,7 @@ pub enum ConversationActor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationMessage {
     pub id: String,
+    pub seq: i64,
     pub actor: ConversationActor,
     pub content: String,
     pub turn_id: Option<String>,
@@ -56,6 +57,71 @@ pub struct ConversationMessage {
     /// that asked for its reasoning back. Peers and humans never see it: it is
     /// the model's private working, not part of the transcript.
     pub reasoning: Vec<String>,
+}
+
+/// The compacted, model-only history saved for one agent in one thread.
+///
+/// `messages` excludes the system prompt so prompt/config changes take effect
+/// immediately. Visible transcript rows are never changed.
+pub(crate) struct ContextCheckpoint {
+    pub through_seq: i64,
+    pub messages: Vec<ChatMessage>,
+}
+
+pub(crate) async fn load_context_checkpoint(
+    pool: &SqlitePool,
+    thread_id: &str,
+    agent_id: &str,
+) -> anyhow::Result<Option<ContextCheckpoint>> {
+    let Some((through_seq, messages_json)) = sqlx::query_as::<_, (i64, String)>(
+        "SELECT through_seq, messages_json FROM context_checkpoints \
+         WHERE thread_id = ? AND agent_id = ?",
+    )
+    .bind(thread_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    match serde_json::from_str(&messages_json) {
+        Ok(messages) => Ok(Some(ContextCheckpoint {
+            through_seq,
+            messages,
+        })),
+        Err(error) => {
+            tracing::warn!(%thread_id, %agent_id, %error, "ignoring invalid context checkpoint");
+            Ok(None)
+        }
+    }
+}
+
+pub(crate) async fn save_context_checkpoint(
+    pool: &SqlitePool,
+    thread_id: &str,
+    agent_id: &str,
+    through_seq: i64,
+    messages: &[ChatMessage],
+) -> anyhow::Result<()> {
+    let messages_json = serde_json::to_string(messages)?;
+    sqlx::query(
+        "INSERT INTO context_checkpoints \
+             (thread_id, agent_id, through_seq, messages_json, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
+         ON CONFLICT(thread_id, agent_id) DO UPDATE SET \
+             through_seq = excluded.through_seq, \
+             messages_json = excluded.messages_json, \
+             updated_at = excluded.updated_at",
+    )
+    .bind(thread_id)
+    .bind(agent_id)
+    .bind(through_seq)
+    .bind(messages_json)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -72,6 +138,7 @@ pub struct ConversationToolCall {
 #[derive(sqlx::FromRow)]
 struct ConversationRow {
     id: String,
+    seq: i64,
     sender_type: String,
     sender_id: Option<String>,
     content: Option<String>,
@@ -89,7 +156,16 @@ pub async fn load_conversation(
     pool: &SqlitePool,
     thread_id: &str,
 ) -> anyhow::Result<Vec<ConversationMessage>> {
-    load_conversation_rows(pool, thread_id, None).await
+    load_conversation_rows(pool, thread_id, None, None).await
+}
+
+/// Load visible transcript rows appended after a compacted prompt checkpoint.
+pub(crate) async fn load_conversation_after(
+    pool: &SqlitePool,
+    thread_id: &str,
+    after_seq: i64,
+) -> anyhow::Result<Vec<ConversationMessage>> {
+    load_conversation_rows(pool, thread_id, None, Some(after_seq)).await
 }
 
 /// Load visible transcript rows plus one interrupted message being resumed.
@@ -98,16 +174,17 @@ pub(crate) async fn load_conversation_for_resume(
     thread_id: &str,
     interrupted_message_id: &str,
 ) -> anyhow::Result<Vec<ConversationMessage>> {
-    load_conversation_rows(pool, thread_id, Some(interrupted_message_id)).await
+    load_conversation_rows(pool, thread_id, Some(interrupted_message_id), None).await
 }
 
 async fn load_conversation_rows(
     pool: &SqlitePool,
     thread_id: &str,
     included_message_id: Option<&str>,
+    after_seq: Option<i64>,
 ) -> anyhow::Result<Vec<ConversationMessage>> {
     let rows: Vec<ConversationRow> = sqlx::query_as(
-        "SELECT m.id, m.sender_type, m.sender_id, m.content, \
+        "SELECT m.id, m.seq, m.sender_type, m.sender_id, m.content, \
                 a.name AS agent_name, ga.display_name AS group_agent_display_name, \
                 u.name AS human_display_name, m.turn_id, m.dispatch_id, \
                 m.reply_to_message_id, m.content_json \
@@ -119,10 +196,12 @@ async fn load_conversation_rows(
          LEFT JOIN users u \
            ON m.sender_type != 'agent' AND u.id = m.sender_id \
          WHERE m.thread_id = ? AND (m.status = 'visible' OR m.id = ?) \
+           AND m.seq > ? \
          ORDER BY m.seq ASC",
     )
     .bind(thread_id)
     .bind(included_message_id)
+    .bind(after_seq.unwrap_or(i64::MIN))
     .fetch_all(pool)
     .await?;
 
@@ -152,6 +231,7 @@ impl From<ConversationRow> for ConversationMessage {
 
         Self {
             id: row.id,
+            seq: row.seq,
             actor,
             content: row.content.unwrap_or_default(),
             turn_id: row.turn_id,
@@ -558,6 +638,7 @@ mod tests {
     fn agent_row(content_json: Option<&str>) -> ConversationMessage {
         ConversationRow {
             id: "m1".to_string(),
+            seq: 1,
             sender_type: "agent".to_string(),
             sender_id: Some("agent-1".to_string()),
             content: Some("done".to_string()),
@@ -589,6 +670,7 @@ mod tests {
     fn human_row(id: &str, content: &str) -> ConversationMessage {
         ConversationRow {
             id: id.to_string(),
+            seq: 1,
             sender_type: "human".to_string(),
             sender_id: Some("user-1".to_string()),
             content: Some(content.to_string()),

@@ -626,7 +626,9 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByRole('button', { name: '关闭' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'raw dir/README_RAW_原文.md' })).toBeVisible()
     expect(screen.queryByText('预览由服务器限制，大文件可能会被截断。')).not.toBeInTheDocument()
-    expect(screen.getByText('preview:groups:raw dir/README_RAW_原文.md')).toBeVisible()
+    const preview = screen.getByText('preview:groups:raw dir/README_RAW_原文.md')
+    expect(preview).toBeVisible()
+    expect(preview.parentElement).toHaveClass('flex', 'min-h-0', 'flex-1', 'flex-col')
   })
 
   it('shows localized English delete failure framing without raw diagnostics', async () => {
