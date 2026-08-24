@@ -4,11 +4,11 @@ import { Bot, Cpu, Plus, Sparkles, Terminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { EntityCard } from '@/components/layout/EntityCard'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { SearchInput } from '@/components/ui/search-input'
 import { useAgents } from '@/hooks/useAgents'
-import { avatarColorClass } from '@/lib/avatarColor'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
 
 export function AgentsIndexPage() {
@@ -114,8 +114,8 @@ export function AgentsIndexPage() {
                   to={`/agents/${agent.id}`}
                   editTo={`/agents/${agent.id}?edit=1`}
                   title={agent.name}
-                  avatarInitial={agent.name.slice(0, 1).toUpperCase()}
-                  avatarClass={avatarColorClass(agent.id)}
+                  avatarIcon={<AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} />}
+                  avatarClass="bg-transparent p-0 shadow-none"
                   statusLabel={formatResourceStatus(agent.status, t)}
                   statusActive={agent.status === 'active'}
                   description={

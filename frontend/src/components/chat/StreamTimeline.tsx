@@ -361,6 +361,7 @@ function AgentBlockView({
   runStatus,
   groupId,
   fallbackUsage,
+  avatarUrl,
   agentIsSystem,
   onSubmitHumanInput,
   stateId,
@@ -371,6 +372,7 @@ function AgentBlockView({
   runStatus: StreamRun['status']
   groupId: string
   fallbackUsage: ContextUsage | null
+  avatarUrl?: string | null
   agentIsSystem?: boolean
   onSubmitHumanInput?: (content: string) => void
   stateId?: string
@@ -514,6 +516,7 @@ function AgentBlockView({
       <AgentAvatar
         name={block.displayName}
         kind={agentIsSystem ? 'system' : 'agent'}
+        avatarUrl={avatarUrl}
         className="mt-0.5"
         contextUsage={block.contextUsage ?? fallbackUsage}
       />
@@ -582,6 +585,10 @@ export function StreamTimeline({
     }
     return map
   }, [agents, groupAgents.data])
+  const avatarByAgentId = useMemo(
+    () => new Map((agents ?? groupAgents.data ?? []).map((agent) => [agent.agent_id, agent.avatar_url])),
+    [agents, groupAgents.data],
+  )
   const blocks = buildBlocks(run.events, t('messages.agent'))
   const renderedInputRequests = new Set<string>()
   if (blocks.length === 0 && run.status === 'active') {
@@ -650,6 +657,7 @@ export function StreamTimeline({
             runStatus={run.status}
             groupId={groupId}
             fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
+            avatarUrl={avatarByAgentId.get(block.agentId)}
             agentIsSystem={agentIsSystem}
             onSubmitHumanInput={onSubmitHumanInput}
             stateId={stateId}

@@ -7,6 +7,7 @@ import { avatarColorClass } from '@/lib/avatarColor'
 import { useGroups } from '@/hooks/useGroups'
 import { useDirectChats } from '@/hooks/useDirectChats'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { SectionHeading } from '@/components/ui/section'
@@ -36,6 +37,7 @@ export function ChatHomePage() {
       subtitle: group.description || t('groups:noDescription'),
       updatedAt: group.updated_at ?? group.created_at,
       to: `/groups/${group.id}`,
+      avatarUrl: null,
     })),
     ...(directChats.data ?? []).map((chat) => ({
       id: chat.id,
@@ -44,6 +46,7 @@ export function ChatHomePage() {
       subtitle: chat.agent_name ?? t('chat:direct.agentUnavailable'),
       updatedAt: chat.updated_at,
       to: `/chats/${chat.id}`,
+      avatarUrl: chat.agent_avatar_url ?? null,
     })),
   ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 5)
   const pageTitle = t('groups:pageTitle')
@@ -96,11 +99,18 @@ export function ChatHomePage() {
                     to={conversation.to}
                     className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:bg-card-hover"
                   >
-                    <Avatar className="h-8 w-8 shrink-0">
-                      <AvatarFallback className={avatarColorClass(conversation.id)}>
-                        {conversation.title.slice(0, 1).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
+                    {conversation.kind === 'direct' ? (
+                      <AgentAvatar
+                        name={conversation.subtitle}
+                        avatarUrl={conversation.avatarUrl}
+                      />
+                    ) : (
+                      <Avatar className="h-8 w-8 shrink-0">
+                        <AvatarFallback className={avatarColorClass(conversation.id)}>
+                          {conversation.title.slice(0, 1).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{conversation.title}</p>
                       <p className="line-clamp-1 text-xs text-muted-foreground">

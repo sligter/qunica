@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -35,6 +36,18 @@ const ACP_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const ACP_OUTPUT_LIMIT: usize = 8 * 1024;
 const MAX_PROMPT_SOURCE_CHARS: usize = 50_000;
 const MAX_GENERATED_PROMPT_CHARS: usize = 20_000;
+// ponytail: self-contained data URLs avoid an avatar service; move to asset URLs if roster payload size matters.
+const MAX_AGENT_AVATAR_BYTES: usize = 512 * 1024;
+const AGENT_AVATAR_PRESETS: [&str; 8] = [
+    "preset:beacon",
+    "preset:crest",
+    "preset:tide",
+    "preset:loom",
+    "preset:prism",
+    "preset:orbit",
+    "preset:bloom",
+    "preset:ember",
+];
 const SYSTEM_PROMPT_WRITER_PROMPT: &str = "You write production system prompts for agents running inside ag-swarmer. Return only the complete system prompt in Markdown, with no code fence or commentary.\n\
 The prompt must be specific to the supplied role and usable as-is. It must tell the agent to:\n\
 - establish its role, outcomes, boundaries, and a short execution workflow;\n\
@@ -48,7 +61,7 @@ For an enhancement, preserve the original intent and useful constraints while re
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, \
      COALESCE((SELECT json_group_array(workspace_id) FROM agent_workspaces WHERE agent_id = agents.id), '[]') AS workspace_ids_json, \
-     name, description, system_prompt, \
+     name, description, avatar_url, system_prompt, \
      runtime_kind, provider_id, model_config_json, tool_config_json, external_runtime_json, \
      skill_ids_json, status, is_system, created_at, updated_at";
 
@@ -57,6 +70,8 @@ pub struct CreateRequest {
     name: String,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    avatar_url: Option<String>,
     #[serde(default)]
     system_prompt: Option<String>,
     #[serde(default)]
@@ -84,6 +99,8 @@ pub struct UpdateRequest {
     // explicit JSON `null` (inner `None`) for nullable/json fields.
     #[serde(default, deserialize_with = "double_option")]
     description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    avatar_url: Option<Option<String>>,
     #[serde(default)]
     system_prompt: Option<String>,
     #[serde(default, deserialize_with = "double_option")]
@@ -127,6 +144,7 @@ pub struct AgentResponse {
     id: String,
     name: String,
     description: Option<String>,
+    avatar_url: Option<String>,
     system_prompt: String,
     llm_config: Option<Value>,
     tool_config: Option<Value>,
@@ -230,6 +248,7 @@ struct AgentRow {
     workspace_ids_json: String,
     name: String,
     description: Option<String>,
+    avatar_url: Option<String>,
     system_prompt: String,
     runtime_kind: String,
     provider_id: Option<String>,
@@ -269,6 +288,7 @@ impl From<AgentRow> for AgentResponse {
             id: row.id,
             name: row.name,
             description: row.description,
+            avatar_url: row.avatar_url,
             system_prompt: row.system_prompt,
             llm_config: parse_json(row.model_config_json.as_deref()),
             tool_config: parse_json(row.tool_config_json.as_deref()),
@@ -548,6 +568,7 @@ pub(crate) async fn create_inner(
     )
     .await?;
     let description = normalize_description(body.description.as_deref());
+    let avatar_url = normalize_avatar_url(body.avatar_url.as_deref())?;
     let skill_ids_json = validate_skill_ids(body.skill_ids.as_deref())?;
     let model_config_json = json_to_db_string(body.llm_config.as_ref());
     let tool_config_json = json_to_db_string(body.tool_config.as_ref());
@@ -578,16 +599,17 @@ pub(crate) async fn create_inner(
 
     sqlx::query(
         "INSERT INTO agents \
-         (id, owner_id, workspace_id, name, description, system_prompt, runtime_kind, \
+         (id, owner_id, workspace_id, name, description, avatar_url, system_prompt, runtime_kind, \
           provider_id, model_config_json, tool_config_json, external_runtime_json, \
           skill_ids_json, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
     .bind(&workspace_id)
     .bind(&name)
     .bind(&description)
+    .bind(&avatar_url)
     .bind(&system_prompt)
     .bind(&runtime_kind)
     .bind(&provider_id)
@@ -689,6 +711,10 @@ pub(crate) async fn update_inner(
         Some(ref value) => normalize_description(value.as_deref()),
         None => existing.description.clone(),
     };
+    let avatar_url = match body.avatar_url {
+        Some(ref value) => normalize_avatar_url(value.as_deref())?,
+        None => existing.avatar_url.clone(),
+    };
     let system_prompt = match body.system_prompt.as_deref() {
         Some(raw) => validate_system_prompt(raw)?,
         None => existing.system_prompt.clone(),
@@ -755,13 +781,14 @@ pub(crate) async fn update_inner(
         .map_err(|_| ApiError::internal("failed to start agent update transaction"))?;
     sqlx::query(
         "UPDATE agents SET \
-         name = ?, description = ?, system_prompt = ?, runtime_kind = ?, workspace_id = ?, \
+         name = ?, description = ?, avatar_url = ?, system_prompt = ?, runtime_kind = ?, workspace_id = ?, \
          provider_id = ?, model_config_json = ?, tool_config_json = ?, external_runtime_json = ?, \
          skill_ids_json = ?, updated_at = ? \
          WHERE id = ? AND owner_id = ?",
     )
     .bind(&name)
     .bind(&description)
+    .bind(&avatar_url)
     .bind(&system_prompt)
     .bind(&runtime_kind)
     .bind(&workspace_id)
@@ -1062,6 +1089,39 @@ fn normalize_description(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|d| !d.is_empty())
         .map(|d| d.to_string())
+}
+
+pub(crate) fn normalize_avatar_url(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if AGENT_AVATAR_PRESETS.contains(&value) {
+        return Ok(Some(value.to_string()));
+    }
+
+    let invalid = || {
+        ApiError::invalid_input(
+            "avatar_url must be a supported preset or a PNG, JPEG, or WebP image up to 512 KiB",
+        )
+    };
+    if value.len() > MAX_AGENT_AVATAR_BYTES * 4 / 3 + 128 {
+        return Err(invalid());
+    }
+    let (mime, encoded) = value
+        .strip_prefix("data:")
+        .and_then(|value| value.split_once(";base64,"))
+        .ok_or_else(invalid)?;
+    let bytes = BASE64.decode(encoded).map_err(|_| invalid())?;
+    let signature_matches = match mime {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(&b"WEBP"[..]),
+        _ => false,
+    };
+    if bytes.len() > MAX_AGENT_AVATAR_BYTES || !signature_matches {
+        return Err(invalid());
+    }
+    Ok(Some(value.to_string()))
 }
 
 /// Validate that every supplied skill id is a UUID and serialize them to the
@@ -1917,7 +1977,7 @@ fn now_rfc3339() -> String {
         .unwrap_or_default()
 }
 
-fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: Deserializer<'de>,
@@ -1929,6 +1989,27 @@ where
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn agent_avatar_accepts_presets_and_supported_image_data_only() {
+        assert_eq!(
+            normalize_avatar_url(Some(" preset:prism "))
+                .unwrap()
+                .as_deref(),
+            Some("preset:prism")
+        );
+        assert!(normalize_avatar_url(Some("preset:unknown")).is_err());
+
+        let png = format!(
+            "data:image/png;base64,{}",
+            BASE64.encode(b"\x89PNG\r\n\x1a\nimage")
+        );
+        assert_eq!(
+            normalize_avatar_url(Some(&png)).unwrap().as_deref(),
+            Some(png.as_str())
+        );
+        assert!(normalize_avatar_url(Some("data:image/jpeg;base64,iVBORw0KGgo=")).is_err());
+    }
 
     #[test]
     fn generated_system_prompt_is_grounded_in_ag_swarmer_and_enhances_the_draft() {

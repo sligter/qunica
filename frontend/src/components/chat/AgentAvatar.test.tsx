@@ -12,6 +12,30 @@ afterEach(async () => {
 })
 
 describe('AgentAvatar', () => {
+  it('renders a selected preset mark instead of initials', () => {
+    const { container } = render(
+      <AgentAvatar name="Builder" avatarUrl="preset:loom" />,
+    )
+
+    expect(container.querySelector('svg')).not.toBeNull()
+    expect(container).not.toHaveTextContent('B')
+  })
+
+  it('falls back to initials for a preset id it no longer ships', () => {
+    render(<AgentAvatar name="Builder" avatarUrl="preset:robot" />)
+
+    expect(screen.getByText('B')).toBeVisible()
+  })
+
+  it('renders presets for user avatars too', () => {
+    const { container } = render(
+      <AgentAvatar name="Alice" kind="user" avatarUrl="preset:prism" />,
+    )
+
+    expect(container.querySelector('svg')).not.toBeNull()
+    expect(container).not.toHaveTextContent('A')
+  })
+
   it('uses the bot icon instead of initials for the system Assistant', () => {
     const { container } = render(<AgentAvatar name="AG Assistant" kind="system" />)
 

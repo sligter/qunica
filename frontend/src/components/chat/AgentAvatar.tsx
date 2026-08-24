@@ -2,10 +2,12 @@ import type { ReactNode } from 'react'
 import { Bot } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { AgentAvatarArt } from '@/components/chat/AgentAvatarArt'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { formatNumber, formatTime } from '@/lib/format'
+import { findAgentAvatarPreset, agentInitialsTone } from '@/lib/agentAvatar'
 import { normalizeLanguage } from '@/i18n'
 import type { ContextUsage } from '@/types/api'
 
@@ -16,20 +18,14 @@ interface AgentAvatarProps {
   kind?: AvatarKind
   className?: string
   contextUsage?: ContextUsage | null
+  avatarUrl?: string | null
+  size?: 'sm' | 'md' | 'lg'
 }
 
-/** Deterministic, readable color pairs for agent initials avatars (warm token palette). */
-const AGENT_PALETTE = [
-  'bg-avatar-1/15 text-avatar-1',
-  'bg-avatar-2/15 text-avatar-2',
-  'bg-avatar-3/15 text-avatar-3',
-  'bg-avatar-4/15 text-avatar-4',
-  'bg-avatar-5/15 text-avatar-5',
-  'bg-avatar-6/15 text-avatar-6',
-  'bg-avatar-7/15 text-avatar-7',
-  'bg-avatar-8/15 text-avatar-8',
-]
+const AVATAR_SIZE = { sm: 'h-6 w-6', md: 'h-8 w-8', lg: 'h-12 w-12' } as const
+const AVATAR_TEXT = { sm: 'text-[10px]', md: 'text-xs', lg: 'text-base' } as const
 
+/** Up to two leading letters of a name, for the fallback initials avatar. */
 export function avatarInitials(name: string): string {
   const trimmed = name.trim()
   if (!trimmed) return '?'
@@ -37,14 +33,6 @@ export function avatarInitials(name: string): string {
   const letters = parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '')
   const joined = letters.join('')
   return joined || trimmed.slice(0, 2).toUpperCase()
-}
-
-function colorFor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i += 1) {
-    hash = (hash * 31 + name.charCodeAt(i)) >>> 0
-  }
-  return AGENT_PALETTE[hash % AGENT_PALETTE.length]
 }
 
 /** Ring/badge color by how full the context window is. */
@@ -130,13 +118,20 @@ export function AgentAvatar({
   kind = 'agent',
   className,
   contextUsage,
+  avatarUrl,
+  size = 'md',
 }: AgentAvatarProps) {
+  const customizable = kind !== 'system'
+  const preset = customizable ? findAgentAvatarPreset(avatarUrl) : undefined
+  const imageUrl = customizable && avatarUrl?.startsWith('data:image/') ? avatarUrl : undefined
   const fallbackClass =
-    kind === 'user'
-      ? 'bg-primary text-primary-foreground'
-      : kind === 'system'
-        ? 'bg-muted text-muted-foreground'
-        : colorFor(name)
+    kind === 'system'
+      ? 'bg-muted text-muted-foreground'
+      : preset
+        ? 'bg-transparent'
+        : kind === 'user'
+          ? 'bg-primary text-primary-foreground'
+          : agentInitialsTone(name)
   const ratio =
     kind !== 'user' && contextUsage?.ratio !== null && contextUsage?.ratio !== undefined
       ? Math.max(0, Math.min(1, contextUsage.ratio))
@@ -145,17 +140,24 @@ export function AgentAvatar({
   const avatar = (
     <Avatar
       aria-label={name}
-      className={cn(ratio === null ? 'h-8 w-8' : 'h-7 w-7', 'shrink-0')}
+      className={cn(ratio === null ? AVATAR_SIZE[size] : 'h-7 w-7', 'shrink-0')}
     >
-      <AvatarFallback className={cn('text-xs font-semibold', fallbackClass)}>
-        {kind === 'system' ? <Bot className="h-4 w-4" aria-hidden /> : avatarInitials(name)}
+      {imageUrl && <AvatarImage src={imageUrl} alt="" className="object-cover" />}
+      <AvatarFallback className={cn('font-semibold', AVATAR_TEXT[size], fallbackClass)}>
+        {kind === 'system' ? (
+          <Bot className="h-4 w-4" aria-hidden />
+        ) : preset ? (
+          <AgentAvatarArt preset={preset} />
+        ) : (
+          avatarInitials(name)
+        )}
       </AvatarFallback>
     </Avatar>
   )
 
   let visual: ReactNode
   if (ratio === null) {
-    visual = <span className={cn('inline-flex h-8 w-8 shrink-0', className)}>{avatar}</span>
+    visual = <span className={cn('inline-flex shrink-0', AVATAR_SIZE[size], className)}>{avatar}</span>
   } else {
     visual = (
       <span

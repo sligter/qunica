@@ -43,7 +43,7 @@ const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_wi
      created_at, updated_at";
 
 const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id, \
-     group_agents.display_name, agents.name AS agent_name, group_agents.role, \
+     group_agents.display_name, agents.name AS agent_name, agents.avatar_url, group_agents.role, \
      group_agents.topology_role, group_agents.speaking_order, group_agents.response_mode, \
      group_agents.context_scope_json, group_agents.status, group_agents.joined_at, \
      (SELECT json_extract(messages.content_json, '$.context_usage') \
@@ -59,7 +59,7 @@ const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id,
       LIMIT 1) AS context_usage_json";
 
 const GROUP_MEMBER_COLUMNS: &str = "group_members.group_id, group_members.user_id, \
-     users.name AS user_name, group_members.role, group_members.status, \
+     users.name AS user_name, users.avatar_url, group_members.role, group_members.status, \
      group_members.joined_at";
 
 const GROUP_NOTE_COLUMNS: &str = "id, group_id, title, content, created_at, updated_at";
@@ -511,6 +511,7 @@ pub struct GroupAgentResponse {
     group_id: String,
     agent_id: String,
     display_name: String,
+    avatar_url: Option<String>,
     role: Option<String>,
     topology_role: Option<String>,
     speaking_order: Option<i64>,
@@ -529,6 +530,7 @@ pub struct GroupMemberResponse {
     group_id: String,
     user_id: String,
     display_name: String,
+    avatar_url: Option<String>,
     role: String,
     status: String,
     is_muted: bool,
@@ -806,6 +808,7 @@ struct GroupAgentRow {
     agent_id: String,
     display_name: Option<String>,
     agent_name: String,
+    avatar_url: Option<String>,
     role: Option<String>,
     topology_role: Option<String>,
     speaking_order: Option<i64>,
@@ -821,6 +824,7 @@ struct GroupMemberRow {
     group_id: String,
     user_id: String,
     user_name: String,
+    avatar_url: Option<String>,
     role: String,
     status: String,
     joined_at: String,
@@ -925,6 +929,7 @@ impl From<GroupAgentRow> for GroupAgentResponse {
             group_id: row.group_id,
             agent_id: row.agent_id,
             display_name: row.display_name.unwrap_or(row.agent_name),
+            avatar_url: row.avatar_url,
             role: row.role,
             topology_role: row.topology_role,
             speaking_order: row.speaking_order,
@@ -949,6 +954,7 @@ impl GroupMemberRow {
             group_id: self.group_id,
             user_id: self.user_id,
             display_name: self.user_name,
+            avatar_url: self.avatar_url,
             role: self.role,
             status: self.status,
             is_muted,

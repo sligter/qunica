@@ -84,7 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v2/health", get(health::health))
         .route("/api/v2/auth/register", axum::routing::post(auth::register))
         .route("/api/v2/auth/login", axum::routing::post(auth::login))
-        .route("/api/v2/auth/me", get(auth::me))
+        .route("/api/v2/auth/me", get(auth::me).patch(auth::update_me))
         .route("/api/v2/token-usage", get(token_usage::get))
         .route(
             "/api/v2/workspaces",

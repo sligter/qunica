@@ -13,6 +13,7 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { AgentSystemPromptActions } from '@/components/agents/AgentSystemPromptActions'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
@@ -127,6 +128,7 @@ export function EditAgentForm({
   const mcpServers = useMcpServers()
   const acpRuntimePresets = useAcpRuntimePresets()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(agent.avatar_url ?? null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skill_ids)
   const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(agent.tool_config)
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -181,6 +183,7 @@ export function EditAgentForm({
 
   const dirty =
     form.formState.isDirty ||
+    avatarUrl !== (agent.avatar_url ?? null) ||
     JSON.stringify(selectedSkillIds) !== JSON.stringify(agent.skill_ids) ||
     JSON.stringify(toolConfig) !== JSON.stringify(agent.tool_config)
 
@@ -287,6 +290,7 @@ export function EditAgentForm({
       await update.mutateAsync({
         name: values.name,
         description: values.description ?? null,
+        avatar_url: avatarUrl,
         system_prompt: values.system_prompt,
         runtime_kind: values.runtime_kind,
         acp_runtime:
@@ -330,6 +334,12 @@ export function EditAgentForm({
           <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
         )}
       </div>
+
+      <AgentAvatarPicker
+        value={avatarUrl}
+        name={form.watch('name')}
+        onChange={setAvatarUrl}
+      />
 
       <div className="space-y-1.5">
         <Label htmlFor="ea-description">{t('agents:fields.descriptionOptional')}</Label>

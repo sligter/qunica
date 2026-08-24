@@ -15,6 +15,7 @@ import {
   EDIT_AGENT_FORM_ID,
   EditAgentForm,
 } from '@/components/agents/EditAgentForm'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -34,8 +35,6 @@ import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
-import { avatarColorClass } from '@/lib/avatarColor'
-import { cn } from '@/lib/utils'
 
 export function AgentDetailPage() {
   const { t } = useTranslation(['agents', 'common'])
@@ -208,14 +207,7 @@ export function AgentDetailPage() {
         {/* Quick Hero Banner */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
           <div className="flex items-center gap-3.5">
-            <span
-              className={cn(
-                'flex h-12 w-12 shrink-0 select-none items-center justify-center rounded-2xl text-base font-semibold shadow-xs',
-                avatarColorClass(a.id),
-              )}
-            >
-              {a.name.slice(0, 1).toUpperCase()}
-            </span>
+            <AgentAvatar name={a.name} avatarUrl={a.avatar_url} size="lg" />
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-semibold">{a.name}</h2>

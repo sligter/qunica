@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, Bot, Search, UserRound } from 'lucide-react'
+import { ArrowLeft, Search } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -88,7 +89,7 @@ function entryMuted(entry: Entry) { return entry.kind === 'agent' ? entry.muted 
 function AddUser({ user, groupId }: { user: UserRead; groupId: string }) {
   const { t } = useTranslation('groups')
   const add = useAddGroupMember()
-  return <li className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{user.name}</p><p className="truncate text-xs text-muted-foreground">{user.email}</p></div><Button size="sm" onClick={() => add.mutate({ groupId, userId: user.id })} disabled={add.isPending}>{add.isPending ? t('members.adding') : t('members.add')}</Button></li>
+  return <li className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-0"><div className="flex min-w-0 items-center gap-2"><AgentAvatar name={user.name} kind="user" avatarUrl={user.avatar_url} /><div className="min-w-0"><p className="truncate text-sm font-medium">{user.name}</p><p className="truncate text-xs text-muted-foreground">{user.email}</p></div></div><Button size="sm" onClick={() => add.mutate({ groupId, userId: user.id })} disabled={add.isPending}>{add.isPending ? t('members.adding') : t('members.add')}</Button></li>
 }
 
 function AddAgent({ agent, groupId, defaultWorkspaceMode }: { agent: AgentRead; groupId: string; defaultWorkspaceMode: GroupWorkspaceMode }) {
@@ -154,7 +155,7 @@ function EntryRow({ entry, active, mode, onSelect }: { entry: Entry; active: boo
   const rawRole = agent ? entry.agent.role : entry.member.role
   const knownRole = rawRole === 'owner' || rawRole === 'admin' || rawRole === 'worker' || rawRole === 'hub' || rawRole === 'participant' || rawRole === 'member' || rawRole === 'agent'
   const role = knownRole ? t(`members.${rawRole}`) : rawRole
-  return <li><button type="button" onClick={onSelect} aria-current={active || undefined} className={navItemClass(active, 'items-center gap-3 px-3 py-2.5')}><div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>{agent ? <Bot className="h-4 w-4" /> : <UserRound className="h-4 w-4" />}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className={cn('truncate text-sm', active ? 'font-semibold' : 'font-medium')}>{entryName(entry)}</span><Badge variant="outline" className="shrink-0">{role || t('members.agent')}</Badge></div>{tags.length > 0 ? <div className="mt-1 flex flex-wrap gap-1">{tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}</div> : null}</div></button></li>
+  return <li><button type="button" onClick={onSelect} aria-current={active || undefined} className={navItemClass(active, 'items-center gap-3 px-3 py-2.5')}>{agent ? <AgentAvatar name={entry.agent.display_name} avatarUrl={entry.agent.avatar_url} /> : <AgentAvatar name={entry.member.display_name} kind="user" avatarUrl={entry.member.avatar_url} />}<div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className={cn('truncate text-sm', active ? 'font-semibold' : 'font-medium')}>{entryName(entry)}</span><Badge variant="outline" className="shrink-0">{role || t('members.agent')}</Badge></div>{tags.length > 0 ? <div className="mt-1 flex flex-wrap gap-1">{tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}</div> : null}</div></button></li>
 }
 
 function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: string; mode: GroupCommunicationMode; onRemoved: () => void }) {
@@ -217,9 +218,7 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
     <Card asChild className="space-y-4 p-4">
       <section>
       <div className="flex items-start gap-3">
-        <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full', agent ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>
-          {agent ? <Bot className="h-5 w-5" /> : <UserRound className="h-5 w-5" />}
-        </div>
+        {agent ? <AgentAvatar name={entry.agent.display_name} avatarUrl={entry.agent.avatar_url} size="lg" /> : <AgentAvatar name={entry.member.display_name} kind="user" avatarUrl={entry.member.avatar_url} size="lg" />}
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold">{entryName(entry)}</h2>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">

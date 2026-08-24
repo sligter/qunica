@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import type { GroupAgentRead } from '@/types/api'
 
 interface MentionPopoverProps {
@@ -89,11 +88,11 @@ export function MentionPopover({
             onSelect(agent)
           }}
         >
-          <Avatar className="h-6 w-6 shrink-0">
-            <AvatarFallback className="bg-avatar-5 text-avatar-foreground text-[10px]">
-              <Bot className="h-3.5 w-3.5" />
-            </AvatarFallback>
-          </Avatar>
+          {/* Decorative: the row already names the agent, and the avatar's own
+              label would otherwise announce it a second time. */}
+          <span aria-hidden="true">
+            <AgentAvatar name={agent.display_name} avatarUrl={agent.avatar_url} size="sm" />
+          </span>
           <span className="truncate font-medium">{agent.display_name}</span>
         </button>
       ))}

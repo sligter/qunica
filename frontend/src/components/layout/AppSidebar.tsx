@@ -30,6 +30,7 @@ import {
 } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { OverlayNavLink, useOverlayLinkState } from '@/components/layout/overlayRouting'
 import {
   commandShortcutHint,
@@ -154,14 +155,6 @@ function storeCollapsed(value: boolean): void {
   } catch {
     // Layout preference persistence should not block the UI.
   }
-}
-
-function initials(name: string | undefined): string {
-  if (!name) return '?'
-  const parts = name.trim().split(/\s+/)
-  if (parts.length === 0) return '?'
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
-  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase()
 }
 
 /**
@@ -525,11 +518,11 @@ export function AppSidebar() {
                         >
                           {({ isActive }) => (
                             <>
-                              <Avatar className="h-7 w-7 shrink-0">
-                                <AvatarFallback className={avatarColorClass(chat.id)}>
-                                  {(chat.agent_name ?? chat.title).slice(0, 1).toUpperCase()}
-                                </AvatarFallback>
-                              </Avatar>
+                              <AgentAvatar
+                                name={chat.agent_name ?? chat.title}
+                                avatarUrl={chat.agent_avatar_url}
+                                size="sm"
+                              />
                               <span
                                 className={cn(
                                   'min-w-0 flex-1 truncate text-sm',
@@ -919,11 +912,7 @@ function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
         )}
         aria-label={t('userMenu')}
       >
-        <Avatar className="h-7 w-7 shrink-0">
-          <AvatarFallback className="bg-primary text-xs text-primary-foreground">
-            {initials(user.name)}
-          </AvatarFallback>
-        </Avatar>
+        <AgentAvatar name={user.name} kind="user" avatarUrl={user.avatar_url} size="sm" />
         {!collapsed && (
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
             {user.name}

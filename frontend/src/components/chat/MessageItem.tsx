@@ -121,8 +121,13 @@ export function MessageItemView({
       )}
     >
       <AgentAvatar
-        name={senderName}
+        name={isUser && message.sender_id === currentUser?.id ? currentUser.name : senderName}
         kind={isUser ? 'user' : agentIsSystem ? 'system' : 'agent'}
+        avatarUrl={
+          isUser && message.sender_id === currentUser?.id
+            ? currentUser.avatar_url
+            : groupAgent?.avatar_url
+        }
         className="mt-0.5"
         contextUsage={message.context_usage ?? groupAgent?.context_usage ?? null}
       />

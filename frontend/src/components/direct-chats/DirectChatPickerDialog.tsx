@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import {
   Dialog,
   DialogContent,
@@ -85,6 +86,7 @@ function DirectChatPickerBody({ onOpenChange }: DirectChatPickerBodyProps) {
             disabled={createChat.isPending}
             onClick={() => void selectAgent(agent.id)}
           >
+            <AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} />
             <span className="min-w-0">
               <span className="block truncate text-sm font-medium">{agent.name}</span>
               {agent.description ? (

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,6 +11,7 @@ import {
   useSystemSettings,
   useUpdateSystemSettings,
 } from '@/hooks/useSystemSettings'
+import { useAuth, useUpdateCurrentUser } from '@/hooks/useAuth'
 import { ApiError } from '@/lib/api-v2/client'
 import { notificationsSupported, requestNotificationPermission, showNotification } from '@/lib/notifications'
 import {
@@ -41,6 +43,8 @@ const REPLY_INSERT_MODES: ReplyInsertMode[] = ['instant', 'queue']
 
 export function SystemSettingsPage() {
   const { t, i18n } = useTranslation('settings')
+  const { user } = useAuth()
+  const updateCurrentUser = useUpdateCurrentUser()
   const settings = useSystemSettings()
   const update = useUpdateSystemSettings()
   const fallbackInputRef = useRef<HTMLInputElement | null>(null)
@@ -68,6 +72,8 @@ export function SystemSettingsPage() {
   const [assistantError, setAssistantError] = useState<string | null>(null)
   const [shellError, setShellError] = useState<string | null>(null)
   const [replyInsertError, setReplyInsertError] = useState<string | null>(null)
+  const [profileName, setProfileName] = useState('')
+  const [profileError, setProfileError] = useState<string | null>(null)
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
@@ -83,6 +89,7 @@ export function SystemSettingsPage() {
   const serverTavilyDepth = settings.data?.tavily_search_depth ?? 'basic'
   const serverTavilyIncludeAnswer = settings.data?.tavily_include_answer ?? true
   const serverTavilyIncludeRawContent = settings.data?.tavily_include_raw_content ?? false
+  const userName = user?.name
 
   useEffect(() => {
     if (serverAppearance !== undefined) setAppearance(serverAppearance)
@@ -117,6 +124,9 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (loaded) setTavilyIncludeRawContent(serverTavilyIncludeRawContent)
   }, [loaded, serverTavilyIncludeRawContent])
+  useEffect(() => {
+    if (userName !== undefined) setProfileName(userName)
+  }, [userName])
   useEffect(() => {
     document.title = t('title')
   }, [i18n.resolvedLanguage, t])
@@ -370,12 +380,80 @@ export function SystemSettingsPage() {
     )
   }
 
+  const onAvatarChange = async (avatar_url: string | null) => {
+    setProfileError(null)
+    try {
+      await updateCurrentUser.mutateAsync({ avatar_url })
+    } catch (err) {
+      setProfileError(errorMessage(err, t('profile.saveError')))
+    }
+  }
+
+  const normalizedProfileName = profileName.trim()
+  const profileNameDirty = Boolean(user && normalizedProfileName !== user.name)
+  const onProfileNameSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!profileNameDirty || updateCurrentUser.isPending) return
+    setProfileError(null)
+    try {
+      await updateCurrentUser.mutateAsync({ name: normalizedProfileName })
+    } catch (err) {
+      setProfileError(errorMessage(err, t('profile.saveError')))
+    }
+  }
+
   return (
     <DetailShell
       title={t('title')}
       subtitle={t('subtitle')}
     >
       <div className="space-y-10">
+        {user ? (
+          <SettingsSection
+            title={t('profile.title')}
+            description={t('profile.description')}
+            aside={updateCurrentUser.isPending ? t('profile.saving') : undefined}
+          >
+            <SettingsRow
+              label={t('profile.nickname')}
+              description={user.email}
+              htmlFor="profile-nickname"
+            >
+              <form className="flex w-full gap-2" onSubmit={onProfileNameSubmit}>
+                <Input
+                  id="profile-nickname"
+                  name="nickname"
+                  autoComplete="name"
+                  required
+                  maxLength={100}
+                  value={profileName}
+                  disabled={updateCurrentUser.isPending}
+                  onChange={(event) => setProfileName(event.target.value)}
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!profileNameDirty || !normalizedProfileName || updateCurrentUser.isPending}
+                >
+                  {updateCurrentUser.isPending
+                    ? t('common:actions.saving')
+                    : t('common:actions.save')}
+                </Button>
+              </form>
+            </SettingsRow>
+            <div className="space-y-2 py-2.5">
+              <AgentAvatarPicker
+                value={user.avatar_url}
+                name={user.name}
+                disabled={updateCurrentUser.isPending}
+                onChange={(value) => void onAvatarChange(value)}
+              />
+              {profileError ? (
+                <p className="text-sm text-destructive" role="alert">{profileError}</p>
+              ) : null}
+            </div>
+          </SettingsSection>
+        ) : null}
         <SettingsSection title={t('appearance')}>
           <SettingsRow
             label={t('theme')}

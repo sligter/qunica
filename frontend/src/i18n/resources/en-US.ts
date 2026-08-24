@@ -360,8 +360,12 @@ export const enUS = {
       toolsDescription: 'Select tool permissions to include in the agent context.', visionDescription: 'Allow this agent to receive image input.', created: 'Created agent: {{name}}',
     },
     fields: {
-      name: 'Name', descriptionOptional: 'Description (optional)', systemPrompt: 'System prompt', runtime: 'Runtime', workspace: 'Workspace', provider: 'LLM provider', model: 'Model', mode: 'Mode', thinking: 'Thinking',
+      name: 'Name', avatar: 'Avatar', descriptionOptional: 'Description (optional)', systemPrompt: 'System prompt', runtime: 'Runtime', workspace: 'Workspace', provider: 'LLM provider', model: 'Model', mode: 'Mode', thinking: 'Thinking',
       modelParameters: 'Model Parameters', temperature: 'Temperature', topP: 'Top P', thinkingLevel: 'Thinking level', contextWindowOverride: 'Context window override', outputReserveOverride: 'Output reserve % override', vision: 'Enable image input', builtInTools: 'Built-in tools', skills: 'Skills',
+    },
+    avatar: {
+      description: 'Pick a mark, or upload a square image.', preview: 'Agent', upload: 'Upload image', custom: 'Custom image', processing: 'Processing…', initials: 'Initials', type: 'Choose a PNG, JPEG, or WebP image.', size: 'Image must be 8 MB or smaller.', processingFailed: 'This image could not be processed.',
+      presets: { beacon: 'Beacon', crest: 'Crest', tide: 'Tide', loom: 'Loom', prism: 'Prism', orbit: 'Orbit', bloom: 'Bloom', ember: 'Ember' },
     },
     actions: { create: 'Create agent', creating: 'Creating...', showOptions: 'Show {{label}} options', valueOptions: '{{label}} options', refreshValues: 'Refresh available values' },
     states: { defaultProvider: 'Default (env settings)', providerDefault: 'Provider default', inheritProvider: 'Inherit provider', backendLocal: 'local', backendSandbox: 'sandbox', loadingTools: 'Loading tools...', loadingSkills: 'Loading...', loadingValues: 'Loading available values...', staleValues: 'Runtime settings changed. Refresh available values.' },
@@ -693,6 +697,13 @@ export const enUS = {
     description: 'Account-level preferences and integrations.',
     groups: { preferences: 'Preferences', diagnostics: 'Diagnostics' },
     tabs: { system: 'System', media: 'Media', logs: 'Runtime logs' },
+    profile: {
+      title: 'Profile',
+      description: 'Your identity across chats and groups.',
+      nickname: 'Nickname',
+      saving: 'Saving…',
+      saveError: 'Profile update failed.',
+    },
     appearance: 'Appearance',
     theme: 'Theme',
     themeDescription: 'Choose the app theme for this account. Saved instantly.',

@@ -5,9 +5,11 @@ import { useAuthStore } from '@/stores/authStore'
 import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
 
 const STORAGE_KEY = 'agentchat:auth:v1'
+const USER_SYNC_KEY = 'agentchat:auth-user:v1'
 
 describe('authStore window synchronization', () => {
   beforeEach(() => {
+    localStorage.clear()
     queryClient.clear()
     useAuthStore.setState({ token: null, user: null, hydrated: true })
     useQueuedMessagesStore.getState().clearAll()
@@ -46,6 +48,29 @@ describe('authStore window synchronization', () => {
       user: null,
       hydrated: false,
     }))
+  })
+
+  it('applies a profile saved in another window immediately', () => {
+    const current = {
+      id: 'user-1',
+      email: 'nova@example.com',
+      name: 'Nova',
+      avatar_url: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    useAuthStore.setState({ token: 'token', user: current })
+    const updated = { ...current, name: 'Nova Ray', avatar_url: 'preset:prism' }
+    useAuthStore.getState().setUser(updated)
+    const payload = localStorage.getItem(USER_SYNC_KEY)
+    useAuthStore.setState({ user: current })
+
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: USER_SYNC_KEY,
+      newValue: payload,
+    }))
+
+    expect(useAuthStore.getState().user).toEqual(updated)
+    expect(queryClient.getQueryData(['auth', 'me', 'token'])).toEqual(updated)
   })
 
   it('does not restore an in-flight queued message after logout clears it', () => {

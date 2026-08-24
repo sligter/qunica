@@ -729,11 +729,16 @@ async fn agent_patch_updates_name_and_json_fields() {
             "POST",
             "/api/v2/agents",
             &token,
-            json!({"name": "Before", "workspace_id": workspace}),
+            json!({
+                "name": "Before",
+                "avatar_url": "preset:prism",
+                "workspace_id": workspace
+            }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(agent["avatar_url"], "preset:prism");
     let agent_id = agent["id"].as_str().unwrap().to_string();
 
     let (status, updated) = send(
@@ -744,6 +749,7 @@ async fn agent_patch_updates_name_and_json_fields() {
             &token,
             json!({
                 "name": "After",
+                "avatar_url": "preset:ember",
                 "llm_config": {"model": "claude", "temperature": 0.5},
                 "tool_config": {"enabled": ["search"]},
                 "skill_ids": [SKILL_A, SKILL_B],
@@ -753,6 +759,7 @@ async fn agent_patch_updates_name_and_json_fields() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["name"], "After");
+    assert_eq!(updated["avatar_url"], "preset:ember");
     assert_eq!(
         updated["llm_config"],
         json!({"model": "claude", "temperature": 0.5})
@@ -768,12 +775,26 @@ async fn agent_patch_updates_name_and_json_fields() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["name"], "After");
+    assert_eq!(fetched["avatar_url"], "preset:ember");
     assert_eq!(
         fetched["llm_config"],
         json!({"model": "claude", "temperature": 0.5})
     );
     assert_eq!(fetched["tool_config"], json!({"enabled": ["search"]}));
     assert_eq!(fetched["skill_ids"], json!([SKILL_A, SKILL_B]));
+
+    let (status, cleared) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{agent_id}"),
+            &token,
+            json!({"avatar_url": null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["avatar_url"], Value::Null);
 }
 
 #[tokio::test]

@@ -13,6 +13,7 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { AgentSystemPromptActions } from '@/components/agents/AgentSystemPromptActions'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
 import { SystemPromptMentionTextarea } from '@/components/agents/SystemPromptMentionTextarea'
@@ -119,6 +120,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
   const acpRuntimePresets = useAcpRuntimePresets()
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [submittedName, setSubmittedName] = useState<string | null>(null)
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
   const [toolConfig, setToolConfig] = useState<AgentToolConfig | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -278,6 +280,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       const created = await createAgent.mutateAsync({
         name: values.name,
         description: values.description,
+        avatar_url: avatarUrl,
         system_prompt: values.system_prompt,
         runtime_kind: values.runtime_kind,
         acp_runtime:
@@ -307,6 +310,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
         skill_ids: selectedSkillIds,
       })
       form.reset()
+      setAvatarUrl(null)
       setSelectedSkillIds([])
       setToolConfig(null)
       setSubmittedName(created.name)
@@ -325,6 +329,12 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
           <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
         )}
       </div>
+
+      <AgentAvatarPicker
+        value={avatarUrl}
+        name={form.watch('name')}
+        onChange={setAvatarUrl}
+      />
 
       <div className="space-y-1.5">
         <Label htmlFor="agent-description">{t('agents:fields.descriptionOptional')}</Label>

@@ -9,7 +9,11 @@ use sqlx::SqlitePool;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::api::{error::ApiError, AppState};
+use crate::api::{
+    agents::{double_option, normalize_avatar_url},
+    error::ApiError,
+    AppState,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
@@ -22,6 +26,14 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMeRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    avatar_url: Option<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,8 +84,8 @@ pub async fn register(
     Json(body): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
     let email = normalize_email(&body.email);
-    let name = body.name.trim().to_string();
-    validate_register(&email, &body.password, &name)?;
+    let name = normalize_name(&body.name)?;
+    validate_register(&email, &body.password)?;
 
     if find_user_by_email(state.db.pool(), &email).await?.is_some() {
         return Err(ApiError::conflict("user already exists"));
@@ -147,6 +159,43 @@ pub async fn me(
     Ok(Json(user.into()))
 }
 
+pub async fn update_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateMeRequest>,
+) -> Result<Json<UserResponse>, ApiError> {
+    let user_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let name = body.name.as_deref().map(normalize_name).transpose()?;
+    let avatar_url = body
+        .avatar_url
+        .map(|value| normalize_avatar_url(value.as_deref()))
+        .transpose()?;
+    let update_avatar = avatar_url.is_some();
+    let avatar_url = avatar_url.flatten();
+    let now = now_rfc3339();
+
+    let result = sqlx::query(
+        "UPDATE users SET name = COALESCE(?, name), \
+         avatar_url = CASE WHEN ? THEN ? ELSE avatar_url END, updated_at = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(update_avatar)
+    .bind(avatar_url)
+    .bind(now)
+    .bind(&user_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::unauthorized("invalid token"));
+    }
+
+    let user = find_user_by_id(state.db.pool(), &user_id)
+        .await?
+        .ok_or_else(|| ApiError::unauthorized("invalid token"))?;
+    Ok(Json(user.into()))
+}
+
 /// Resolve the authenticated user id from an `Authorization: Bearer <jwt>` header.
 ///
 /// Reusable by later API v2 routes that need the current user. Any missing or
@@ -173,7 +222,18 @@ fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
-fn validate_register(email: &str, password: &str, name: &str) -> Result<(), ApiError> {
+fn normalize_name(raw: &str) -> Result<String, ApiError> {
+    let name = raw.trim().to_string();
+    let name_len = name.chars().count();
+    if !(1..=100).contains(&name_len) {
+        return Err(ApiError::invalid_input(
+            "name must be between 1 and 100 characters",
+        ));
+    }
+    Ok(name)
+}
+
+fn validate_register(email: &str, password: &str) -> Result<(), ApiError> {
     match email.split_once('@') {
         Some((local, domain)) if !local.is_empty() && !domain.is_empty() => {}
         _ => return Err(ApiError::invalid_input("email is invalid")),
@@ -183,13 +243,6 @@ fn validate_register(email: &str, password: &str, name: &str) -> Result<(), ApiE
     if !(8..=128).contains(&password_len) {
         return Err(ApiError::invalid_input(
             "password must be between 8 and 128 characters",
-        ));
-    }
-
-    let name_len = name.chars().count();
-    if !(1..=100).contains(&name_len) {
-        return Err(ApiError::invalid_input(
-            "name must be between 1 and 100 characters",
         ));
     }
 

@@ -114,6 +114,64 @@ describe('SystemSettingsPage preferences', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Language update failed.')
   })
 
+  it('saves the current user avatar and updates auth state', async () => {
+    const currentUser = {
+      id: 'user-1',
+      email: 'me@example.com',
+      name: 'Nova Ray',
+      avatar_url: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    useAuthStore.setState({ token: 'token', user: currentUser })
+    let resolvePatch!: (response: Response) => void
+    const patchResponse = new Promise<Response>((resolve) => {
+      resolvePatch = resolve
+    })
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(settings))
+      .mockReturnValueOnce(patchResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+
+    await renderSettingsPage()
+    await user.click(await screen.findByRole('button', { name: 'Prism' }))
+    expect(useAuthStore.getState().user?.avatar_url).toBe('preset:prism')
+
+    const [, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(patchInit.method).toBe('PATCH')
+    expect(JSON.parse(String(patchInit.body))).toEqual({ avatar_url: 'preset:prism' })
+    resolvePatch(jsonResponse({ ...currentUser, avatar_url: 'preset:prism' }))
+    await waitFor(() => expect(useAuthStore.getState().user?.avatar_url).toBe('preset:prism'))
+  })
+
+  it('trims and saves the current user nickname', async () => {
+    const currentUser = {
+      id: 'user-1',
+      email: 'me@example.com',
+      name: 'Nova',
+      avatar_url: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    useAuthStore.setState({ token: 'token', user: currentUser })
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(settings))
+      .mockResolvedValueOnce(jsonResponse({ ...currentUser, name: 'Nova Ray' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+
+    await renderSettingsPage()
+    const nickname = await screen.findByLabelText('Nickname')
+    await user.clear(nickname)
+    await user.type(nickname, '  Nova Ray  ')
+    await user.click(nickname.closest('form')!.querySelector('button')!)
+
+    const [, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(JSON.parse(String(patchInit.body))).toEqual({ name: 'Nova Ray' })
+    await waitFor(() => expect(useAuthStore.getState().user?.name).toBe('Nova Ray'))
+  })
+
   it('saves whether the assistant launcher is enabled', async () => {
     useAuthStore.setState({ token: 'token' })
     const fetchMock = vi

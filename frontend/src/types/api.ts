@@ -14,6 +14,11 @@ export interface UserRead {
   created_at: string
 }
 
+export interface UserUpdate {
+  name?: string
+  avatar_url?: string | null
+}
+
 export interface Token {
   access_token: string
   token_type: 'bearer'
@@ -259,6 +264,7 @@ export interface AgentRead {
   id: string
   name: string
   description: string | null
+  avatar_url?: string | null
   system_prompt: string
   llm_config: Record<string, unknown> | null
   tool_config: AgentToolConfig | null
@@ -370,6 +376,7 @@ export interface TokenUsageRead {
 export interface AgentCreate {
   name: string
   description?: string
+  avatar_url?: string | null
   system_prompt: string
   llm_config?: Record<string, unknown> | null
   tool_config?: AgentToolConfig | null
@@ -384,6 +391,7 @@ export interface AgentCreate {
 export interface AgentUpdate {
   name?: string
   description?: string | null
+  avatar_url?: string | null
   system_prompt?: string
   llm_config?: Record<string, unknown> | null
   tool_config?: AgentToolConfig | null
@@ -564,6 +572,7 @@ export interface DirectChatRead {
   title_source: DirectChatTitleSource
   agent_id: string | null
   agent_name: string | null
+  agent_avatar_url?: string | null
   agent_status: string | null
   workspace_id: string | null
   status: string
@@ -632,6 +641,7 @@ export interface GroupMemberRead {
   group_id: string
   user_id: string
   display_name: string
+  avatar_url?: string | null
   role: string
   status: string
   is_muted: boolean
@@ -660,6 +670,7 @@ export interface GroupAgentRead {
   group_id: string
   agent_id: string
   display_name: string
+  avatar_url?: string | null
   role: string | null
   topology_role: GroupTopologyRole | null
   speaking_order: number | null

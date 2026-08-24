@@ -75,6 +75,54 @@ async fn register_login_and_me_round_trip() {
     assert_eq!(me["id"], user_id);
     assert_eq!(me["email"], "alice@example.com");
     assert_eq!(me["name"], "Alice");
+
+    let update_request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v2/auth/me")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"name": " Alice Nova ", "avatar_url": "preset:prism"}).to_string(),
+        ))
+        .unwrap();
+    let (status, updated) = send(&app, update_request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["name"], "Alice Nova");
+    assert_eq!(updated["avatar_url"], "preset:prism");
+
+    let me_request = Request::builder()
+        .method("GET")
+        .uri("/api/v2/auth/me")
+        .header("authorization", format!("Bearer {access_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, me) = send(&app, me_request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["name"], "Alice Nova");
+    assert_eq!(me["avatar_url"], "preset:prism");
+
+    let clear_request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v2/auth/me")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"avatar_url": null}).to_string()))
+        .unwrap();
+    let (status, cleared) = send(&app, clear_request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["name"], "Alice Nova");
+    assert!(cleared["avatar_url"].is_null());
+
+    let invalid_name_request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v2/auth/me")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"name": "   "}).to_string()))
+        .unwrap();
+    let (status, body) = send(&app, invalid_name_request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
 }
 
 #[tokio::test]
