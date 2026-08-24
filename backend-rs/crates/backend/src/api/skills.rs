@@ -353,7 +353,9 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<SkillResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(update_inner(&state, &owner_id, &skill_id, body).await?))
+    Ok(Json(
+        update_inner(&state, &owner_id, &skill_id, body).await?,
+    ))
 }
 
 /// The body of [`update`] without the axum extractors. See [`create_inner`].
@@ -449,8 +451,7 @@ pub async fn list_resources(
             // fail, which the helper already treats as "not editable" — the
             // right degradation for a row whose storage directory is gone.
             let storage_dir = FsPath::new(row.storage_path.as_deref().unwrap_or(""));
-            let (size, is_text) =
-                resource_metadata(&state.skill_storage_root, storage_dir, file);
+            let (size, is_text) = resource_metadata(&state.skill_storage_root, storage_dir, file);
             SkillResourceResponse {
                 path: file.path.clone(),
                 size,

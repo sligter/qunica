@@ -12,6 +12,7 @@
 
 pub mod agent_as_tool;
 pub mod approval;
+pub mod chat_title;
 pub mod compaction;
 pub mod compaction_hook;
 pub mod conversation_context;

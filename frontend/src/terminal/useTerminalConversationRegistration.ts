@@ -4,6 +4,7 @@ import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { looksAbsolute } from '@/lib/folderPicker'
 import { isDesktopRuntime } from '@/lib/runtime'
 import {
+  useOptionalTerminalRuntime,
   useTerminalRuntime,
 } from '@/terminal/TerminalRuntimeProvider'
 import type { TerminalConversationTarget } from '@/terminal/types'
@@ -74,4 +75,35 @@ export function useTerminalConversationRegistration(
   )
 
   return target
+}
+
+/**
+ * Registers the chat only when a terminal runtime is mounted. Compact surfaces
+ * such as the Assistant window never host a terminal, so they skip this.
+ */
+export function useOptionalTerminalConversationRegistration(
+  conversationId: string | undefined,
+  workspaceId: string | null,
+  cwdOverride?: string | null,
+): void {
+  const workspaces = useWorkspaces()
+  const runtime = useOptionalTerminalRuntime()
+  const registerConversation = runtime?.registerConversation
+  const target = useMemo(
+    () => conversationId
+      ? resolveTerminalConversationTarget(
+          conversationId,
+          workspaceId,
+          { data: workspaces.data, isLoading: workspaces.isLoading },
+          undefined,
+          cwdOverride,
+        )
+      : null,
+    [conversationId, cwdOverride, workspaceId, workspaces.data, workspaces.isLoading],
+  )
+
+  useEffect(() => {
+    if (!registerConversation || !target) return
+    return registerConversation(target)
+  }, [registerConversation, target])
 }

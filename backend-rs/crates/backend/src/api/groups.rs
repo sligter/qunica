@@ -3497,8 +3497,7 @@ async fn fetch_group_note_rows(
     pool: &SqlitePool,
     group_id: &str,
 ) -> Result<Vec<GroupNoteRow>, ApiError> {
-    let sql =
-        "SELECT id, group_id, title, '' AS content, created_at, updated_at FROM group_notes \
+    let sql = "SELECT id, group_id, title, '' AS content, created_at, updated_at FROM group_notes \
          WHERE group_id = ? AND status = 'active' \
          ORDER BY updated_at DESC, id DESC";
     sqlx::query_as::<_, GroupNoteRow>(sql)

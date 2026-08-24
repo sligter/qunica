@@ -178,7 +178,11 @@ async fn mcp_servers_crud_round_trips_every_transport_field() {
 
     let (status, _) = send(
         &app,
-        authed("DELETE", &format!("/api/v2/mcp-servers/{server_id}"), &token),
+        authed(
+            "DELETE",
+            &format!("/api/v2/mcp-servers/{server_id}"),
+            &token,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -267,7 +271,11 @@ async fn mcp_servers_are_scoped_to_their_owner() {
 
     let (status, _) = send(
         &app,
-        authed("GET", &format!("/api/v2/mcp-servers/{server_id}"), &stranger),
+        authed(
+            "GET",
+            &format!("/api/v2/mcp-servers/{server_id}"),
+            &stranger,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -378,7 +386,10 @@ async fn stdio_transport_lists_and_calls_tools() {
     let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(names, vec!["echo", "fail"]);
     assert_eq!(tools[0].description, "Echo the input back.");
-    assert_eq!(tools[0].input_schema["properties"]["text"]["type"], "string");
+    assert_eq!(
+        tools[0].input_schema["properties"]["text"]["type"],
+        "string"
+    );
 
     let outcome = client
         .call_tool("echo", &json!({"text": "hello"}))
@@ -665,10 +676,7 @@ async fn sse_stream_handler(State(state): State<FakeHttpState>) -> Response {
             if first {
                 let announcement =
                     "event: endpoint\ndata: /messages?sessionId=session-abc\n\n".to_string();
-                return Some((
-                    Ok::<_, Infallible>(Bytes::from(announcement)),
-                    (false, rx),
-                ));
+                return Some((Ok::<_, Infallible>(Bytes::from(announcement)), (false, rx)));
             }
             let payload = rx.recv().await?;
             let event = format!("event: message\ndata: {payload}\n\n");
@@ -688,12 +696,7 @@ async fn sse_message_handler(
     Json(message): Json<Value>,
 ) -> Response {
     if let Some(response) = handle_rpc(&message) {
-        let sender = state
-            .sessions
-            .lock()
-            .unwrap()
-            .get("session-abc")
-            .cloned();
+        let sender = state.sessions.lock().unwrap().get("session-abc").cloned();
         if let Some(sender) = sender {
             sender.send(response.to_string()).ok();
         }
@@ -827,7 +830,10 @@ async fn an_http_endpoint_that_is_not_an_mcp_server_fails_with_a_readable_reason
         .expect_err("should not connect");
 
     let message = error.to_string();
-    assert!(message.contains("405") || message.contains("unreachable"), "{message}");
+    assert!(
+        message.contains("405") || message.contains("unreachable"),
+        "{message}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -915,7 +921,10 @@ async fn a_retyped_header_replaces_the_stored_value_and_an_omitted_one_is_delete
     .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["headers_masked"]["Authorization"], "****5678");
-    assert!(updated["headers_masked"].get("X-Trace").is_none(), "{updated}");
+    assert!(
+        updated["headers_masked"].get("X-Trace").is_none(),
+        "{updated}"
+    );
 
     // An empty map clears every header, so a credential can be revoked.
     let (status, cleared) = send(

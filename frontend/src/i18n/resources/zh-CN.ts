@@ -175,6 +175,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     userMenu: '用户菜单',
     logout: '退出登录',
     backToChat: '返回聊天',
+    closeWindow: '关闭窗口',
     openingWorkspace: '正在打开工作区…',
     // 资源导轨两个分组的标题：可增删改的资源，以及只读的报表。
     rail: {

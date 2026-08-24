@@ -239,13 +239,12 @@ pub async fn compact(
     // the drastic tail, not the normal one: the normal pass will not shrink it
     // enough to land under 55%, and the provider is one estimate away from
     // refusing it.
-    let trigger = if trigger == CompactionTrigger::Pressure
-        && tokens_before > limits.emergency_threshold()
-    {
-        CompactionTrigger::Emergency
-    } else {
-        trigger
-    };
+    let trigger =
+        if trigger == CompactionTrigger::Pressure && tokens_before > limits.emergency_threshold() {
+            CompactionTrigger::Emergency
+        } else {
+            trigger
+        };
     let mut outcome = CompactionOutcome {
         tokens_before,
         tokens_after: tokens_before,
@@ -566,9 +565,7 @@ fn preserved_prefix(messages: &[ChatMessage]) -> usize {
 fn retained_tail_start(messages: &[ChatMessage], trigger: CompactionTrigger) -> usize {
     let turns = match trigger {
         CompactionTrigger::Pressure => RETAINED_TAIL_TURNS,
-        CompactionTrigger::Emergency | CompactionTrigger::Overflow => {
-            EMERGENCY_RETAINED_TAIL_TURNS
-        }
+        CompactionTrigger::Emergency | CompactionTrigger::Overflow => EMERGENCY_RETAINED_TAIL_TURNS,
     };
     let start = preserved_prefix(messages);
     let heads: Vec<usize> = (start..messages.len())
@@ -646,8 +643,7 @@ fn select_span(
     let retreat = retreat_to_turn_head(messages, raw, start);
     let advance = advance_to_turn_head(messages, raw);
 
-    let keep_tail =
-        retreat > start + 1 && estimate_tokens(&messages[retreat..]) <= limits.target();
+    let keep_tail = retreat > start + 1 && estimate_tokens(&messages[retreat..]) <= limits.target();
     let end = if keep_tail { retreat } else { advance };
 
     // A span worth a model call and a splice.
@@ -989,10 +985,8 @@ mod tests {
 
     #[test]
     fn an_image_is_not_estimated_as_free() {
-        let image = ag_swarmer_domain::runtime::ChatContentPart::image(
-            "image/png",
-            "A".repeat(1_200_000),
-        );
+        let image =
+            ag_swarmer_domain::runtime::ChatContentPart::image("image/png", "A".repeat(1_200_000));
         let message = ChatMessage::with_parts("user", vec![image]);
         let tokens = estimate_message_tokens(&message);
         assert!(tokens > 1_000, "{tokens}");
@@ -1177,7 +1171,11 @@ mod tests {
             provider_metadata: None,
         };
         messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
-        messages.push(ChatMessage::tool_result(call.id, call.name, "build output".to_string()));
+        messages.push(ChatMessage::tool_result(
+            call.id,
+            call.name,
+            "build output".to_string(),
+        ));
         messages.push(ChatMessage::text("assistant", "the build failed due to X"));
         let calls_index = messages.len() - 3;
         let conclusion_index = messages.len() - 1;
@@ -1192,12 +1190,17 @@ mod tests {
         let mut messages = thread(2);
         messages.extend(tool_exchange("build output"));
         messages.extend(thread(3).into_iter().skip(1));
-        let raw = messages.iter().position(|message| message.role == "tool").unwrap();
+        let raw = messages
+            .iter()
+            .position(|message| message.role == "tool")
+            .unwrap();
 
         let span = select_span(
             &messages,
             raw,
-            CompactionLimits { usable_tokens: 10_000 },
+            CompactionLimits {
+                usable_tokens: 10_000,
+            },
         )
         .expect("a span should be selectable");
         assert_eq!(span.start, preserved_prefix(&messages));
@@ -1212,7 +1215,9 @@ mod tests {
         let (messages, calls_index, conclusion_index) = turn_on_the_tail_edge();
         // Land the raw boundary on the tool result, one message after the call.
         let raw = calls_index + 1;
-        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let limits = CompactionLimits {
+            usable_tokens: 10_000,
+        };
 
         let span = select_span(&messages, raw, limits).expect("a span should be selectable");
 
@@ -1229,7 +1234,9 @@ mod tests {
         // Land the raw boundary exactly on the concluding answer — the position
         // the old forward-scan silently left split.
         let raw = calls_index + 2;
-        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let limits = CompactionLimits {
+            usable_tokens: 10_000,
+        };
 
         let span = select_span(&messages, raw, limits).expect("a span should be selectable");
 
@@ -1246,13 +1253,19 @@ mod tests {
             provider_metadata: None,
         };
         messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
-        messages.push(ChatMessage::tool_result(call.id, call.name, "x".repeat(30_000)));
+        messages.push(ChatMessage::tool_result(
+            call.id,
+            call.name,
+            "x".repeat(30_000),
+        ));
         messages.push(ChatMessage::text("assistant", "done"));
         let huge_index = messages.len() - 2;
         messages.extend(thread(3).into_iter().skip(1));
 
         let raw = huge_index;
-        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let limits = CompactionLimits {
+            usable_tokens: 10_000,
+        };
         let span = select_span(&messages, raw, limits).expect("a span should be selectable");
 
         // The straddling turn is too big to keep whole in the tail, so the
@@ -1271,7 +1284,11 @@ mod tests {
             provider_metadata: None,
         };
         messages.push(ChatMessage::assistant_tool_calls("", vec![call.clone()]));
-        messages.push(ChatMessage::tool_result(call.id, call.name, "output".to_string()));
+        messages.push(ChatMessage::tool_result(
+            call.id,
+            call.name,
+            "output".to_string(),
+        ));
         messages.push(ChatMessage::text("assistant", "done"));
 
         let tail_start = retained_tail_start(&messages, CompactionTrigger::Emergency);
@@ -1289,15 +1306,22 @@ mod tests {
         let span = select_span(
             &messages,
             raw,
-            CompactionLimits { usable_tokens: 10_000 },
+            CompactionLimits {
+                usable_tokens: 10_000,
+            },
         )
         .expect("a span should be selectable");
-        assert_eq!(span.end, raw, "a boundary already on a turn start must not move");
+        assert_eq!(
+            span.end, raw,
+            "a boundary already on a turn start must not move"
+        );
     }
 
     #[test]
     fn a_thread_shorter_than_the_retained_tail_has_no_span() {
-        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let limits = CompactionLimits {
+            usable_tokens: 10_000,
+        };
         let messages = thread(1); // one user turn + one assistant turn
         let tail_start = retained_tail_start(&messages, CompactionTrigger::Pressure);
         assert!(select_span(&messages, tail_start, limits).is_none());
@@ -1349,11 +1373,7 @@ mod tests {
             lines.push("error: conflicting type in crate `foo`");
         }
         lines.push("done");
-        let mut messages = vec![ChatMessage::tool_result(
-            "call-1",
-            "Bash",
-            lines.join("\n"),
-        )];
+        let mut messages = vec![ChatMessage::tool_result("call-1", "Bash", lines.join("\n"))];
 
         let outcome = snip_compact(&mut messages);
 
@@ -1383,13 +1403,21 @@ mod tests {
         let pressure = retained_tail_start(&messages, CompactionTrigger::Pressure);
         let emergency = retained_tail_start(&messages, CompactionTrigger::Emergency);
         let overflow = retained_tail_start(&messages, CompactionTrigger::Overflow);
-        assert!(pressure < emergency, "pressure keeps more turns than emergency");
-        assert_eq!(emergency, overflow, "emergency and overflow share a skeleton");
+        assert!(
+            pressure < emergency,
+            "pressure keeps more turns than emergency"
+        );
+        assert_eq!(
+            emergency, overflow,
+            "emergency and overflow share a skeleton"
+        );
     }
 
     #[test]
     fn the_emergency_ceiling_sits_above_the_pressure_ceiling() {
-        let limits = CompactionLimits { usable_tokens: 10_000 };
+        let limits = CompactionLimits {
+            usable_tokens: 10_000,
+        };
         assert!(limits.emergency_threshold() > limits.pressure_threshold());
     }
 
@@ -1422,9 +1450,7 @@ mod tests {
         // escalation: the tail stays at the full size.
         let outcome = compact(
             &mut messages,
-            CompactionLimits {
-                usable_tokens: 800,
-            },
+            CompactionLimits { usable_tokens: 800 },
             CompactionTrigger::Pressure,
             &FixedSummarizer("summary"),
         )
@@ -1446,7 +1472,9 @@ mod tests {
         let (count, removed) = prune_tool_results(
             &mut small,
             tail_start,
-            CompactionLimits { usable_tokens: 1_000_000 },
+            CompactionLimits {
+                usable_tokens: 1_000_000,
+            },
         );
         assert_eq!((count, removed), (0, 0));
 
@@ -1457,7 +1485,9 @@ mod tests {
         let (count, removed) = prune_tool_results(
             &mut big,
             tail_start,
-            CompactionLimits { usable_tokens: 10_000 },
+            CompactionLimits {
+                usable_tokens: 10_000,
+            },
         );
         assert!(count > 0);
         assert!(removed > 0);
@@ -1510,9 +1540,15 @@ mod tests {
         let (count, removed) = prune_tool_results(
             &mut messages,
             tail_start,
-            CompactionLimits { usable_tokens: 1_000 },
+            CompactionLimits {
+                usable_tokens: 1_000,
+            },
         );
-        assert_eq!((count, removed), (0, 0), "a checklist is exempt even in the tail");
+        assert_eq!(
+            (count, removed),
+            (0, 0),
+            "a checklist is exempt even in the tail"
+        );
         assert_eq!(latest_checklist(&messages).unwrap().len(), 30);
     }
 
@@ -1632,7 +1668,9 @@ mod tests {
         let (count, removed) = prune_tool_results(
             &mut messages,
             tail_start,
-            CompactionLimits { usable_tokens: 100_000 },
+            CompactionLimits {
+                usable_tokens: 100_000,
+            },
         );
         assert_eq!(
             (count, removed),

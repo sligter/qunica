@@ -187,7 +187,10 @@ mod tests {
 
     #[test]
     fn transport_parsing_accepts_the_common_spellings() {
-        assert_eq!(McpTransportKind::parse("stdio"), Some(McpTransportKind::Stdio));
+        assert_eq!(
+            McpTransportKind::parse("stdio"),
+            Some(McpTransportKind::Stdio)
+        );
         // Operators routinely type "studio" for stdio; accept it rather than
         // rejecting a server that is otherwise configured correctly.
         assert_eq!(

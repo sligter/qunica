@@ -619,7 +619,10 @@ mod tests {
 
         // system, user(h1), assistant(calls), tool, assistant("done"), user(h2)
         assert_eq!(rendered.messages.len(), 6);
-        assert_eq!(rendered.message_index_by_row, vec![Some(1), Some(4), Some(5)]);
+        assert_eq!(
+            rendered.message_index_by_row,
+            vec![Some(1), Some(4), Some(5)]
+        );
         let target = rendered.message_index_by_row[2].unwrap();
         assert_eq!(rendered.messages[target].role, "user");
         assert!(rendered.messages[target]

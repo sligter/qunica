@@ -36,6 +36,8 @@ import {
   useOpenCommandPalette,
 } from '@/components/layout/CommandPalette'
 import { useAuthStore } from '@/stores/authStore'
+import { isDesktopRuntime } from '@/lib/runtime'
+import { openLibraryWindow, openSettingsWindow } from '@/lib/desktop'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -264,6 +266,10 @@ export function AppSidebar() {
     (prefix) =>
       location.pathname === prefix || location.pathname.startsWith(`${prefix}/`),
   )
+  // On the desktop shell the library and settings open as independent
+  // top-level windows, so they can sit beside the conversation and be used at
+  // the same time; the browser build keeps the in-app overlay.
+  const desktop = isDesktopRuntime()
 
   return (
     <aside
@@ -713,7 +719,11 @@ export function AppSidebar() {
             <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={() => navigate('/agents', { state: overlayState })}
+                onClick={() =>
+                  desktop
+                    ? void openLibraryWindow().catch(() => undefined)
+                    : navigate('/agents', { state: overlayState })
+                }
                 aria-label={t('navigation:library')}
                 aria-current={libraryActive ? 'page' : undefined}
                 className={cn(
@@ -731,7 +741,11 @@ export function AppSidebar() {
         ) : (
           <button
             type="button"
-            onClick={() => navigate('/agents', { state: overlayState })}
+            onClick={() =>
+              desktop
+                ? void openLibraryWindow().catch(() => undefined)
+                : navigate('/agents', { state: overlayState })
+            }
             aria-current={libraryActive ? 'page' : undefined}
             className={cn(
               'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
@@ -759,23 +773,43 @@ export function AppSidebar() {
         {collapsed ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <OverlayNavLink
-                to="/settings"
-                aria-label={t('navigation:settings')}
-                className={({ isActive }) =>
-                  cn(
-                    'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
-                    isActive
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
-                  )
-                }
-              >
-                <Settings className="h-4 w-4" />
-              </OverlayNavLink>
+              {desktop ? (
+                <button
+                  type="button"
+                  onClick={() => void openSettingsWindow().catch(() => undefined)}
+                  aria-label={t('navigation:settings')}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-card-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <Settings className="h-4 w-4" />
+                </button>
+              ) : (
+                <OverlayNavLink
+                  to="/settings"
+                  aria-label={t('navigation:settings')}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
+                      isActive
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-muted-foreground hover:bg-card-hover hover:text-foreground',
+                    )
+                  }
+                >
+                  <Settings className="h-4 w-4" />
+                </OverlayNavLink>
+              )}
             </TooltipTrigger>
             <TooltipContent side="right">{t('navigation:settings')}</TooltipContent>
           </Tooltip>
+        ) : desktop ? (
+          <button
+            type="button"
+            onClick={() => void openSettingsWindow().catch(() => undefined)}
+            className="flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-card-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <Settings className="h-4 w-4" />
+            {t('navigation:settings')}
+          </button>
         ) : (
           <OverlayNavLink
             to="/settings"

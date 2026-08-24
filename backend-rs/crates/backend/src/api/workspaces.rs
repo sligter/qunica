@@ -227,7 +227,9 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<WorkspaceResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(update_inner(&state, &owner_id, &workspace_id, body).await?))
+    Ok(Json(
+        update_inner(&state, &owner_id, &workspace_id, body).await?,
+    ))
 }
 
 /// The body of [`update`] without the axum extractors. See [`create_inner`].

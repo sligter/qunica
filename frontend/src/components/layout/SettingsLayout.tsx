@@ -7,12 +7,14 @@ import { RouteFallback } from '@/components/layout/RouteFallback'
 import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { useDocumentTitle } from '@/components/ui/section'
+import { isAuxiliaryDesktopWindow } from '@/lib/desktop'
 import { navItemClass } from '@/lib/navItemClass'
 
 /** Global settings shell with a compact system/logs navigation. */
 export function SettingsLayout() {
   const { t } = useTranslation(['navigation', 'settings', 'assistant'])
   const close = useCloseOverlay()
+  const auxiliaryWindow = isAuxiliaryDesktopWindow()
   useDocumentTitle(t('settings'))
   const groups = [
     {
@@ -42,7 +44,7 @@ export function SettingsLayout() {
           variant="ghost"
           size="icon"
           onClick={close}
-          aria-label={t('backToChat')}
+          aria-label={t(auxiliaryWindow ? 'closeWindow' : 'backToChat')}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>

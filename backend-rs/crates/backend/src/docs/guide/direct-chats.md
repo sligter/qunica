@@ -4,7 +4,7 @@ A direct chat is a one-on-one conversation with a single agent. Use it when ther
 
 ## Starting one
 
-Pick an agent from the chat picker. The chat's title is generated from the first exchange, and can be renamed by hand at any time; renaming stops it being regenerated.
+Pick an agent from the chat picker. When your first message arrives, the agent's own model names the chat from it and the new title appears on the spot; you can rename by hand at any time, which stops regeneration. If the agent has no LLM provider yet (or generation fails), the title falls back to the first message's opening words.
 
 ## How it differs from a group
 

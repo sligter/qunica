@@ -192,9 +192,15 @@ vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
     isDockOpen: false,
     toggleDock: mocks.toggleDock,
   }),
+  useOptionalTerminalRuntime: () => ({
+    closeConversation: mocks.closeConversation,
+    isDockOpen: false,
+    toggleDock: mocks.toggleDock,
+  }),
 }))
 vi.mock('@/terminal/useTerminalConversationRegistration', () => ({
   useTerminalConversationRegistration: mocks.registerTerminal,
+  useOptionalTerminalConversationRegistration: mocks.registerTerminal,
 }))
 
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'

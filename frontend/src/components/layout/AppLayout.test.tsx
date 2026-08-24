@@ -303,4 +303,27 @@ describe('AppLayout', () => {
       message: 'Cleanup timed out',
     })
   })
+
+  it('omits the conversation chrome inside an auxiliary desktop window', async () => {
+    vi.stubGlobal('__TAURI_INTERNALS__', {
+      metadata: { currentWindow: { label: 'library' } },
+    })
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, hostname: 'tauri.localhost' },
+    })
+
+    const { router } = await renderAppLayout()
+    await act(async () => {
+      await router.navigate('/agents')
+    })
+
+    expect(await screen.findByText('Agents content')).toBeInTheDocument()
+    expect(screen.queryByText('Library')).not.toBeInTheDocument()
+    expect(screen.queryByText('Chats')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('assistant-dock')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('terminal-dock-host')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close window' })).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
 })

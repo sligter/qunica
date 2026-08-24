@@ -302,11 +302,9 @@ impl LlmProvider for AnthropicProvider {
         // thinking as well as the reply and must stay above the budget, so a
         // deeper level raises both together rather than being clamped down to
         // fit a fixed ceiling.
-        let thinking = request.reasoning_effort.map(|effort| {
-            effort
-                .thinking_budget_tokens()
-                .max(MIN_THINKING_BUDGET)
-        });
+        let thinking = request
+            .reasoning_effort
+            .map(|effort| effort.thinking_budget_tokens().max(MIN_THINKING_BUDGET));
         let max_tokens = thinking.map_or(DEFAULT_MAX_TOKENS, |budget| {
             budget.saturating_add(THINKING_RESPONSE_RESERVE)
         });

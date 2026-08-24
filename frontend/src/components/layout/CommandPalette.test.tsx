@@ -13,6 +13,8 @@ import {
 const mocks = vi.hoisted(() => ({
   settings: { appearance: 'system', language: 'en-US' },
   updateMutateAsync: vi.fn(),
+  openLibraryWindow: vi.fn(),
+  openSettingsWindow: vi.fn(),
 }))
 
 vi.mock('@/hooks/useSystemSettings', () => ({
@@ -22,6 +24,14 @@ vi.mock('@/hooks/useSystemSettings', () => ({
     isPending: false,
   }),
 }))
+vi.mock('@/lib/desktop', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/desktop')>('@/lib/desktop')
+  return {
+    ...actual,
+    openLibraryWindow: mocks.openLibraryWindow,
+    openSettingsWindow: mocks.openSettingsWindow,
+  }
+})
 
 function LocationProbe() {
   const location = useLocation()
@@ -64,6 +74,8 @@ describe('CommandPalette', () => {
     await i18n.changeLanguage('en-US')
     mocks.updateMutateAsync.mockReset()
     mocks.updateMutateAsync.mockResolvedValue({})
+    mocks.openLibraryWindow.mockReset().mockResolvedValue(undefined)
+    mocks.openSettingsWindow.mockReset().mockResolvedValue(undefined)
     window.localStorage.clear()
   })
   afterEach(cleanup)
@@ -169,6 +181,59 @@ describe('CommandPalette', () => {
     await user.type(screen.getByRole('textbox'), 'zzzz-no-match')
     expect(screen.getByText('No matching commands.')).toBeVisible()
     unmount()
+  })
+
+  it('opens library and settings as native windows from the desktop conversation', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('__TAURI_INTERNALS__', {
+      metadata: { currentWindow: { label: 'main' } },
+    })
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, hostname: 'tauri.localhost' },
+    })
+    const { unmount } = renderPalette('/chats/chat-1')
+
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true })
+    await screen.findByRole('dialog')
+    await user.click(screen.getByRole('option', { name: 'Providers' }))
+    await waitForDialogToClose()
+    expect(mocks.openLibraryWindow).toHaveBeenCalledWith('/providers')
+    expect(screen.getByTestId('location')).toHaveTextContent('/chats/chat-1')
+
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true })
+    await screen.findByRole('dialog')
+    await user.click(screen.getByRole('option', { name: 'Runtime logs' }))
+    await waitForDialogToClose()
+    expect(mocks.openSettingsWindow).toHaveBeenCalledWith('/settings/logs')
+    expect(screen.getByTestId('location')).toHaveTextContent('/chats/chat-1')
+    unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps native auxiliary windows in their own route families', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('__TAURI_INTERNALS__', {
+      metadata: { currentWindow: { label: 'library' } },
+    })
+    const { unmount } = renderPalette('/agents')
+
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true })
+    await screen.findByRole('dialog')
+    await user.click(screen.getByRole('option', { name: 'Providers' }))
+    await waitForDialogToClose()
+    expect(screen.getByTestId('location')).toHaveTextContent('/providers')
+    expect(mocks.openLibraryWindow).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true })
+    await screen.findByRole('dialog')
+    await user.click(screen.getByRole('option', { name: 'Runtime logs' }))
+    await waitForDialogToClose()
+    expect(mocks.openSettingsWindow).toHaveBeenCalledWith('/settings/logs')
+    expect(screen.getByTestId('location')).toHaveTextContent('/providers')
+
+    unmount()
+    vi.unstubAllGlobals()
   })
 })
 

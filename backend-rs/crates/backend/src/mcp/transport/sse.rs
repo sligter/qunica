@@ -394,11 +394,8 @@ mod tests {
 
     #[test]
     fn a_rooted_endpoint_resolves_against_the_origin() {
-        let resolved = resolve_endpoint(
-            "https://example.com/mcp/sse",
-            "/messages?sessionId=abc",
-        )
-        .unwrap();
+        let resolved =
+            resolve_endpoint("https://example.com/mcp/sse", "/messages?sessionId=abc").unwrap();
         assert_eq!(resolved, "https://example.com/messages?sessionId=abc");
     }
 

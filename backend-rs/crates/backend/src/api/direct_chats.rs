@@ -106,7 +106,8 @@ pub(crate) async fn create_inner(
             .await
             .map_err(|_| ApiError::internal("database error"))?;
     let title = direct_chat_title(language.as_deref(), &agent.name);
-    let workspace_id = create_direct_chat_workspace(state.db.pool(), owner_id, &agent, &title).await?;
+    let workspace_id =
+        create_direct_chat_workspace(state.db.pool(), owner_id, &agent, &title).await?;
     let id = insert_direct_chat(
         state.db.pool(),
         owner_id,
@@ -148,7 +149,11 @@ async fn create_direct_chat_workspace(
                 .join(".ag-swarmer")
                 .join("direct-chats")
         });
-        let short_id: String = workspace_id.chars().filter(|ch| *ch != '-').take(8).collect();
+        let short_id: String = workspace_id
+            .chars()
+            .filter(|ch| *ch != '-')
+            .take(8)
+            .collect();
         let path = base.join(format!("direct-{short_id}"));
         std::fs::create_dir_all(&path)
             .map_err(|_| ApiError::internal("failed to create direct chat workspace"))?;

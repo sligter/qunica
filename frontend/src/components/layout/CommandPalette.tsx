@@ -31,7 +31,7 @@ import {
 
 
 import i18n, { normalizeLanguage, writeLanguageMirror } from '@/i18n'
-import { useOverlayLinkState } from '@/components/layout/overlayRouting'
+import { useOverlayLinkState, isOverlayPath } from '@/components/layout/overlayRouting'
 import {
   useSystemSettings,
   useUpdateSystemSettings,
@@ -45,6 +45,14 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { ApiError } from '@/lib/api-v2/client'
+import {
+  isAuxiliaryDesktopWindow,
+  isDesktopRuntime,
+  isLibraryDesktopWindow,
+  isSettingsDesktopWindow,
+  openLibraryWindow,
+  openSettingsWindow,
+} from '@/lib/desktop'
 import { cn } from '@/lib/utils'
 import type { Appearance, Language } from '@/types/api'
 
@@ -141,6 +149,9 @@ function CommandPalette({
   // Carries the conversation underneath so jumping from the stage opens the
   // area as an overlay over it, and jumping from inside an overlay stays there.
   const overlayState = useOverlayLinkState()
+  const auxiliaryWindow = isAuxiliaryDesktopWindow()
+  const libraryWindow = isLibraryDesktopWindow()
+  const settingsWindow = isSettingsDesktopWindow()
   const settingsQuery = useSystemSettings()
   const update = useUpdateSystemSettings()
 
@@ -165,9 +176,22 @@ function CommandPalette({
   const goTo = useCallback(
     (to: string) => {
       close()
-      navigate(to, { state: overlayState })
+      if (isDesktopRuntime() && !settingsWindow && to.startsWith('/settings')) {
+        void openSettingsWindow(to).catch(() => undefined)
+        return
+      }
+      if (
+        isDesktopRuntime() &&
+        !libraryWindow &&
+        !to.startsWith('/settings') &&
+        isOverlayPath(to)
+      ) {
+        void openLibraryWindow(to).catch(() => undefined)
+        return
+      }
+      navigate(to, { state: auxiliaryWindow ? undefined : overlayState })
     },
-    [close, navigate, overlayState],
+    [auxiliaryWindow, close, libraryWindow, navigate, overlayState, settingsWindow],
   )
 
   const changeAppearance = useCallback(
@@ -232,7 +256,7 @@ function CommandPalette({
         { id: 'new-agent', label: t('agents:new'), icon: Plus, keywords: 'create agent 新建 智能体', run: () => goTo('/agents/new') },
         { id: 'new-provider', label: t('providers:new'), icon: Plus, keywords: 'create provider 新建 服务商', run: () => goTo('/providers/new') },
         { id: 'new-mcp', label: t('mcp:new'), icon: Plus, keywords: 'create mcp server 新建 服务', run: () => goTo('/mcp-servers/new') },
-        { id: 'new-skill', label: t('skills:import'), icon: Plus, keywords: 'import skill 新建 技能', run: () => goTo('/skills/import') },
+        { id: 'new-skill', label: t('skills:import'), icon: Plus, keywords: 'import skill 新建 技能', run: () => goTo('/skills/new') },
         { id: 'new-workspace', label: t('workspaces:new'), icon: Plus, keywords: 'create workspace folder 新建 工作区', run: () => goTo('/workspaces/new') },
       ],
     },

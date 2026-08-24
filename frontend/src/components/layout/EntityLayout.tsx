@@ -8,6 +8,7 @@ import { ResourceRail } from '@/components/layout/ResourceRail'
 import { useCloseOverlay } from '@/components/layout/overlayRouting'
 import { Button } from '@/components/ui/button'
 import { useDocumentTitle } from '@/components/ui/section'
+import { isAuxiliaryDesktopWindow } from '@/lib/desktop'
 import { cn } from '@/lib/utils'
 
 type EntityArea =
@@ -36,6 +37,7 @@ export function EntityLayout({ titleKey }: EntityLayoutProps) {
   const { t } = useTranslation(['navigation', 'common'])
   const location = useLocation()
   const close = useCloseOverlay()
+  const auxiliaryWindow = isAuxiliaryDesktopWindow()
   const area = t(titleKey)
   const basePath = titleKey === 'mcpServers' ? '/mcp-servers' : `/${titleKey}`
   // A detail or create page is open when the path goes deeper than the area
@@ -54,7 +56,7 @@ export function EntityLayout({ titleKey }: EntityLayoutProps) {
           variant="ghost"
           size="icon"
           onClick={close}
-          aria-label={t('backToChat')}
+          aria-label={t(auxiliaryWindow ? 'closeWindow' : 'backToChat')}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>

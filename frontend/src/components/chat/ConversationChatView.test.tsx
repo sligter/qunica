@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConversationChatView } from './ConversationChatView'
 import i18n from '@/i18n'
+import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
 
 const terminalMocks = vi.hoisted(() => ({
   register: vi.fn(),
   toggleDock: vi.fn(),
   isDockOpen: false,
+  runtimeAvailable: true,
 }))
 
 const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
@@ -139,13 +141,17 @@ vi.mock('@/stores/messageStore', () => ({
   ),
 }))
 vi.mock('@/terminal/useTerminalConversationRegistration', () => ({
-  useTerminalConversationRegistration: terminalMocks.register,
+  useOptionalTerminalConversationRegistration: terminalMocks.register,
 }))
 vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
-  useTerminalRuntime: () => ({
-    isDockOpen: terminalMocks.isDockOpen,
-    toggleDock: terminalMocks.toggleDock,
-  }),
+  useOptionalTerminalRuntime: () => (
+    terminalMocks.runtimeAvailable
+      ? {
+          isDockOpen: terminalMocks.isDockOpen,
+          toggleDock: terminalMocks.toggleDock,
+        }
+      : null
+  ),
 }))
 
 interface ConversationRenderOptions {
@@ -208,6 +214,7 @@ describe('ConversationChatView', () => {
     terminalMocks.register.mockReset()
     terminalMocks.toggleDock.mockReset().mockResolvedValue(undefined)
     terminalMocks.isDockOpen = false
+    terminalMocks.runtimeAvailable = true
     composerMocks.render.mockReset()
     messageListMocks.render.mockReset()
     workspacePanelMocks.group.mockReset()
@@ -219,6 +226,7 @@ describe('ConversationChatView', () => {
     systemSettingsMocks.replyInsertMode = 'instant'
     sendStreamMocks.isStreaming = false
     sendStreamMocks.send.mockReset().mockResolvedValue(undefined)
+    useQueuedMessagesStore.setState({ byStateId: {}, dispatchingByStateId: {} })
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
   })
 
@@ -442,6 +450,19 @@ describe('ConversationChatView', () => {
     expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
   })
 
+  it('does not claim the terminal shortcut when no terminal runtime is mounted', () => {
+    terminalMocks.runtimeAvailable = false
+    renderConversation({ showTerminal: false })
+
+    const event = new KeyboardEvent('keydown', {
+      key: '`', ctrlKey: true, bubbles: true, cancelable: true,
+    })
+    window.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
+  })
+
   it('queues a message sent mid-reply and releases it when the stream ends', async () => {
     systemSettingsMocks.replyInsertMode = 'queue'
     sendStreamMocks.isStreaming = true
@@ -460,6 +481,38 @@ describe('ConversationChatView', () => {
     view.rerender(conversationElement())
     await waitFor(() => expect(sendStreamMocks.send).toHaveBeenCalledWith('next question'))
     expect(screen.queryByText(/message queued/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a queued message when navigating away and back', async () => {
+    systemSettingsMocks.replyInsertMode = 'queue'
+    sendStreamMocks.isStreaming = true
+    const user = userEvent.setup()
+    const view = renderConversation({ conversationId: 'chat-1' })
+
+    await user.type(screen.getByLabelText('Message'), 'keep me{Enter}')
+    expect(screen.getByText(/1 message queued/)).toBeVisible()
+
+    view.rerender(conversationElement({ conversationId: 'chat-2' }))
+    expect(screen.queryByText(/message queued/)).not.toBeInTheDocument()
+    view.rerender(conversationElement({ conversationId: 'chat-1' }))
+
+    expect(screen.getByText(/1 message queued/)).toBeVisible()
+    expect(sendStreamMocks.send).not.toHaveBeenCalled()
+  })
+
+  it('returns a queued message to the front when dispatch fails', async () => {
+    systemSettingsMocks.replyInsertMode = 'queue'
+    sendStreamMocks.isStreaming = true
+    sendStreamMocks.send.mockRejectedValueOnce(new Error('offline'))
+    const user = userEvent.setup()
+    const view = renderConversation()
+
+    await user.type(screen.getByLabelText('Message'), 'retry me{Enter}')
+    sendStreamMocks.isStreaming = false
+    view.rerender(conversationElement())
+
+    await waitFor(() => expect(sendStreamMocks.send).toHaveBeenCalledWith('retry me'))
+    expect(await screen.findByText(/1 message queued/)).toBeVisible()
   })
 
   it('sends immediately while streaming in the default instant mode', async () => {

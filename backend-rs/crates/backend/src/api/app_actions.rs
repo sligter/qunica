@@ -66,12 +66,7 @@ const MAX_APP_ACTION_SEARCH_CHARS: usize = 200;
 
 /// Statuses a row can hold, and therefore the only values worth filtering on.
 const APP_ACTION_STATUSES: [&str; 6] = [
-    "pending",
-    "approved",
-    "applied",
-    "rejected",
-    "failed",
-    "expired",
+    "pending", "approved", "applied", "rejected", "failed", "expired",
 ];
 
 fn default_app_action_limit() -> usize {
@@ -139,19 +134,17 @@ pub async fn list(
               OR action LIKE ? ESCAPE '\\')";
     let pattern = search.map(|value| format!("%{value}%"));
 
-    let total: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM app_actions {predicate}"
-    ))
-    .bind(&owner_id)
-    .bind(&status)
-    .bind(&status)
-    .bind(&pattern)
-    .bind(&pattern)
-    .bind(&pattern)
-    .bind(&pattern)
-    .fetch_one(state.db.pool())
-    .await
-    .map_err(|_| ApiError::internal("database error"))?;
+    let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM app_actions {predicate}"))
+        .bind(&owner_id)
+        .bind(&status)
+        .bind(&status)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
 
     let sql = format!(
         "SELECT id, conversation_id, target_kind, action, target_id, summary, status, \

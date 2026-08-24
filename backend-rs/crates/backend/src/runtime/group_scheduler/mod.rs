@@ -173,16 +173,7 @@ mod tests {
         let budget = TurnBudget::new_unbounded(BudgetLimits::with_auto_steps(1, Some(1)));
 
         assert!(matches!(
-            next_decision(
-                &budget,
-                Some("a"),
-                &[],
-                &[],
-                &ids(&["a"]),
-                0,
-                true,
-                true
-            ),
+            next_decision(&budget, Some("a"), &[], &[], &ids(&["a"]), 0, true, true),
             SchedulerDecision::RequestModerator
         ));
     }

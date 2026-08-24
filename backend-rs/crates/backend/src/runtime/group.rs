@@ -719,6 +719,29 @@ async fn run_inner(
         );
     }
 
+    // A direct chat's opening message names the conversation: the chat's own
+    // agent is asked for a title before its reply starts, so both the renamed
+    // title and the reply arrive on one stream. Failure or a skipped case
+    // leaves the truncated placeholder applied above untouched.
+    if let Some(generated) =
+        crate::runtime::chat_title::maybe_generate_direct_chat_title(&services.pool, &req.group_id)
+            .await
+    {
+        step!(
+            ctx,
+            ctx.emit_durable_event(
+                StreamEventKind::ConversationUpdated,
+                json!({
+                    "conversation_id": req.group_id,
+                    "title": generated.title,
+                    "title_source": "automatic",
+                    "updated_at": generated.updated_at,
+                })
+            )
+            .await
+        );
+    }
+
     run_scheduled_turn(services, req, ctx, &group, &user_message.id).await
 }
 
@@ -3858,8 +3881,8 @@ async fn run_acp_agent_turn(
                 last_was_reasoning = false;
                 agent_reported_usage = true;
                 let usage = acp_context_usage(&event.data);
-                acp_ledger_tokens = acp_ledger_tokens
-                    .saturating_add(usage.total_tokens.unwrap_or(0).max(0));
+                acp_ledger_tokens =
+                    acp_ledger_tokens.saturating_add(usage.total_tokens.unwrap_or(0).max(0));
                 persist_token_usage(
                     &services.pool,
                     &usage_record_id,
@@ -6996,17 +7019,31 @@ async fn resolve_provider(
         .provider_id
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("agent has no llm provider configured"))?;
+    resolve_provider_for_binding(pool, &agent.owner_id, provider_id, &agent.model_config_json).await
+}
+
+/// Resolve an active owner-owned provider binding into connection settings.
+///
+/// Shared with one-off callers outside the candidate pipeline — the
+/// assistant-generated direct-chat titles — which hold a raw provider id and
+/// model config rather than a loaded [`Candidate`].
+pub(crate) async fn resolve_provider_for_binding(
+    pool: &SqlitePool,
+    owner_id: &str,
+    provider_id: &str,
+    model_config_json: &Option<String>,
+) -> anyhow::Result<(ProviderConfig, String)> {
     let row: Option<ProviderRow> = sqlx::query_as(
         "SELECT name, kind, base_url, api_key, default_model, reasoning_passback, \
                 context_window_tokens, context_output_reserve_ratio, models_json \
          FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
     .bind(provider_id)
-    .bind(&agent.owner_id)
+    .bind(owner_id)
     .fetch_optional(pool)
     .await?;
     let row = row.ok_or_else(|| anyhow::anyhow!("agent llm provider not found"))?;
-    let model = model_from_config(&agent.model_config_json, &row.default_model);
+    let model = model_from_config(model_config_json, &row.default_model);
     let (model_window, model_reserve) =
         crate::llm::model_context_config(row.models_json.as_deref(), &model);
     let reasoning_passback = crate::llm::model_reasoning_passback(
@@ -7016,8 +7053,7 @@ async fn resolve_provider(
     );
 
     // Agent-level overrides in model_config_json win over the provider defaults.
-    let (window_override, reserve_override) =
-        context_window_override(agent.model_config_json.as_deref());
+    let (window_override, reserve_override) = context_window_override(model_config_json.as_deref());
 
     let name = row.name;
     Ok((

@@ -108,11 +108,25 @@ async fn controlled_provider(text: &'static str) -> (String, Arc<Notify>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let release = Arc::new(Notify::new());
+    // The first request is the best-effort chat-title call that follows a new
+    // chat's opening message; it answers immediately with an empty stream so
+    // no title is generated. The agent's own turn waits on `release`.
+    let served = Arc::new(tokio::sync::Mutex::new(false));
     let app = Router::new().fallback({
         let release = release.clone();
         move || {
             let release = release.clone();
+            let served = served.clone();
             async move {
+                let mut first = served.lock().await;
+                if !*first {
+                    *first = true;
+                    return (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        "data: [DONE]\n".to_owned(),
+                    );
+                }
+                drop(first);
                 release.notified().await;
                 (
                     [(header::CONTENT_TYPE, "text/event-stream")],
@@ -1239,11 +1253,7 @@ async fn the_action_list_can_be_searched_and_filtered_by_status() {
             .await;
     }
 
-    let (status, list) = send(
-        &app,
-        authed("GET", "/api/v2/app-actions?q=weather", &token),
-    )
-    .await;
+    let (status, list) = send(&app, authed("GET", "/api/v2/app-actions?q=weather", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["total"], 1);
     assert!(list["items"][0]["summary"]

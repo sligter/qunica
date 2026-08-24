@@ -1191,8 +1191,13 @@ async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
     let owner = owner_id(&state, "direct-prompt@example.com").await;
     let (_workspace_root, workspace) = create_local_workspace(&app, &token).await;
     let conversation = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
-    let (provider_url, requests) =
-        recording_fake_provider_sequence(vec![text_body("Hello privately")]).await;
+    let (provider_url, requests) = recording_fake_provider_sequence(vec![
+        // The opening message makes the runtime ask the agent for a chat title
+        // first; an empty stream yields no usable title and the flow moves on.
+        "data: [DONE]\n".to_owned(),
+        text_body("Hello privately"),
+    ])
+    .await;
     let provider = seed_provider(&state, &owner, &provider_url).await;
     let agent = seed_agent(
         &state,
@@ -1223,7 +1228,11 @@ async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
     assert_eq!(events.last().unwrap()["kind"], "done");
 
     let requests = requests.lock().await;
-    let system_prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    // The last request is the agent's own turn; earlier ones are the
+    // best-effort chat-title call.
+    let system_prompt = requests[requests.len() - 1]["messages"][0]["content"]
+        .as_str()
+        .unwrap();
     assert!(system_prompt.contains("Private chat context:"));
     assert!(system_prompt
         .contains("This is a private one-to-one conversation with the user, not a group."));
@@ -9404,10 +9413,18 @@ async fn a_resume_that_stops_at_a_second_gate_asks_again_instead_of_failing() {
         &state,
         &owner,
         &fake_provider_sequence(vec![
-            tool_body(vec![("call_one", "Bash", json!({"command": "rm build.txt"}))]),
+            tool_body(vec![(
+                "call_one",
+                "Bash",
+                json!({"command": "rm build.txt"}),
+            )]),
             // The plain continuation reaches for another deletion, so the
             // resumed turn hits the same gate a second time.
-            tool_body(vec![("call_two", "Bash", json!({"command": "rm cache.txt"}))]),
+            tool_body(vec![(
+                "call_two",
+                "Bash",
+                json!({"command": "rm cache.txt"}),
+            )]),
             text_body("All tidy."),
         ])
         .await,

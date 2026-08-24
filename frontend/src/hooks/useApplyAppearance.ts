@@ -4,7 +4,30 @@ import { useSystemSettings } from '@/hooks/useSystemSettings'
 import { useAuthStore } from '@/stores/authStore'
 import type { Appearance } from '@/types/api'
 
-type ResolvedAppearance = 'light' | 'dark'
+export type ResolvedAppearance = 'light' | 'dark'
+export const APPEARANCE_MIRROR_KEY = 'ag-swarmer:appearance'
+
+export function normalizeResolvedAppearance(value: unknown): ResolvedAppearance | null {
+  return value === 'light' || value === 'dark' ? value : null
+}
+
+export function readAppearanceMirror(): ResolvedAppearance | null {
+  try {
+    return normalizeResolvedAppearance(localStorage.getItem(APPEARANCE_MIRROR_KEY))
+  } catch {
+    return null
+  }
+}
+
+export function writeAppearanceMirror(appearance: ResolvedAppearance): void {
+  try {
+    if (localStorage.getItem(APPEARANCE_MIRROR_KEY) !== appearance) {
+      localStorage.setItem(APPEARANCE_MIRROR_KEY, appearance)
+    }
+  } catch {
+    // Persistence failure must not block rendering.
+  }
+}
 
 function systemPrefersDark(): boolean {
   return (
@@ -22,10 +45,21 @@ function resolveAppearance(
   return appearance
 }
 
+function applyResolvedAppearance(appearance: ResolvedAppearance): void {
+  const root = document.documentElement
+  root.dataset.theme = appearance
+  root.style.colorScheme = appearance
+}
+
 export function useApplyAppearance(): void {
   const token = useAuthStore((s) => s.token)
+  const currentUserId = useAuthStore((s) => s.user?.id)
   const settings = useSystemSettings()
-  const appearance = token ? settings.data?.appearance ?? 'system' : 'system'
+  const appearance = token === null
+    ? 'system'
+    : currentUserId !== undefined && settings.data?.owner_id === currentUserId
+      ? settings.data.appearance
+      : undefined
   const [systemDark, setSystemDark] = useState(systemPrefersDark)
 
   useEffect(() => {
@@ -41,9 +75,22 @@ export function useApplyAppearance(): void {
   }, [])
 
   useEffect(() => {
+    // Keep the theme painted by index.html while authenticated settings are
+    // still loading. Falling back to `system` here would create a second flash
+    // for accounts that explicitly selected the other theme.
+    if (!appearance) return
     const resolved = resolveAppearance(appearance, systemDark)
-    const root = document.documentElement
-    root.dataset.theme = resolved
-    root.style.colorScheme = resolved
+    applyResolvedAppearance(resolved)
+    writeAppearanceMirror(resolved)
   }, [appearance, systemDark])
+
+  useEffect(() => {
+    const syncAppearance = (event: StorageEvent) => {
+      if (event.key !== APPEARANCE_MIRROR_KEY) return
+      const resolved = normalizeResolvedAppearance(event.newValue)
+      if (resolved) applyResolvedAppearance(resolved)
+    }
+    window.addEventListener('storage', syncAppearance)
+    return () => window.removeEventListener('storage', syncAppearance)
+  }, [])
 }

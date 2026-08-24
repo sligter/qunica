@@ -1001,3 +1001,8 @@ export function useTerminalRuntime(): TerminalRuntimeContextValue {
   }
   return context
 }
+
+/** Same as {@link useTerminalRuntime}, but returns null when no provider is mounted. */
+export function useOptionalTerminalRuntime(): TerminalRuntimeContextValue | null {
+  return useContext(TerminalRuntimeContext)
+}

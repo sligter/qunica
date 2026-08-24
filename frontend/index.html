@@ -4,6 +4,49 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentChat</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bootstrap-background: hsl(48 33% 97%);
+        background-color: var(--bootstrap-background);
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --bootstrap-background: hsl(30 8% 12%);
+      }
+
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+      }
+
+      body,
+      #root {
+        margin: 0;
+        background-color: var(--bootstrap-background);
+      }
+    </style>
+    <script>
+      (() => {
+        let appearance = null
+        try {
+          const mirrored = localStorage.getItem('ag-swarmer:appearance')
+          if (mirrored === 'light' || mirrored === 'dark') appearance = mirrored
+        } catch {
+          // A restricted storage context still gets the system theme below.
+        }
+        if (!appearance) {
+          appearance = window.matchMedia?.('(prefers-color-scheme: dark)').matches
+            ? 'dark'
+            : 'light'
+        }
+        document.documentElement.dataset.theme = appearance
+        document.documentElement.style.colorScheme = appearance
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

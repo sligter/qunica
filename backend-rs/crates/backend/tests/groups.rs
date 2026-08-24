@@ -710,11 +710,7 @@ async fn group_templates_snapshot_settings_and_create_a_new_group() {
 
     let template_id = template["id"].as_str().unwrap();
     let stranger = register_and_login(&app, "group-templates-stranger@example.com").await;
-    let (status, templates) = send(
-        &app,
-        authed("GET", "/api/v2/group-templates", &stranger),
-    )
-    .await;
+    let (status, templates) = send(&app, authed("GET", "/api/v2/group-templates", &stranger)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(templates.as_array().unwrap().is_empty());
     let (status, _) = send(

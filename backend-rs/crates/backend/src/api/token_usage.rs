@@ -396,7 +396,9 @@ fn normalize_date(value: Option<&str>, field: &str) -> Result<Option<String>, Ap
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_options, local_day, matches_query, response, shift_day, TokenUsageQuery, UsageRow};
+    use super::{
+        filter_options, local_day, matches_query, response, shift_day, TokenUsageQuery, UsageRow,
+    };
 
     fn row(day: &str, agent: &str, provider: &str, model: &str, total: i64) -> UsageRow {
         UsageRow {

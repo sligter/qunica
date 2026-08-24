@@ -36,6 +36,7 @@ import {
 } from 'react-router-dom'
 
 import { useUnsavedChangesAction } from '@/hooks/useUnsavedChangesGuard'
+import { closeCurrentDesktopWindow, isAuxiliaryDesktopWindow } from '@/lib/desktop'
 
 /** Top-level areas that render as an overlay over the conversation stage. */
 const OVERLAY_PREFIXES = [
@@ -132,6 +133,13 @@ export function useCloseOverlay(fallback = '/'): () => void {
   const requestAction = useUnsavedChangesAction()
   return useCallback(() => {
     requestAction(() => {
+      // An auxiliary desktop window is the surface itself. Navigating back to
+      // chat would just paint the conversation inside this window, which is
+      // how the library started showing the main page beside the resource rail.
+      if (isAuxiliaryDesktopWindow()) {
+        void closeCurrentDesktopWindow().catch(() => undefined)
+        return
+      }
       if (!background) {
         void navigate(fallback)
         return

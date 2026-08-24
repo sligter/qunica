@@ -7,6 +7,8 @@
 
 import { create } from 'zustand'
 
+import { queryClient } from '@/lib/queryClient'
+import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
 import type { UserRead } from '@/types/api'
 
 const STORAGE_KEY = 'agentchat:auth:v1'
@@ -15,12 +17,19 @@ interface PersistedAuth {
   token: string | null
 }
 
-function loadFromStorage(): PersistedAuth {
+function parsePersistedAuth(raw: string | null): PersistedAuth {
+  if (!raw) return { token: null }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { token: null }
     const parsed = JSON.parse(raw) as Partial<PersistedAuth>
     return { token: typeof parsed.token === 'string' ? parsed.token : null }
+  } catch {
+    return { token: null }
+  }
+}
+
+function loadFromStorage(): PersistedAuth {
+  try {
+    return parsePersistedAuth(localStorage.getItem(STORAGE_KEY))
   } catch {
     return { token: null }
   }
@@ -64,6 +73,28 @@ export const useAuthStore = create<AuthState>((set) => ({
   setHydrated: (value) => set({ hydrated: value }),
   logout: () => {
     clearStorage()
+    queryClient.clear()
+    useQueuedMessagesStore.getState().clearAll()
     set({ token: null, user: null })
   },
 }))
+
+// Tauri auxiliary windows and ordinary browser tabs have separate Zustand
+// instances but share localStorage. Mirror auth changes so logging out in the
+// conversation window cannot leave a library/Assistant window authenticated
+// with a stale in-memory token.
+if (typeof window !== 'undefined') {
+  const syncAuthFromStorage = (event: StorageEvent) => {
+    if (event.key !== STORAGE_KEY) return
+    const { token } = parsePersistedAuth(event.newValue)
+    queryClient.clear()
+    useQueuedMessagesStore.getState().clearAll()
+    useAuthStore.setState({
+      token,
+      user: null,
+      hydrated: token === null,
+    })
+  }
+  window.addEventListener('storage', syncAuthFromStorage)
+  import.meta.hot?.dispose(() => window.removeEventListener('storage', syncAuthFromStorage))
+}

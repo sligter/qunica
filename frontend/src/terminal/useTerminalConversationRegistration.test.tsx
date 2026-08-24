@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceRead } from '@/types/api'
 import {
   resolveTerminalConversationTarget,
+  useOptionalTerminalConversationRegistration,
   useTerminalConversationRegistration,
 } from './useTerminalConversationRegistration'
 
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   },
   registerConversation: vi.fn(),
   unregister: vi.fn(),
+  optionalRuntime: true,
 }))
 
 vi.mock('@/hooks/useWorkspaces', () => ({
@@ -21,6 +23,11 @@ vi.mock('@/hooks/useWorkspaces', () => ({
 }))
 vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
   useTerminalRuntime: () => ({ registerConversation: mocks.registerConversation }),
+  useOptionalTerminalRuntime: () => (
+    mocks.optionalRuntime
+      ? { registerConversation: mocks.registerConversation }
+      : null
+  ),
 }))
 
 function workspace(overrides: Partial<WorkspaceRead> = {}): WorkspaceRead {
@@ -118,5 +125,25 @@ describe('useTerminalConversationRegistration', () => {
 
     unmount()
     expect(mocks.unregister).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('useOptionalTerminalConversationRegistration', () => {
+  beforeEach(() => {
+    mocks.query = { data: undefined, isLoading: true }
+    mocks.unregister.mockReset()
+    mocks.registerConversation.mockReset().mockReturnValue(mocks.unregister)
+    mocks.optionalRuntime = true
+  })
+
+  it('skips registration when no terminal runtime is mounted', () => {
+    mocks.optionalRuntime = false
+    renderHook(() => useOptionalTerminalConversationRegistration('chat-1', 'workspace-1'))
+    expect(mocks.registerConversation).not.toHaveBeenCalled()
+  })
+
+  it('skips registration when the compact surface disables the terminal', () => {
+    renderHook(() => useOptionalTerminalConversationRegistration(undefined, 'workspace-1'))
+    expect(mocks.registerConversation).not.toHaveBeenCalled()
   })
 })

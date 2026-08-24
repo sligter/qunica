@@ -339,7 +339,10 @@ mod tests {
         assert_eq!(tools[0].name, "search");
         assert_eq!(tools[1].name, "ping");
         // A tool with no schema still gets a provider-acceptable object schema.
-        assert_eq!(tools[1].input_schema, json!({"type":"object","properties":{}}));
+        assert_eq!(
+            tools[1].input_schema,
+            json!({"type":"object","properties":{}})
+        );
     }
 
     #[test]

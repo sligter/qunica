@@ -1378,3 +1378,208 @@ async fn direct_workspace_upload_writes_into_the_conversation_workspace() {
     assert_eq!(response.status(), StatusCode::CREATED);
     assert!(chat_root.join("uploads/notes.txt").is_file());
 }
+
+// ---------------------------------------------------------------------------
+// Assistant-generated titles
+// ---------------------------------------------------------------------------
+
+fn openai_sse_body(text: &str) -> String {
+    format!(
+        "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": text}}]})
+    )
+}
+
+/// Start a local OpenAI-style SSE server that answers queued bodies in order.
+async fn queued_fake_provider(
+    bodies: Vec<String>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::response::IntoResponse;
+    use std::collections::VecDeque;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let queue = Arc::new(tokio::sync::Mutex::new(VecDeque::from(bodies)));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app_calls = Arc::clone(&calls);
+    let app = Router::new().fallback(move || {
+        let queue = Arc::clone(&queue);
+        let calls = Arc::clone(&app_calls);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let body = queue
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or_else(|| "data: [DONE]\n".to_owned());
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                body,
+            )
+                .into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), calls)
+}
+
+async fn create_provider_backed_chat(
+    app: &Router,
+    state: &AppState,
+    email: &str,
+    bodies: Vec<String>,
+) -> (
+    tempfile::TempDir,
+    String,
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let token = register(app, email).await;
+    let owner_id: String = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let (base_url, calls) = queued_fake_provider(bodies).await;
+    let provider_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO llm_providers \
+         (id, owner_id, name, kind, base_url, api_key, default_model, reasoning_passback, \
+          status, created_at, updated_at) \
+         VALUES (?, ?, 'Fake', 'openai-compatible', ?, 'test-key', 'test-model', 0, \
+                 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+    )
+    .bind(&provider_id)
+    .bind(&owner_id)
+    .bind(&base_url)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    let (root, workspace_id) = create_local_workspace(app, &token, "Titles").await;
+    let (status, agent) = send(
+        app,
+        request(
+            "POST",
+            "/api/v2/agents",
+            Some(&token),
+            json!({
+                "name": "Solo",
+                "workspace_id": workspace_id,
+                "llm_provider_id": provider_id,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {agent:?}");
+    let agent_id = agent["id"].as_str().unwrap();
+    let chat = create_chat(app, &token, &agent_id).await;
+    (root, token, chat["id"].as_str().unwrap().to_owned(), calls)
+}
+
+/// The opening message of a direct chat makes the runtime ask the chat's own
+/// agent to write a title, announced as a second `conversation_updated`
+/// before the reply starts.
+#[tokio::test]
+async fn direct_stream_titles_new_chats_from_the_opening_message_via_llm() {
+    let (app, state) = router_with_state_for_tests().await;
+    // The first provider response names the chat; the second answers the agent.
+    let (_root, token, chat_id, calls) = create_provider_backed_chat(
+        &app,
+        &state,
+        "direct-llm-title@example.com",
+        vec![
+            openai_sse_body("\u{201c}Rust \u{6240}\u{6709}\u{6743}\u{201d}"),
+            openai_sse_body("Hello! How can I help?"),
+        ],
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/direct-chats/{chat_id}/messages/stream"),
+        &token,
+        json!({"content": "explain rust ownership please"}),
+    )
+    .await;
+
+    let updates: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["kind"] == "conversation_updated")
+        .collect();
+    assert_eq!(updates.len(), 2, "events: {events:?}");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "events: {events:?}"
+    );
+    assert_eq!(updates[0]["payload"]["title_source"], "automatic");
+    assert_eq!(
+        updates[1]["payload"]["title"],
+        format!("Rust \u{6240}\u{6709}\u{6743}")
+    );
+    assert_eq!(updates[1]["payload"]["conversation_id"], chat_id);
+
+    let (status, fetched) = send(
+        &app,
+        authed("GET", &format!("/api/v2/direct-chats/{chat_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["title"], format!("Rust \u{6240}\u{6709}\u{6743}"));
+}
+
+#[tokio::test]
+async fn a_manual_title_skips_the_opening_title_provider_call() {
+    let (app, state) = router_with_state_for_tests().await;
+    let (_root, token, chat_id, calls) = create_provider_backed_chat(
+        &app,
+        &state,
+        "direct-manual-title@example.com",
+        vec![openai_sse_body("Agent reply")],
+    )
+    .await;
+
+    let (status, renamed) = send(
+        &app,
+        request(
+            "PATCH",
+            &format!("/api/v2/direct-chats/{chat_id}"),
+            Some(&token),
+            json!({"title": "Pinned before first message"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(renamed["title_source"], "manual");
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/direct-chats/{chat_id}/messages/stream"),
+        &token,
+        json!({"content": "private opening message"}),
+    )
+    .await;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "events: {events:?}"
+    );
+    let updates: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["kind"] == "conversation_updated")
+        .collect();
+    assert_eq!(updates.len(), 1, "events: {events:?}");
+    assert_eq!(
+        updates[0]["payload"]["title"],
+        "Pinned before first message"
+    );
+    assert_eq!(updates[0]["payload"]["title_source"], "manual");
+}

@@ -147,7 +147,9 @@ mod tests {
             status: ToolStatus::Completed,
             output: "y".repeat(2_000_000),
         };
-        ToolResultCapHook.post_tool(&step(), &call(), &mut result).await;
+        ToolResultCapHook
+            .post_tool(&step(), &call(), &mut result)
+            .await;
         assert!(result.output.chars().count() < MAX_TOOL_RESULT_CHARS + 400);
         assert_eq!(result.status, ToolStatus::Completed);
     }
@@ -167,7 +169,9 @@ mod tests {
             status: ToolStatus::Completed,
             output: output.clone(),
         };
-        ToolResultCapHook.post_tool(&step(), &call(), &mut result).await;
+        ToolResultCapHook
+            .post_tool(&step(), &call(), &mut result)
+            .await;
         assert_eq!(
             result.output, output,
             "cutting the middle out of a checklist drops the agent's own plan"

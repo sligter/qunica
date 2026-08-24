@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::mcp::{
-    config::{MAX_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS},
+    config::{DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS},
     manager::bindings_for,
     slugify_server_name,
     store::{McpServerRow, MCP_SERVER_COLUMNS},
@@ -283,7 +283,9 @@ pub async fn list(
         .await
         .map_err(|_| ApiError::internal("database error"))?;
 
-    Ok(Json(rows.into_iter().map(McpServerResponse::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(McpServerResponse::from).collect(),
+    ))
 }
 
 pub async fn get(
@@ -304,7 +306,9 @@ pub async fn update(
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    Ok(Json(update_inner(&state, &owner_id, &server_id, body).await?))
+    Ok(Json(
+        update_inner(&state, &owner_id, &server_id, body).await?,
+    ))
 }
 
 /// The body of [`update`] without the axum extractors. See [`create_inner`].
@@ -572,12 +576,13 @@ async fn ensure_slug_is_free(
     exclude_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let slug = slugify_server_name(name);
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT id, name FROM mcp_servers WHERE owner_id = ?1 AND status != 'deleted'")
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|_| ApiError::internal("database error"))?;
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, name FROM mcp_servers WHERE owner_id = ?1 AND status != 'deleted'",
+    )
+    .bind(owner_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
 
     for (id, existing_name) in rows {
         if exclude_id == Some(id.as_str()) {

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { EntityLayout } from '@/components/layout/EntityLayout'
 import '@/i18n'
@@ -97,5 +97,18 @@ describe('EntityLayout', () => {
     const heading = screen.getByRole('heading', { level: 1 })
     expect(within(heading).queryByText('›')).toBeNull()
     expect(screen.getByText('Index')).toBeInTheDocument()
+  })
+
+  it('closes the native window from an auxiliary desktop surface', () => {
+    vi.stubGlobal('__TAURI_INTERNALS__', {
+      metadata: { currentWindow: { label: 'library' } },
+    })
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, hostname: 'tauri.localhost' },
+    })
+    renderLayout('/agents')
+    expect(screen.getByRole('button', { name: 'Close window' })).toBeInTheDocument()
+    vi.unstubAllGlobals()
   })
 })

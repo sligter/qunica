@@ -53,8 +53,7 @@ impl McpServerRow {
         McpServerConfig {
             id: self.id.clone(),
             name: self.name.clone(),
-            transport: McpTransportKind::parse(&self.transport)
-                .unwrap_or(McpTransportKind::Stdio),
+            transport: McpTransportKind::parse(&self.transport).unwrap_or(McpTransportKind::Stdio),
             command: self.command.clone(),
             args: parse_string_array(self.args_json.as_deref()),
             env: parse_string_map(self.env_json.as_deref()),
@@ -153,15 +152,24 @@ mod tests {
         let config = row("stdio", 30).to_config();
         assert_eq!(config.transport, McpTransportKind::Stdio);
         assert_eq!(config.args, vec!["server.js"]);
-        assert_eq!(config.env.get("API_KEY").map(String::as_str), Some("secret"));
+        assert_eq!(
+            config.env.get("API_KEY").map(String::as_str),
+            Some("secret")
+        );
         assert_eq!(config.tool_filter, vec!["forecast"]);
         assert_eq!(config.timeout_seconds, 30);
     }
 
     #[test]
     fn a_nonpositive_timeout_falls_back_to_the_default() {
-        assert_eq!(row("stdio", 0).to_config().timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
-        assert_eq!(row("stdio", -5).to_config().timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
+        assert_eq!(
+            row("stdio", 0).to_config().timeout_seconds,
+            DEFAULT_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            row("stdio", -5).to_config().timeout_seconds,
+            DEFAULT_TIMEOUT_SECONDS
+        );
     }
 
     #[test]

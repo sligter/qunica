@@ -38,6 +38,8 @@ import { Button } from '@/components/ui/button'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useProvider } from '@/hooks/useProviders'
 import { cn } from '@/lib/utils'
+import { toggleAssistantWindow } from '@/lib/desktop'
+import { isDesktopRuntime } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
 
 /** Every edge and corner the panel can be resized from. */
@@ -77,6 +79,11 @@ function clampSize(value: number, minimum: number): number {
 export function AssistantDock() {
   const { t } = useTranslation('assistant')
   const token = useAuthStore((state) => state.token)
+  // Desktop shells promote the dock to an always-on-top native window: a DOM
+  // overlay cannot leave the webview that hosts it, and staying above every
+  // application window is exactly what the utility is for there. The browser
+  // build keeps the in-page panel below.
+  const desktop = isDesktopRuntime()
   const { placement, setPlacement, snapToNearestCorner, toggleCollapsed } =
     useAssistantDockPlacement()
   const launcherRef = useRef<HTMLButtonElement>(null)
@@ -216,6 +223,21 @@ export function AssistantDock() {
   // Signed out means the login and register routes, where a floating helper
   // would be both useless and unauthenticated.
   if (!token) return null
+
+  if (desktop) {
+    return createPortal(
+      <button
+        type="button"
+        aria-label={t('title')}
+        title={t('title')}
+        onClick={() => void toggleAssistantWindow().catch(() => undefined)}
+        className="fixed bottom-4 right-4 z-[30] flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/30 bg-primary text-primary-foreground shadow-lg outline-none transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      >
+        <Sparkles className="h-5 w-5" aria-hidden />
+      </button>,
+      document.body,
+    )
+  }
 
   if (placement.collapsed) {
     return createPortal(

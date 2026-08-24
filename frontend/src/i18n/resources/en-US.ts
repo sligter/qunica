@@ -182,6 +182,7 @@ export const enUS = {
     userMenu: 'User menu',
     logout: 'Log out',
     backToChat: 'Back to chat',
+    closeWindow: 'Close window',
     openingWorkspace: 'Opening workspace…',
     // Headings over the resource rail's two groups: the things you create and
     // edit, then the read-only report.

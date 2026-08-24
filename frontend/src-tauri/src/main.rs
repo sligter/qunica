@@ -1,11 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "windows")]
+mod clipboard_history;
 mod terminal;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -13,7 +16,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ag_swarmer_backend::{config::AppConfig, server, telemetry};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::PageLoadEvent;
+use tauri::window::{Color, Monitor};
+use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 #[cfg(not(windows))]
 use tauri_plugin_notification::NotificationExt;
@@ -42,6 +47,9 @@ impl Drop for BackendShutdown {
 const BACKEND_PORT: u16 = 8765;
 const BACKEND_BASE_URL: &str = "http://127.0.0.1:8765";
 const MAIN_WINDOW_LABEL: &str = "main";
+// Matches `--color-background` in index.css. This covers the native/WebView2
+// surface before index.html gets its first chance to paint.
+const APP_WINDOW_BACKGROUND: Color = Color(250, 249, 245, 255);
 const TRAY_OPEN_MAIN_ID: &str = "open-main";
 const TRAY_OPEN_SETTINGS_ID: &str = "open-settings";
 const TRAY_OPEN_LOGS_ID: &str = "open-logs";
@@ -202,7 +210,9 @@ fn show_windows_toast(
             let registration = registration_error
                 .map(|error| format!("; AUMID registration: {error}"))
                 .unwrap_or_default();
-            format!("{app_id}: {identity_error}{registration}; powershell fallback: {fallback_error}")
+            format!(
+                "{app_id}: {identity_error}{registration}; powershell fallback: {fallback_error}"
+            )
         })
     })
 }
@@ -241,9 +251,7 @@ fn register_windows_app_user_model_id(app_id: &str, display_name: &str) -> Resul
         .chain(std::iter::once(0))
         .collect();
     let hr = unsafe {
-        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
-            wide_app_id.as_ptr(),
-        )
+        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide_app_id.as_ptr())
     };
     if hr != 0 {
         return Err(format!(
@@ -472,6 +480,211 @@ fn open_route(app: &tauri::AppHandle, route: &str) {
     }
 }
 
+/// Labels of the auxiliary windows the shell can host.
+const LIBRARY_WINDOW_LABEL: &str = "library";
+const SETTINGS_WINDOW_LABEL: &str = "settings";
+const ASSISTANT_WINDOW_LABEL: &str = "assistant";
+const ASSISTANT_WINDOW_EDGE_MARGIN: f64 = 16.0;
+
+fn assistant_window_monitor(app: &tauri::AppHandle) -> Option<Monitor> {
+    app.get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn bottom_right_window_position(
+    work_area_position: PhysicalPosition<i32>,
+    work_area_size: PhysicalSize<u32>,
+    window_size: PhysicalSize<u32>,
+    scale_factor: f64,
+) -> PhysicalPosition<i32> {
+    let margin = (ASSISTANT_WINDOW_EDGE_MARGIN * scale_factor).round() as i64;
+    let trailing_edge = |origin: i32, available: u32, window: u32| {
+        let origin = i64::from(origin);
+        let desired = origin + i64::from(available) - i64::from(window) - margin;
+        desired
+            .max(origin)
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    };
+    PhysicalPosition::new(
+        trailing_edge(
+            work_area_position.x,
+            work_area_size.width,
+            window_size.width,
+        ),
+        trailing_edge(
+            work_area_position.y,
+            work_area_size.height,
+            window_size.height,
+        ),
+    )
+}
+
+fn move_assistant_to_bottom_right(window: &tauri::WebviewWindow, monitor: &Monitor) {
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+    let work_area = monitor.work_area();
+    let position = bottom_right_window_position(
+        work_area.position,
+        work_area.size,
+        window_size,
+        monitor.scale_factor(),
+    );
+    let _ = window.set_position(position);
+}
+
+/// Shared bootstrap for auxiliary windows: reuse an existing one, otherwise
+/// build it pointed at `route`.
+///
+/// Every window loads the same SPA; the route decides which surface renders,
+/// so no page logic is duplicated. The auth token lives in `localStorage`,
+/// which Tauri persists per origin, and all windows share that origin — an
+/// auxiliary window opens already signed in.
+fn open_aux_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    title: &str,
+    route: &str,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(label) {
+        existing.show().map_err(|error| error.to_string())?;
+        existing.unminimize().map_err(|error| error.to_string())?;
+        existing.set_focus().map_err(|error| error.to_string())?;
+        let current = existing
+            .url()
+            .map_err(|error| error.to_string())?
+            .path()
+            .to_string();
+        if current != route {
+            existing
+                .eval(route_script(route))
+                .map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let revealed = Arc::new(AtomicBool::new(false));
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App(route.into()))
+        .title(title)
+        .inner_size(width, height)
+        .min_inner_size(560.0, 420.0)
+        .background_color(APP_WINDOW_BACKGROUND)
+        .visible(false)
+        .focused(false)
+        .on_page_load(move |window, payload| {
+            if payload.event() == PageLoadEvent::Finished && !revealed.swap(true, Ordering::Relaxed)
+            {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        })
+        .build()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn is_library_route(route: &str) -> bool {
+    [
+        "/agents",
+        "/providers",
+        "/mcp-servers",
+        "/skills",
+        "/workspaces",
+        "/usage",
+    ]
+    .iter()
+    .any(|prefix| route == *prefix || route.starts_with(&format!("{prefix}/")))
+}
+
+fn is_settings_route(route: &str) -> bool {
+    route == "/settings" || route.starts_with("/settings/")
+}
+
+/// Open the resource library as its own top-level window, independent of the
+/// main conversation window so both can be used side by side.
+#[tauri::command]
+async fn open_library_window(app: tauri::AppHandle, route: String) -> Result<(), String> {
+    if !is_library_route(&route) {
+        return Err("invalid library route".to_string());
+    }
+    open_aux_window(
+        &app,
+        LIBRARY_WINDOW_LABEL,
+        "AG Swarmer — Library",
+        &route,
+        1180.0,
+        760.0,
+    )
+}
+
+/// Open settings as its own top-level window, same reasoning as the library's.
+#[tauri::command]
+async fn open_settings_window(app: tauri::AppHandle, route: String) -> Result<(), String> {
+    if !is_settings_route(&route) {
+        return Err("invalid settings route".to_string());
+    }
+    open_aux_window(
+        &app,
+        SETTINGS_WINDOW_LABEL,
+        "AG Swarmer — Settings",
+        &route,
+        900.0,
+        680.0,
+    )
+}
+
+/// Open (or focus) the Assistant dock as an always-on-top utility window.
+///
+/// A DOM overlay cannot leave the webview that hosts it; promoting the dock to
+/// a native window is what lets it stay visible above every other application
+/// window while the user works elsewhere. Browser builds keep the in-page
+/// overlay instead.
+#[tauri::command]
+async fn toggle_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(ASSISTANT_WINDOW_LABEL) {
+        let showing = existing.is_visible().map_err(|error| error.to_string())?;
+        if showing {
+            existing.hide().map_err(|error| error.to_string())?;
+        } else {
+            existing.show().map_err(|error| error.to_string())?;
+            existing.unminimize().map_err(|error| error.to_string())?;
+            existing.set_focus().map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let revealed = Arc::new(AtomicBool::new(false));
+    let initial_monitor = assistant_window_monitor(&app);
+    WebviewWindowBuilder::new(
+        &app,
+        ASSISTANT_WINDOW_LABEL,
+        WebviewUrl::App("/assistant-dock".into()),
+    )
+    .title("AG Swarmer — Assistant")
+    .inner_size(380.0, 520.0)
+    .min_inner_size(300.0, 360.0)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(true)
+    .background_color(APP_WINDOW_BACKGROUND)
+    .visible(false)
+    .focused(false)
+    .on_page_load(move |window, payload| {
+        if payload.event() == PageLoadEvent::Finished && !revealed.swap(true, Ordering::Relaxed) {
+            if let Some(monitor) = initial_monitor.as_ref() {
+                move_assistant_to_bottom_right(&window, monitor);
+            }
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    })
+    .build()
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
 fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
     if app.get_webview_window(MAIN_WINDOW_LABEL).is_some() {
         return Ok(());
@@ -481,6 +694,7 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         .title("AG Swarmer")
         .inner_size(1280.0, 800.0)
         .min_inner_size(1024.0, 680.0)
+        .background_color(APP_WINDOW_BACKGROUND)
         .build()?;
     Ok(())
 }
@@ -516,7 +730,23 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_OPEN_MAIN_ID => open_route(app, "/groups"),
-            TRAY_OPEN_SETTINGS_ID => open_route(app, "/settings/system"),
+            TRAY_OPEN_SETTINGS_ID => {
+                // WebView2 can deadlock when a webview window is created from
+                // this synchronous event handler. Run the same async path as
+                // the frontend command on Tauri's runtime instead.
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        open_settings_window(app, "/settings/system".to_string()).await
+                    {
+                        tracing::warn!(
+                            target: "ag_swarmer::desktop",
+                            %error,
+                            "failed to open settings window from tray"
+                        );
+                    }
+                });
+            }
             TRAY_OPEN_LOGS_ID => {
                 let _ = open_logs_dir(app);
             }
@@ -637,6 +867,9 @@ fn main() {
             reveal_in_file_manager,
             save_file,
             show_notification,
+            open_library_window,
+            open_settings_window,
+            toggle_assistant_window,
             system_logs_snapshot,
             set_system_log_filter,
             clear_system_logs,
@@ -660,6 +893,12 @@ fn main() {
             append_launcher_log(&log_dir, format!("logs directory: {}", log_dir.display()));
 
             create_tray(app)?;
+            // Copies made inside WebView2 never reach Windows clipboard
+            // history. The Windows-only bridge mirrors copies made while one
+            // of this process's windows has focus; other applications are
+            // deliberately left untouched.
+            #[cfg(target_os = "windows")]
+            clipboard_history::start();
             clear_backend_port(&log_dir, BACKEND_PORT);
             let shutdown = start_in_process_backend(app_data_dir, log_dir.clone())?;
             let state = app.state::<BackendShutdown>();
@@ -668,9 +907,27 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == MAIN_WINDOW_LABEL {
+                        // The conversation window hides to the tray so a later
+                        // click does not lose the open chat. Auxiliary windows
+                        // are disposable and must actually close — hiding them
+                        // would leave a leftover SPA that still paints the
+                        // previous surface the next time they reopen.
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+                tauri::WindowEvent::Focused(false) => {
+                    // Keep the Assistant above everything even when another
+                    // window takes input; Tauri drops always-on-top on some
+                    // platforms when a fullscreen window overlaps.
+                    if window.label() == ASSISTANT_WINDOW_LABEL {
+                        let _ = window.set_always_on_top(true);
+                    }
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())
@@ -685,7 +942,74 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{pids_listening_on_port, taskkill_args};
+    use std::future::Future;
+
+    use super::{
+        bottom_right_window_position, is_library_route, is_settings_route, open_library_window,
+        open_settings_window, pids_listening_on_port, taskkill_args, toggle_assistant_window,
+    };
+    use tauri::{PhysicalPosition, PhysicalSize};
+
+    fn assert_route_window_command_is_async<F, Fut>(_command: F)
+    where
+        F: Fn(tauri::AppHandle, String) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+    }
+
+    fn assert_window_command_is_async<F, Fut>(_command: F)
+    where
+        F: Fn(tauri::AppHandle) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+    }
+
+    #[test]
+    fn webview_window_commands_stay_async_on_windows() {
+        // Tauri documents a WebView2 deadlock when builders run from a
+        // synchronous command. These type assertions make a future accidental
+        // `async` removal fail to compile on every platform.
+        assert_route_window_command_is_async(open_library_window);
+        assert_route_window_command_is_async(open_settings_window);
+        assert_window_command_is_async(toggle_assistant_window);
+    }
+
+    #[test]
+    fn auxiliary_window_routes_stay_inside_their_surface() {
+        assert!(is_library_route("/agents"));
+        assert!(is_library_route("/providers/new"));
+        assert!(is_library_route("/usage"));
+        assert!(!is_library_route("/settings/system"));
+        assert!(!is_library_route("/groups/one/manage"));
+
+        assert!(is_settings_route("/settings/system"));
+        assert!(is_settings_route("/settings/logs"));
+        assert!(!is_settings_route("/agents"));
+    }
+
+    #[test]
+    fn assistant_starts_at_the_work_area_bottom_right() {
+        let position = bottom_right_window_position(
+            PhysicalPosition::new(0, 0),
+            PhysicalSize::new(1920, 1040),
+            PhysicalSize::new(493, 660),
+            1.25,
+        );
+
+        assert_eq!(position, PhysicalPosition::new(1407, 360));
+    }
+
+    #[test]
+    fn assistant_position_supports_monitors_with_negative_origins() {
+        let position = bottom_right_window_position(
+            PhysicalPosition::new(-1920, -200),
+            PhysicalSize::new(1920, 1080),
+            PhysicalSize::new(400, 500),
+            1.5,
+        );
+
+        assert_eq!(position, PhysicalPosition::new(-424, 356));
+    }
 
     /// Proves a portable exe can register its own identity and raise a toast.
     ///

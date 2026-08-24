@@ -24,8 +24,9 @@ import type { ConversationUpdatedPayload } from '@/lib/api-v2/types'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import { useMessageStore } from '@/stores/messageStore'
-import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
-import { useTerminalConversationRegistration } from '@/terminal/useTerminalConversationRegistration'
+import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
+import { useOptionalTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
+import { useOptionalTerminalConversationRegistration } from '@/terminal/useTerminalConversationRegistration'
 import type { GroupAgentRead, MessageSendInput } from '@/types/api'
 
 const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-files-open:'
@@ -144,8 +145,13 @@ export function ConversationChatView({
   compact = false,
 }: ConversationChatViewProps) {
   const { t } = useTranslation('chat')
-  const { isDockOpen, toggleDock } = useTerminalRuntime()
-  useTerminalConversationRegistration(threadId ?? conversationId, workspaceId, threadWorktreePath)
+  const showTerminal = capabilities.showTerminal !== false
+  const terminal = useOptionalTerminalRuntime()
+  useOptionalTerminalConversationRegistration(
+    showTerminal ? (threadId ?? conversationId) : undefined,
+    workspaceId,
+    threadWorktreePath,
+  )
   const stateId = threadId ?? conversationId
   const messagesQuery = useConversationMessages(scope, conversationId, threadId)
   const stream = useSendMessageStream(conversationId, {
@@ -175,39 +181,50 @@ export function ConversationChatView({
 
   // What to do with a message typed while the previous reply is still running.
   // `instant` is the original behaviour: the send goes out now and joins the
-  // turn in flight. `queue` parks it here and releases it once the stream ends,
-  // so a follow-up meant as the *next* question does not rewrite the answer
-  // being written.
+  // turn in flight. `queue` parks it in the cross-conversation store and
+  // releases it once the stream ends, so a follow-up meant as the *next*
+  // question does not rewrite the answer being written — and switching to
+  // another conversation and back no longer discards it.
   const systemSettings = useSystemSettings()
   const replyInsertMode = systemSettings.data?.reply_insert_mode ?? 'instant'
-  const queuedRef = useRef<MessageSendInput[]>([])
-  const [queuedCount, setQueuedCount] = useState(0)
+  const queuedCount = useQueuedMessagesStore(
+    (state) => state.byStateId[stateId]?.length ?? 0,
+  )
+  const enqueueQueued = useQueuedMessagesStore((state) => state.enqueue)
+  const clearQueuedMessages = useCallback(
+    () => useQueuedMessagesStore.getState().clear(stateId),
+    [stateId],
+  )
   const sendOrQueueMessage = useCallback(
     (input: MessageSendInput) => {
       if (replyInsertMode !== 'queue' || !isConversationStreaming) return sendMessage(input)
-      queuedRef.current = [...queuedRef.current, input]
-      setQueuedCount(queuedRef.current.length)
+      enqueueQueued(stateId, [input])
     },
-    [isConversationStreaming, replyInsertMode, sendMessage],
+    [enqueueQueued, isConversationStreaming, replyInsertMode, sendMessage, stateId],
   )
-  const clearQueuedMessages = useCallback(() => {
-    queuedRef.current = []
-    setQueuedCount(0)
-  }, [])
 
   // One at a time: releasing the whole queue at once would put every message
   // into a single turn, which is the behaviour queueing exists to avoid. The
-  // next release is triggered by this send's own stream ending.
+  // next release is triggered by this send's own stream ending. The store is
+  // read imperatively inside the effect so returning to a conversation that
+  // still holds queued messages drains them here without re-render churn.
   useEffect(() => {
-    if (isConversationStreaming || queuedRef.current.length === 0) return
-    const [next, ...rest] = queuedRef.current
-    queuedRef.current = rest
-    setQueuedCount(rest.length)
-    void sendMessage(next).catch(() => undefined)
-  }, [isConversationStreaming, sendMessage])
-
-  // A queue belongs to the conversation it was typed in.
-  useEffect(() => clearQueuedMessages, [clearQueuedMessages, conversationId, threadId])
+    if (isConversationStreaming) return
+    const queue = useQueuedMessagesStore.getState()
+    const next = queue.beginDispatch(stateId)
+    if (!next) return
+    let pending: Promise<void>
+    try {
+      pending = sendMessage(next)
+    } catch {
+      useQueuedMessagesStore.getState().finishDispatch(stateId, next)
+      return
+    }
+    void pending.then(
+      () => useQueuedMessagesStore.getState().finishDispatch(stateId),
+      () => useQueuedMessagesStore.getState().finishDispatch(stateId, next),
+    )
+  }, [isConversationStreaming, sendMessage, stateId])
   const fileNavRequest = useFileNavStore((state) => state.request)
   const registerConversationTitles = useConversationActivityStore(
     (state) => state.registerConversationTitles,
@@ -262,6 +279,7 @@ export function ConversationChatView({
   }, [capabilities.showWorkspace, clearWarnings, conversationId, stateId])
 
   useEffect(() => {
+    if (!showTerminal || !terminal) return
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       const isMac = /mac/i.test(navigator.platform || navigator.userAgent)
       const modifier = isMac
@@ -279,11 +297,11 @@ export function ConversationChatView({
       }
       if (isEditableShortcutTarget(event)) return
       event.preventDefault()
-      void toggleDock().catch(() => undefined)
+      void terminal.toggleDock().catch(() => undefined)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [toggleDock])
+  }, [showTerminal, terminal])
 
   const setWorkspaceFilesOpenPersisted = useCallback(
     (next: WorkspaceFilesOpenUpdater) => {
@@ -345,13 +363,13 @@ export function ConversationChatView({
               disabled={isConversationStreaming}
             />
           ) : null}
-          {capabilities.showTerminal !== false ? (
+          {showTerminal && terminal ? (
             <Button
-              variant={isDockOpen ? 'secondary' : 'ghost'}
+              variant={terminal.isDockOpen ? 'secondary' : 'ghost'}
               size="icon"
-              onClick={() => void toggleDock().catch(() => undefined)}
-              aria-label={isDockOpen ? t('terminal.hide') : t('terminal.show')}
-              aria-pressed={isDockOpen}
+              onClick={() => void terminal.toggleDock().catch(() => undefined)}
+              aria-label={terminal.isDockOpen ? t('terminal.hide') : t('terminal.show')}
+              aria-pressed={terminal.isDockOpen}
             >
               <SquareTerminal className="h-4 w-4" />
             </Button>

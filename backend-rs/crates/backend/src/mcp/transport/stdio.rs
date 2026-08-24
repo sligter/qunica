@@ -402,7 +402,10 @@ mod tests {
     #[test]
     fn windows_runs_npx_through_the_command_processor() {
         let (command, args) = launch_command("npx", &["-y".to_string(), "server".to_string()]);
-        assert!(command.to_string_lossy().to_lowercase().ends_with("cmd.exe"));
+        assert!(command
+            .to_string_lossy()
+            .to_lowercase()
+            .ends_with("cmd.exe"));
         assert_eq!(args, vec!["/d", "/c", "call", "npx", "-y", "server"]);
     }
 

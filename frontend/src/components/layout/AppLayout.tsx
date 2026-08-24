@@ -16,14 +16,30 @@ import { SettingsOverlay } from '@/components/layout/SettingsOverlay'
 import { UnsavedChangesProvider } from '@/components/layout/UnsavedChangesProvider'
 import { appChildren } from '@/routes/appRoutes'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
+import { isAuxiliaryDesktopWindow } from '@/lib/desktop'
 import {
   TerminalRuntimeProvider,
+  type TerminalRuntimeProviderProps,
 } from '@/terminal/TerminalRuntimeProvider'
 import { TerminalDock } from '@/terminal/TerminalDock'
 import type { TerminalTransport } from '@/terminal/transport'
 
 export interface AppLayoutProps {
   terminalTransport?: TerminalTransport
+}
+
+interface AppTerminalRuntimeBoundaryProps extends TerminalRuntimeProviderProps {
+  enabled: boolean
+}
+
+/** Auxiliary desktop surfaces must not restore or create native PTY sessions. */
+function AppTerminalRuntimeBoundary({
+  enabled,
+  children,
+  ...props
+}: AppTerminalRuntimeBoundaryProps) {
+  if (!enabled) return <>{children}</>
+  return <TerminalRuntimeProvider {...props}>{children}</TerminalRuntimeProvider>
 }
 
 type TextField = HTMLInputElement | HTMLTextAreaElement
@@ -131,6 +147,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const menuRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
+  const auxiliaryWindow = isAuxiliaryDesktopWindow()
 
   // The settings overlay is React Router's background-location pattern: the
   // real browser location is the overlay URL, and the conversation it was
@@ -141,6 +158,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const overlayState = location.state as OverlayLocationState | null
   const stageRef = useRef<Location | null>(null)
   const overlayOpen =
+    !auxiliaryWindow &&
     isOverlayPath(location.pathname) &&
     (overlayState?.backgroundLocation != null || stageRef.current != null)
   const background: Location | null = overlayOpen
@@ -334,7 +352,8 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
     // element so its global chord listener is never torn down mid-typing.
     <CommandPaletteProvider>
     <UnsavedChangesProvider>
-      <TerminalRuntimeProvider
+      <AppTerminalRuntimeBoundary
+        enabled={!auxiliaryWindow}
         transport={terminalTransport}
         shell={systemSettings.data?.shell_preference}
       >
@@ -343,20 +362,20 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         onContextMenu={openMenu}
         inert={overlayOpen || undefined}
       >
-        <AppSidebar />
+        {auxiliaryWindow ? null : <AppSidebar />}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 overflow-hidden">
             <Suspense fallback={<RouteFallback />}>
               {stageElement}
             </Suspense>
           </div>
-          <TerminalDock />
+          {auxiliaryWindow ? null : <TerminalDock />}
         </main>
         {/* Portals to document.body, so it floats over the whole shell rather
             than being clipped by the main column's overflow. Only mounted
             inside the authenticated tree: the login and register routes render
-            outside AppLayout. */}
-        {!systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false ? (
+            outside AppLayout. Auxiliary windows keep their own surface. */}
+        {!auxiliaryWindow && !systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false ? (
           <AssistantDock />
         ) : null}
       </div>
@@ -396,7 +415,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
           </SettingsOverlay>
         </OverlayProvider>
       ) : null}
-      </TerminalRuntimeProvider>
+      </AppTerminalRuntimeBoundary>
     </UnsavedChangesProvider>
     </CommandPaletteProvider>
   )
