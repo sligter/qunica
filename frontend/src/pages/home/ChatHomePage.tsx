@@ -3,12 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { MessageSquarePlus } from 'lucide-react'
 
-import { avatarColorClass } from '@/lib/avatarColor'
 import { useGroups } from '@/hooks/useGroups'
 import { useDirectChats } from '@/hooks/useDirectChats'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { GroupAvatar } from '@/components/groups/GroupAvatar'
 import { Button } from '@/components/ui/button'
 import { SectionHeading } from '@/components/ui/section'
 
@@ -37,7 +36,8 @@ export function ChatHomePage() {
       subtitle: group.description || t('groups:noDescription'),
       updatedAt: group.updated_at ?? group.created_at,
       to: `/groups/${group.id}`,
-      avatarUrl: null,
+      avatarUrl: group.avatar_url ?? null,
+      avatarMembers: group.avatar_members ?? [],
     })),
     ...(directChats.data ?? []).map((chat) => ({
       id: chat.id,
@@ -47,6 +47,7 @@ export function ChatHomePage() {
       updatedAt: chat.updated_at,
       to: `/chats/${chat.id}`,
       avatarUrl: chat.agent_avatar_url ?? null,
+      avatarMembers: [],
     })),
   ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 5)
   const pageTitle = t('groups:pageTitle')
@@ -105,11 +106,13 @@ export function ChatHomePage() {
                         avatarUrl={conversation.avatarUrl}
                       />
                     ) : (
-                      <Avatar className="h-8 w-8 shrink-0">
-                        <AvatarFallback className={avatarColorClass(conversation.id)}>
-                          {conversation.title.slice(0, 1).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
+                      <GroupAvatar
+                        name={conversation.title}
+                        avatarUrl={conversation.avatarUrl}
+                        members={conversation.avatarMembers}
+                        size="sm"
+                        className="h-8 w-8"
+                      />
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{conversation.title}</p>

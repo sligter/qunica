@@ -14,7 +14,7 @@ vi.mock('@/components/direct-chats/DirectChatPickerDialog', () => ({ DirectChatP
 
 describe('ChatHomePage', () => {
   beforeEach(() => {
-    mocks.groups.mockReturnValue({ isLoading: false, error: null, data: [{ id: 'group-1', name: 'Older group', description: null, created_at: '2026-07-18T00:00:00Z', updated_at: '2026-07-18T00:00:00Z' }] })
+    mocks.groups.mockReturnValue({ isLoading: false, error: null, data: [{ id: 'group-1', name: 'Older group', description: null, avatar_url: null, avatar_members: [{ id: 'user-1', name: 'Alice', kind: 'user', avatar_url: null }, { id: 'agent-1', name: 'Builder', kind: 'agent', avatar_url: 'preset:loom' }], created_at: '2026-07-18T00:00:00Z', updated_at: '2026-07-18T00:00:00Z' }] })
     mocks.directChats.mockReturnValue({ isLoading: false, error: null, data: [{ id: 'chat-1', title: 'Newest direct', agent_name: 'Solo', updated_at: '2026-07-20T00:00:00Z' }] })
   })
 
@@ -24,5 +24,8 @@ describe('ChatHomePage', () => {
     expect(screen.getByRole('button', { name: 'New group' })).toBeInTheDocument()
     const links = screen.getAllByRole('link')
     expect(links.map((link) => link.getAttribute('href'))).toEqual(['/chats/chat-1', '/groups/group-1'])
+    expect(
+      screen.getByText('Older group').closest('a')?.querySelector('[data-slot="group-avatar"]'),
+    ).toHaveAttribute('data-member-count', '2')
   })
 })

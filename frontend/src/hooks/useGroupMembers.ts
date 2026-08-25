@@ -48,6 +48,8 @@ export function useAddGroupMember() {
     onSuccess: (_data, { groupId }) => {
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'members'] })
       void qc.invalidateQueries({ queryKey: ['groups', groupId, 'member-candidates'] })
+      void qc.invalidateQueries({ queryKey: ['groups', groupId] })
+      void qc.invalidateQueries({ queryKey: ['groups'] })
     },
   })
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LegacyDetailRedirect } from '@/components/layout/LegacyDetailRedirect'
 import {
+  isGroupManagePath,
   isOverlayPath,
   overlayAreaLabelKey,
   overlayLinkState,
@@ -275,6 +276,8 @@ describe('overlay route metadata', () => {
     }
     expect(isOverlayPath('/settings-old')).toBe(false)
     expect(isOverlayPath('/groups/group-1/manage/members')).toBe(false)
+    expect(isGroupManagePath('/groups/group-1/manage')).toBe(true)
+    expect(isGroupManagePath('/settings/system')).toBe(false)
   })
 
   it('carries the original stage, but does not invent one for a cold deep link', () => {

@@ -27,7 +27,9 @@ function readStoredWidth({
 }: UsePersistentPaneWidthOptions): number {
   if (typeof window === 'undefined') return defaultWidth
   try {
-    const stored = Number(window.localStorage.getItem(storageKey))
+    const raw = window.localStorage.getItem(storageKey)
+    if (raw === null) return defaultWidth
+    const stored = Number(raw)
     if (!Number.isFinite(stored)) return defaultWidth
     return clampWidth(stored, minWidth, maxWidth)
   } catch {

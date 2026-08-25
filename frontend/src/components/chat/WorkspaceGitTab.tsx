@@ -759,9 +759,9 @@ export function WorkspaceGitTab({
         <div className="flex items-center gap-1">
           <Button
             type="button"
-            variant="outline"
+            variant="default"
             size="sm"
-            className="h-7 rounded-md bg-foreground px-2 text-xs text-background hover:bg-foreground/90 hover:text-background"
+            className="h-7 rounded-md px-2 text-xs"
             disabled={!prUrl || !canUseGit}
             onClick={() => {
               if (prUrl) void openExternal(prUrl).catch((error) => setGitError(errorMessage(error)))

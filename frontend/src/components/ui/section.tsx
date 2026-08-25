@@ -43,6 +43,7 @@ export function SectionHeading({
 }: SectionHeadingProps) {
   return (
     <div
+      data-slot="section-heading"
       className={cn('flex items-end justify-between gap-4 border-b border-border pb-1.5', className)}
     >
       <div className="min-w-0">

@@ -544,6 +544,13 @@ export interface SkillGithubImport {
 export type GroupCommunicationMode = 'mesh' | 'star' | 'hierarchical' | 'ring'
 export type GroupTopologyRole = 'hub' | 'leader' | 'worker'
 
+export interface GroupAvatarMemberRead {
+  id: string
+  name: string
+  kind: 'user' | 'agent'
+  avatar_url?: string | null
+}
+
 export interface GroupRead extends GroupSchedulerConfig {
   id: string
   workspace_id: string | null
@@ -551,6 +558,8 @@ export interface GroupRead extends GroupSchedulerConfig {
   name: string
   description: string | null
   announcement: string | null
+  avatar_url?: string | null
+  avatar_members?: GroupAvatarMemberRead[]
   free_speech: boolean
   proactive_mode: boolean
   allow_agent_free_mention: boolean
@@ -625,6 +634,7 @@ export interface GroupTemplateRead {
 
 export interface GroupUpdate extends Partial<GroupSchedulerConfig> {
   name?: string
+  avatar_url?: string | null
   workspace_id?: string | null
   auto_share_workspace_with_new_agents?: boolean
   description?: string | null

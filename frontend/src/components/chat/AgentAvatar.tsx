@@ -19,11 +19,11 @@ interface AgentAvatarProps {
   className?: string
   contextUsage?: ContextUsage | null
   avatarUrl?: string | null
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'xs' | 'sm' | 'md' | 'lg'
 }
 
-const AVATAR_SIZE = { sm: 'h-6 w-6', md: 'h-8 w-8', lg: 'h-12 w-12' } as const
-const AVATAR_TEXT = { sm: 'text-[10px]', md: 'text-xs', lg: 'text-base' } as const
+const AVATAR_SIZE = { xs: 'h-4 w-4', sm: 'h-6 w-6', md: 'h-8 w-8', lg: 'h-12 w-12' } as const
+const AVATAR_TEXT = { xs: 'text-[7px]', sm: 'text-[10px]', md: 'text-xs', lg: 'text-base' } as const
 
 /** Up to two leading letters of a name, for the fallback initials avatar. */
 export function avatarInitials(name: string): string {

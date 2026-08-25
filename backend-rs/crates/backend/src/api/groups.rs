@@ -17,6 +17,7 @@ use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::{
+    agents::normalize_avatar_url,
     auth::current_user_id,
     error::ApiError,
     workspace_files::{self, ConversationScope},
@@ -32,7 +33,23 @@ use crate::llm::{
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{resolve_workspace_path, ToolError};
 
-const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, \
+const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, avatar_url, \
+     COALESCE((SELECT json_group_array(json_object( \
+       'id', avatar_members.id, 'name', avatar_members.name, 'kind', avatar_members.kind, \
+       'avatar_url', avatar_members.avatar_url)) \
+       FROM ( \
+         SELECT users.id AS id, users.name AS name, 'user' AS kind, users.avatar_url AS avatar_url, \
+                group_members.joined_at AS joined_at \
+         FROM group_members JOIN users ON users.id = group_members.user_id \
+         WHERE group_members.group_id = groups.id AND group_members.status = 'active' \
+         UNION ALL \
+         SELECT agents.id AS id, COALESCE(group_agents.display_name, agents.name) AS name, \
+                'agent' AS kind, agents.avatar_url AS avatar_url, group_agents.joined_at AS joined_at \
+         FROM group_agents JOIN agents ON agents.id = group_agents.agent_id \
+         WHERE group_agents.group_id = groups.id AND group_agents.status = 'active' \
+               AND agents.status = 'active' \
+         ORDER BY joined_at ASC, id ASC LIMIT 6 \
+       ) AS avatar_members), '[]') AS avatar_members_json, \
      free_speech, proactive_mode, \
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
      scheduler_mode, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
@@ -232,6 +249,8 @@ pub struct UpdateRequest {
     description: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     announcement: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    avatar_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     workspace_id: Option<Option<String>>,
     #[serde(default)]
@@ -473,6 +492,8 @@ pub struct GroupResponse {
     name: String,
     description: Option<String>,
     announcement: Option<String>,
+    avatar_url: Option<String>,
+    avatar_members: Vec<GroupAvatarMemberResponse>,
     free_speech: bool,
     proactive_mode: bool,
     allow_agent_free_mention: bool,
@@ -497,6 +518,14 @@ pub struct GroupResponse {
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GroupAvatarMemberResponse {
+    id: String,
+    name: String,
+    kind: String,
+    avatar_url: Option<String>,
 }
 
 impl GroupResponse {
@@ -602,6 +631,8 @@ struct GroupRow {
     name: String,
     description: Option<String>,
     announcement: Option<String>,
+    avatar_url: Option<String>,
+    avatar_members_json: String,
     // SQLite stores booleans as integers; these are exposed as booleans below.
     free_speech: i64,
     proactive_mode: i64,
@@ -887,6 +918,8 @@ impl From<GroupRow> for GroupResponse {
             name: row.name,
             description: row.description,
             announcement: row.announcement,
+            avatar_url: row.avatar_url,
+            avatar_members: serde_json::from_str(&row.avatar_members_json).unwrap_or_default(),
             free_speech: row.free_speech != 0,
             proactive_mode: row.proactive_mode != 0,
             allow_agent_free_mention: row.allow_agent_free_mention != 0,
@@ -1420,6 +1453,10 @@ pub(crate) async fn update_inner(
         Some(ref value) => normalize_description(value.as_deref()),
         None => existing.announcement.clone(),
     };
+    let avatar_url = match body.avatar_url {
+        Some(ref value) => normalize_avatar_url(value.as_deref())?,
+        None => existing.avatar_url.clone(),
+    };
     // `Some(Some(id))` rebinds to an owned active workspace; `Some(None)` clears
     // the binding; `None` leaves the existing binding untouched.
     let workspace_id = match body.workspace_id {
@@ -1463,7 +1500,7 @@ pub(crate) async fn update_inner(
         .map_err(|_| ApiError::internal("failed to start group update transaction"))?;
     sqlx::query(
         "UPDATE groups SET \
-         name = ?, description = ?, announcement = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
+         name = ?, description = ?, announcement = ?, avatar_url = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
          proactive_mode = ?, \
          allow_agent_free_mention = ?, agent_free_mention_max_dispatches = ?, \
          communication_mode = ?, scheduler_mode = ?, agent_mention_policy = ?, \
@@ -1476,6 +1513,7 @@ pub(crate) async fn update_inner(
     .bind(&name)
     .bind(&description)
     .bind(&announcement)
+    .bind(&avatar_url)
     .bind(&workspace_id)
     .bind(auto_share_workspace_with_new_agents)
     .bind(free_speech)

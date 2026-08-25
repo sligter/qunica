@@ -1,6 +1,11 @@
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 
+import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
+import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useUnsavedChangesAction } from '@/hooks/useUnsavedChangesGuard'
+import { cn } from '@/lib/utils'
+
+const GROUP_DRAWER_WIDTH_STORAGE_KEY = 'ag-swarmer:layout:group-settings-drawer-width'
 
 const FOCUSABLE = [
   'a[href]',
@@ -22,6 +27,10 @@ export interface SettingsOverlayProps {
    * forwarding this keeps text editing copy/paste working inside settings.
    */
   onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
+  /** Group management uses a compact sheet; resource settings use the inset panel. */
+  variant?: 'panel' | 'drawer'
+  /** Accessible label for the group drawer's resize separator. */
+  resizeLabel?: string
   children: ReactNode
 }
 
@@ -36,21 +45,34 @@ export interface SettingsOverlayProps {
  * `AppLayout` too, so right-click copy still works in here. The terminal dock
  * is in normal flow inside the stage, so it is under all of these.
  *
- * Near full height and full width rather than a right-hand sheet: the content
- * is wide forms and two-column master/detail views, which a sheet would force
- * into a single squeezed column.
+ * Resource settings stay near full height and width because they contain wide
+ * forms and master/detail views. Group management opts into the compact drawer
+ * variant and adapts its own content to the narrower measure.
  *
  * Clicking the scrim does not close. The scrim is a narrow frame around an
  * almost-full-screen panel, so a click landing there is nearly always a miss —
  * and behind these forms are half-typed API keys and prompts.
  */
-export function SettingsOverlay({ label, onClose, onContextMenu, children }: SettingsOverlayProps) {
+export function SettingsOverlay({
+  label,
+  onClose,
+  onContextMenu,
+  variant = 'panel',
+  resizeLabel,
+  children,
+}: SettingsOverlayProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
   const requestAction = useUnsavedChangesAction()
   const requestActionRef = useRef(requestAction)
   closeRef.current = onClose
   requestActionRef.current = requestAction
+  const drawerWidth = usePersistentPaneWidth({
+    storageKey: GROUP_DRAWER_WIDTH_STORAGE_KEY,
+    defaultWidth: 512,
+    minWidth: 400,
+    maxWidth: 960,
+  })
 
   useEffect(() => {
     const panel = panelRef.current
@@ -103,16 +125,47 @@ export function SettingsOverlay({ label, onClose, onContextMenu, children }: Set
   }, [])
 
   return (
-    <div className="fixed inset-0 z-40 flex p-2 sm:p-4" onContextMenu={onContextMenu}>
-      <div className="animate-overlay-scrim absolute inset-0 bg-scrim" aria-hidden />
+    <div
+      className={cn(
+        'fixed inset-0 z-40 flex',
+        variant === 'drawer' ? 'justify-end' : 'p-2 sm:p-4',
+      )}
+      onContextMenu={onContextMenu}
+    >
+      <div
+        className={cn(
+          'animate-overlay-scrim absolute inset-0',
+          variant === 'drawer' ? 'group-drawer-scrim' : 'bg-scrim',
+        )}
+        aria-hidden
+      />
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label={label}
+        data-variant={variant}
         tabIndex={-1}
-        className="animate-overlay-panel relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-background shadow-lg outline-none"
+        style={variant === 'drawer' ? { width: drawerWidth.width } : undefined}
+        className={cn(
+          'relative flex min-h-0 flex-col overflow-hidden border-border bg-background outline-none',
+          variant === 'drawer'
+            ? 'animate-overlay-drawer h-full w-full max-w-full border-l shadow-2xl'
+            : 'animate-overlay-panel w-full flex-1 rounded-lg border shadow-lg',
+        )}
       >
+        {variant === 'drawer' ? (
+          <VerticalResizeHandle
+            label={resizeLabel ?? label}
+            value={drawerWidth.width}
+            min={drawerWidth.minWidth}
+            max={drawerWidth.maxWidth}
+            increaseOnArrowRight={false}
+            onResizeStart={(event) => drawerWidth.startResize(event, -1)}
+            onStep={drawerWidth.resizeBy}
+            className="absolute inset-y-0 left-0 z-30"
+          />
+        ) : null}
         {children}
       </div>
     </div>

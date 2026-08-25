@@ -18,6 +18,7 @@ import { useClearGroupMessages } from '@/hooks/useGroupMessages'
 import { ApiError } from '@/lib/api-v2/client'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
 import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
@@ -41,9 +42,10 @@ function isCommunicationMode(value: string): value is GroupCommunicationMode {
 
 interface GroupSettingsTabProps {
   group: GroupRead
+  compact?: boolean
 }
 
-export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
+export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabProps) {
   const { t, i18n } = useTranslation(['groups', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const update = useUpdateGroup(group.id)
@@ -207,7 +209,12 @@ export function GroupSettingsTab({ group }: GroupSettingsTabProps) {
   }
 
   return (
-    <div className="w-full space-y-10">
+    <div
+      className={cn(
+        'w-full',
+        compact ? 'group-drawer-settings space-y-4' : 'space-y-10',
+      )}
+    >
       <SettingsSection
         title={t('settings.basic')}
         description={t('settings.basicDescription')}

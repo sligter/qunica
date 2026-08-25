@@ -421,6 +421,111 @@
   }
 }
 
+/* The group drawer arrives from the right edge it is docked to, the way a
+   sheet does — travel along one axis instead of the panel's fade-in-place. */
+@keyframes overlay-drawer-in {
+  0% {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Group management is denser than the app's full-page settings while keeping
+   the same theme tokens and card language inside the compact drawer. */
+.group-drawer-scrim {
+  background: color-mix(in srgb, var(--color-scrim) 52%, transparent);
+}
+
+.group-drawer-settings > [data-slot="settings-section"],
+.group-drawer-settings > details {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-card);
+  box-shadow: var(--shadow-xs);
+}
+
+.group-drawer-settings > [data-slot="settings-section"] {
+  overflow: hidden;
+}
+
+.group-drawer-settings > [data-slot="settings-section"] > [data-slot="section-heading"] {
+  align-items: center;
+  padding: 0.875rem 1rem 0.75rem;
+}
+
+.group-drawer-settings > [data-slot="settings-section"] > [data-slot="section-heading"] h2 {
+  color: var(--color-foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.group-drawer-settings > [data-slot="settings-section"] > [data-slot="section-heading"] p {
+  margin-top: 0.25rem;
+  line-height: 1.4;
+}
+
+.group-drawer-settings > [data-slot="settings-section"] > .divide-y {
+  padding-inline: 1rem;
+}
+
+.group-drawer-settings > details {
+  padding-inline: 1rem;
+}
+
+.group-drawer-settings > details > summary {
+  padding-block: 0.875rem;
+}
+
+.group-drawer-settings > details > summary > span {
+  color: var(--color-foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.group-drawer-settings [data-slot="settings-row"]:not([data-stacked]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 1rem;
+  padding-block: 0.875rem;
+}
+
+.group-drawer-settings [data-slot="settings-row"][data-stacked] {
+  padding-block: 0.875rem;
+}
+
+.group-drawer-settings [data-slot="settings-control"] {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.group-drawer-settings [data-slot="settings-control"] > select {
+  width: 10.5rem;
+}
+
+@media (max-width: 420px) {
+  .group-drawer-settings [data-slot="settings-row"]:not([data-stacked]) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .group-drawer-settings [data-slot="settings-control"],
+  .group-drawer-settings [data-slot="settings-control"] > select {
+    width: 100%;
+  }
+
+  .group-drawer-settings [data-slot="settings-control"] {
+    justify-content: flex-start;
+  }
+}
+
 @layer utilities {
   .animate-startup-progress {
     animation: startup-progress 1.4s ease-in-out infinite;
@@ -490,6 +595,10 @@
   .animate-overlay-panel {
     animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
+
+  .animate-overlay-drawer {
+    animation: overlay-drawer-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -531,7 +640,8 @@
   /* The overlay still has to end up on screen, so it settles on its last frame
      rather than on the transparent first one. */
   .animate-overlay-scrim,
-  .animate-overlay-panel {
+  .animate-overlay-panel,
+  .animate-overlay-drawer {
     animation: none;
     opacity: 1;
     transform: none;

@@ -249,6 +249,25 @@ describe('AppSidebar terminal cleanup', () => {
     expect(chatRow).not.toHaveAccessibleName(expect.stringContaining('Replying'))
   })
 
+  it('uses the group avatar summary in the conversation list', () => {
+    mocks.groups = [{
+      id: 'group-1',
+      name: 'Group one',
+      created_at: '2026-07-22T00:00:00Z',
+      avatar_url: null,
+      avatar_members: [
+        { id: 'user-1', name: 'Alice', kind: 'user', avatar_url: null },
+        { id: 'agent-1', name: 'Builder', kind: 'agent', avatar_url: 'preset:loom' },
+      ],
+    }]
+    renderSidebar()
+
+    const groupRow = screen.getByText('Group one').closest('a')!
+    expect(
+      groupRow.querySelector('[data-slot="group-avatar"]'),
+    ).toHaveAttribute('data-member-count', '2')
+  })
+
   it('publishes conversation IDs when a conversation is dragged', () => {
     mocks.groups = [{ id: 'group-1', name: 'Group one', created_at: '2026-07-22T00:00:00Z' }]
     renderSidebar()

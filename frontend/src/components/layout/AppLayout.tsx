@@ -8,6 +8,7 @@ import { CommandPaletteProvider } from '@/components/layout/CommandPalette'
 import { RouteFallback } from '@/components/layout/RouteFallback'
 import {
   OverlayProvider,
+  isGroupManagePath,
   isOverlayPath,
   overlayAreaLabelKey,
   type OverlayLocationState,
@@ -410,6 +411,8 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
             label={overlayLabel ?? ''}
             onClose={closeOverlay}
             onContextMenu={openMenu}
+            variant={isGroupManagePath(location.pathname) ? 'drawer' : 'panel'}
+            resizeLabel={t('groups:manage.resize')}
           >
             {overlayElement}
           </SettingsOverlay>

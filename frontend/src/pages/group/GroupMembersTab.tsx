@@ -247,11 +247,18 @@ function Details({ entry, groupId, mode, onRemoved }: { entry: Entry; groupId: s
   )
 }
 
-export function GroupMembersTab({ groupId }: { groupId: string }) {
+export function GroupMembersTab({
+  groupId,
+  compact = false,
+}: {
+  groupId: string
+  compact?: boolean
+}) {
   const { t, i18n } = useTranslation('groups')
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const [query, setQuery] = useState('')
   const [userQuery, setUserQuery] = useState('')
+  const [agentQuery, setAgentQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [selected, setSelected] = useState<string | null>(null)
   // Below xl the two-column grid stacks, which drops a selected member's
@@ -260,7 +267,7 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
   // Keyed off selection state rather than matchMedia: jsdom's is always false,
   // and `max-xl:` variants keep wide windows side-by-side either way.
   const [panesSwapped, setPanesSwapped] = useState(false)
-  const exclusive = selected !== null && panesSwapped
+  const exclusive = selected !== null && (compact || panesSwapped)
   const group = useGroup(groupId)
   const humans = useGroupMembers(groupId)
   const groupAgents = useGroupAgents(groupId)
@@ -302,6 +309,13 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
     const existing = new Set((groupAgents.data ?? []).map((agent) => agent.agent_id))
     return (agents.data ?? []).filter((agent) => !existing.has(agent.id))
   }, [agents.data, groupAgents.data])
+  const visibleAvailableAgents = useMemo(() => {
+    const normalized = agentQuery.trim().toLowerCase()
+    if (!normalized) return availableAgents
+    return availableAgents.filter((agent) =>
+      `${agent.name}\n${agent.description ?? ''}`.toLowerCase().includes(normalized),
+    )
+  }, [agentQuery, availableAgents])
   const filters: Array<[Filter, string]> = [
     ['all', t('members.all')],
     ['human', t('members.human')],
@@ -317,10 +331,21 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
   }
 
   return (
-    <div className="grid min-h-[34rem] w-full grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+    <div
+      className={cn(
+        'grid min-h-[34rem] w-full grid-cols-1 gap-5',
+        !compact && 'xl:grid-cols-[minmax(0,1fr)_22rem]',
+      )}
+    >
       {/* Swapped out only below xl, where the details would otherwise stack
           a screen away; wide windows keep the master/detail grid. */}
-      <Card asChild className={cn('flex min-h-0 flex-col', exclusive && 'max-xl:hidden')}>
+      <Card
+        asChild
+        className={cn(
+          'flex min-h-0 flex-col',
+          exclusive && (compact ? 'hidden' : 'max-xl:hidden'),
+        )}
+      >
         <section>
         <div className="space-y-3 border-b border-border p-4">
           <div>
@@ -351,7 +376,7 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
           <Button
             variant="ghost"
             size="sm"
-            className="-ml-2 h-7 gap-1.5 text-xs xl:hidden"
+            className={cn('-ml-2 h-7 gap-1.5 text-xs', !compact && 'xl:hidden')}
             onClick={() => {
               setSelected(null)
               setPanesSwapped(false)
@@ -372,7 +397,24 @@ export function GroupMembersTab({ groupId }: { groupId: string }) {
               <ul className="mt-2 max-h-48 overflow-y-auto">{(userCandidates.data ?? []).filter((user) => !(humans.data ?? []).some((member) => member.user_id === user.id)).map((user) => <AddUser key={user.id} user={user} groupId={groupId} />)}</ul>
             </Panel>
             <Panel title={t('members.addAgent')}>
-              <ul className="max-h-56 overflow-y-auto">{availableAgents.map((agent) => <AddAgent key={`${agent.id}:${defaultWorkspaceMode}`} agent={agent} groupId={groupId} defaultWorkspaceMode={defaultWorkspaceMode} />)}{availableAgents.length === 0 ? <li className="py-2 text-xs text-muted-foreground">{t('members.noAgents')}</li> : null}</ul>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  aria-label={t('manage.agentSearch.placeholder')}
+                  className="h-9 pl-8"
+                  value={agentQuery}
+                  onChange={(event) => setAgentQuery(event.target.value)}
+                  placeholder={t('manage.agentSearch.placeholder')}
+                />
+              </div>
+              <ul className="mt-2 max-h-56 overflow-y-auto">
+                {visibleAvailableAgents.map((agent) => <AddAgent key={`${agent.id}:${defaultWorkspaceMode}`} agent={agent} groupId={groupId} defaultWorkspaceMode={defaultWorkspaceMode} />)}
+                {visibleAvailableAgents.length === 0 ? (
+                  <li className="py-2 text-xs text-muted-foreground">
+                    {availableAgents.length === 0 ? t('members.noAgents') : t('manage.agentSearch.noMatches')}
+                  </li>
+                ) : null}
+              </ul>
             </Panel>
           </>
         )}

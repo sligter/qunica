@@ -17,7 +17,6 @@ import {
   X,
 } from 'lucide-react'
 
-import { avatarColorClass } from '@/lib/avatarColor'
 import { formatRelativeTime } from '@/lib/format'
 import { setConversationIdDrag } from '@/lib/conversationDrag'
 import { cn } from '@/lib/utils'
@@ -40,7 +39,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { isDesktopRuntime } from '@/lib/runtime'
 import { openLibraryWindow, openSettingsWindow } from '@/lib/desktop'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { GroupAvatar } from '@/components/groups/GroupAvatar'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -596,11 +595,12 @@ export function AppSidebar() {
                         >
                           {({ isActive }) => (
                             <>
-                              <Avatar className="h-7 w-7 shrink-0">
-                                <AvatarFallback className={avatarColorClass(g.id)}>
-                                  {g.name.slice(0, 1).toUpperCase()}
-                                </AvatarFallback>
-                              </Avatar>
+                              <GroupAvatar
+                                name={g.name}
+                                avatarUrl={g.avatar_url}
+                                members={g.avatar_members ?? []}
+                                size="sm"
+                              />
                               <span
                                 className={cn(
                                   'min-w-0 flex-1 truncate text-sm',

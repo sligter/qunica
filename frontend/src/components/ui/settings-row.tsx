@@ -32,7 +32,7 @@ export function SettingsSection({
   children,
 }: SettingsSectionProps) {
   return (
-    <section className={cn('w-full', className)}>
+    <section data-slot="settings-section" className={cn('w-full', className)}>
       <SectionHeading title={title} description={description} aside={aside} />
       <div className="divide-y divide-border">{children}</div>
     </section>

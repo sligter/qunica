@@ -51,9 +51,14 @@ const OVERLAY_PREFIXES = [
 
 const GROUP_MANAGE = /^\/groups\/[^/]+\/manage\/?$/
 
+/** Group management is the one overlay area rendered as a narrow side drawer. */
+export function isGroupManagePath(pathname: string): boolean {
+  return GROUP_MANAGE.test(pathname)
+}
+
 /** Whether a pathname belongs to a settings-class area rather than the stage. */
 export function isOverlayPath(pathname: string): boolean {
-  if (GROUP_MANAGE.test(pathname)) return true
+  if (isGroupManagePath(pathname)) return true
   return OVERLAY_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   )
@@ -65,7 +70,7 @@ export function isOverlayPath(pathname: string): boolean {
  * which of seven areas just opened.
  */
 export function overlayAreaLabelKey(pathname: string): string {
-  if (GROUP_MANAGE.test(pathname)) return 'groups:manage.title'
+  if (isGroupManagePath(pathname)) return 'groups:manage.title'
   const prefix = OVERLAY_PREFIXES.find(
     (candidate) => pathname === candidate || pathname.startsWith(`${candidate}/`),
   )

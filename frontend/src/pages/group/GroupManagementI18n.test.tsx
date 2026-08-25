@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   group: null as GroupRead | null,
   groupAgents: [] as GroupAgentRead[],
   groupMembers: [] as GroupMemberRead[],
-  agents: [] as { id: string; workspace_id: string | null }[],
+  agents: [] as { id: string; workspace_id: string | null; name?: string; description?: string | null }[],
   workspaces: [] as { id: string; local_path: string | null }[],
   groupThreads: [] as GroupThread[],
   useGroupAgents: vi.fn(),
@@ -508,6 +508,60 @@ describe('group management i18n', () => {
     expect(document.title).toBe('原样 Group 42 · Manage · AG Swarmer')
   })
 
+  it('opens the compact member manager from the settings roster', async () => {
+    const user = userEvent.setup()
+    mocks.groupMembers = Array.from({ length: 6 }, (_, index) => ({
+      ...humanMember,
+      id: `member-${index}`,
+      user_id: `user-${index}`,
+      display_name: `Human ${index + 1}`,
+    }))
+    mocks.groupAgents = Array.from({ length: 3 }, (_, index) => ({
+      ...groupAgent,
+      id: `group-agent-${index}`,
+      agent_id: `agent-${index}`,
+      display_name: `Agent ${index + 1}`,
+    }))
+    await setLanguage('zh-CN')
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1/manage']}>
+        <Routes>
+          <Route path="/groups/:groupId/manage" element={<GroupManagePage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    const overview = screen.getByRole('region', { name: '原样 Group 42' })
+    expect(within(overview).getByText('9 位')).toBeVisible()
+    expect(within(overview).getByText('+4')).toBeVisible()
+    await user.click(within(overview).getByRole('button', { name: '成员' }))
+
+    expect(screen.getByRole('tab', { name: '成员' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByPlaceholderText('搜索成员')).toBeVisible()
+  })
+
+  it('resets an uploaded group avatar to the default member avatar', async () => {
+    const user = userEvent.setup()
+    mocks.group = {
+      ...group,
+      avatar_url: 'data:image/png;base64,iVBORw0KGgo=',
+    }
+    mocks.groupMembers = [humanMember]
+    await setLanguage('zh-CN')
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1/manage']}>
+        <Routes>
+          <Route path="/groups/:groupId/manage" element={<GroupManagePage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('button', { name: '设置群头像' }))
+    await user.click(screen.getByRole('button', { name: /默认头像/ }))
+
+    await waitFor(() => expect(mocks.mutateAsync).toHaveBeenCalledWith({ avatar_url: null }))
+  })
+
   it('localizes member empty and action framing', async () => {
     await setLanguage('zh-CN')
     render(
@@ -520,6 +574,32 @@ describe('group management i18n', () => {
     expect(screen.getByPlaceholderText('搜索成员')).toBeVisible()
     expect(screen.getByText('没有匹配的成员。')).toBeVisible()
     expect(screen.getByRole('heading', { name: '添加 Agent' })).toBeVisible()
+  })
+
+  it('searches addable agents by name and description', async () => {
+    const user = userEvent.setup()
+    mocks.agents = [
+      { id: 'agent-research', name: 'Researcher', description: '网页检索', workspace_id: null },
+      { id: 'agent-builder', name: 'Builder', description: '编写代码', workspace_id: null },
+    ]
+    await setLanguage('zh-CN')
+    render(
+      <MemoryRouter>
+        <GroupMembersTab groupId="group-1" />
+      </MemoryRouter>,
+    )
+
+    const search = screen.getByRole('textbox', { name: '搜索 Agent' })
+    expect(screen.getByText('Researcher')).toBeVisible()
+    expect(screen.getByText('Builder')).toBeVisible()
+
+    await user.type(search, '代码')
+    expect(screen.queryByText('Researcher')).not.toBeInTheDocument()
+    expect(screen.getByText('Builder')).toBeVisible()
+
+    await user.clear(search)
+    await user.type(search, 'missing')
+    expect(screen.getByText('没有匹配的 Agent。')).toBeVisible()
   })
 
   it('pluralizes the raw member count while displaying the formatted count', async () => {

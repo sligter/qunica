@@ -604,6 +604,10 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
     assert_eq!(group["name"], "Expanded Team");
     assert_eq!(group["description"], "Operators");
     assert_eq!(group["announcement"], "Stand by");
+    assert_eq!(group["avatar_url"], Value::Null);
+    assert_eq!(group["avatar_members"].as_array().unwrap().len(), 1);
+    assert_eq!(group["avatar_members"][0]["name"], "Tester");
+    assert_eq!(group["avatar_members"][0]["kind"], "user");
     assert_eq!(group["free_speech"], true);
     assert_eq!(group["proactive_mode"], true);
     assert_eq!(group["allow_agent_free_mention"], false);
@@ -625,6 +629,44 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
     assert_eq!(fetched["announcement"], "Stand by");
     assert_eq!(fetched["communication_mode"], "star");
     assert_eq!(fetched["agent_free_mention_max_dispatches"], 12);
+    assert_eq!(fetched["avatar_members"], group["avatar_members"]);
+
+    let (status, listed) = send(&app, authed("GET", "/api/v2/groups", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed_group = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(group_id.as_str()))
+        .unwrap();
+    assert_eq!(listed_group["avatar_members"], group["avatar_members"]);
+
+    let avatar = "data:image/png;base64,iVBORw0KGgo=";
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({"avatar_url": avatar}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["avatar_url"], avatar);
+
+    let (status, cleared) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({"avatar_url": null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["avatar_url"], Value::Null);
 
     let owner = owner_id(&state, email).await;
     let membership = sqlx::query_as::<_, (String, String)>(

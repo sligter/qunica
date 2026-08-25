@@ -42,6 +42,7 @@ export function useUpdateCurrentUser() {
       void qc.invalidateQueries({
         predicate: ({ queryKey }) => queryKey[0] === 'groups' && queryKey[2] === 'members',
       })
+      void qc.invalidateQueries({ queryKey: ['groups'] })
     },
   })
 }
