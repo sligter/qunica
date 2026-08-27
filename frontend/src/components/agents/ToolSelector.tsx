@@ -55,7 +55,7 @@ export function ToolSelector({
   currentAgentId,
   onChange,
 }: ToolSelectorProps) {
-  const { t } = useTranslation('agents')
+  const { t } = useTranslation(['agents', 'groups'])
   const statusText = (tool: BuiltinToolRead) => {
     if (tool.requires_sandbox && workspaceBackendType === 'local') return t('tools.states.cloudRequired')
     if (isRuntimeExecutable(tool, workspaceBackendType) || tool.runtime_status === 'available') return t('tools.states.executable')
@@ -127,7 +127,7 @@ export function ToolSelector({
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-muted-foreground">{t('tools.agentAsTool')}</p>
-        <p className="text-xs text-muted-foreground">{t('tools.agentAsToolDescription')}</p>
+        <p className="text-xs text-muted-foreground">{t('groups:delegationDescription')}</p>
         <EntityPicker
           label={t('tools.agentAsTool')}
           searchPlaceholder={t('form.searchAgents')}
@@ -156,7 +156,9 @@ export function ToolSelector({
         />
       </div>
       {POLICY_ORDER.map((policy) => {
-        const policyTools = tools.filter((tool) => tool.policy === policy)
+        const policyTools = tools.filter(
+          (tool) => tool.policy === policy && tool.runtime_status !== 'planned',
+        )
         if (policyTools.length === 0) return null
         return (
           <div key={policy} className="space-y-2">

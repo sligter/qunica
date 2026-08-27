@@ -546,13 +546,14 @@ async fn group_create_requires_active_owned_workspace() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(group["workspace_id"], workspace_a);
     assert_eq!(group["status"], "active");
-    // Active settings are exposed as booleans/numbers; retired knobs are absent.
+    // Active settings use normal types; legacy response fields remain readable.
     assert_eq!(group["free_speech"], false);
     assert_eq!(group["proactive_mode"], false);
     assert!(group.get("proactive_reply_multiplier").is_none());
     assert!(group.get("proactive_max_rounds").is_none());
     assert!(group.get("scheduler_enabled").is_none());
-    assert_eq!(group["allow_agent_free_mention"], true);
+    assert_eq!(group["allow_agent_free_mention"], false);
+    assert_eq!(group["agent_free_mention_max_dispatches"], 0);
 
     // A workspace owned by another user cannot be referenced.
     let token_b = register_and_login(&app, "ownerb@example.com").await;
@@ -592,8 +593,6 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
                 "announcement": "Stand by",
                 "free_speech": true,
                 "proactive_mode": true,
-                "allow_agent_free_mention": false,
-                "agent_free_mention_max_dispatches": 12,
                 "communication_mode": "star"
             }),
         ),
@@ -611,7 +610,7 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
     assert_eq!(group["free_speech"], true);
     assert_eq!(group["proactive_mode"], true);
     assert_eq!(group["allow_agent_free_mention"], false);
-    assert_eq!(group["agent_free_mention_max_dispatches"], 12);
+    assert_eq!(group["agent_free_mention_max_dispatches"], 0);
     assert_eq!(group["communication_mode"], "star");
     assert_eq!(group["muted_agent_ids"], Value::Null);
     assert_eq!(group["admin_agent_ids"], Value::Null);
@@ -628,7 +627,7 @@ async fn group_create_and_read_return_expanded_fields_and_owner_membership() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["announcement"], "Stand by");
     assert_eq!(fetched["communication_mode"], "star");
-    assert_eq!(fetched["agent_free_mention_max_dispatches"], 12);
+    assert_eq!(fetched["agent_free_mention_max_dispatches"], 0);
     assert_eq!(fetched["avatar_members"], group["avatar_members"]);
 
     let (status, listed) = send(&app, authed("GET", "/api/v2/groups", &token)).await;
@@ -5843,7 +5842,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     assert_eq!(group["moderator_model"], Value::Null);
     assert_eq!(group["free_speech"], false);
     assert_eq!(group["proactive_mode"], false);
-    assert_eq!(group["allow_agent_free_mention"], true);
+    assert_eq!(group["allow_agent_free_mention"], false);
 
     let group_id = group["id"].as_str().unwrap();
     let (status, updated) = send(
@@ -5854,7 +5853,6 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
             &token,
             json!({
                 "scheduler_mode": "automatic",
-                "agent_mention_policy": "bounded_schedule",
                 "max_agent_steps": 18,
                 "max_steps_per_agent": 4,
                 "max_scheduler_hops": 7,
@@ -5873,7 +5871,7 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     assert_eq!(status, StatusCode::OK, "body: {updated:?}");
     assert!(updated.get("scheduler_enabled").is_none());
     assert_eq!(updated["scheduler_mode"], "automatic");
-    assert_eq!(updated["agent_mention_policy"], "bounded_schedule");
+    assert_eq!(updated["agent_mention_policy"], "display_only");
     assert_eq!(updated["max_agent_steps"], 18);
     assert_eq!(updated["max_steps_per_agent"], 4);
     assert_eq!(updated["max_scheduler_hops"], 7);
@@ -5905,7 +5903,6 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
             &token,
             json!({
                 "scheduler_mode": "bounded",
-                "agent_mention_policy": "display_only",
                 "max_agent_steps": Value::Null,
                 "moderator_enabled": false,
                 "moderator_provider_id": Value::Null,
@@ -5918,6 +5915,94 @@ async fn group_scheduler_config_round_trips_without_an_engine_toggle() {
     assert_eq!(reset["max_agent_steps"], Value::Null);
     assert_eq!(reset["moderator_provider_id"], Value::Null);
     assert_eq!(reset["moderator_model"], Value::Null);
+}
+
+#[tokio::test]
+async fn group_api_rejects_removed_agent_mention_fields() {
+    let (app, state) = app_with_state().await;
+    let token = register_and_login(&app, "retired-mention-fields@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({
+                "name": "Retired field",
+                "workspace_id": workspace,
+                "agent_mention_policy": "display_only"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("agent_mention_policy has been removed"));
+
+    let (status, group) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({"name": "Current fields", "workspace_id": workspace}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group_id = group["id"].as_str().unwrap();
+
+    for (field, value) in [
+        ("agent_mention_policy", json!("bounded_schedule")),
+        ("allow_agent_free_mention", json!(false)),
+        ("agent_free_mention_max_dispatches", json!(0)),
+        ("agent_mention_policy", Value::Null),
+    ] {
+        let payload = Value::Object([(field.to_owned(), value)].into_iter().collect());
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "PATCH",
+                &format!("/api/v2/groups/{group_id}"),
+                &token,
+                payload,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "field: {field}");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{field} has been removed")));
+    }
+
+    sqlx::query(
+        "UPDATE groups SET allow_agent_free_mention = 1, \
+         agent_free_mention_max_dispatches = 7, agent_mention_policy = 'bounded_schedule' \
+         WHERE id = ?",
+    )
+    .bind(group_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({"name": "Legacy intent preserved"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["allow_agent_free_mention"], true);
+    assert_eq!(updated["agent_free_mention_max_dispatches"], 7);
+    assert_eq!(updated["agent_mention_policy"], "bounded_schedule");
 }
 
 #[tokio::test]
@@ -6056,7 +6141,6 @@ async fn group_patch_updates_name_description_workspace_and_settings() {
                 "workspace_id": workspace_b,
                 "free_speech": true,
                 "proactive_mode": true,
-                "allow_agent_free_mention": false,
             }),
         ),
     )

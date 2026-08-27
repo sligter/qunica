@@ -363,6 +363,32 @@ describe('group management i18n', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('创建群组失败')
   })
 
+  it('creates groups with one response mode and disabled legacy mention dispatch', async () => {
+    const user = userEvent.setup()
+    mocks.mutateAsync.mockResolvedValueOnce(group)
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter>
+        <GroupFormDialog open onOpenChange={vi.fn()} />
+      </MemoryRouter>,
+    )
+
+    await user.type(screen.getByLabelText('Name'), 'Review team')
+    await user.selectOptions(screen.getByLabelText('Response mode'), 'proactive')
+    await user.click(screen.getByRole('button', { name: 'Create group' }))
+
+    await waitFor(() => {
+      const payload = mocks.mutateAsync.mock.calls[0]?.[0]
+      expect(payload).toEqual(expect.objectContaining({
+        free_speech: false,
+        proactive_mode: true,
+      }))
+      expect(payload).not.toHaveProperty('allow_agent_free_mention')
+      expect(payload).not.toHaveProperty('agent_free_mention_max_dispatches')
+      expect(payload).not.toHaveProperty('agent_mention_policy')
+    })
+  })
+
   it('localizes group chat framing while preserving group data raw', async () => {
     mocks.group = { ...group, workspace_id: 'workspace-1' }
     await setLanguage('zh-CN')
@@ -746,7 +772,7 @@ describe('group management i18n', () => {
 
     expect(screen.getByText('基本信息')).toBeVisible()
     expect(screen.getByLabelText('群组名称')).toHaveValue('draft')
-    expect(screen.getByRole('switch', { name: '自由发言' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: '响应方式' })).toBeVisible()
   })
 
   it('shows localized framing for an unexpected settings update error', async () => {
@@ -759,8 +785,29 @@ describe('group management i18n', () => {
       </MemoryRouter>,
     )
 
-    await user.click(screen.getByRole('switch', { name: '自由发言' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: '响应方式' }), 'everyone')
     expect(await screen.findByRole('alert')).toHaveTextContent('更新群组失败')
+  })
+
+  it('stores one response mode without an overlapping follow-up control', async () => {
+    const user = userEvent.setup()
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter>
+        <GroupSettingsTab group={group} />
+      </MemoryRouter>,
+    )
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Response mode' }), 'proactive')
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith({
+        free_speech: false,
+        proactive_mode: true,
+      })
+    })
+
+    expect(screen.queryByRole('switch', { name: 'Allow agent follow-ups' })).not.toBeInTheDocument()
+    expect(screen.getByText(/@mention is text only/)).toBeVisible()
   })
 
   it('retranslates a clear-history ApiError while preserving its raw diagnostic', async () => {
@@ -887,7 +934,7 @@ describe('group management i18n', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Communication mode' })).toHaveValue(
+    expect(screen.getByRole('combobox', { name: 'Collaboration topology' })).toHaveValue(
       'future-mode',
     )
     expect(screen.getByRole('option', { name: 'future-mode' })).toBeVisible()

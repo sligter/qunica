@@ -551,8 +551,73 @@ async fn agent_as_tool_call_is_private_and_returns_to_caller() {
 }
 
 #[tokio::test]
+async fn agent_as_tool_runs_each_helper_at_most_once_per_turn() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-once-per-turn@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "first_call",
+            "AgentAsTool",
+            json!({"assistant": "Helper", "task": "inspect", "mode": "call"}),
+        )]),
+        text_body("first findings"),
+        tool_body(vec![(
+            "duplicate_call",
+            "AgentAsTool",
+            json!({"assistant": "Helper", "task": "inspect again", "mode": "call"}),
+        )]),
+        text_body("caller final answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "helper-agent",
+        "Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller investigate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["status"], "completed");
+    assert_eq!(results[1]["status"], "already_scheduled");
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatch_count, 2, "one public dispatch and one helper call");
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
+}
+
+#[tokio::test]
 #[allow(clippy::type_complexity)]
-async fn agent_as_tool_omitted_mode_handoffs_without_caller_message() {
+async fn agent_as_tool_omitted_mode_is_rejected_and_caller_can_recover() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "aat-bounded-handoff@example.com";
     let token = register_and_login(&app, email).await;
@@ -594,16 +659,20 @@ async fn agent_as_tool_omitted_mode_handoffs_without_caller_message() {
     )
     .await;
 
-    let (outcome, _) = run_turn(&state, &group, &owner, "@Caller delegate").await;
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller delegate").await;
 
     assert_eq!(outcome, TurnOutcome::Completed);
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "failed");
+    assert!(results[0]["result_summary"]
+        .as_str()
+        .unwrap()
+        .contains("mode is required"));
     let rows = message_rows(&state).await;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[1].1.as_deref(), Some(helper.as_str()));
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
     assert_eq!(rows[1].2.as_deref(), Some("helper visible answer"));
-    assert!(rows
-        .iter()
-        .all(|row| row.1.as_deref() != Some(caller.as_str())));
 
     let dispatches: Vec<(
         String,
@@ -619,12 +688,10 @@ async fn agent_as_tool_omitted_mode_handoffs_without_caller_message() {
     .fetch_all(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(dispatches.len(), 2);
-    assert_eq!(dispatches[1].1.as_deref(), Some(dispatches[0].0.as_str()));
-    assert_eq!(dispatches[1].2.as_deref(), Some(caller.as_str()));
-    assert_eq!(dispatches[1].3, "handoff");
-    assert_eq!(dispatches[1].4, "completed");
-    assert!(dispatches[1].5.is_some());
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].3, "speak");
+    assert_eq!(dispatches[0].4, "completed");
+    assert!(dispatches[0].5.is_some());
 }
 
 #[tokio::test]
@@ -640,7 +707,7 @@ async fn agent_as_tool_requires_bound_active_group_member() {
         tool_body(vec![(
             "call_handoff",
             "AgentAsTool",
-            json!({"assistant": "Helper", "task": "take over"}),
+            json!({"assistant": "Helper", "task": "take over", "mode": "handoff"}),
         )]),
         text_body("Helper is not bound to me, so I answered myself."),
     ])
@@ -712,7 +779,7 @@ async fn agent_as_tool_terminal_handoff_skips_sibling_tools() {
             (
                 "call_handoff",
                 "AgentAsTool",
-                json!({"assistant": helper.clone(), "task": "draft summary"}),
+                json!({"assistant": helper.clone(), "task": "draft summary", "mode": "handoff"}),
             ),
         ]),
         text_body("Helper finished"),
@@ -780,7 +847,7 @@ async fn agent_as_tool_resolves_group_display_name() {
         tool_body(vec![(
             "call_handoff",
             "AgentAsTool",
-            json!({"assistant": "Research Lead", "task": "check facts"}),
+            json!({"assistant": "Research Lead", "task": "check facts", "mode": "handoff"}),
         )]),
         text_body("Facts checked"),
     ])
@@ -831,7 +898,7 @@ async fn agent_as_tool_does_not_dispatch_muted_helper() {
         tool_body(vec![(
             "call_handoff",
             "AgentAsTool",
-            json!({"assistant": "Helper", "task": "take over"}),
+            json!({"assistant": "Helper", "task": "take over", "mode": "handoff"}),
         )]),
         text_body("Helper is muted, so I answered myself."),
     ])
@@ -894,7 +961,7 @@ async fn agent_as_tool_runs_acp_helper_with_full_group_context() {
     let provider_url = fake_provider_sequence(vec![tool_body(vec![(
         "call_handoff",
         "AgentAsTool",
-        json!({"assistant": "ACP Helper", "task": "finish externally"}),
+        json!({"assistant": "ACP Helper", "task": "finish externally", "mode": "handoff"}),
     )])])
     .await;
     let provider = seed_provider(&state, &owner, &provider_url).await;
@@ -956,7 +1023,7 @@ async fn agent_as_tool_runs_acp_helper_with_full_group_context() {
 }
 
 #[tokio::test]
-async fn agent_as_tool_rejects_recursive_self_cycle() {
+async fn agent_as_tool_claims_a_pending_public_responder_without_running_it_twice() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "aat-self@example.com";
     let token = register_and_login(&app, email).await;
@@ -964,11 +1031,15 @@ async fn agent_as_tool_rejects_recursive_self_cycle() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace).await;
 
-    let provider_url = fake_provider_sequence(vec![tool_body(vec![(
-        "call_self",
-        "AgentAsTool",
-        json!({"assistant": "Caller", "task": "loop"}),
-    )])])
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_public",
+            "AgentAsTool",
+            json!({"assistant": "Public Helper", "task": "duplicate", "mode": "call"}),
+        )]),
+        text_body("I kept the public turn."),
+        text_body("I ran once through the scheduler."),
+    ])
     .await;
     let provider = seed_provider(&state, &owner, &provider_url).await;
     let caller = seed_agent(
@@ -982,26 +1053,56 @@ async fn agent_as_tool_rejects_recursive_self_cycle() {
         None,
     )
     .await;
+    let public_helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "public-helper",
+        "Public Helper",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let spare_helper = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "spare-helper",
+        "Spare Helper",
+        "2024-01-03T00:00:00Z",
+        None,
+    )
+    .await;
     set_tool_config(
         &state,
         &caller,
-        json!({"assistant_agents": [{"agent_id": caller, "enabled": true}]}),
+        json!({"assistant_agents": [
+            {"agent_id": public_helper, "enabled": true},
+            {"agent_id": spare_helper, "enabled": true}
+        ]}),
     )
     .await;
 
-    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller recurse").await;
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller then @Public Helper").await;
 
-    assert_eq!(outcome, TurnOutcome::Silence);
+    assert_eq!(outcome, TurnOutcome::Completed);
     let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["status"], "unavailable");
-    assert!(results[0]["result_summary"]
-        .as_str()
-        .unwrap()
-        .contains("cannot delegate to itself"));
+    assert_eq!(results[0]["status"], "completed");
     let rows = message_rows(&state).await;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].0, "user");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(
+        rows[1].2.as_deref(),
+        Some("I ran once through the scheduler.")
+    );
+    let dispatch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatch_count, 2, "one public dispatch and one helper call");
 }
 
 /// The tool has to name its targets. Without this the `assistant` field was an
@@ -1184,9 +1285,8 @@ async fn agent_as_tool_unavailable_assistant_lets_the_caller_retry_and_answer() 
     assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
 }
 
-/// Handoff is the mode a call gets when it does not ask for one, and it used to
-/// be the mode whose rejections were swallowed: the caller's turn ended with
-/// nothing written and nothing explained.
+/// A rejected handoff returns control to the caller instead of swallowing the
+/// turn.
 #[tokio::test]
 async fn agent_as_tool_handoff_rejection_returns_a_tool_result_instead_of_ending_the_turn() {
     let (app, state) = router_with_state_for_tests().await;
@@ -1200,7 +1300,7 @@ async fn agent_as_tool_handoff_rejection_returns_a_tool_result_instead_of_ending
         tool_body(vec![(
             "call_handoff",
             "AgentAsTool",
-            json!({"assistant": "Ghost", "task": "take over"}),
+            json!({"assistant": "Ghost", "task": "take over", "mode": "handoff"}),
         )]),
         text_body("Ghost is not in this group, so I answered myself."),
     ])
@@ -1325,7 +1425,7 @@ mod agent_as_tool {
             tool_body(vec![(
                 "call_handoff",
                 "AgentAsTool",
-                json!({"assistant": "helper-agent", "task": "long task"}),
+                json!({"assistant": "helper-agent", "task": "long task", "mode": "handoff"}),
             )]),
             (0..16)
                 .map(|index| {

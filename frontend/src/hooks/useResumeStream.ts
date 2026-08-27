@@ -21,7 +21,7 @@ import {
 } from '@/lib/api-v2/schemas'
 import { openApiV2SseStream } from '@/lib/api-v2/sse'
 import type { RetryState } from '@/lib/api-v2/retry'
-import type { SchedulerStreamUpdate, StreamEvent } from '@/lib/api-v2/types'
+import type { StreamEvent } from '@/lib/api-v2/types'
 import { conversationMessagesKey } from '@/hooks/useGroupMessages'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
 import { notifyReplyOutcome } from '@/lib/replyNotifications'
@@ -99,23 +99,6 @@ function buildAgentMessage(
     reply_to_message_id: previous?.reply_to_message_id ?? event.stream_id,
     turn_summary: previous?.turn_summary ?? null,
     created_at: previous?.created_at ?? nowIso(),
-  }
-}
-
-function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
-  switch (update.kind) {
-    case 'turn_cancelled':
-    case 'turn_superseded':
-    case 'turn_budget_exhausted':
-    case 'turn_completed':
-      return true
-    case 'turn_started':
-    case 'moderator_started':
-    case 'speaker_selected':
-    case 'dispatch_failed':
-    case 'moderator_fallback':
-    case 'done':
-      return false
   }
 }
 
@@ -329,11 +312,9 @@ export function useResumeStream(
           if (schedulerUpdate) {
             if (!applySchedulerEvent(stateId, streamId, schedulerUpdate)) return
             linkRun()
-            if (isTerminalSchedulerUpdate(schedulerUpdate)) {
-              void qc.invalidateQueries({
-                queryKey: ['groups', groupId, 'turns', schedulerUpdate.payload.turn_id],
-              })
-            }
+            void qc.invalidateQueries({
+              queryKey: ['groups', groupId, 'turns', schedulerUpdate.payload.turn_id],
+            })
             if (schedulerUpdate.kind === 'done') {
               markStreamRunDone(stateId, streamId)
               finish()

@@ -146,7 +146,7 @@ describe('GroupSchedulerSettingsSection', () => {
     await i18n.changeLanguage('en-US')
     renderSection()
     expect(screen.getByText(i18n.t('groups:scheduler.title'))).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'Agent mention policy' })).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: 'Agent mention policy' })).toBeNull()
     expect(screen.getAllByText('No provider')[0]).toBeVisible()
 
     cleanup()
@@ -188,7 +188,6 @@ describe('GroupSchedulerSettingsSection', () => {
     })
     expect(mocks.mutateAsync).toHaveBeenCalledWith({
       scheduler_mode: 'bounded',
-      agent_mention_policy: 'display_only',
       max_agent_steps: null,
       max_steps_per_agent: 4,
       max_scheduler_hops: 5,
@@ -212,8 +211,8 @@ describe('GroupSchedulerSettingsSection', () => {
       moderator_model: 'gpt-test',
     })
 
-    await user.click(screen.getByRole('combobox', { name: 'Scheduler mode' }))
-    await user.click(await screen.findByRole('option', { name: 'Automatic' }))
+    await user.click(screen.getByRole('combobox', { name: 'Turn style' }))
+    await user.click(await screen.findByRole('option', { name: 'Moderated discussion' }))
 
     expect(screen.getByRole('switch', { name: 'Enable moderator' })).toBeDisabled()
     expect(screen.getByLabelText('Steps per agent')).toBeDisabled()
@@ -229,28 +228,20 @@ describe('GroupSchedulerSettingsSection', () => {
     })
   })
 
-  it('preserves and submits an unknown mention policy while editing another field', async () => {
+  it('does not overwrite the follow-up policy while editing scheduler budgets', async () => {
     const user = userEvent.setup()
-    const unknownPolicy = 'future_policy'
     renderSection({
       ...group,
-      agent_mention_policy: unknownPolicy,
+      agent_mention_policy: 'bounded_schedule',
     } as unknown as GroupRead)
 
-    expect(
-      screen.getByRole('combobox', { name: 'Agent mention policy' }),
-    ).toHaveTextContent('Unknown mention policy: future_policy')
+    expect(screen.queryByRole('combobox', { name: 'Agent mention policy' })).toBeNull()
     await user.clear(screen.getByRole('spinbutton', { name: 'Steps per agent' }))
     await user.type(screen.getByRole('spinbutton', { name: 'Steps per agent' }), '4')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => {
-      expect(mocks.mutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agent_mention_policy: unknownPolicy,
-        }),
-      )
-    })
+    await waitFor(() => expect(mocks.mutateAsync).toHaveBeenCalledTimes(1))
+    expect(mocks.mutateAsync.mock.calls[0]?.[0]).not.toHaveProperty('agent_mention_policy')
   })
 
   it('requires an active provider and model when the moderator is enabled', async () => {

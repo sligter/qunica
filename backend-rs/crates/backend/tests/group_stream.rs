@@ -1017,7 +1017,7 @@ async fn fake_nested_cancellable_provider() -> (String, Arc<Notify>, Arc<Notify>
                     1 => tool_body(vec![(
                         "nested_handoff",
                         "AgentAsTool",
-                        json!({"assistant": "Leaf", "task": "finish"}),
+                        json!({"assistant": "Leaf", "task": "finish", "mode": "handoff"}),
                     )]),
                     _ => {
                         leaf_started.notify_one();
@@ -2504,7 +2504,7 @@ async fn message_send_agent_as_tool_returns_the_scheduled_helper_reply() {
         tool_body(vec![(
             "call_handoff",
             "AgentAsTool",
-            json!({"assistant": "Helper", "task": "draft summary"}),
+            json!({"assistant": "Helper", "task": "draft summary", "mode": "handoff"}),
         )]),
         text_body("Helper finished"),
     ])
@@ -3215,13 +3215,13 @@ async fn every_group_agent_can_read_and_edit_shared_notes_on_demand() {
     assert_eq!(status, StatusCode::CREATED);
     let note_id = note["id"].as_str().unwrap();
 
-    let provider_url = fake_provider_sequence(vec![
+    let (provider_url, requests) = recording_fake_provider_sequence(vec![
         tool_body(vec![("read_notes", "ReadGroupNotes", json!({}))]),
         tool_body(vec![(
             "edit_note",
             "EditGroupNote",
             json!({
-                "path": format!("{note_id}.md"),
+                "path": format!("Notes/{note_id}.md"),
                 "edits": [{"oldText": "before", "newText": "after"}]
             }),
         )]),
@@ -3263,6 +3263,11 @@ async fn every_group_agent_can_read_and_edit_shared_notes_on_demand() {
         std::fs::read_to_string(root.path().join("Notes").join(format!("{note_id}.md"))).unwrap(),
         "after"
     );
+    let requests = requests.lock().await;
+    assert!(requests[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("do not prefix it with Notes/"));
 }
 
 /// A checklist is only useful if the client can find it. It has to leave the
@@ -5728,21 +5733,17 @@ async fn scheduler_token_budget_stops_before_the_next_dispatch() {
 
 #[tokio::test]
 #[allow(clippy::type_complexity)]
-async fn bounded_mentions_routes_visible_agent_prose_with_child_dispatch_metadata() {
+async fn legacy_bounded_mentions_are_display_only() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-mentions@example.com").await;
     let owner = owner_id(&state, "bounded-mentions@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({
-            "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
-        }),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    sqlx::query("UPDATE groups SET agent_mention_policy = 'bounded_schedule' WHERE id = ?")
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
     let provider = seed_provider(
         &state,
         &owner,
@@ -5762,7 +5763,7 @@ async fn bounded_mentions_routes_visible_agent_prose_with_child_dispatch_metadat
         "2024-01-01T00:00:00Z",
     )
     .await;
-    let bob = seed_agent(
+    seed_agent(
         &state,
         &owner,
         &group,
@@ -5787,11 +5788,11 @@ async fn bounded_mentions_routes_visible_agent_prose_with_child_dispatch_metadat
     .fetch_all(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(dispatches.len(), 2);
-    assert_eq!(dispatches[1].1.as_deref(), Some(dispatches[0].0.as_str()));
-    assert_eq!(dispatches[1].2.as_deref(), Some(alice.as_str()));
-    assert_eq!(dispatches[1].3, "agent_text_mention");
-    assert_eq!(dispatches[1].4, 1);
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].1, None);
+    assert_eq!(dispatches[0].2, None);
+    assert_eq!(dispatches[0].3, "user_mention");
+    assert_eq!(dispatches[0].4, 0);
 
     let senders: Vec<Option<String>> = sqlx::query_scalar(
         "SELECT sender_id FROM messages WHERE sender_type = 'agent' ORDER BY seq",
@@ -5799,7 +5800,7 @@ async fn bounded_mentions_routes_visible_agent_prose_with_child_dispatch_metadat
     .fetch_all(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(senders, vec![Some(alice), Some(bob)]);
+    assert_eq!(senders, vec![Some(alice)]);
 }
 
 #[tokio::test]
@@ -5808,16 +5809,12 @@ async fn bounded_mentions_display_only_ignores_agent_output_when_free_mentions_a
     let token = register_and_login(&app, "bounded-display-only@example.com").await;
     let owner = owner_id(&state, "bounded-display-only@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({
-            "agent_mention_policy": "display_only",
-            "allow_agent_free_mention": true,
-        }),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    sqlx::query("UPDATE groups SET allow_agent_free_mention = 1 WHERE id = ?")
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
     let provider = seed_provider(
         &state,
         &owner,
@@ -5863,21 +5860,12 @@ async fn bounded_mentions_display_only_ignores_agent_output_when_free_mentions_a
 }
 
 #[tokio::test]
-async fn bounded_mentions_topology_rejects_disallowed_agent_edge() {
+async fn agent_prose_mentions_do_not_bypass_topology() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-topology@example.com").await;
     let owner = owner_id(&state, "bounded-topology@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({
-            "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
-        }),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
     let provider = seed_provider(
         &state,
         &owner,
@@ -5944,7 +5932,7 @@ async fn bounded_mentions_topology_rejects_disallowed_agent_edge() {
 }
 
 #[tokio::test]
-async fn bounded_mentions_dispatch_budget_exhaustion_stops_child_queueing() {
+async fn display_only_agent_mentions_do_not_consume_dispatch_budget() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-budget@example.com").await;
     let owner = owner_id(&state, "bounded-budget@example.com").await;
@@ -5955,7 +5943,6 @@ async fn bounded_mentions_dispatch_budget_exhaustion_stops_child_queueing() {
         &workspace,
         json!({
             "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
             "max_agent_steps": 1,
         }),
     )
@@ -6004,10 +5991,7 @@ async fn bounded_mentions_dispatch_budget_exhaustion_stops_child_queueing() {
             .await
             .unwrap();
     assert_eq!(dispatch_count, 1);
-    assert_eq!(
-        turn,
-        ("budget_exhausted".to_owned(), "budget_exhausted".to_owned())
-    );
+    assert_eq!(turn, ("completed".to_owned(), "".to_owned()));
 }
 
 #[tokio::test]
@@ -6016,13 +6000,7 @@ async fn bounded_handoff_silent_helper_terminalizes_parent_child_and_turn_once()
     let token = register_and_login(&app, "bounded-handoff-silent@example.com").await;
     let owner = owner_id(&state, "bounded-handoff-silent@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({"scheduler_enabled": true, "proactive_mode": true}),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
     let provider = seed_provider(
         &state,
         &owner,
@@ -6030,9 +6008,9 @@ async fn bounded_handoff_silent_helper_terminalizes_parent_child_and_turn_once()
             tool_body(vec![(
                 "handoff",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "take over"}),
+                json!({"assistant": "Helper", "task": "take over", "mode": "handoff"}),
             )]),
-            text_body("<SILENT>"),
+            text_body(""),
         ])
         .await,
     )
@@ -6112,7 +6090,7 @@ async fn bounded_handoff_failed_helper_leaves_no_running_dispatch_or_turn() {
             tool_body(vec![(
                 "handoff",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "take over"}),
+                json!({"assistant": "Helper", "task": "take over", "mode": "handoff"}),
             )]),
         ),
         (
@@ -6202,13 +6180,7 @@ async fn bounded_public_nested_handoff_silent_terminalizes_each_dispatch_once() 
     let token = register_and_login(&app, "public-nested-silent@example.com").await;
     let owner = owner_id(&state, "public-nested-silent@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({"scheduler_enabled": true, "proactive_mode": true}),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
     let provider = seed_provider(
         &state,
         &owner,
@@ -6216,14 +6188,14 @@ async fn bounded_public_nested_handoff_silent_terminalizes_each_dispatch_once() 
             tool_body(vec![(
                 "handoff_one",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "continue"}),
+                json!({"assistant": "Helper", "task": "continue", "mode": "handoff"}),
             )]),
             tool_body(vec![(
                 "handoff_two",
                 "AgentAsTool",
-                json!({"assistant": "Leaf", "task": "finish"}),
+                json!({"assistant": "Leaf", "task": "finish", "mode": "handoff"}),
             )]),
-            text_body("<SILENT>"),
+            text_body(""),
         ])
         .await,
     )
@@ -6266,7 +6238,7 @@ async fn bounded_public_nested_handoff_failure_preserves_failure_budget() {
             tool_body(vec![(
                 "handoff_one",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "continue"}),
+                json!({"assistant": "Helper", "task": "continue", "mode": "handoff"}),
             )]),
         ),
         (
@@ -6274,7 +6246,7 @@ async fn bounded_public_nested_handoff_failure_preserves_failure_budget() {
             tool_body(vec![(
                 "handoff_two",
                 "AgentAsTool",
-                json!({"assistant": "Leaf", "task": "finish"}),
+                json!({"assistant": "Leaf", "task": "finish", "mode": "handoff"}),
             )]),
         ),
         (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
@@ -6303,7 +6275,7 @@ async fn bounded_public_nested_handoff_failure_preserves_failure_budget() {
 }
 
 #[tokio::test]
-async fn bounded_handoff_visible_helper_mentions_use_actual_helper_hop() {
+async fn handoff_helper_prose_mention_does_not_queue_an_extra_hop() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "handoff-mention-hop@example.com").await;
     let owner = owner_id(&state, "handoff-mention-hop@example.com").await;
@@ -6314,7 +6286,6 @@ async fn bounded_handoff_visible_helper_mentions_use_actual_helper_hop() {
         &workspace,
         json!({
             "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
             "max_scheduler_hops": 1,
         }),
     )
@@ -6326,7 +6297,7 @@ async fn bounded_handoff_visible_helper_mentions_use_actual_helper_hop() {
             tool_body(vec![(
                 "handoff",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "continue"}),
+                json!({"assistant": "Helper", "task": "continue", "mode": "handoff"}),
             )]),
             text_body("Please ask @Leaf"),
             text_body("must not run"),
@@ -6473,7 +6444,7 @@ async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata
             tool_body(vec![(
                 "nested_handoff",
                 "AgentAsTool",
-                json!({"assistant": "Leaf", "task": "finish research"}),
+                json!({"assistant": "Leaf", "task": "finish research", "mode": "handoff"}),
             )]),
             text_body("private leaf result"),
             text_body("caller used private result"),
@@ -6508,13 +6479,7 @@ async fn bounded_nested_call_handoff_silent_result_stays_private_and_terminal() 
     let token = register_and_login(&app, "nested-call-silent@example.com").await;
     let owner = owner_id(&state, "nested-call-silent@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({"scheduler_enabled": true, "proactive_mode": true}),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
     let provider = seed_provider(
         &state,
         &owner,
@@ -6527,9 +6492,9 @@ async fn bounded_nested_call_handoff_silent_result_stays_private_and_terminal() 
             tool_body(vec![(
                 "nested_handoff",
                 "AgentAsTool",
-                json!({"assistant": "Leaf", "task": "finish research"}),
+                json!({"assistant": "Leaf", "task": "finish research", "mode": "handoff"}),
             )]),
-            text_body("<SILENT>"),
+            text_body(""),
             text_body("caller handled silence"),
         ])
         .await,
@@ -6577,7 +6542,7 @@ async fn bounded_nested_call_handoff_failure_stays_private_and_leaves_no_active_
             tool_body(vec![(
                 "nested_handoff",
                 "AgentAsTool",
-                json!({"assistant": "Leaf", "task": "finish research"}),
+                json!({"assistant": "Leaf", "task": "finish research", "mode": "handoff"}),
             )]),
         ),
         (StatusCode::INTERNAL_SERVER_ERROR, "leaf failed".to_string()),
@@ -6953,7 +6918,7 @@ async fn bounded_handoff_helper_wait_leaves_parent_complete_and_child_waiting() 
             tool_body(vec![(
                 "handoff",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "ask"}),
+                json!({"assistant": "Helper", "task": "ask", "mode": "handoff"}),
             )]),
             tool_body(vec![(
                 "ask",
@@ -7083,7 +7048,7 @@ async fn bounded_private_call_wait_returns_unavailable_and_continues() {
 }
 
 #[tokio::test]
-async fn bounded_mentions_preempt_initial_round_slot_in_three_agent_free_speech() {
+async fn agent_prose_mentions_do_not_change_a_three_agent_public_round() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "mention-round-claim@example.com").await;
     let owner = owner_id(&state, "mention-round-claim@example.com").await;
@@ -7095,7 +7060,6 @@ async fn bounded_mentions_preempt_initial_round_slot_in_three_agent_free_speech(
         json!({
             "free_speech": true,
             "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
         }),
     )
     .await;
@@ -7155,7 +7119,7 @@ async fn bounded_mentions_preempt_initial_round_slot_in_three_agent_free_speech(
 }
 
 #[tokio::test]
-async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_slot() {
+async fn handoff_claims_a_pending_public_responder_without_requeueing_it() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "handoff-speaker-order@example.com").await;
     let owner = owner_id(&state, "handoff-speaker-order@example.com").await;
@@ -7167,7 +7131,6 @@ async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_s
         json!({
             "free_speech": true,
             "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
         }),
     )
     .await;
@@ -7178,7 +7141,7 @@ async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_s
             tool_body(vec![(
                 "handoff",
                 "AgentAsTool",
-                json!({"assistant": "Helper", "task": "take over"}),
+                json!({"assistant": "Helper", "task": "take over", "mode": "handoff"}),
             )]),
             text_body("@Caller please resume"),
             text_body("Caller resumed"),
@@ -7195,7 +7158,7 @@ async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_s
         "2024-01-02T00:00:00Z",
     )
     .await;
-    let caller = seed_agent_with_tool_config(
+    let _caller = seed_agent_with_tool_config(
         &state,
         &owner,
         &group,
@@ -7206,7 +7169,7 @@ async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_s
     )
     .await;
 
-    let _ = stream_events(
+    let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
         &token,
@@ -7223,8 +7186,11 @@ async fn bounded_handoff_helper_mention_uses_actual_speaker_and_claims_initial_s
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(senders, vec![helper, caller]);
-    assert_eq!(dispatch_count, 3);
+    assert_eq!(senders, vec![helper]);
+    assert_eq!(dispatch_count, 2);
+    assert!(!payloads_of_kind(&events, StreamEventKind::ToolCallResult)
+        .iter()
+        .any(|result| result["status"] == "already_scheduled"));
 }
 
 #[tokio::test]
@@ -7234,16 +7200,7 @@ async fn bounded_tool_output_mentions_do_not_schedule_without_visible_prose_ment
     let owner = owner_id(&state, "tool-output-mention@example.com").await;
     let (root, workspace) = create_local_workspace(&app, &token).await;
     std::fs::write(root.path().join("note.txt"), "route this to @Bob").unwrap();
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({
-            "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
-        }),
-    )
-    .await;
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
     let provider = seed_provider(
         &state,
         &owner,
@@ -8279,6 +8236,12 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
         system_prompt.contains("Bash runs in the primary root only"),
         "got: {system_prompt}"
     );
+    assert!(
+        system_prompt.contains("- response_mode: everyone")
+            && system_prompt
+                .contains("Agents are dispatched sequentially, never in the background"),
+        "got: {system_prompt}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -8338,6 +8301,86 @@ async fn speaker_order(state: &AppState, group_id: &str) -> Vec<String> {
     .fetch_all(state.db.pool())
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn explicit_start_keeps_every_group_wide_responder_in_all_topologies() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "topology-explicit-start@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+
+    for (index, mode) in ["mesh", "star", "hierarchical", "ring"]
+        .into_iter()
+        .enumerate()
+    {
+        let flags = if index % 2 == 0 {
+            json!({
+                "free_speech": true,
+                "scheduler_enabled": true,
+                "scheduler_mode": "bounded",
+                "communication_mode": mode,
+            })
+        } else {
+            json!({
+                "proactive_mode": true,
+                "scheduler_enabled": true,
+                "scheduler_mode": "bounded",
+                "communication_mode": mode,
+            })
+        };
+        let group = create_group(&app, &token, &workspace, flags).await;
+        let names = [
+            format!("{mode}-A"),
+            format!("{mode}-B"),
+            format!("{mode}-C"),
+        ];
+        let mut agents = Vec::new();
+        for (position, name) in names.iter().enumerate() {
+            agents.push(
+                seed_agent(
+                    &state,
+                    &owner,
+                    &group,
+                    &provider,
+                    name,
+                    &format!("2024-01-0{}T00:00:00Z", position + 1),
+                )
+                .await,
+            );
+        }
+        match mode {
+            "star" => set_agent_topology(&state, &group, &agents[1], Some("hub"), None).await,
+            "hierarchical" => {
+                set_agent_topology(&state, &group, &agents[1], Some("leader"), None).await
+            }
+            "ring" => {
+                for (position, agent) in agents.iter().enumerate() {
+                    set_agent_topology(&state, &group, agent, None, Some(position as i64 + 1))
+                        .await;
+                }
+            }
+            _ => {}
+        }
+
+        let events = stream_events(
+            &app,
+            &format!("/api/v2/groups/{group}/messages/stream"),
+            &token,
+            json!({"content": format!("@{} coordinate", names[1])}),
+        )
+        .await;
+
+        assert_eq!(kinds(&events).last().unwrap(), "done", "{mode}");
+        let expected = if mode == "ring" {
+            vec![names[1].clone(), names[2].clone(), names[0].clone()]
+        } else {
+            vec![names[1].clone(), names[0].clone(), names[2].clone()]
+        };
+        assert_eq!(speaker_order(&state, &group).await, expected, "{mode}");
+    }
 }
 
 #[tokio::test]
@@ -8650,22 +8693,20 @@ async fn hierarchical_mode_without_a_leader_promotes_a_stand_in() {
 }
 
 #[tokio::test]
-async fn agent_mention_follow_ups_respect_the_group_dispatch_cap() {
+async fn legacy_followup_cap_cannot_enable_agent_text_dispatch() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "mention-cap@example.com").await;
     let owner = owner_id(&state, "mention-cap@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({
-            "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
-            "agent_free_mention_max_dispatches": 0
-        }),
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    sqlx::query(
+        "UPDATE groups SET agent_mention_policy = 'bounded_schedule', \
+         agent_free_mention_max_dispatches = 0 WHERE id = ?",
     )
-    .await;
+    .bind(&group)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
     let provider = seed_provider(&state, &owner, &fake_provider(MENTION_SSE).await).await;
     seed_agent(
         &state,
@@ -8695,27 +8736,25 @@ async fn agent_mention_follow_ups_respect_the_group_dispatch_cap() {
     .await;
 
     assert!(!kinds(&events).iter().any(|kind| kind == "error"));
-    // A cap of zero disables agent-to-agent follow-ups entirely.
+    // Legacy follow-up settings cannot re-enable prose dispatch.
     assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
 }
 
 #[tokio::test]
-async fn agent_mention_follow_ups_stop_when_free_mention_is_disabled() {
+async fn legacy_followup_switch_stays_disabled() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "mention-disabled@example.com").await;
     let owner = owner_id(&state, "mention-disabled@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(
-        &app,
-        &token,
-        &workspace,
-        json!({
-            "scheduler_enabled": true,
-            "agent_mention_policy": "bounded_schedule",
-            "allow_agent_free_mention": false
-        }),
+    let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
+    sqlx::query(
+        "UPDATE groups SET agent_mention_policy = 'bounded_schedule', \
+         allow_agent_free_mention = 0 WHERE id = ?",
     )
-    .await;
+    .bind(&group)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
     let provider = seed_provider(&state, &owner, &fake_provider(MENTION_SSE).await).await;
     seed_agent(
         &state,

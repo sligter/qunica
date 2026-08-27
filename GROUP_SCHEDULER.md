@@ -11,15 +11,23 @@ Group and direct conversations use one Rust scheduler. Each user message creates
 
 ## Routing
 
-The conversation rules first establish eligible agents: explicit user mentions take priority; otherwise `free_speech` or `proactive_mode` may include every eligible member. The topology then establishes the current legal frontier. The scheduler chooses work in this order:
+The conversation rules first establish eligible agents. In mentioned-only mode, explicit user mentions define that set. With `free_speech` or `proactive_mode`, every eligible member stays in the turn and explicit mentions only choose the starting speaker. The topology then establishes the current legal frontier. The scheduler chooses work in this order:
 
 1. User mentions.
-2. Agent mentions when `agent_mention_policy` is `bounded_schedule`.
-3. The moderator when enabled: bounded mode asks it to choose when at least two candidates remain; automatic mode asks it to dispatch or finish even with one candidate.
-4. The deterministic topology and `speaking_order` order.
-5. Natural completion.
+2. The moderator when enabled: bounded mode asks it to choose when at least two candidates remain; automatic mode asks it to dispatch or finish even with one candidate.
+3. The deterministic topology and `speaking_order` order.
+4. Natural completion.
 
-The moderator can only choose among agents in the legal frontier. A moderator failure falls back to deterministic order and is counted by the failure fuse in automatic mode.
+The scheduler is the only owner of public dispatch. Agent-authored `@mentions`, notes, workspace files, and assignments written in prose are passive context; they never start or notify another agent. A speaker may request a structured helper dispatch only through an available `AgentAsTool`:
+
+- `call` runs a helper privately and returns its result to the caller.
+- `handoff` transfers the public response to a helper and is available only in bounded mode.
+- A pending public responder may be delegated to. That helper claim removes its later public slot, preventing accidental double dispatch. An agent that already ran cannot become a helper, and each helper may be dispatched at most once per turn.
+- Automatic mode keeps public dispatch under the moderator and therefore exposes `call` only.
+
+Dispatches are sequential. A speaker must finish before the scheduler can advance, including after a private helper returns.
+
+The moderator can only choose among agents in the legal frontier. In automatic mesh mode the previous speaker remains legal, so the moderator may intentionally select the same agent for consecutive steps. A moderator failure falls back to deterministic order and is counted by the failure fuse in automatic mode.
 
 ## Budget profiles
 
@@ -43,7 +51,7 @@ Exhausting the candidate list is a natural completion. Budget terminal states ar
 
 ## Persistence and cancellation
 
-`group_turns` stores configuration and topology snapshots, accumulated budgets, and terminal state. `agent_dispatches` stores selection reasons, parent relationships, state, token usage, and visible output. A partial unique index permits at most one active turn per thread; creating a replacement and superseding its predecessor happen in one transaction.
+`group_turns` stores configuration and topology snapshots, accumulated budgets, and terminal state. `agent_dispatches` stores selection reasons, parent relationships, state, token usage, and visible output. Per-turn helper claims prevent duplicate structured delegation while the scheduler is running. A partial unique index permits at most one active turn per thread; creating a replacement and superseding its predecessor happen in one transaction.
 
 Cancellation writes the terminal state before notifying the in-process cancellation token. Visible output is committed through dispatch completion so a cancelled or superseded turn cannot append late messages. During retryable provider failures, an interrupted checkpoint is persisted only when the turn and dispatch are still running under the same write lock.
 

@@ -162,16 +162,16 @@ pub struct CreateRequest {
     free_speech: Option<bool>,
     #[serde(default)]
     proactive_mode: Option<bool>,
-    #[serde(default)]
-    allow_agent_free_mention: Option<bool>,
-    #[serde(default)]
-    agent_free_mention_max_dispatches: Option<i64>,
+    #[serde(default, deserialize_with = "double_option")]
+    allow_agent_free_mention: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    agent_free_mention_max_dispatches: Option<Option<i64>>,
     #[serde(default)]
     communication_mode: Option<String>,
     #[serde(default)]
     scheduler_mode: Option<String>,
-    #[serde(default)]
-    agent_mention_policy: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    agent_mention_policy: Option<Option<String>>,
     #[serde(default)]
     max_agent_steps: Option<i64>,
     #[serde(default)]
@@ -259,16 +259,16 @@ pub struct UpdateRequest {
     free_speech: Option<bool>,
     #[serde(default)]
     proactive_mode: Option<bool>,
-    #[serde(default)]
-    allow_agent_free_mention: Option<bool>,
-    #[serde(default)]
-    agent_free_mention_max_dispatches: Option<i64>,
+    #[serde(default, deserialize_with = "double_option")]
+    allow_agent_free_mention: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    agent_free_mention_max_dispatches: Option<Option<i64>>,
     #[serde(default)]
     communication_mode: Option<String>,
     #[serde(default)]
     scheduler_mode: Option<String>,
-    #[serde(default)]
-    agent_mention_policy: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    agent_mention_policy: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     max_agent_steps: Option<Option<i64>>,
     #[serde(default)]
@@ -698,11 +698,7 @@ impl SchedulerConfigFields {
                 .as_deref()
                 .unwrap_or("bounded")
                 .to_string(),
-            agent_mention_policy: body
-                .agent_mention_policy
-                .as_deref()
-                .unwrap_or("display_only")
-                .to_string(),
+            agent_mention_policy: AGENT_MENTION_POLICY.to_owned(),
             max_agent_steps: body.max_agent_steps,
             max_steps_per_agent: body.max_steps_per_agent.unwrap_or(3),
             max_scheduler_hops: body.max_scheduler_hops.unwrap_or(5),
@@ -730,10 +726,7 @@ impl SchedulerConfigFields {
                 .scheduler_mode
                 .clone()
                 .unwrap_or_else(|| existing.scheduler_mode.clone()),
-            agent_mention_policy: body
-                .agent_mention_policy
-                .clone()
-                .unwrap_or_else(|| existing.agent_mention_policy.clone()),
+            agent_mention_policy: existing.agent_mention_policy.clone(),
             max_agent_steps: body.max_agent_steps.unwrap_or(existing.max_agent_steps),
             max_steps_per_agent: body
                 .max_steps_per_agent
@@ -773,7 +766,6 @@ impl SchedulerConfigFields {
 
     async fn validate(mut self, pool: &SqlitePool, owner_id: &str) -> Result<Self, ApiError> {
         self.scheduler_mode = validate_scheduler_mode(&self.scheduler_mode)?;
-        self.agent_mention_policy = validate_agent_mention_policy(&self.agent_mention_policy)?;
         if self.max_agent_steps.is_some_and(|value| value < 1) {
             return Err(ApiError::invalid_input("max_agent_steps must be >= 1"));
         }
@@ -1061,21 +1053,15 @@ async fn apply_group_template(
         .or(Some(config.auto_share_workspace_with_new_agents));
     body.free_speech = body.free_speech.or(Some(config.free_speech));
     body.proactive_mode = body.proactive_mode.or(Some(config.proactive_mode));
-    body.allow_agent_free_mention = body
-        .allow_agent_free_mention
-        .or(Some(config.allow_agent_free_mention));
-    body.agent_free_mention_max_dispatches = body
-        .agent_free_mention_max_dispatches
-        .or(Some(config.agent_free_mention_max_dispatches));
+    // The three mention-scheduling settings are deliberately not copied from the
+    // template. A template saved before agent `@mentions` became display-only
+    // still holds the old values, and filling them in here would make an old
+    // template fail the create-time rejection instead of applying cleanly.
     body.communication_mode = body
         .communication_mode
         .take()
         .or(Some(config.communication_mode));
     body.scheduler_mode = body.scheduler_mode.take().or(Some(config.scheduler_mode));
-    body.agent_mention_policy = body
-        .agent_mention_policy
-        .take()
-        .or(Some(config.agent_mention_policy));
     body.max_agent_steps = body.max_agent_steps.or(config.max_agent_steps);
     body.max_steps_per_agent = body
         .max_steps_per_agent
@@ -1269,9 +1255,13 @@ pub(crate) async fn create_inner(
         body.auto_share_workspace_with_new_agents.unwrap_or(true);
     let free_speech = body.free_speech.unwrap_or(false);
     let proactive_mode = body.proactive_mode.unwrap_or(false);
-    let allow_agent_free_mention = body.allow_agent_free_mention.unwrap_or(true);
-    let agent_free_mention_max_dispatches =
-        validate_agent_free_mention_max_dispatches(body.agent_free_mention_max_dispatches)?;
+    reject_agent_mention_scheduling(
+        body.agent_mention_policy.is_some(),
+        body.allow_agent_free_mention.is_some(),
+        body.agent_free_mention_max_dispatches.is_some(),
+    )?;
+    let allow_agent_free_mention = false;
+    let agent_free_mention_max_dispatches = 0;
     let communication_mode = validate_communication_mode(body.communication_mode.as_deref())?;
     let scheduler = SchedulerConfigFields::for_create(state.db.pool(), &owner_id, &body).await?;
     let initial_agents =
@@ -1478,14 +1468,13 @@ pub(crate) async fn update_inner(
         .proactive_mode
         .map(|b| b as i64)
         .unwrap_or(existing.proactive_mode);
-    let allow_agent_free_mention = body
-        .allow_agent_free_mention
-        .map(|b| b as i64)
-        .unwrap_or(existing.allow_agent_free_mention);
-    let agent_free_mention_max_dispatches = match body.agent_free_mention_max_dispatches {
-        Some(value) => validate_agent_free_mention_max_dispatches(Some(value))?,
-        None => existing.agent_free_mention_max_dispatches,
-    };
+    reject_agent_mention_scheduling(
+        body.agent_mention_policy.is_some(),
+        body.allow_agent_free_mention.is_some(),
+        body.agent_free_mention_max_dispatches.is_some(),
+    )?;
+    let allow_agent_free_mention = existing.allow_agent_free_mention;
+    let agent_free_mention_max_dispatches = existing.agent_free_mention_max_dispatches;
     let communication_mode = match body.communication_mode.as_deref() {
         Some(raw) => validate_communication_mode(Some(raw))?,
         None => existing.communication_mode.clone(),
@@ -5365,14 +5354,31 @@ fn validate_name(raw: &str) -> Result<String, ApiError> {
     Ok(name)
 }
 
-fn validate_agent_mention_policy(raw: &str) -> Result<String, ApiError> {
-    match raw.trim() {
-        "display_only" => Ok("display_only".to_string()),
-        "bounded_schedule" => Ok("bounded_schedule".to_string()),
-        _ => Err(ApiError::invalid_input(
-            "agent_mention_policy must be display_only or bounded_schedule",
-        )),
+/// The stored value of every mention-scheduling setting, now that agent-authored
+/// `@mentions` are display-only.
+pub(crate) const AGENT_MENTION_POLICY: &str = "display_only";
+
+/// Reject retired mention-scheduling request fields instead of acknowledging and
+/// silently discarding them. The columns remain readable to preserve old data.
+fn reject_agent_mention_scheduling(
+    policy_present: bool,
+    allow_free_mention_present: bool,
+    max_dispatches_present: bool,
+) -> Result<(), ApiError> {
+    let retired = [
+        policy_present.then_some("agent_mention_policy"),
+        allow_free_mention_present.then_some("allow_agent_free_mention"),
+        max_dispatches_present.then_some("agent_free_mention_max_dispatches"),
+    ]
+    .into_iter()
+    .flatten()
+    .next();
+    if let Some(field) = retired {
+        return Err(ApiError::invalid_input(format!(
+            "{field} has been removed; agent @mentions are display-only, use AgentAsTool for delegation"
+        )));
     }
+    Ok(())
 }
 
 fn validate_scheduler_mode(raw: &str) -> Result<String, ApiError> {
@@ -5424,16 +5430,6 @@ async fn validate_moderator_provider(
         )),
         Some(_) => Ok(id),
     }
-}
-
-fn validate_agent_free_mention_max_dispatches(raw: Option<i64>) -> Result<i64, ApiError> {
-    let value = raw.unwrap_or(8);
-    if value < 0 {
-        return Err(ApiError::invalid_input(
-            "agent_free_mention_max_dispatches must be >= 0",
-        ));
-    }
-    Ok(value)
 }
 
 fn validate_communication_mode(raw: Option<&str>) -> Result<String, ApiError> {

@@ -25,7 +25,6 @@ import type { RetryState } from '@/lib/api-v2/retry'
 import { pendingActionFromOutput } from '@/lib/appActions'
 import type {
   ConversationUpdatedPayload,
-  SchedulerStreamUpdate,
   StreamEvent,
 } from '@/lib/api-v2/types'
 import {
@@ -290,23 +289,6 @@ function buildAgentMessage(
     reply_to_message_id: event.stream_id,
     turn_summary: null,
     created_at: nowIso(),
-  }
-}
-
-function isTerminalSchedulerUpdate(update: SchedulerStreamUpdate): boolean {
-  switch (update.kind) {
-    case 'turn_cancelled':
-    case 'turn_superseded':
-    case 'turn_budget_exhausted':
-    case 'turn_completed':
-      return true
-    case 'turn_started':
-    case 'moderator_started':
-    case 'speaker_selected':
-    case 'dispatch_failed':
-    case 'moderator_fallback':
-    case 'done':
-      return false
   }
 }
 
@@ -700,9 +682,7 @@ export function useSendMessageStream(
               schedulerTurnByRequestRef.current.set(id, schedulerUpdate.payload.turn_id)
               void completePendingCancellation()
               if (!applySchedulerEvent(storeId, streamId, schedulerUpdate)) return
-              if (isTerminalSchedulerUpdate(schedulerUpdate)) {
-                invalidateTurn(schedulerUpdate.payload.turn_id)
-              }
+              invalidateTurn(schedulerUpdate.payload.turn_id)
               if (schedulerUpdate.kind === 'done') {
                 if (!erroredStreamIdsRef.current.has(streamId)) {
                   markStreamRunDone(storeId, streamId)

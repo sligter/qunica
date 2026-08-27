@@ -1,6 +1,5 @@
 pub mod budget;
 pub mod cancellation;
-pub mod mentions;
 pub mod model;
 pub mod moderator;
 pub mod state;
@@ -28,17 +27,15 @@ pub use cancellation::{ActiveTurn, ActiveTurnRegistry, TurnCancellation};
 
 /// Pick who speaks next, or report why the turn is over.
 ///
-/// Priority is user `@mentions`, then the agent `@mentions` queued by the last
-/// speaker, then the group's deterministic speaking order. Every path draws from
-/// the same budget-filtered candidate set. In bounded mode the moderator only
+/// Priority is user `@mentions`, then the group's deterministic speaking order.
+/// Mentions written by an agent are display-only; structured delegation enters
+/// through `AgentAsTool` and the turn runtime. In bounded mode the moderator only
 /// chooses who runs; automatic mode also lets it finish the turn.
 pub fn next_decision(
     budget: &TurnBudget,
     previous_speaker: Option<&str>,
     user_mentions: &[String],
-    agent_mentions: &[String],
     deterministic_candidates: &[String],
-    hop: u32,
     moderator_enabled: bool,
     moderator_may_finish: bool,
 ) -> SchedulerDecision {
@@ -47,8 +44,7 @@ pub fn next_decision(
     } else {
         previous_speaker
     };
-    if user_mentions.is_empty() && agent_mentions.is_empty() && deterministic_candidates.is_empty()
-    {
+    if user_mentions.is_empty() && deterministic_candidates.is_empty() {
         return match budget.check_dispatch("terminal", 0) {
             Err(BudgetRejection::Failures) => SchedulerDecision::Finish {
                 status: TurnStatus::FailureBudgetExhausted,
@@ -64,27 +60,19 @@ pub fn next_decision(
             },
         };
     }
-    if let Some(target) = first_eligible(budget, previous_speaker, user_mentions, hop) {
+    if let Some(target) = first_eligible(budget, previous_speaker, user_mentions, 0) {
         return SchedulerDecision::Dispatch(SchedulerDispatch {
             target_agent_id: target,
             selection_reason: SelectionReason::UserMention,
             action_kind: ActionKind::Speak,
-            hop,
-        });
-    }
-    if let Some(target) = first_eligible(budget, previous_speaker, agent_mentions, hop) {
-        return SchedulerDecision::Dispatch(SchedulerDispatch {
-            target_agent_id: target,
-            selection_reason: SelectionReason::AgentTextMention,
-            action_kind: ActionKind::Speak,
-            hop,
+            hop: 0,
         });
     }
 
     let legal_candidates: Vec<&String> = deterministic_candidates
         .iter()
         .filter(|agent_id| Some(agent_id.as_str()) != previous_speaker)
-        .filter(|agent_id| budget.check_dispatch(agent_id, hop).is_ok())
+        .filter(|agent_id| budget.check_dispatch(agent_id, 0).is_ok())
         .collect();
     if moderator_enabled
         && (legal_candidates.len() >= 2 || moderator_may_finish && !legal_candidates.is_empty())
@@ -96,7 +84,7 @@ pub fn next_decision(
                     target_agent_id: legal_candidates[0].clone(),
                     selection_reason: SelectionReason::ModeratorFallback,
                     action_kind: ActionKind::Speak,
-                    hop,
+                    hop: 0,
                 })
             }
             Err(BudgetRejection::Tokens) => SchedulerDecision::Finish {
@@ -117,7 +105,7 @@ pub fn next_decision(
             target_agent_id: (*target).clone(),
             selection_reason: SelectionReason::DeterministicOrder,
             action_kind: ActionKind::Speak,
-            hop,
+            hop: 0,
         });
     }
     SchedulerDecision::Finish {
@@ -173,30 +161,24 @@ mod tests {
         let budget = TurnBudget::new_unbounded(BudgetLimits::with_auto_steps(1, Some(1)));
 
         assert!(matches!(
-            next_decision(&budget, Some("a"), &[], &[], &ids(&["a"]), 0, true, true),
+            next_decision(&budget, Some("a"), &[], &ids(&["a"]), true, true),
             SchedulerDecision::RequestModerator
         ));
     }
 
     #[test]
-    fn scheduler_decision_priority_is_user_then_agent_mention_then_deterministic() {
+    fn scheduler_decision_priority_is_user_then_deterministic() {
         let budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
         let candidates = ids(&["a", "b"]);
 
         assert!(matches!(
-            next_decision(&budget, None, &ids(&["b"]), &ids(&["a"]), &candidates, 0, false, false),
+            next_decision(&budget, None, &ids(&["b"]), &candidates, false, false),
             SchedulerDecision::Dispatch(ref value)
                 if value.target_agent_id == "b"
                     && value.selection_reason == SelectionReason::UserMention
         ));
         assert!(matches!(
-            next_decision(&budget, None, &[], &ids(&["b"]), &candidates, 0, false, false),
-            SchedulerDecision::Dispatch(ref value)
-                if value.target_agent_id == "b"
-                    && value.selection_reason == SelectionReason::AgentTextMention
-        ));
-        assert!(matches!(
-            next_decision(&budget, Some("a"), &[], &[], &candidates, 0, false, false),
+            next_decision(&budget, Some("a"), &[], &candidates, false, false),
             SchedulerDecision::Dispatch(ref value)
                 if value.target_agent_id == "b"
                     && value.selection_reason == SelectionReason::DeterministicOrder
@@ -217,7 +199,7 @@ mod tests {
         budget.record_failure();
 
         assert!(matches!(
-            next_decision(&budget, None, &[], &[], &ids(&["a"]), 0, false, false),
+            next_decision(&budget, None, &[], &ids(&["a"]), false, false),
             SchedulerDecision::Finish {
                 status: super::TurnStatus::FailureBudgetExhausted,
                 reason: super::TurnReason::FailureBudgetExhausted,
@@ -233,7 +215,7 @@ mod tests {
         }
 
         assert!(matches!(
-            next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, false, false),
+            next_decision(&budget, None, &[], &ids(&["a", "b"]), false, false),
             SchedulerDecision::Dispatch(ref dispatch)
                 if dispatch.target_agent_id == "b"
                     && dispatch.selection_reason == SelectionReason::DeterministicOrder
@@ -252,7 +234,7 @@ mod tests {
         // arbitrate, but here both paths must land on the same agent.
         for moderator_enabled in [false, true] {
             assert!(matches!(
-                next_decision(&budget, None, &[], &[], &candidates, 0, moderator_enabled, false),
+                next_decision(&budget, None, &[], &candidates, moderator_enabled, false),
                 SchedulerDecision::Dispatch(ref dispatch) if dispatch.target_agent_id == "b"
             ));
         }
@@ -268,7 +250,7 @@ mod tests {
         }
 
         assert!(matches!(
-            next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, false, false),
+            next_decision(&budget, None, &[], &ids(&["a", "b"]), false, false),
             SchedulerDecision::Finish { .. }
         ));
     }
@@ -287,7 +269,7 @@ mod tests {
         budget.record_dispatch("a");
 
         assert!(matches!(
-            next_decision(&budget, Some("a"), &[], &[], &[], 0, false, false),
+            next_decision(&budget, Some("a"), &[], &[], false, false),
             SchedulerDecision::Finish {
                 status: super::TurnStatus::Silence,
                 reason: super::TurnReason::Silence,
@@ -309,7 +291,7 @@ mod tests {
         budget.record_failure();
 
         assert!(matches!(
-            next_decision(&budget, None, &[], &[], &[], 0, false, false),
+            next_decision(&budget, None, &[], &[], false, false),
             SchedulerDecision::Finish {
                 status: super::TurnStatus::FailureBudgetExhausted,
                 reason: super::TurnReason::FailureBudgetExhausted,
@@ -330,7 +312,7 @@ mod tests {
         });
 
         assert!(matches!(
-            next_decision(&budget, None, &[], &[], &ids(&["a", "b"]), 0, true, false),
+            next_decision(&budget, None, &[], &ids(&["a", "b"]), true, false),
             SchedulerDecision::Dispatch(ref dispatch)
                 if dispatch.target_agent_id == "a"
                     && dispatch.selection_reason == SelectionReason::ModeratorFallback

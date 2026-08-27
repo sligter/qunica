@@ -31,6 +31,7 @@ pub enum SelectionReason {
     UserMention,
     AgentCall,
     AgentHandoff,
+    /// Read-only compatibility for traces created before agent prose became display-only.
     AgentTextMention,
     DeterministicOrder,
     Moderator,

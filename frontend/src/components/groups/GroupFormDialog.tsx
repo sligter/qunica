@@ -38,13 +38,22 @@ const communicationModeKeys = {
 
 const communicationModes = Object.keys(communicationModeKeys) as GroupCommunicationMode[]
 
+type ResponseMode = 'mentioned' | 'everyone' | 'proactive'
+
+const responseModeKeys = {
+  mentioned: 'settings.responseModes.mentioned',
+  everyone: 'settings.responseModes.everyone',
+  proactive: 'settings.responseModes.proactive',
+} as const satisfies Record<ResponseMode, string>
+
+const responseModes = Object.keys(responseModeKeys) as ResponseMode[]
+
 const schema = z.object({
   name: z.string().min(1, 'required').max(100, 'nameTooLong'),
   description: z.string().optional(),
   announcement: z.string().optional(),
+  response_mode: z.enum(['mentioned', 'everyone', 'proactive']),
   communication_mode: z.enum(['mesh', 'star', 'hierarchical', 'ring']),
-  free_speech: z.boolean(),
-  allow_agent_free_mention: z.boolean(),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -82,9 +91,8 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
       name: '',
       description: '',
       announcement: '',
+      response_mode: 'mentioned',
       communication_mode: 'mesh',
-      free_speech: false,
-      allow_agent_free_mention: true,
     },
   })
 
@@ -102,18 +110,19 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
     if (!template) {
       form.setValue('description', '')
       form.setValue('announcement', '')
+      form.setValue('response_mode', 'mentioned')
       form.setValue('communication_mode', 'mesh')
-      form.setValue('free_speech', false)
-      form.setValue('allow_agent_free_mention', true)
       setSelectedAgentIds([])
       return
     }
     const config = template.config
     form.setValue('description', config.description ?? '')
     form.setValue('announcement', config.announcement ?? '')
+    form.setValue(
+      'response_mode',
+      config.proactive_mode ? 'proactive' : config.free_speech ? 'everyone' : 'mentioned',
+    )
     form.setValue('communication_mode', config.communication_mode)
-    form.setValue('free_speech', config.free_speech)
-    form.setValue('allow_agent_free_mention', config.allow_agent_free_mention)
     const available = new Set(agents.data?.map((agent) => agent.id) ?? [])
     setSelectedAgentIds(config.initial_agents.filter((agentId) => available.has(agentId)))
   }
@@ -127,8 +136,8 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
         description: values.description ?? null,
         announcement: values.announcement ?? null,
         communication_mode: values.communication_mode,
-        free_speech: values.free_speech,
-        allow_agent_free_mention: values.allow_agent_free_mention,
+        free_speech: values.response_mode === 'everyone',
+        proactive_mode: values.response_mode === 'proactive',
         workspace_id: selectedWorkspaceId || undefined,
         initial_agents: selectedAgentIds,
       })
@@ -223,6 +232,21 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
           </div>
 
           <div className="space-y-1.5">
+            <Label htmlFor="gd-response-mode">{t('create.responseMode')}</Label>
+            <select
+              id="gd-response-mode"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              {...form.register('response_mode')}
+            >
+              {responseModes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {t(responseModeKeys[mode])}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
             <Label htmlFor="gd-communication-mode">{t('create.communicationMode')}</Label>
             <select
               id="gd-communication-mode"
@@ -239,6 +263,9 @@ function GroupFormDialogBody({ onOpenChange }: GroupFormDialogBodyProps) {
               {
                 t(communicationModeKeys[form.watch('communication_mode')].description)
               }
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t('delegationDescription')}
             </p>
           </div>
 

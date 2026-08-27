@@ -339,16 +339,21 @@ impl ToolExecutor {
                         "this group has no shared notes",
                     ));
                 };
-                match name {
-                    "ReadGroupNotes" => {
-                        let path = arg_str_opt(&args, "path").unwrap_or("index.md").to_string();
-                        run_blocking(move || notes.read(&path, 1, MAX_READ_LINES)).await
-                    }
-                    _ => {
-                        let path = arg_path(&args)?.to_string();
-                        let edits = arg_file_edits(&args)?;
-                        run_blocking(move || notes.edit(&path, &edits)).await
-                    }
+                let raw_path = if name == "ReadGroupNotes" {
+                    arg_str_opt(&args, "path").unwrap_or("index.md")
+                } else {
+                    arg_path(&args)?
+                };
+                let path = raw_path
+                    .strip_prefix("Notes/")
+                    .or_else(|| raw_path.strip_prefix("Notes\\"))
+                    .unwrap_or(raw_path)
+                    .to_string();
+                if name == "ReadGroupNotes" {
+                    run_blocking(move || notes.read(&path, 1, MAX_READ_LINES)).await
+                } else {
+                    let edits = arg_file_edits(&args)?;
+                    run_blocking(move || notes.edit(&path, &edits)).await
                 }
             }
             // The shell tool answers to whichever name the host advertises it

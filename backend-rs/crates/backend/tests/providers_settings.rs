@@ -1489,7 +1489,6 @@ async fn tool_catalog_includes_required_builtin_tools_with_stable_ids() {
         "ask_user",
         "web_search",
         "fetch",
-        "run_sub_agent",
         "generate_image",
         "generate_video",
         "skill_manager",
@@ -1507,7 +1506,7 @@ async fn tool_catalog_includes_required_builtin_tools_with_stable_ids() {
     assert_eq!(by_id["generate_image"]["requires_workspace"], true);
     assert_eq!(by_id["generate_video"]["requires_workspace"], true);
     assert_eq!(by_id["skill_manager"]["runtime_status"], "available");
-    assert_eq!(by_id["run_sub_agent"]["runtime_status"], "planned");
+    assert!(!by_id.contains_key("run_sub_agent"));
     assert_eq!(by_id["generate_image"]["runtime_status"], "available");
     assert_eq!(by_id["generate_video"]["runtime_status"], "available");
 

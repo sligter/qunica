@@ -16,8 +16,6 @@ import { useUpdateGroup } from '@/hooks/useGroups'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
 import { ApiError } from '@/lib/api-v2/client'
-import { normalizeLanguage } from '@/i18n'
-import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
 import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
@@ -36,6 +34,25 @@ const communicationModeKeys = {
 
 const communicationModes = Object.keys(communicationModeKeys) as GroupCommunicationMode[]
 
+type ResponseMode = 'mentioned' | 'everyone' | 'proactive'
+
+const responseModeKeys = {
+  mentioned: {
+    label: 'settings.responseModes.mentioned',
+    description: 'settings.responseModes.mentionedDescription',
+  },
+  everyone: {
+    label: 'settings.responseModes.everyone',
+    description: 'settings.responseModes.everyoneDescription',
+  },
+  proactive: {
+    label: 'settings.responseModes.proactive',
+    description: 'settings.responseModes.proactiveDescription',
+  },
+} as const satisfies Record<ResponseMode, { label: string; description: string }>
+
+const responseModes = Object.keys(responseModeKeys) as ResponseMode[]
+
 function isCommunicationMode(value: string): value is GroupCommunicationMode {
   return communicationModes.some((mode) => mode === value)
 }
@@ -46,8 +63,7 @@ interface GroupSettingsTabProps {
 }
 
 export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabProps) {
-  const { t, i18n } = useTranslation(['groups', 'common'])
-  const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
+  const { t } = useTranslation(['groups', 'common'])
   const update = useUpdateGroup(group.id)
   const del = useDeleteGroup()
   const clearMessages = useClearGroupMessages(group.id)
@@ -58,14 +74,10 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
   const [name, setName] = useState(group.name)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(group.workspace_id ?? '')
   const [announcement, setAnnouncement] = useState(group.announcement ?? '')
-  const [freeMentionMaxDispatches, setFreeMentionMaxDispatches] = useState(
-    group.agent_free_mention_max_dispatches,
-  )
 
   // Switch/select fields: saved instantly.
   const [freeSpeech, setFreeSpeech] = useState(group.free_speech)
   const [proactiveMode, setProactiveMode] = useState(group.proactive_mode)
-  const [allowFreeMention, setAllowFreeMention] = useState(group.allow_agent_free_mention)
   const [autoShareWorkspace, setAutoShareWorkspace] = useState(
     group.auto_share_workspace_with_new_agents ?? true,
   )
@@ -100,14 +112,8 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
     setProactiveMode(group.proactive_mode)
   }, [group.proactive_mode])
   useEffect(() => {
-    setAllowFreeMention(group.allow_agent_free_mention)
-  }, [group.allow_agent_free_mention])
-  useEffect(() => {
     setAutoShareWorkspace(group.auto_share_workspace_with_new_agents ?? true)
   }, [group.auto_share_workspace_with_new_agents])
-  useEffect(() => {
-    setFreeMentionMaxDispatches(group.agent_free_mention_max_dispatches)
-  }, [group.agent_free_mention_max_dispatches])
   useEffect(() => {
     setCommunicationMode(group.communication_mode)
   }, [group.communication_mode])
@@ -127,23 +133,26 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
     }
   }
 
-  const onFreeSpeechChange = (next: boolean) => {
-    const previous = freeSpeech
-    setFreeSpeech(next)
-    void saveInstant({ free_speech: next }, () => setFreeSpeech(previous))
-  }
+  const responseMode: ResponseMode = proactiveMode
+    ? 'proactive'
+    : freeSpeech
+      ? 'everyone'
+      : 'mentioned'
 
-  const onProactiveModeChange = (next: boolean) => {
-    const previous = proactiveMode
-    setProactiveMode(next)
-    void saveInstant({ proactive_mode: next }, () => setProactiveMode(previous))
-  }
-
-  const onAllowFreeMentionChange = (next: boolean) => {
-    const previous = allowFreeMention
-    setAllowFreeMention(next)
-    void saveInstant({ allow_agent_free_mention: next }, () =>
-      setAllowFreeMention(previous),
+  const onResponseModeChange = (value: string) => {
+    if (!responseModes.includes(value as ResponseMode)) return
+    const previousFreeSpeech = freeSpeech
+    const previousProactiveMode = proactiveMode
+    const nextFreeSpeech = value === 'everyone'
+    const nextProactiveMode = value === 'proactive'
+    setFreeSpeech(nextFreeSpeech)
+    setProactiveMode(nextProactiveMode)
+    void saveInstant(
+      { free_speech: nextFreeSpeech, proactive_mode: nextProactiveMode },
+      () => {
+        setFreeSpeech(previousFreeSpeech)
+        setProactiveMode(previousProactiveMode)
+      },
     )
   }
 
@@ -188,24 +197,6 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
     } catch (err) {
       setBasicsError(errorMessage(err))
     }
-  }
-
-  const limitsDirty = freeMentionMaxDispatches !== group.agent_free_mention_max_dispatches
-
-  const onSaveLimits = async () => {
-    setCommError(undefined)
-    try {
-      await update.mutateAsync({
-        agent_free_mention_max_dispatches: freeMentionMaxDispatches,
-      })
-    } catch (err) {
-      setCommError(errorMessage(err))
-    }
-  }
-
-  const setMinimumFreeMentionMaxDispatches = (value: string) => {
-    const next = Number.parseInt(value, 10)
-    setFreeMentionMaxDispatches(Number.isNaN(next) ? 0 : Math.max(0, next))
   }
 
   return (
@@ -270,6 +261,18 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
           </div>
         </SettingsRow>
 
+        <SettingsRow
+          label={t('settings.autoShareWorkspace')}
+          description={t('settings.autoShareWorkspaceDescription')}
+        >
+          <Switch
+            checked={autoShareWorkspace}
+            onCheckedChange={onAutoShareWorkspaceChange}
+            disabled={update.isPending}
+            aria-label={t('settings.autoShareWorkspace')}
+          />
+        </SettingsRow>
+
         {basicsError !== undefined ? (
           <p className="py-2 text-sm text-destructive" role="alert">
             {basicsError
@@ -281,16 +284,28 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
 
       <SettingsSection
         title={t('settings.communication')}
-        aside={
-          <Button
-            size="sm"
-            onClick={() => void onSaveLimits()}
-            disabled={!limitsDirty || update.isPending}
-          >
-            {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
-          </Button>
-        }
+        description={t('settings.communicationDescription')}
       >
+        <SettingsRow
+          label={t('settings.responseMode')}
+          description={t(responseModeKeys[responseMode].description)}
+          htmlFor="gs-response-mode"
+        >
+          <select
+            id="gs-response-mode"
+            value={responseMode}
+            onChange={(event) => onResponseModeChange(event.target.value)}
+            disabled={update.isPending}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {responseModes.map((mode) => (
+              <option key={mode} value={mode}>
+                {t(responseModeKeys[mode].label)}
+              </option>
+            ))}
+          </select>
+        </SettingsRow>
+
         <SettingsRow
           label={t('settings.mode')}
           description={
@@ -318,73 +333,9 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
           </select>
         </SettingsRow>
 
-        <SettingsRow
-          label={t('settings.freeSpeech')}
-          description={t('settings.freeSpeechDescription')}
-        >
-          <Switch
-            checked={freeSpeech}
-            onCheckedChange={onFreeSpeechChange}
-            disabled={update.isPending}
-            aria-label={t('settings.freeSpeech')}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label={t('settings.autoShareWorkspace')}
-          description={t('settings.autoShareWorkspaceDescription')}
-        >
-          <Switch
-            checked={autoShareWorkspace}
-            onCheckedChange={onAutoShareWorkspaceChange}
-            disabled={update.isPending}
-            aria-label={t('settings.autoShareWorkspace')}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label={t('settings.proactive')}
-          description={t('settings.proactiveDescription')}
-        >
-          <Switch
-            checked={proactiveMode}
-            onCheckedChange={onProactiveModeChange}
-            disabled={update.isPending}
-            aria-label={t('settings.proactive')}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label={t('settings.freeMention')}
-          description={t('settings.freeMentionDescription')}
-        >
-          <Switch
-            checked={allowFreeMention}
-            onCheckedChange={onAllowFreeMentionChange}
-            disabled={update.isPending}
-            aria-label={t('settings.freeMention')}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label={t('settings.followUp')}
-          description={t('settings.followUpDescription', {
-            count: freeMentionMaxDispatches,
-            formattedCount: formatNumber(freeMentionMaxDispatches, language),
-          })}
-          htmlFor="gs-free-mention-max"
-        >
-          <Input
-            id="gs-free-mention-max"
-            type="number"
-            min={0}
-            step={1}
-            value={freeMentionMaxDispatches}
-            onChange={(e) => setMinimumFreeMentionMaxDispatches(e.target.value)}
-            disabled={!allowFreeMention}
-            className="w-24"
-          />
-        </SettingsRow>
+        <p className="py-2 text-xs text-muted-foreground">
+          {t('delegationDescription')}
+        </p>
 
         {commError !== undefined ? (
           <p className="py-2 text-sm text-destructive" role="alert">

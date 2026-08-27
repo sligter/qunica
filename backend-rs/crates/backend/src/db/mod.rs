@@ -16,6 +16,8 @@ type SchemaMatchFn = for<'a> fn(&'a SqlitePool) -> SchemaMatchFuture<'a>;
 const APPEARANCE_MIGRATION_VERSION: i64 = 2;
 const APPEARANCE_MIGRATION_DESCRIPTION: &str = "system settings appearance";
 const LEGACY_APPEARANCE_MIGRATION_DESCRIPTION: &str = "system_settings_appearance";
+const DISPATCH_IDEMPOTENCY_MIGRATION_VERSION: i64 = 27;
+const DISPATCH_IDEMPOTENCY_MIGRATION_DESCRIPTION: &str = "dispatch idempotency";
 const INITIAL_MIGRATION_VERSION: i64 = 1;
 const INITIAL_MIGRATION_DESCRIPTION: &str = "initial";
 const SCHEDULER_MIGRATION_VERSION: i64 = 3;
@@ -70,6 +72,7 @@ impl Db {
         reconcile_legacy_initial_migration_checksum(&self.pool).await?;
         reconcile_legacy_appearance_migration_checksum(&self.pool).await?;
         reconcile_legacy_scheduler_migration_checksum(&self.pool).await?;
+        reconcile_legacy_dispatch_idempotency_checksum(&self.pool).await?;
         MIGRATOR.run(&self.pool).await?;
         Ok(())
     }
@@ -83,6 +86,18 @@ async fn reconcile_legacy_scheduler_migration_checksum(
         SCHEDULER_MIGRATION_VERSION,
         SCHEDULER_MIGRATION_DESCRIPTION,
         scheduler_schema_matches_target,
+    )
+    .await
+}
+
+async fn reconcile_legacy_dispatch_idempotency_checksum(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::Error> {
+    reconcile_checksum_when_schema_matches(
+        pool,
+        DISPATCH_IDEMPOTENCY_MIGRATION_VERSION,
+        DISPATCH_IDEMPOTENCY_MIGRATION_DESCRIPTION,
+        legacy_dispatch_idempotency_schema_matches,
     )
     .await
 }
@@ -308,13 +323,21 @@ fn scheduler_schema_matches_target(
     })
 }
 
+fn legacy_dispatch_idempotency_schema_matches(
+    pool: &SqlitePool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, sqlx::Error>> + Send + '_>> {
+    Box::pin(column_exists(pool, "agent_dispatches", "dispatch_key"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         appearance_column_matches_target_schema, migration_by_version,
         reconcile_legacy_appearance_migration_checksum,
+        reconcile_legacy_dispatch_idempotency_checksum,
         reconcile_legacy_scheduler_migration_checksum, scheduler_schema_matches_target, Db,
         APPEARANCE_MIGRATION_DESCRIPTION, APPEARANCE_MIGRATION_VERSION,
+        DISPATCH_IDEMPOTENCY_MIGRATION_DESCRIPTION, DISPATCH_IDEMPOTENCY_MIGRATION_VERSION,
         SCHEDULER_MIGRATION_DESCRIPTION, SCHEDULER_MIGRATION_VERSION,
     };
     use sqlx::SqlitePool;
@@ -407,6 +430,53 @@ mod tests {
 
         assert_eq!(scheduler_checksum(&pool).await, old_checksum);
         assert!(!scheduler_schema_matches_target(&pool).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn repairs_removed_dispatch_idempotency_migration() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let pool = db.pool();
+        sqlx::query(
+            r#"
+            CREATE TABLE _sqlx_migrations (
+                version BIGINT PRIMARY KEY,
+                description TEXT NOT NULL,
+                installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                success BOOLEAN NOT NULL,
+                checksum BLOB NOT NULL,
+                execution_time BIGINT NOT NULL
+            );
+            CREATE TABLE agent_dispatches (id TEXT PRIMARY KEY, dispatch_key TEXT);
+            INSERT INTO _sqlx_migrations
+                (version, description, success, checksum, execution_time)
+            VALUES (?1, ?2, TRUE, X'010203', 0);
+            "#,
+        )
+        .bind(DISPATCH_IDEMPOTENCY_MIGRATION_VERSION)
+        .bind(DISPATCH_IDEMPOTENCY_MIGRATION_DESCRIPTION)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        reconcile_legacy_dispatch_idempotency_checksum(pool)
+            .await
+            .unwrap();
+
+        let actual: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?1")
+                .bind(DISPATCH_IDEMPOTENCY_MIGRATION_VERSION)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let expected = migration_by_version(
+            DISPATCH_IDEMPOTENCY_MIGRATION_VERSION,
+            DISPATCH_IDEMPOTENCY_MIGRATION_DESCRIPTION,
+        )
+        .unwrap()
+        .checksum
+        .as_ref()
+        .to_vec();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]

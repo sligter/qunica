@@ -1267,13 +1267,6 @@ fn builtin_tools() -> Vec<BuiltinToolResponse> {
             false,
         ),
         tool(
-            "run_sub_agent",
-            "RunSubAgent",
-            "Delegate read-only exploration to a sub-agent.",
-            "orchestration",
-            false,
-        ),
-        tool(
             "generate_image",
             "GenerateImage",
             "Generate images through a media provider.",
@@ -1325,10 +1318,7 @@ fn tool(
         policy,
         requires_workspace,
         requires_sandbox: false,
-        runtime_status: match id {
-            "run_sub_agent" => "planned",
-            _ => "available",
-        },
+        runtime_status: "available",
     }
 }
 

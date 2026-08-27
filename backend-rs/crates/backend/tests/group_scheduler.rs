@@ -4,7 +4,6 @@ use ag_swarmer_backend::{
     db::Db,
     runtime::{
         group_scheduler::{
-            mentions::{scan_visible_mentions, MentionTarget},
             next_decision, ActionKind, BudgetLimits, DispatchOutput, DispatchStatus,
             FinishDispatch, NewDispatch, NewTurn, SchedulerDecision, SchedulerModelError,
             SchedulerStore, SchedulerStoreError, SelectionReason, TurnBudget, TurnReason,
@@ -26,7 +25,7 @@ fn moderator_decision_requires_two_legal_candidates() {
     let budget = TurnBudget::new(BudgetLimits::with_auto_steps(2, Some(8)));
     let one_candidate = ["a".to_owned()];
     assert!(matches!(
-        next_decision(&budget, None, &[], &[], &one_candidate, 0, true, false),
+        next_decision(&budget, None, &[], &one_candidate, true, false),
         SchedulerDecision::Dispatch(ref dispatch)
             if dispatch.target_agent_id == "a"
                 && dispatch.selection_reason == SelectionReason::DeterministicOrder
@@ -35,168 +34,9 @@ fn moderator_decision_requires_two_legal_candidates() {
     let candidates = ["a".to_owned(), "b".to_owned()];
 
     assert!(matches!(
-        next_decision(&budget, None, &[], &[], &candidates, 0, true, false),
+        next_decision(&budget, None, &[], &candidates, true, false),
         SchedulerDecision::RequestModerator
     ));
-}
-
-#[test]
-fn visible_mentions_are_markdown_aware_ordered_and_deduplicated() {
-    let candidates = [
-        MentionTarget {
-            agent_id: "echo",
-            display_name: "Echo",
-        },
-        MentionTarget {
-            agent_id: "echo-prime",
-            display_name: "Echo Prime",
-        },
-        MentionTarget {
-            agent_id: "review",
-            display_name: "Review",
-        },
-    ];
-    let markdown = r#"@Echo Prime then @Review and @Echo Prime again.
-
-`@Echo` and ``@Review`` are code.
-```text
-@Review
-```
-> @Echo is quoted.
-[ask @Echo](https://example.test/@Review) then x@Echo and @Echoes.
-Finally @Echo."#;
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["echo-prime", "review", "echo"]
-    );
-}
-
-#[test]
-fn visible_mentions_ignore_unmatched_names_and_link_destinations() {
-    let candidates = [MentionTarget {
-        agent_id: "agent-a",
-        display_name: "Agent A",
-    }];
-    assert!(scan_visible_mentions("[@Nobody](mailto:@Agent A)", &candidates).is_empty());
-}
-
-#[test]
-fn visible_mentions_ignore_multiline_inline_code_spans() {
-    let candidates = [
-        MentionTarget {
-            agent_id: "hidden",
-            display_name: "Hidden",
-        },
-        MentionTarget {
-            agent_id: "visible",
-            display_name: "Visible",
-        },
-    ];
-    let markdown = "`code starts\n@Hidden\nends here` then @Visible";
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["visible"]
-    );
-}
-
-#[test]
-fn visible_mentions_require_valid_fenced_code_closers() {
-    let candidates = [
-        MentionTarget {
-            agent_id: "hidden",
-            display_name: "Hidden",
-        },
-        MentionTarget {
-            agent_id: "visible",
-            display_name: "Visible",
-        },
-    ];
-    let markdown = "```text\n@Hidden\n``` trailing text\n    ```\n@Hidden\n```\n@Visible";
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["visible"]
-    );
-}
-
-#[test]
-fn visible_mentions_treat_unmatched_backticks_as_literal_prose() {
-    let candidates = [MentionTarget {
-        agent_id: "visible",
-        display_name: "Visible",
-    }];
-    let markdown = "an unmatched ` delimiter\nstill leaves @Visible as prose";
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["visible"]
-    );
-}
-
-#[test]
-fn visible_mentions_treat_escaped_backticks_as_literal() {
-    let candidates = [
-        MentionTarget {
-            agent_id: "literal",
-            display_name: "Literal",
-        },
-        MentionTarget {
-            agent_id: "hidden",
-            display_name: "Hidden",
-        },
-        MentionTarget {
-            agent_id: "visible",
-            display_name: "Visible",
-        },
-    ];
-    let markdown = "\\`@Literal\\` and `code \\` @Hidden\nends` then @Visible";
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["literal", "visible"]
-    );
-}
-
-#[test]
-fn visible_mentions_ignore_escaped_parenthesis_inside_link_destination() {
-    let candidates = [
-        MentionTarget {
-            agent_id: "hidden",
-            display_name: "Hidden",
-        },
-        MentionTarget {
-            agent_id: "visible",
-            display_name: "Visible",
-        },
-    ];
-    let markdown = "[link](https://example.test/\\)@Hidden) then @Visible";
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["visible"]
-    );
-}
-
-#[test]
-fn bounded_mentions_ignore_reference_definition_destinations() {
-    let candidates = [
-        MentionTarget {
-            agent_id: "hidden",
-            display_name: "Hidden",
-        },
-        MentionTarget {
-            agent_id: "visible",
-            display_name: "Visible",
-        },
-    ];
-    let markdown = "[r]: https://example.test/@Hidden \"title\"\nUse [r], then ask @Visible.";
-
-    assert_eq!(
-        scan_visible_mentions(markdown, &candidates),
-        vec!["visible"]
-    );
 }
 
 struct Fixture {

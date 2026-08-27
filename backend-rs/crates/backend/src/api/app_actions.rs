@@ -759,12 +759,17 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
                 ));
             }
         }
-        if let Some(policy) = object.get("agent_mention_policy").and_then(Value::as_str) {
-            if !matches!(policy.trim(), "display_only" | "bounded_schedule") {
-                return Err(ApiError::invalid_input(
-                    "agent_mention_policy must be display_only or bounded_schedule",
-                ));
-            }
+        if let Some(field) = [
+            "agent_mention_policy",
+            "allow_agent_free_mention",
+            "agent_free_mention_max_dispatches",
+        ]
+        .into_iter()
+        .find(|field| object.contains_key(*field))
+        {
+            return Err(ApiError::invalid_input(format!(
+                "{field} has been removed; agent @mentions are display-only, use AgentAsTool for delegation"
+            )));
         }
     }
 

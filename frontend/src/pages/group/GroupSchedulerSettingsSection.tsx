@@ -25,30 +25,18 @@ import type { GroupSchedulerConfig } from '@/lib/api-v2/types'
 import type { GroupRead, GroupUpdate } from '@/types/api'
 
 const NO_SELECTION = '__none__'
-const UNKNOWN_POLICY_PREFIX = '__unknown_policy__:'
 const AUTO_MAX_AGENT_STEPS = 8
-type AgentMentionPolicy = GroupSchedulerConfig['agent_mention_policy']
 type SchedulerMode = GroupSchedulerConfig['scheduler_mode']
 
-const mentionPolicies: AgentMentionPolicy[] = ['display_only', 'bounded_schedule']
 const schedulerModes: SchedulerMode[] = ['bounded', 'automatic']
-const mentionPolicyKeys = {
-  display_only: 'scheduler.displayOnly',
-  bounded_schedule: 'scheduler.boundedSchedule',
-} as const satisfies Record<AgentMentionPolicy, string>
 const schedulerModeKeys = {
   bounded: 'scheduler.boundedMode',
   automatic: 'scheduler.automaticMode',
 } as const satisfies Record<SchedulerMode, string>
 
-function isAgentMentionPolicy(value: string): value is AgentMentionPolicy {
-  return mentionPolicies.some((policy) => policy === value)
-}
-
 const schedulerFormSchema = z
   .object({
     scheduler_mode: z.enum(['bounded', 'automatic']),
-    agent_mention_policy: z.string(),
     max_agent_steps_mode: z.enum(['auto', 'custom']),
     max_agent_steps_custom: z.number().int().min(1, 'minOne'),
     max_steps_per_agent: z.number().int().min(1, 'minOne'),
@@ -94,7 +82,6 @@ interface GroupSchedulerSettingsSectionProps {
 function groupToFormValues(group: GroupSchedulerConfig): SchedulerFormValues {
   return {
     scheduler_mode: group.scheduler_mode,
-    agent_mention_policy: group.agent_mention_policy,
     max_agent_steps_mode: group.max_agent_steps === null ? 'auto' : 'custom',
     max_agent_steps_custom: group.max_agent_steps ?? AUTO_MAX_AGENT_STEPS,
     max_steps_per_agent: group.max_steps_per_agent,
@@ -156,10 +143,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const selectedProviderId = form.watch('moderator_provider_id')
   const selectedModel = form.watch('moderator_model')
   const maxAgentStepsMode = form.watch('max_agent_steps_mode')
-  const mentionPolicy = form.watch('agent_mention_policy') as string
-  const mentionPolicySelectValue = isAgentMentionPolicy(mentionPolicy)
-    ? mentionPolicy
-    : `${UNKNOWN_POLICY_PREFIX}${mentionPolicy}`
   const models = useProviderModels(selectedProviderId ?? undefined)
   const activeProviders = useMemo(
     () => (providers.data ?? []).filter((provider) => provider.status === 'active'),
@@ -238,8 +221,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
 
     const payload: GroupUpdate = {
       scheduler_mode: values.scheduler_mode,
-      agent_mention_policy:
-        values.agent_mention_policy as GroupUpdate['agent_mention_policy'],
       max_agent_steps:
         values.max_agent_steps_mode === 'auto' ? null : values.max_agent_steps_custom,
       max_steps_per_agent: values.max_steps_per_agent,
@@ -317,37 +298,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               {schedulerModes.map((mode) => (
                 <SelectItem key={mode} value={mode}>
                   {t(schedulerModeKeys[mode])}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t('scheduler.mentionPolicy')}
-          description={t('scheduler.mentionPolicyDescription')}
-        >
-          <Select
-            value={mentionPolicySelectValue}
-            onValueChange={(value) => {
-              if (isAgentMentionPolicy(value)) {
-                updateValue('agent_mention_policy', value)
-              }
-            }}
-            disabled={schedulerControlsDisabled}
-          >
-            <SelectTrigger className="w-52" aria-label={t('scheduler.mentionPolicy')}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {!isAgentMentionPolicy(mentionPolicy) ? (
-                <SelectItem value={mentionPolicySelectValue}>
-                  {t('scheduler.unknownMentionPolicy', { value: mentionPolicy })}
-                </SelectItem>
-              ) : null}
-              {mentionPolicies.map((policy) => (
-                <SelectItem key={policy} value={policy}>
-                  {t(mentionPolicyKeys[policy])}
                 </SelectItem>
               ))}
             </SelectContent>

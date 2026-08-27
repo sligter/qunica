@@ -138,7 +138,7 @@ describe('useResumeStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
-  it('normalizes scheduler events with live-send parity and invalidates terminal trace data', () => {
+  it('normalizes scheduler events with live-send parity and refreshes live trace data', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const hook = renderHook(
@@ -169,6 +169,10 @@ describe('useResumeStream scheduler events', () => {
         hop: 1,
       },
     })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'group-1', 'turns', 'turn-1'],
+    })
+    invalidate.mockClear()
     emit(stream.handlers, {
       stream_id: 'stream-1',
       seq: 3,

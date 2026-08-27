@@ -10,10 +10,11 @@ You can save an existing group's settings and Agent roster as a reusable templat
 
 ## Who replies
 
-- **Mentions.** `@Name` addresses one agent. Explicit mentions always win.
-- **free_speech.** When on, every agent may reply to an unaddressed message. When off, only mentioned agents reply.
+- **Mentions.** In mentioned-only mode, `@Name` selects the responders. In a group-wide mode, mentions choose who starts without removing the other eligible agents from the turn.
+- **free_speech.** When on, every eligible agent enters the turn and replies sequentially.
 - **proactive_mode.** Includes every eligible agent in the current turn. An agent can answer with `<SILENT>` to skip without creating a message.
-- **allow_agent_free_mention.** Lets an agent's `@mention` of another agent dispatch a follow-up, capped by `agent_free_mention_max_dispatches`. Set it to `0` to disable.
+
+Only a user's `@mention` selects public responders. An `@mention` written by an Agent is display-only. Legacy mention-dispatch fields remain readable so old intent is not erased, but requests that send those removed fields are rejected with `400 Bad Request`.
 
 ## Communication modes
 
@@ -24,6 +25,17 @@ You can save an existing group's settings and Agent roster as a reusable templat
 - `hierarchical` — leaders go first.
 - `ring` — a fixed rotation, by `speaking_order`.
 
+Agents are dispatched one at a time, not in the background. A speaker must finish its response before the scheduler can advance. Writing a shared note or assigning work in prose shares context but does not itself dispatch another agent.
+
+Use `AgentAsTool` for structured delegation when it is available. `call` runs a helper privately and returns the result to the caller. In bounded mode, `handoff` instead transfers the public response to that helper. A pending public responder may be delegated to; doing so claims its scheduled slot so it does not run again later. Agents that already ran and helpers already claimed are excluded. Automatic mode permits `call` only because the moderator owns public dispatch.
+
+Practical combinations:
+
+- **Star synthesis:** address the hub first. It can `call` spokes and then write one integrated answer; called spokes give up any pending public slot.
+- **Hierarchical work:** address a leader, which can call or hand off to reachable workers.
+- **Mesh discussion:** use everyone/proactive for a public pass; structured delegation replaces the delegated member's pending public execution.
+- **Ring pipeline:** use everyone/proactive and let the scheduler follow `speaking_order`; delegating to a pending ring member consumes that member's scheduled slot.
+
 ## Scheduling and budgets
 
 Every group and direct chat uses the same persisted scheduler. It records each turn and dispatch so the trace shows which agent ran, why it was selected, and what it cost.
@@ -33,7 +45,7 @@ Every group and direct chat uses the same persisted scheduler. It records each t
 - `bounded` consumes candidates and stops at the configured work limits.
 - `automatic` lets the moderator repeatedly choose a legal speaker or finish the turn. It ignores agent-step, per-agent, hop, moderator-call, and token limits, while retaining failure limits, moderator timeout, cancellation, and supersession.
 
-Older scheduler-off conversations are migrated to a one-pass profile: each selected agent can run once, moderator and agent follow-ups are disabled, and selection follows the deterministic order. Direct chats use the same profile with one candidate.
+Older scheduler-off conversations are migrated to a one-pass profile: each selected agent can run once, moderator dispatch is disabled, and selection follows deterministic order. Direct chats use the same profile with one candidate.
 
 Budgets that end a turn when exhausted:
 
@@ -41,8 +53,6 @@ Budgets that end a turn when exhausted:
 - `max_scheduler_hops`, `max_moderator_calls`
 - `max_consecutive_failures`, `max_total_failures`
 - `max_total_tokens`
-
-`agent_mention_policy` decides what an agent-to-agent mention does: `display_only` just renders it, `bounded_schedule` dispatches a real follow-up.
 
 A **moderator** can be enabled with its own provider and model to pick the next legal speaker. Automatic mode requires it. `turn_timeout_seconds` currently limits moderator calls; it is not an agent execution timeout.
 

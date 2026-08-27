@@ -44,7 +44,9 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 
 An agent with no tools configured gets `Read`, `Glob`, and `Grep`. Shared-note tools are mounted automatically for members of a group that has a local workspace.
 
-`RunSubAgent` is present as a saved-only placeholder and is not exposed to the runtime yet.
+`AgentAsTool` is the host-level group delegation mechanism. Its target list is computed for each turn: it contains only bound, active, unselected group helpers allowed by the topology. Every call must explicitly choose `call` or `handoff`; automatic scheduler turns expose `call` only.
+
+Codex CLI and Claude Code may create their own native subagents inside an ACP run. Those subagents stay private to the external runtime: they are not group members, do not enter the group topology, and return their output only to the owning ACP Agent. The host does not expose a separate `RunSubAgent` tool.
 
 ## Approvals and unattended mode
 

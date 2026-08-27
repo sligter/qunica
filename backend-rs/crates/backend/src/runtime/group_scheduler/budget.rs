@@ -97,6 +97,10 @@ impl TurnBudget {
         self.total_failures
     }
 
+    pub fn has_dispatched(&self, agent_id: &str) -> bool {
+        self.steps_per_agent.contains_key(agent_id)
+    }
+
     pub fn check_dispatch(&self, target_agent_id: &str, hop: u32) -> Result<(), BudgetRejection> {
         if !self.unbounded_work {
             if self.agent_steps >= self.limits.max_agent_steps {

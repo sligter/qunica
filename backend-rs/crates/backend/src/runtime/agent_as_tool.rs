@@ -48,13 +48,11 @@ impl AgentAsToolCall {
         let instructions = first_string(args, &["instructions"])
             .filter(|value| !value.trim().is_empty())
             .map(str::to_string);
-        let mode = args
-            .get("mode")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| AgentAsToolFailure::failed("mode must be call or handoff"))?
-            .unwrap_or(AgentAsToolMode::Handoff);
+        let mode =
+            serde_json::from_value(args.get("mode").cloned().ok_or_else(|| {
+                AgentAsToolFailure::failed("mode is required: use call or handoff")
+            })?)
+            .map_err(|_| AgentAsToolFailure::failed("mode must be call or handoff"))?;
 
         // Models name an assistant the way the roster prints it, which is with
         // the `@` they see in every group message. Stripping it here means a
@@ -123,6 +121,13 @@ impl AgentAsToolFailure {
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self {
             status: "unavailable",
+            message: message.into(),
+        }
+    }
+
+    pub fn already_scheduled(message: impl Into<String>) -> Self {
+        Self {
+            status: "already_scheduled",
             message: message.into(),
         }
     }

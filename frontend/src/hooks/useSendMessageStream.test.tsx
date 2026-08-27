@@ -795,8 +795,9 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
-  it('normalizes live call and budget events without storing dispatch details', () => {
+  it('refreshes live trace data without storing dispatch details', () => {
     const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const hook = renderHook(() => useSendMessageStream('group-1'), {
       wrapper: wrapper(queryClient),
     })
@@ -823,6 +824,9 @@ describe('useSendMessageStream scheduler events', () => {
         action_kind: 'call',
         hop: 1,
       },
+    })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['groups', 'group-1', 'turns', 'turn-1'],
     })
     emit(stream.handlers, {
       stream_id: 'stream-1',
