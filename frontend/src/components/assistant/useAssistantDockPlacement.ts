@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-export const ASSISTANT_PLACEMENT_KEY = 'ag-swarmer:assistant:placement'
+export const ASSISTANT_PLACEMENT_KEY = 'qunica:assistant:placement'
 
 export const MIN_DOCK_WIDTH = 300
 export const MIN_DOCK_HEIGHT = 320

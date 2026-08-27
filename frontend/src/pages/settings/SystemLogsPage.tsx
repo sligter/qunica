@@ -283,7 +283,7 @@ export function SystemLogsPage() {
                   value={override.target}
                   disabled={busy}
                   aria-label={t('logs.overrides.module')}
-                  placeholder="ag_swarmer_backend::api"
+                  placeholder="qunica_backend::api"
                   onChange={(event) =>
                     setFilterConfig((current) =>
                       withOverride(current, index, { target: event.target.value }),

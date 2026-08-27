@@ -212,7 +212,7 @@ jobs:
             release_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="${TAG}" \
               -f target_commitish="${TAG_COMMIT}" \
-              -f name="AG Swarmer ${TAG}" \
+              -f name="Qunica ${TAG}" \
               -f body="Automated release draft for ${TAG}." \
               -F draft=true \
               -F prerelease="${PRERELEASE}" \
@@ -358,13 +358,13 @@ jobs:
         with:
           releaseId: ${{ needs.create-draft-release.outputs.release_id }}
           tagName: ${{ needs.validate-release.outputs.tag }}
-          releaseName: AG Swarmer ${{ needs.validate-release.outputs.tag }}
+          releaseName: Qunica ${{ needs.validate-release.outputs.tag }}
           releaseDraft: true
           prerelease: ${{ needs.validate-release.outputs.prerelease }}
           projectPath: frontend
           tauriScript: pnpm tauri
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: ag-swarmer_[version]_[arch][setup][ext]
+          releaseAssetNamePattern: qunica_[version]_[arch][setup][ext]
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
@@ -384,8 +384,8 @@ jobs:
           set -euo pipefail
 
           portable_dir="dist/release-desktop"
-          portable_name="ag-swarmer_${RELEASE_VERSION}_${PORTABLE_ARCH}-portable.exe"
-          source_exe="frontend/src-tauri/target/${RELEASE_TARGET}/release/ag-swarmer-desktop.exe"
+          portable_name="qunica_${RELEASE_VERSION}_${PORTABLE_ARCH}-portable.exe"
+          source_exe="frontend/src-tauri/target/${RELEASE_TARGET}/release/qunica-desktop.exe"
           portable_exe="${portable_dir}/${portable_name}"
 
           test -s "${source_exe}"
@@ -407,7 +407,7 @@ jobs:
           projectPath: frontend
           tauriScript: pnpm tauri
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: ag-swarmer_[version]_[arch][setup][ext]
+          releaseAssetNamePattern: qunica_[version]_[arch][setup][ext]
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
@@ -426,19 +426,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-            artifact: ag-swarmer-server-linux-x64.tar.gz
+            artifact: qunica-server-linux-x64.tar.gz
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04
-            artifact: ag-swarmer-server-linux-arm64.tar.gz
+            artifact: qunica-server-linux-arm64.tar.gz
           - target: x86_64-apple-darwin
             runner: macos-latest
-            artifact: ag-swarmer-server-darwin-x64.tar.gz
+            artifact: qunica-server-darwin-x64.tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest
-            artifact: ag-swarmer-server-darwin-arm64.tar.gz
+            artifact: qunica-server-darwin-arm64.tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-            artifact: ag-swarmer-server-windows-x64.zip
+            artifact: qunica-server-windows-x64.zip
     env:
       RELEASE_TARGET: ${{ matrix.target }}
       RELEASE_ARTIFACT: ${{ matrix.artifact }}
@@ -505,7 +505,7 @@ jobs:
         run: pnpm build
 
       - name: Build backend server
-        run: cargo build --manifest-path backend-rs/Cargo.toml --package ag-swarmer-backend --release --target "${RELEASE_TARGET}"
+        run: cargo build --manifest-path backend-rs/Cargo.toml --package qunica-backend --release --target "${RELEASE_TARGET}"
 
       - name: Package and smoke-check server archive
         run: node scripts/package-server-release.mjs

@@ -167,7 +167,7 @@ pub trait ShellHost {
 
 /// Environment variable that overrides shell resolution with an explicit
 /// interpreter — a path, or a name resolvable on `PATH`.
-pub const SHELL_OVERRIDE_VAR: &str = "AG_SWARMER_SHELL";
+pub const SHELL_OVERRIDE_VAR: &str = "QUNICA_SHELL";
 
 /// Resolve the interpreter for `host` under `preference`.
 ///

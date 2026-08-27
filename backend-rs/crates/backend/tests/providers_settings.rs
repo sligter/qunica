@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 async fn app() -> Router {
-    ag_swarmer_backend::api::router_for_tests().await
+    qunica_backend::api::router_for_tests().await
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -1452,7 +1452,7 @@ async fn providers_settings_system_settings_validation_rejects_invalid_values() 
         json!({"image_generation_endpoint": "not-a-path"}),
         json!({"video_status_endpoint": "/v1/videos/status"}),
         json!({"video_content_endpoint": "ftp://example.test/{id}"}),
-        json!({"group_workspace_root": "/this/path/does/not/exist/ag-swarmer"}),
+        json!({"group_workspace_root": "/this/path/does/not/exist/qunica"}),
     ];
 
     for body in invalid_cases {

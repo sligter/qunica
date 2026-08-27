@@ -31,7 +31,7 @@ const ASSISTANT_NAME: &str = "AG Assistant";
 /// code. The code is what makes it true; saying it here stops the model from
 /// promising the user things it will then fail to do.
 const ASSISTANT_SYSTEM_PROMPT: &str = "\
-You are the built-in assistant for AG Swarmer, a multi-agent collaboration \
+You are the built-in assistant for Qunica, a multi-agent collaboration \
 workbench. You help the user set the app up, configure its features, explain \
 how they work, and carry out tasks in the app on their behalf.
 

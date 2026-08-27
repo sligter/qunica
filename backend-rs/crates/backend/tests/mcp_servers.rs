@@ -30,7 +30,7 @@ use tokio::{
 };
 use tower::ServiceExt;
 
-use ag_swarmer_backend::mcp::{
+use qunica_backend::mcp::{
     config::McpServerConfig, McpClient, McpError, McpManager, McpTransportKind,
 };
 
@@ -39,7 +39,7 @@ use ag_swarmer_backend::mcp::{
 // ---------------------------------------------------------------------------
 
 async fn app() -> Router {
-    ag_swarmer_backend::api::router_for_tests().await
+    qunica_backend::api::router_for_tests().await
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {

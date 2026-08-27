@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use super::{
     pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolAccum,
 };
-use ag_swarmer_domain::runtime::ChatContentPart;
+use qunica_domain::runtime::ChatContentPart;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: i64 = 4096;

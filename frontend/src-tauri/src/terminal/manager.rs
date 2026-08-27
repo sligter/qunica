@@ -9,7 +9,7 @@ use super::protocol::{
 };
 use super::shell::{resolve_default_shell, validate_launch_directory, ShellSpec};
 
-use ag_swarmer_backend::tools::ShellPreference;
+use qunica_backend::tools::ShellPreference;
 
 pub trait EventSink: Send + Sync {
     fn send(&self, event: TerminalEvent) -> Result<(), TerminalCommandError>;

@@ -57,7 +57,7 @@ pub const MAX_SHELL_OUTPUT_CHARS: usize = 12_000;
 pub const MAX_COMMAND_CHARS: usize = 8_000;
 
 /// Workspace-relative directory holding spilled shell output.
-pub const SPILL_DIR: &str = ".ag-swarmer/shell";
+pub const SPILL_DIR: &str = ".qunica/shell";
 
 /// Run `command` in `root` under `shell`.
 ///

@@ -4,8 +4,8 @@ import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
 import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
 
-const STORAGE_KEY = 'agentchat:auth:v1'
-const USER_SYNC_KEY = 'agentchat:auth-user:v1'
+const STORAGE_KEY = 'qunica:auth:v1'
+const USER_SYNC_KEY = 'qunica:auth-user:v1'
 
 describe('authStore window synchronization', () => {
   beforeEach(() => {

@@ -28,7 +28,7 @@ use async_trait::async_trait;
 
 use crate::llm::ChatMessage;
 use crate::tools::todo::{self, TodoItem, TodoStatus};
-use ag_swarmer_domain::runtime::ToolDefinition;
+use qunica_domain::runtime::ToolDefinition;
 
 /// Turns at the end of the thread that are never pruned or summarized under
 /// normal pressure.
@@ -445,8 +445,8 @@ fn prune_tool_result(message: &mut ChatMessage, max_chars: usize) -> (usize, usi
 /// Written and read back: a long thread compacts more than once, and the second
 /// pass has to find the list its predecessor carried, or the checklist survives
 /// exactly one compaction.
-const CHECKLIST_OPEN: &str = "<ag-swarmer-todo-checklist>";
-const CHECKLIST_CLOSE: &str = "</ag-swarmer-todo-checklist>";
+const CHECKLIST_OPEN: &str = "<qunica-todo-checklist>";
+const CHECKLIST_CLOSE: &str = "</qunica-todo-checklist>";
 
 /// The checklist a summary should restate, if any.
 ///
@@ -690,10 +690,10 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
 /// invite it to treat invented detail as something it had already said.
 fn summary_message(summary: &str, replaced: usize, checklist: Option<&[TodoItem]>) -> ChatMessage {
     let mut content = format!(
-        "<ag-swarmer-context-summary replaced_messages=\"{replaced}\">\nThe earlier part of \
+        "<qunica-context-summary replaced_messages=\"{replaced}\">\nThe earlier part of \
          this conversation was replaced by this summary to stay inside the context window. \
          Treat it as an accurate record of what happened, and say so if you need detail it \
-         does not carry.\n\n{summary}\n</ag-swarmer-context-summary>"
+         does not carry.\n\n{summary}\n</qunica-context-summary>"
     );
     // Outside the summary envelope: the checklist is not a record of what was
     // said, it is state the agent is still acting on, and a model told to treat
@@ -786,10 +786,10 @@ fn estimate_message_tokens(message: &ChatMessage) -> i64 {
     } else {
         for part in &message.parts {
             tokens += match part {
-                ag_swarmer_domain::runtime::ChatContentPart::Text { text } => {
+                qunica_domain::runtime::ChatContentPart::Text { text } => {
                     estimate_text_tokens(text)
                 }
-                ag_swarmer_domain::runtime::ChatContentPart::Image { data_base64, .. } => {
+                qunica_domain::runtime::ChatContentPart::Image { data_base64, .. } => {
                     estimate_image_tokens(data_base64)
                 }
             };
@@ -916,7 +916,7 @@ mod tests {
     fn compacted_text(messages: &[ChatMessage]) -> String {
         messages
             .iter()
-            .find(|message| message.content.contains("ag-swarmer-context-summary"))
+            .find(|message| message.content.contains("qunica-context-summary"))
             .expect("a summary should have been spliced in")
             .content
             .clone()
@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn an_image_is_not_estimated_as_free() {
         let image =
-            ag_swarmer_domain::runtime::ChatContentPart::image("image/png", "A".repeat(1_200_000));
+            qunica_domain::runtime::ChatContentPart::image("image/png", "A".repeat(1_200_000));
         let message = ChatMessage::with_parts("user", vec![image]);
         let tokens = estimate_message_tokens(&message);
         assert!(tokens > 1_000, "{tokens}");
@@ -998,7 +998,7 @@ mod tests {
         let plain = ChatMessage::text("user", text.clone());
         let as_part = ChatMessage::with_parts(
             "user",
-            vec![ag_swarmer_domain::runtime::ChatContentPart::text(
+            vec![qunica_domain::runtime::ChatContentPart::text(
                 text.clone(),
             )],
         );
@@ -1080,7 +1080,7 @@ mod tests {
         assert!(messages[2]
             .content
             .contains("The agent answered twenty questions."));
-        assert!(messages[2].content.contains("ag-swarmer-context-summary"));
+        assert!(messages[2].content.contains("qunica-context-summary"));
         assert!(outcome.made_progress());
     }
 
@@ -1584,7 +1584,7 @@ mod tests {
         // Outside the summary envelope: the checklist is live state, not a
         // record of what was already said.
         assert!(
-            summary.find(CHECKLIST_OPEN) > summary.find("</ag-swarmer-context-summary>"),
+            summary.find(CHECKLIST_OPEN) > summary.find("</qunica-context-summary>"),
             "{summary}"
         );
     }

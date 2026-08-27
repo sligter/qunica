@@ -27,8 +27,8 @@ use crate::process::tokio_command_no_window;
 pub const MAX_TAIL_CHARS: usize = 12_000;
 
 /// Marker env var set on every ACP child so a spawned agent can detect it runs
-/// under ag-swarmer. Matches the Python runtime.
-pub const ACP_AGENT_ENV_FLAG: &str = "AG_SWARMER_ACP_AGENT";
+/// under qunica. Matches the Python runtime.
+pub const ACP_AGENT_ENV_FLAG: &str = "QUNICA_ACP_AGENT";
 
 /// A failure while persisting an ACP audit row.
 #[derive(Debug, Error)]

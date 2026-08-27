@@ -6,7 +6,7 @@ use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::Mutex;
 
-use ag_swarmer_domain::events::StreamEventKind;
+use qunica_domain::events::StreamEventKind;
 
 use crate::runtime::sequence::persist_message_with_event_in_tx;
 

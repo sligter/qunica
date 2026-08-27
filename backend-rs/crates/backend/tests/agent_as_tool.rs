@@ -7,7 +7,7 @@
 
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use ag_swarmer_backend::{
+use qunica_backend::{
     api::{router_with_state_for_tests, AppState},
     runtime::{
         run_group_turn, RuntimeServices, StreamEvent, StreamEventKind, TurnOutcome, TurnRequest,

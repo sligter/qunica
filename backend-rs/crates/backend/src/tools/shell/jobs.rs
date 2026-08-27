@@ -373,7 +373,7 @@ mod tests {
             id: id.to_string(),
             command: "probe".to_string(),
             root: PathBuf::from("/root"),
-            spill_path: ".ag-swarmer/shell/probe.log".to_string(),
+            spill_path: ".qunica/shell/probe.log".to_string(),
             started: Instant::now(),
             state: Mutex::new(JobState::default()),
             tree: ProcessTree::detached(),

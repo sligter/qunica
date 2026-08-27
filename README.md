@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/ag-swarmer-logo.png" alt="AG Swarmer Logo" width="160">
+  <img src="assets/qunica-logo.png" alt="Qunica Logo" width="160">
 </p>
 
-<h1 align="center">AG Swarmer</h1>
+<h1 align="center">Qunica</h1>
 
 <p align="center">
   <strong>A group-first workbench where humans and multiple agents build in the same room.</strong>
@@ -28,15 +28,15 @@
 
 ## What is this, really?
 
-AG Swarmer is a multi-agent collaboration workbench built around **groups** as the primary container.
+Qunica is a multi-agent collaboration workbench built around **groups** as the primary container.
 
-Most AI products give you one chat window and one agent. Real work looks more like a team: product, research, engineering, review, docs — different roles, one project context. AG Swarmer treats that project as a **group**. Agents are members you invite, configure, and observe. Humans and agents share the same message history, files, workspace, and execution trail.
+Most AI products give you one chat window and one agent. Real work looks more like a team: product, research, engineering, review, docs — different roles, one project context. Qunica treats that project as a **group**. Agents are members you invite, configure, and observe. Humans and agents share the same message history, files, workspace, and execution trail.
 
 Agents are not bolted-on bots. They are first-class members with roles, models, tools, skills, MCP servers, and optional external CLI runtimes (Codex CLI, Claude Code) that execute inside a bound workspace.
 
 ---
 
-## Stuff you do in AG Swarmer
+## Stuff you do in Qunica
 
 - **Stand up a project group** and invite specialized agents the way you'd invite teammates.
 - **Keep long-lived project context** — messages, files, workspace state, run logs, and agent replies stay in one place.
@@ -104,11 +104,11 @@ pnpm desktop:build
 Artifacts:
 
 ```text
-frontend/src-tauri/target/release/bundle/nsis/AG Swarmer_<version>_x64-setup.exe
-frontend/src-tauri/target/release/bundle/portable/AG Swarmer_<version>_x64-portable.exe
+frontend/src-tauri/target/release/bundle/nsis/Qunica_<version>_x64-setup.exe
+frontend/src-tauri/target/release/bundle/portable/Qunica_<version>_x64-portable.exe
 ```
 
-Portable build: run the standalone `AG Swarmer_<version>_x64-portable.exe` directly.
+Portable build: run the standalone `Qunica_<version>_x64-portable.exe` directly.
 
 ### I want to develop the web UI
 
@@ -236,7 +236,7 @@ shared/
 Desktop process shape:
 
 ```text
-AG Swarmer.exe
+Qunica.exe
   ├─ Tauri WebView shell
   ├─ starts the Rust / Axum backend in process
   ├─ listens on http://127.0.0.1:8765
@@ -251,7 +251,7 @@ AG Swarmer.exe
                │ HTTP / SSE-style streams  │
                ▼                           ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ag-swarmer-backend (Rust / Axum)                             │
+│ qunica-backend (Rust / Axum)                             │
 │  auth · groups · agents · chat · workspace · MCP · runtimes  │
 └──────────────┬───────────────────────────┬───────────────────┘
                │                           │
@@ -274,6 +274,6 @@ AG Swarmer.exe
 ---
 
 <p align="center">
-  <sub>AG Swarmer</sub><br>
+  <sub>Qunica</sub><br>
   <sub>Local-first multi-agent collaboration · v0.1.1-alpha</sub>
 </p>

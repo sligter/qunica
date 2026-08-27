@@ -6,7 +6,7 @@
 //! exactly once per owner, and it is invisible to — and unwritable through —
 //! the generic agent and direct-chat routes.
 
-use ag_swarmer_backend::api::{router_for_tests, router_with_state_for_tests};
+use qunica_backend::api::{router_for_tests, router_with_state_for_tests};
 use axum::{
     body::Body,
     http::{Request, StatusCode},

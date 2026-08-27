@@ -429,7 +429,7 @@ pub fn to_acp_prompt(
     });
 
     let mut prompt = String::new();
-    prompt.push_str("<ag-swarmer-task>\n");
+    prompt.push_str("<qunica-task>\n");
     prompt.push_str(
         "This is host-provided task context for the external ACP agent runtime; it is not the ACP runtime native system prompt.\n\n",
     );
@@ -453,7 +453,7 @@ pub fn to_acp_prompt(
         prompt.push_str("\n</current-message>\n");
     }
 
-    prompt.push_str("</ag-swarmer-task>\n");
+    prompt.push_str("</qunica-task>\n");
     prompt
 }
 
@@ -505,7 +505,7 @@ pub fn to_acp_incremental_prompt(
     };
 
     format!(
-        "<ag-swarmer-message>\n{preceding}<current-message>\n{current}\n</current-message>\n</ag-swarmer-message>\n"
+        "<qunica-message>\n{preceding}<current-message>\n{current}\n</current-message>\n</qunica-message>\n"
     )
 }
 

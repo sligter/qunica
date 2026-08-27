@@ -31,7 +31,7 @@ describe('AuthCard', () => {
   it('introduces the product beside the sign-in form', async () => {
     await renderAuthPage('login', 'en-US')
 
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('AG Swarmer')
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Qunica')
     expect(screen.getByText('One room. Many agents.')).toBeInTheDocument()
     expect(screen.getByText(/group-first workbench/)).toBeInTheDocument()
     expect(screen.getByText('Groups, not chat windows')).toBeInTheDocument()

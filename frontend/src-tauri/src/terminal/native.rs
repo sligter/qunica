@@ -1012,7 +1012,7 @@ mod tests {
             CreateTerminalRequest, TerminalCommandError, TerminalEvent,
         };
         use crate::terminal::shell::resolve_default_shell;
-        use ag_swarmer_backend::tools::ShellPreference;
+        use qunica_backend::tools::ShellPreference;
 
         #[derive(Default)]
         struct RecordingState {
@@ -1091,7 +1091,7 @@ mod tests {
 
         pub(super) fn run_windows_real_pty_smoke() {
             let temp = std::env::temp_dir()
-                .join(format!("ag-swarmer-terminal-smoke-{}", std::process::id()));
+                .join(format!("qunica-terminal-smoke-{}", std::process::id()));
             std::fs::create_dir_all(&temp).expect("create smoke-test directory");
             let shell = resolve_default_shell(ShellPreference::Auto)
                 .expect("PowerShell should resolve");

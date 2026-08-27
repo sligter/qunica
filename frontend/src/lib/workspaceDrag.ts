@@ -1,5 +1,5 @@
-export const WORKSPACE_PATHS_MIME = 'application/x-ag-swarmer-workspace-paths'
-export const WORKSPACE_ITEM_MIME = 'application/x-ag-swarmer-workspace-item+json'
+export const WORKSPACE_PATHS_MIME = 'application/x-qunica-workspace-paths'
+export const WORKSPACE_ITEM_MIME = 'application/x-qunica-workspace-item+json'
 export const WORKSPACE_DRAG_ITEM_VERSION = 1 as const
 
 export type WorkspaceDragItemKind = 'file' | 'directory'

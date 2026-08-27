@@ -5,7 +5,7 @@ import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
 import { useUnsavedChangesAction } from '@/hooks/useUnsavedChangesGuard'
 import { cn } from '@/lib/utils'
 
-const GROUP_DRAWER_WIDTH_STORAGE_KEY = 'ag-swarmer:layout:group-settings-drawer-width'
+const GROUP_DRAWER_WIDTH_STORAGE_KEY = 'qunica:layout:group-settings-drawer-width'
 
 const FOCUSABLE = [
   'a[href]',

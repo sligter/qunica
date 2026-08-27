@@ -48,7 +48,7 @@ const AGENT_AVATAR_PRESETS: [&str; 8] = [
     "preset:bloom",
     "preset:ember",
 ];
-const SYSTEM_PROMPT_WRITER_PROMPT: &str = "You write production system prompts for agents running inside ag-swarmer. Return only the complete system prompt in Markdown, with no code fence or commentary.\n\
+const SYSTEM_PROMPT_WRITER_PROMPT: &str = "You write production system prompts for agents running inside Qunica. Return only the complete system prompt in Markdown, with no code fence or commentary.\n\
 The prompt must be specific to the supplied role and usable as-is. It must tell the agent to:\n\
 - establish its role, outcomes, boundaries, and a short execution workflow;\n\
 - inspect relevant workspace context before acting and keep changes focused;\n\
@@ -1471,7 +1471,7 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
             name: "DeepSeek Harness",
             description: "deepseek-harness ACP server. It streams no tool or plan \
                           updates and sessions cannot be resumed; token usage is \
-                          estimated by ag-swarmer rather than reported.",
+                          estimated by Qunica rather than reported.",
             profile: "dsh",
             installed: dsh_acp.installed,
             command: Some(if dsh_acp.installed {
@@ -2002,14 +2002,14 @@ mod tests {
     }
 
     #[test]
-    fn generated_system_prompt_is_grounded_in_ag_swarmer_and_enhances_the_draft() {
+    fn generated_system_prompt_is_grounded_in_qunica_and_enhances_the_draft() {
         let messages = system_prompt_generation_messages(
             "Reviewer",
             Some("Reviews code"),
             Some("Be precise."),
         );
 
-        assert!(messages[0].content.contains("inside ag-swarmer"));
+        assert!(messages[0].content.contains("inside Qunica"));
         assert!(messages[0].content.contains("mounted Skills"));
         assert!(messages[1]
             .content
@@ -2079,7 +2079,7 @@ mod tests {
     fn find_command_on_path_returns_absolute_path_from_relative_path_env_on_windows() {
         let cwd = env::current_dir().unwrap();
         let dir = tempfile::Builder::new()
-            .prefix("ag-swarmer-npx-")
+            .prefix("qunica-npx-")
             .tempdir_in(&cwd)
             .unwrap();
         let relative_dir = dir.path().strip_prefix(&cwd).unwrap();
@@ -2115,7 +2115,7 @@ mod tests {
     fn find_command_on_path_returns_absolute_path_from_relative_path_env_off_windows() {
         let cwd = env::current_dir().unwrap();
         let dir = tempfile::Builder::new()
-            .prefix("ag-swarmer-npx-")
+            .prefix("qunica-npx-")
             .tempdir_in(&cwd)
             .unwrap();
         let relative_dir = dir.path().strip_prefix(&cwd).unwrap();

@@ -57,7 +57,7 @@ export function AuthCard({ title, subtitle, children }: AuthCardProps) {
             className="animate-auth-rise mt-6 font-serif text-4xl font-semibold tracking-tight"
             style={rise(140)}
           >
-            AG Swarmer
+            Qunica
           </h1>
           <p
             className="animate-auth-rise mt-2 text-base font-medium text-primary"

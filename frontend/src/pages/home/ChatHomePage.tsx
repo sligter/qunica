@@ -67,7 +67,7 @@ export function ChatHomePage() {
       <div className="flex w-full max-w-xl flex-col items-center gap-6">
         <div className="flex flex-col items-center gap-2">
           <h1 className="text-center font-serif text-4xl font-semibold tracking-tight">
-            AG Swarmer
+            Qunica
           </h1>
           <p className="max-w-md text-center text-sm leading-relaxed text-muted-foreground">
             {t('groups:homeSubtitle')}

@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use ag_swarmer_backend::{
+use qunica_backend::{
     api::{router_with_state_for_tests, AppState},
     tools::{AppControlContext, ToolExecutor, ToolResult, ToolStatus},
 };

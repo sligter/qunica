@@ -101,7 +101,7 @@ describe('resource detail status labels', () => {
 
   it('uses the available width when editing a skill', () => {
     renderPage(SkillDetailPage, '/skills/skill-1')
-    expect(document.title).toBe('Skill one · AG Swarmer')
+    expect(document.title).toBe('Skill one · Qunica')
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
 

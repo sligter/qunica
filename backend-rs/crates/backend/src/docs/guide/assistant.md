@@ -1,6 +1,6 @@
 # The built-in assistant
 
-The assistant is the floating panel that helps you configure AG Swarmer, explains how its features work, and carries out setup tasks for you.
+The assistant is the floating panel that helps you configure Qunica, explains how its features work, and carries out setup tasks for you.
 
 ## What it can do on its own
 

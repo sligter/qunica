@@ -175,7 +175,7 @@ export function composePickedPath(
   return name
 }
 
-const PREFIX_STORAGE_PREFIX = 'ag-swarmer/picker-prefix:'
+const PREFIX_STORAGE_PREFIX = 'qunica/picker-prefix:'
 
 function storageKey(scope: string): string {
   return `${PREFIX_STORAGE_PREFIX}${scope}`

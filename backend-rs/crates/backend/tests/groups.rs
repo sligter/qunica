@@ -1,4 +1,4 @@
-use ag_swarmer_backend::api::{
+use qunica_backend::api::{
     router_with_state_for_tests, workspace_files::MAX_WORKSPACE_TEXT_BYTES, AppState,
 };
 use axum::{
@@ -15,7 +15,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 async fn app() -> Router {
-    ag_swarmer_backend::api::router_for_tests().await
+    qunica_backend::api::router_for_tests().await
 }
 
 async fn app_with_state() -> (Router, AppState) {
@@ -82,7 +82,7 @@ fn authed_multipart_file(
     content_type: Option<&str>,
     bytes: &[u8],
 ) -> Request<Body> {
-    let boundary = "ag-swarmer-test-boundary";
+    let boundary = "qunica-test-boundary";
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(

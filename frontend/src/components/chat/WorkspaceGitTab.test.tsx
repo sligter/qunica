@@ -90,12 +90,12 @@ function renderTab(nextStatus: GroupWorkspaceGitStatus = status) {
 describe('WorkspaceGitTab i18n', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
-    localStorage.removeItem('ag-swarmer:git:commit-message-prompt')
+    localStorage.removeItem('qunica:git:commit-message-prompt')
   })
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
-    localStorage.removeItem('ag-swarmer:git:commit-message-prompt')
+    localStorage.removeItem('qunica:git:commit-message-prompt')
   })
 
   it('renders the compact Orca-style Git controls without loading a diff eagerly', () => {

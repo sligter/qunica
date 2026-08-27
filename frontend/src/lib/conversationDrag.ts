@@ -1,4 +1,4 @@
-export const CONVERSATION_ID_MIME = 'application/x-ag-swarmer-conversation-id'
+export const CONVERSATION_ID_MIME = 'application/x-qunica-conversation-id'
 
 const MAX_CONVERSATION_ID_LENGTH = 200
 

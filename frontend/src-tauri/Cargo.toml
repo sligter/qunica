@@ -1,15 +1,15 @@
 [package]
-name = "ag-swarmer-desktop"
+name = "qunica-desktop"
 version = "0.1.1-alpha"
-description = "AgentChat desktop shell"
-authors = ["ag-swarmer"]
+description = "Qunica desktop shell"
+authors = ["Qunica"]
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-ag-swarmer-backend = { path = "../../backend-rs/crates/backend" }
+qunica-backend = { path = "../../backend-rs/crates/backend" }
 anyhow = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"

@@ -20,7 +20,7 @@ pub use openai_compatible::OpenAiCompatibleProvider;
 // against this crate) can name the shared types without depending on the domain
 // crate directly. The domain crate holds only pure data types; the streaming
 // provider behaviour below lives here in the backend.
-pub use ag_swarmer_domain::runtime::{
+pub use qunica_domain::runtime::{
     ChatDelta, ChatMessage, ChatRequest, ContextUsage, ReasoningEffort, ToolCall, ToolDefinition,
 };
 

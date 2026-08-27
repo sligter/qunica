@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/authStore'
 import type { Appearance } from '@/types/api'
 
 export type ResolvedAppearance = 'light' | 'dark'
-export const APPEARANCE_MIRROR_KEY = 'ag-swarmer:appearance'
+export const APPEARANCE_MIRROR_KEY = 'qunica:appearance'
 
 export function normalizeResolvedAppearance(value: unknown): ResolvedAppearance | null {
   return value === 'light' || value === 'dark' ? value : null

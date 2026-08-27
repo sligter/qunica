@@ -6,7 +6,7 @@ import { UnsavedChangesProvider } from '@/components/layout/UnsavedChangesProvid
 import '@/i18n'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 
-const DRAWER_WIDTH_KEY = 'ag-swarmer:layout:group-settings-drawer-width'
+const DRAWER_WIDTH_KEY = 'qunica:layout:group-settings-drawer-width'
 
 function DirtySource({ dirty }: { dirty: boolean }) {
   useUnsavedChangesGuard(dirty)

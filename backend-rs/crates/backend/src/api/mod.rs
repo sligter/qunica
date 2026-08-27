@@ -605,7 +605,7 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         write_lock: Arc::new(Mutex::new(())),
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: std::env::temp_dir()
-            .join(format!("ag-swarmer-test-skills-{}", uuid::Uuid::new_v4())),
+            .join(format!("qunica-test-skills-{}", uuid::Uuid::new_v4())),
         // A private pool per test router: the shared one would carry live
         // connections between tests that each build their own database.
         mcp: Arc::new(McpManager::new()),

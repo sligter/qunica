@@ -7,8 +7,8 @@
 
 use std::convert::Infallible;
 
-use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
-use ag_swarmer_domain::runtime::ReasoningEffort;
+use qunica_domain::events::{StreamEvent, StreamEventKind};
+use qunica_domain::runtime::ReasoningEffort;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},

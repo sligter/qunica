@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/ag-swarmer-logo.png" alt="AG Swarmer Logo" width="160">
+  <img src="assets/qunica-logo.png" alt="Qunica Logo" width="160">
 </p>
 
-<h1 align="center">AG Swarmer</h1>
+<h1 align="center">Qunica</h1>
 
 <p align="center">
   <strong>以群组为核心的工作台：人和多个 Agent 在同一间房间里一起做事。</strong>
@@ -28,9 +28,9 @@
 
 ## 这到底是什么？
 
-AG Swarmer 是一个以 **群组（Group）** 为主要交互容器的多 Agent 协作工作台。
+Qunica 是一个以 **群组（Group）** 为主要交互容器的多 Agent 协作工作台。
 
-多数 AI 产品是「一个聊天窗口 + 一个 Agent」。真实工作更像团队：产品、研究、研发、审查、文档——不同角色，同一项目上下文。AG Swarmer 把项目当成一个 **群**：Agent 是你可以邀请、配置、观察的成员。人和 Agent 共享同一份消息历史、文件、工作区与执行轨迹。
+多数 AI 产品是「一个聊天窗口 + 一个 Agent」。真实工作更像团队：产品、研究、研发、审查、文档——不同角色，同一项目上下文。Qunica 把项目当成一个 **群**：Agent 是你可以邀请、配置、观察的成员。人和 Agent 共享同一份消息历史、文件、工作区与执行轨迹。
 
 Agent 是群里的正式成员：有自己的角色、模型、工具、Skills、MCP 服务，也可以挂外部 CLI runtime（Codex CLI、Claude Code），在绑定的 workspace 里直接执行任务。
 
@@ -104,11 +104,11 @@ pnpm desktop:build
 构建产物：
 
 ```text
-frontend/src-tauri/target/release/bundle/nsis/AG Swarmer_<version>_x64-setup.exe
-frontend/src-tauri/target/release/bundle/portable/AG Swarmer_<version>_x64-portable.exe
+frontend/src-tauri/target/release/bundle/nsis/Qunica_<version>_x64-setup.exe
+frontend/src-tauri/target/release/bundle/portable/Qunica_<version>_x64-portable.exe
 ```
 
-免安装版：直接运行独立的 `AG Swarmer_<version>_x64-portable.exe`。
+免安装版：直接运行独立的 `Qunica_<version>_x64-portable.exe`。
 
 ### 我想开发 Web UI
 
@@ -235,7 +235,7 @@ shared/
 桌面运行结构：
 
 ```text
-AG Swarmer.exe
+Qunica.exe
   ├─ Tauri WebView shell
   ├─ 在进程内启动 Rust / Axum 后端
   ├─ 监听 http://127.0.0.1:8765
@@ -250,7 +250,7 @@ AG Swarmer.exe
                │ HTTP / 流式事件           │
                ▼                           ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ag-swarmer-backend（Rust / Axum）                            │
+│ qunica-backend（Rust / Axum）                            │
 │  鉴权 · 群组 · Agent · 聊天 · 工作区 · MCP · runtime         │
 └──────────────┬───────────────────────────┬───────────────────┘
                │                           │
@@ -273,6 +273,6 @@ AG Swarmer.exe
 ---
 
 <p align="center">
-  <sub>AG Swarmer</sub><br>
+  <sub>Qunica</sub><br>
   <sub>本地优先的多 Agent 协作 · v0.1.1-alpha</sub>
 </p>

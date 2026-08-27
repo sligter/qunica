@@ -31,4 +31,4 @@ pub use hooks::{HookChain, RequestRecovery, RuntimeHook, StepContext};
 // Re-export the stream event contract so integration tests (which link only
 // against this crate) can name the shared types without depending on the domain
 // crate directly.
-pub use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
+pub use qunica_domain::events::{StreamEvent, StreamEventKind};

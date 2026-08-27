@@ -14,7 +14,7 @@ import { useGroupThreads } from '@/hooks/useGroupThreads'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
 
-const SELECTED_THREAD_STORAGE_PREFIX = 'ag-swarmer:groups:selected-thread:'
+const SELECTED_THREAD_STORAGE_PREFIX = 'qunica:groups:selected-thread:'
 
 function readSelectedThreadId(groupId: string | undefined): string | undefined {
   if (!groupId || typeof window === 'undefined') return undefined

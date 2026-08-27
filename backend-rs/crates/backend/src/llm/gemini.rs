@@ -7,7 +7,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use super::{
     pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolCall,
 };
-use ag_swarmer_domain::runtime::ChatContentPart;
+use qunica_domain::runtime::ChatContentPart;
 
 /// Streams responses from the Gemini `:streamGenerateContent` endpoint.
 pub struct GeminiProvider {

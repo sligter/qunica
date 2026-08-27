@@ -7,7 +7,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn health_v1_is_kept_for_tauri_readiness() {
-    let app = ag_swarmer_backend::api::router_for_tests().await;
+    let app = qunica_backend::api::router_for_tests().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -23,12 +23,12 @@ async fn health_v1_is_kept_for_tauri_readiness() {
         .unwrap();
     let payload: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(payload["status"], "ok");
-    assert_eq!(payload["service"], "ag-swarmer-backend");
+    assert_eq!(payload["service"], "qunica-backend");
 }
 
 #[tokio::test]
 async fn health_v2_exists_for_new_api_contract() {
-    let app = ag_swarmer_backend::api::router_for_tests().await;
+    let app = qunica_backend::api::router_for_tests().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -44,12 +44,12 @@ async fn health_v2_exists_for_new_api_contract() {
         .unwrap();
     let payload: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(payload["status"], "ok");
-    assert_eq!(payload["service"], "ag-swarmer-backend");
+    assert_eq!(payload["service"], "qunica-backend");
 }
 
 #[tokio::test]
 async fn cors_preflight_allows_desktop_api_headers() {
-    let app = ag_swarmer_backend::api::router_for_tests().await;
+    let app = qunica_backend::api::router_for_tests().await;
     let response = app
         .oneshot(
             Request::builder()

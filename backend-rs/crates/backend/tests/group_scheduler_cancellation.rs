@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ag_swarmer_backend::runtime::group_scheduler::{ActiveTurnRegistry, TurnCancellation};
+use qunica_backend::runtime::group_scheduler::{ActiveTurnRegistry, TurnCancellation};
 use tokio::{
     sync::Barrier,
     time::{timeout, Duration},

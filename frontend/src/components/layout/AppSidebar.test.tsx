@@ -73,7 +73,7 @@ function renderSidebar(initialEntry = '/chats/chat-1') {
 describe('AppSidebar terminal cleanup', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
-    localStorage.removeItem('ag-swarmer:layout:sidebar-collapsed')
+    localStorage.removeItem('qunica:layout:sidebar-collapsed')
     useAuthStore.setState({ token: null, user: null, hydrated: false })
     mocks.directChats = [{
       id: 'chat-1', title: 'Direct chat', agent_name: 'Solo',

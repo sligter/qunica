@@ -83,7 +83,7 @@ type RemoteOperation = (() => Promise<unknown>) | null
 type RepositoryState = NonNullable<GroupWorkspaceGitStatus['state']>
 type DiffLineKind = 'addition' | 'deletion' | 'hunk' | 'meta' | 'context'
 
-const COMMIT_PROMPT_STORAGE_KEY = 'ag-swarmer:git:commit-message-prompt'
+const COMMIT_PROMPT_STORAGE_KEY = 'qunica:git:commit-message-prompt'
 
 function readCommitPrompt(): string {
   try {

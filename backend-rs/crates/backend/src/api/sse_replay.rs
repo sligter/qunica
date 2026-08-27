@@ -1,4 +1,4 @@
-use ag_swarmer_domain::events::{StreamEvent, StreamEventKind};
+use qunica_domain::events::{StreamEvent, StreamEventKind};
 use axum::http::HeaderMap;
 use serde_json::Value;
 use uuid::Uuid;

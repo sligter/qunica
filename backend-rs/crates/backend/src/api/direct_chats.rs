@@ -147,7 +147,7 @@ async fn create_direct_chat_workspace(
         .filter(|root| !root.trim().is_empty());
         let base = configured_root.map(PathBuf::from).unwrap_or_else(|| {
             PathBuf::from(agent_root)
-                .join(".ag-swarmer")
+                .join(".qunica")
                 .join("direct-chats")
         });
         let short_id: String = workspace_id

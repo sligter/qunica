@@ -23,7 +23,7 @@ interface GroupWorkspacePanelProps {
 
 type WorkspaceTab = 'files' | 'git'
 
-const WORKSPACE_TAB_KEY = 'ag-swarmer:groups:workspace-panel-tab'
+const WORKSPACE_TAB_KEY = 'qunica:groups:workspace-panel-tab'
 
 function readStoredTab(): WorkspaceTab {
   return sessionStorage.getItem(WORKSPACE_TAB_KEY) === 'git' ? 'git' : 'files'

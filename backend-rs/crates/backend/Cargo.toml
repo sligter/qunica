@@ -1,11 +1,11 @@
 [package]
-name = "ag-swarmer-backend"
+name = "qunica-backend"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-ag-swarmer-domain = { path = "../domain" }
+qunica-domain = { path = "../domain" }
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.7", features = ["macros", "multipart"] }

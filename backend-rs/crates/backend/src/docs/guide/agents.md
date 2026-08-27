@@ -18,7 +18,7 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 
 **`llm_chat`** calls an LLM provider directly and runs the built-in tools. This is the normal kind.
 
-**`acp`** drives an external CLI agent over the Agent Client Protocol — Codex CLI, Claude Code, and other presets. It stores an `acp_runtime` blob instead of a provider, and AG Swarmer only detects and launches the CLI: install it and sign in outside the app. See `external-cli-agents`.
+**`acp`** drives an external CLI agent over the Agent Client Protocol — Codex CLI, Claude Code, and other presets. It stores an `acp_runtime` blob instead of a provider, and Qunica only detects and launches the CLI: install it and sign in outside the app. See `external-cli-agents`.
 
 ## Built-in tools
 

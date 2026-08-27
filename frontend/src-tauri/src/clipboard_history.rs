@@ -70,7 +70,7 @@ pub fn start() {
         .spawn(run_message_loop)
     {
         tracing::warn!(
-            target: "ag_swarmer::desktop",
+            target: "qunica::desktop",
             %error,
             "failed to start clipboard history bridge"
         );
@@ -82,11 +82,11 @@ fn run_message_loop() {
     // register-class / create-window / message-loop order. A failed step bails
     // out of this thread only, degrading to stock clipboard behaviour.
     unsafe {
-        let class_name: Vec<u16> = "AGSwarmerClipboardBridge\0".encode_utf16().collect();
+        let class_name: Vec<u16> = "QunicaClipboardBridge\0".encode_utf16().collect();
         let instance = GetModuleHandleW(std::ptr::null());
         if instance.is_null() {
             tracing::warn!(
-                target: "ag_swarmer::desktop",
+                target: "qunica::desktop",
                 "clipboard bridge could not resolve the application module"
             );
             return;
@@ -105,7 +105,7 @@ fn run_message_loop() {
         };
         if RegisterClassW(&class) == 0 {
             tracing::warn!(
-                target: "ag_swarmer::desktop",
+                target: "qunica::desktop",
                 "clipboard bridge window class registration failed"
             );
             return;
@@ -126,14 +126,14 @@ fn run_message_loop() {
         );
         if hwnd.is_null() {
             tracing::warn!(
-                target: "ag_swarmer::desktop",
+                target: "qunica::desktop",
                 "clipboard bridge window creation failed"
             );
             return;
         }
         if AddClipboardFormatListener(hwnd) == 0 {
             tracing::warn!(
-                target: "ag_swarmer::desktop",
+                target: "qunica::desktop",
                 "clipboard format listener registration failed"
             );
             DestroyWindow(hwnd);

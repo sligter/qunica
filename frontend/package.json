@@ -1,5 +1,5 @@
 {
-  "name": "@ag-swarmer/frontend",
+  "name": "@qunica/frontend",
   "private": true,
   "version": "0.1.1-alpha",
   "type": "module",
@@ -14,7 +14,7 @@
     "type-check": "tsc -b --noEmit"
   },
   "dependencies": {
-    "@ag-swarmer/shared": "workspace:*",
+    "@qunica/shared": "workspace:*",
     "@hookform/resolvers": "^3.9.1",
     "@microsoft/fetch-event-source": "^2.0.1",
     "@radix-ui/react-alert-dialog": "^1.1.23",

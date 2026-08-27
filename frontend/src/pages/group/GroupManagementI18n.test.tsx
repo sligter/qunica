@@ -323,7 +323,7 @@ describe('group management i18n', () => {
     mocks.closeConversation.mockReset().mockResolvedValue(undefined)
     mocks.toggleDock.mockReset().mockResolvedValue(undefined)
     mocks.registerTerminal.mockReset()
-    window.localStorage.removeItem('ag-swarmer:groups:selected-thread:group-1')
+    window.localStorage.removeItem('qunica:groups:selected-thread:group-1')
   })
 
   afterEach(async () => {
@@ -404,7 +404,7 @@ describe('group management i18n', () => {
     expect(screen.getByText('公告：RAW announcement / 路径 C:/work')).toBeVisible()
     expect(screen.getByRole('button', { name: '新任务' })).toBeVisible()
     expect(screen.getByRole('button', { name: '隐藏工作区文件' })).toBeVisible()
-    expect(document.title).toBe('原样 Group 42 · AG Swarmer')
+    expect(document.title).toBe('原样 Group 42 · Qunica')
     expect(mocks.registerTerminal).toHaveBeenCalledWith('thread-1', 'workspace-1', null)
   })
 
@@ -431,7 +431,7 @@ describe('group management i18n', () => {
         title: 'Release checklist',
         git_branch: 'release/checklist',
       })
-      expect(window.localStorage.getItem('ag-swarmer:groups:selected-thread:group-1'))
+      expect(window.localStorage.getItem('qunica:groups:selected-thread:group-1'))
         .toBe('thread-2')
     })
   })
@@ -441,7 +441,7 @@ describe('group management i18n', () => {
       taskThread,
       { ...taskThread, id: 'thread-2', title: 'Second task' },
     ]
-    window.localStorage.setItem('ag-swarmer:groups:selected-thread:group-1', 'thread-2')
+    window.localStorage.setItem('qunica:groups:selected-thread:group-1', 'thread-2')
 
     render(
       <MemoryRouter initialEntries={['/groups/group-1']}>
@@ -486,7 +486,7 @@ describe('group management i18n', () => {
     mocks.groupThreads = [taskThread, archivedThread]
     mocks.restoreTaskMutateAsync.mockResolvedValue({ ...archivedThread, status: 'active' })
     mocks.deleteTaskMutateAsync.mockResolvedValue(undefined)
-    window.localStorage.setItem('ag-swarmer:groups:selected-thread:group-1', 'thread-2')
+    window.localStorage.setItem('qunica:groups:selected-thread:group-1', 'thread-2')
 
     render(
       <MemoryRouter initialEntries={['/groups/group-1']}>
@@ -509,7 +509,7 @@ describe('group management i18n', () => {
     )
     await waitFor(() => {
       expect(mocks.deleteTaskMutateAsync).toHaveBeenCalledWith('thread-2')
-      expect(window.localStorage.getItem('ag-swarmer:groups:selected-thread:group-1'))
+      expect(window.localStorage.getItem('qunica:groups:selected-thread:group-1'))
         .toBe('thread-1')
     })
   })
@@ -528,10 +528,10 @@ describe('group management i18n', () => {
     expect(screen.getByText('原样 Group 42')).toBeVisible()
     expect(screen.getByRole('tab', { name: '成员' })).toBeVisible()
     expect(screen.getByRole('tab', { name: '笔记' })).toBeVisible()
-    expect(document.title).toBe('原样 Group 42 · 管理 · AG Swarmer')
+    expect(document.title).toBe('原样 Group 42 · 管理 · Qunica')
 
     await setLanguage('en-US')
-    expect(document.title).toBe('原样 Group 42 · Manage · AG Swarmer')
+    expect(document.title).toBe('原样 Group 42 · Manage · Qunica')
   })
 
   it('opens the compact member manager from the settings roster', async () => {

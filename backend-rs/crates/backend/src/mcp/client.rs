@@ -20,7 +20,7 @@ use super::{
 };
 
 /// Client identity sent in the `initialize` handshake.
-const CLIENT_NAME: &str = "ag-swarmer";
+const CLIENT_NAME: &str = "qunica";
 /// Client version sent in the `initialize` handshake.
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 

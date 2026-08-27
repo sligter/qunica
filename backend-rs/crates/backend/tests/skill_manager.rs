@@ -3,7 +3,7 @@
 //! Every test name contains `skill_manager` so
 //! `cargo test --workspace skill_manager` selects this focused suite.
 
-use ag_swarmer_backend::tools::{MountedSkill, ToolExecutor, ToolStatus};
+use qunica_backend::tools::{MountedSkill, ToolExecutor, ToolStatus};
 use serde_json::{json, Value};
 
 fn mounted_skills() -> Vec<MountedSkill> {
@@ -30,7 +30,7 @@ fn mounted_skills() -> Vec<MountedSkill> {
     ]
 }
 
-fn parse_output(result: &ag_swarmer_backend::tools::ToolResult) -> Value {
+fn parse_output(result: &qunica_backend::tools::ToolResult) -> Value {
     serde_json::from_str(&result.output).unwrap()
 }
 

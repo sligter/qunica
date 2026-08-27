@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-const args = ["--filter", "@ag-swarmer/frontend", "tauri", "build"];
+const args = ["--filter", "@qunica/frontend", "tauri", "build"];
 
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY && !process.env.TAURI_SIGNING_PRIVATE_KEY_PATH) {
   args.push("--no-sign");

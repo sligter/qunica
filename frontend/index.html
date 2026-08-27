@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AgentChat</title>
+    <title>Qunica</title>
     <style>
       :root {
         color-scheme: light;
@@ -33,7 +33,7 @@
       (() => {
         let appearance = null
         try {
-          const mirrored = localStorage.getItem('ag-swarmer:appearance')
+          const mirrored = localStorage.getItem('qunica:appearance')
           if (mirrored === 'light' || mirrored === 'dark') appearance = mirrored
         } catch {
           // A restricted storage context still gets the system theme below.

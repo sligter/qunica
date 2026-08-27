@@ -149,8 +149,8 @@ async fn run_probe(
             "protocolVersion": PROTOCOL_VERSION,
             "clientCapabilities": {},
             "clientInfo": {
-                "name": "ag-swarmer",
-                "title": "AG Swarmer",
+                "name": "qunica",
+                "title": "Qunica",
                 "version": "0.1.0"
             },
         }),
@@ -299,7 +299,7 @@ impl ProbeSession {
         config: &AcpRuntimeConfig,
     ) -> Result<(Self, mpsc::Receiver<Value>), AcpCapabilityError> {
         let temp_root = tempfile::Builder::new()
-            .prefix("ag-swarmer-acp-probe-")
+            .prefix("qunica-acp-probe-")
             .tempdir()
             .map_err(|source| AcpCapabilityError::Environment { source })?;
         let home = temp_root.path().join("home");

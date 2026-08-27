@@ -6,39 +6,39 @@ import process from "node:process";
 
 const TARGETS = Object.freeze({
   "x86_64-unknown-linux-gnu": {
-    artifact: "ag-swarmer-server-linux-x64.tar.gz",
+    artifact: "qunica-server-linux-x64.tar.gz",
     archive: "tar.gz",
     extension: ".tar.gz",
-    exe: "ag-swarmer-server",
-    sourceExe: "ag-swarmer-backend",
+    exe: "qunica-server",
+    sourceExe: "qunica-backend",
   },
   "aarch64-unknown-linux-gnu": {
-    artifact: "ag-swarmer-server-linux-arm64.tar.gz",
+    artifact: "qunica-server-linux-arm64.tar.gz",
     archive: "tar.gz",
     extension: ".tar.gz",
-    exe: "ag-swarmer-server",
-    sourceExe: "ag-swarmer-backend",
+    exe: "qunica-server",
+    sourceExe: "qunica-backend",
   },
   "x86_64-apple-darwin": {
-    artifact: "ag-swarmer-server-darwin-x64.tar.gz",
+    artifact: "qunica-server-darwin-x64.tar.gz",
     archive: "tar.gz",
     extension: ".tar.gz",
-    exe: "ag-swarmer-server",
-    sourceExe: "ag-swarmer-backend",
+    exe: "qunica-server",
+    sourceExe: "qunica-backend",
   },
   "aarch64-apple-darwin": {
-    artifact: "ag-swarmer-server-darwin-arm64.tar.gz",
+    artifact: "qunica-server-darwin-arm64.tar.gz",
     archive: "tar.gz",
     extension: ".tar.gz",
-    exe: "ag-swarmer-server",
-    sourceExe: "ag-swarmer-backend",
+    exe: "qunica-server",
+    sourceExe: "qunica-backend",
   },
   "x86_64-pc-windows-msvc": {
-    artifact: "ag-swarmer-server-windows-x64.zip",
+    artifact: "qunica-server-windows-x64.zip",
     archive: "zip",
     extension: ".zip",
-    exe: "ag-swarmer-server.exe",
-    sourceExe: "ag-swarmer-backend.exe",
+    exe: "qunica-server.exe",
+    sourceExe: "qunica-backend.exe",
   },
 });
 
@@ -85,7 +85,7 @@ function main() {
 
   const packagedBinary = path.join(stagingDir, meta.exe);
   fs.copyFileSync(sourceBinary, packagedBinary);
-  if (meta.exe !== "ag-swarmer-server.exe") {
+  if (meta.exe !== "qunica-server.exe") {
     fs.chmodSync(packagedBinary, 0o755);
   }
   fs.cpSync(webDir, path.join(stagingDir, "web"), { recursive: true });
@@ -123,7 +123,7 @@ function selfTest() {
       fail(`Duplicate artifact name: ${meta.artifact}`);
     }
     artifacts.add(meta.artifact);
-    if (!meta.artifact.startsWith("ag-swarmer-server-")) {
+    if (!meta.artifact.startsWith("qunica-server-")) {
       fail(`Unexpected artifact prefix for ${target}: ${meta.artifact}`);
     }
     if (!meta.artifact.endsWith(meta.extension)) {

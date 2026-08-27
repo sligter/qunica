@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 async fn app() -> Router {
-    ag_swarmer_backend::api::router_for_tests().await
+    qunica_backend::api::router_for_tests().await
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {

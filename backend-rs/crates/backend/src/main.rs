@@ -1,4 +1,4 @@
-use ag_swarmer_backend::{config::AppConfig, server, telemetry};
+use qunica_backend::{config::AppConfig, server, telemetry};
 use anyhow::Context;
 
 #[tokio::main]

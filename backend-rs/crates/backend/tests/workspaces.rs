@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 async fn app() -> Router {
-    ag_swarmer_backend::api::router_for_tests().await
+    qunica_backend::api::router_for_tests().await
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -192,7 +192,7 @@ async fn workspace_create_rejects_missing_or_nonexistent_local_path() {
             json!({
                 "name": "Bad Path",
                 "backend_type": "local",
-                "local_path": "/this/path/does/not/exist/ag-swarmer-xyz"
+                "local_path": "/this/path/does/not/exist/qunica-xyz"
             }),
         ),
     )

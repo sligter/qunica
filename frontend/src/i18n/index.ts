@@ -7,7 +7,7 @@ import { zhCN } from './resources/zh-CN'
 
 export type { Language }
 export const SUPPORTED_LANGUAGES: readonly Language[] = ['zh-CN', 'en-US']
-export const LANGUAGE_MIRROR_KEY = 'ag-swarmer:language'
+export const LANGUAGE_MIRROR_KEY = 'qunica:language'
 
 export function normalizeLanguage(value: unknown): Language | null {
   return value === 'zh-CN' || value === 'en-US' ? value : null

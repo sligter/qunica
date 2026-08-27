@@ -11,13 +11,13 @@ Other presets, including Pi and OpenCode, are listed but not all are implemented
 
 ## Installing
 
-AG Swarmer detects and launches these CLIs; it does not manage their accounts. Install each one and sign in outside the app. The runtime version panel can install a preset globally through npm and reports the installed and latest versions.
+Qunica detects and launches these CLIs; it does not manage their accounts. Install each one and sign in outside the app. The runtime version panel can install a preset globally through npm and reports the installed and latest versions.
 
 ## Configuration
 
 - **command** and **args** — what to run.
 - **model** — which model the CLI should use, when it accepts one.
-- **thinking_effort** — reasoning depth, for runtimes that expose it. Codex and Claude Code spell this differently; AG Swarmer maps it per profile.
+- **thinking_effort** — reasoning depth, for runtimes that expose it. Codex and Claude Code spell this differently; Qunica maps it per profile.
 - **timeout_seconds** — how long one run may take.
 - **permission_policy** — how to answer the CLI's permission prompts.
 

@@ -1,4 +1,4 @@
-use ag_swarmer_backend::db::Db;
+use qunica_backend::db::Db;
 
 #[tokio::test]
 async fn sqlite_bootstrap_enables_wal_and_creates_core_tables() {

@@ -69,8 +69,8 @@ interface WorkspaceFilesTabProps {
 
 type WorkspacePreviewMode = 'dialog' | 'editor'
 
-const WORKSPACE_PREVIEW_MODE_KEY_PREFIX = 'ag-swarmer:conversations:workspace-preview-mode:'
-const WORKSPACE_SHOW_HIDDEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-show-hidden:'
+const WORKSPACE_PREVIEW_MODE_KEY_PREFIX = 'qunica:conversations:workspace-preview-mode:'
+const WORKSPACE_SHOW_HIDDEN_KEY_PREFIX = 'qunica:conversations:workspace-show-hidden:'
 
 function previewModeStorageKey(scope: ConversationScope, conversationId: string): string {
   return `${WORKSPACE_PREVIEW_MODE_KEY_PREFIX}${scope}:${conversationId}`

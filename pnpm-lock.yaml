@@ -10,7 +10,7 @@ importers:
 
   frontend:
     dependencies:
-      '@ag-swarmer/shared':
+      '@qunica/shared':
         specifier: workspace:*
         version: link:../shared
       '@hookform/resolvers':

@@ -53,3 +53,8 @@ frontend/src-tauri/gen/
 # Local agent tooling and scratch state
 .tmp-liveagent-git/
 .build-desktop.*.pid
+# Per-workspace runtime state. Currently only ever holds logs, which `*.log`
+# already covers, but the directory is the app's to write into. `.ag-swarmer/`
+# is the pre-rename name, kept so old workspaces stay ignored.
+.qunica/
+.ag-swarmer/

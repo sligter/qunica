@@ -29,7 +29,7 @@ import {
 } from '@/terminal/TerminalRuntimeProvider'
 import { usePersistentPaneHeight } from '@/terminal/usePersistentPaneHeight'
 
-export const FULL_ACCESS_WARNING_KEY = 'ag-swarmer:terminal-full-access-warning:v1'
+export const FULL_ACCESS_WARNING_KEY = 'qunica:terminal-full-access-warning:v1'
 
 // The dock ships with every route but starts collapsed and has no tabs until the
 // user opens one, so the xterm runtime downloads with the first pane instead of

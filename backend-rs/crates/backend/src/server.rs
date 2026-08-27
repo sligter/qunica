@@ -39,7 +39,7 @@ impl ServerConfig {
     pub fn skill_storage_root(&self) -> PathBuf {
         self.app_data_dir
             .clone()
-            .unwrap_or_else(|| PathBuf::from(".ag-swarmer"))
+            .unwrap_or_else(|| PathBuf::from(".qunica"))
             .join("skills")
     }
 }
@@ -100,7 +100,7 @@ pub async fn serve_listener_with_shutdown(
     state: AppState,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    tracing::info!(%addr, "ag-swarmer backend listening");
+    tracing::info!(%addr, "qunica backend listening");
     axum::serve(listener, api::router(state))
         .with_graceful_shutdown(shutdown)
         .await?;

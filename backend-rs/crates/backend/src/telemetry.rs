@@ -72,7 +72,7 @@ pub fn setup_tracing(config: &AppConfig) -> Result<(), TelemetryError> {
     let log_dir = config
         .app_data_dir
         .clone()
-        .unwrap_or_else(|| PathBuf::from(".ag-swarmer"))
+        .unwrap_or_else(|| PathBuf::from(".qunica"))
         .join("logs");
     fs::create_dir_all(&log_dir)?;
     let log_path = log_dir.join(APPLICATION_LOG);
@@ -223,9 +223,9 @@ mod tests {
         std::fs::write(
             &path,
             concat!(
-                r#"{"timestamp":"2026-07-29T12:00:00Z","level":"INFO","fields":{"message":"first"},"target":"ag_swarmer"}"#,
+                r#"{"timestamp":"2026-07-29T12:00:00Z","level":"INFO","fields":{"message":"first"},"target":"qunica"}"#,
                 "\n",
-                r#"{"timestamp":"2026-07-29T12:00:01Z","level":"WARN","fields":{"message":"second","code":2},"target":"ag_swarmer::api"}"#,
+                r#"{"timestamp":"2026-07-29T12:00:01Z","level":"WARN","fields":{"message":"second","code":2},"target":"qunica::api"}"#,
                 "\n",
             ),
         )
@@ -236,6 +236,6 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message, "second");
         assert_eq!(entries[0].level, "WARN");
-        assert_eq!(entries[0].target, "ag_swarmer::api");
+        assert_eq!(entries[0].target, "qunica::api");
     }
 }

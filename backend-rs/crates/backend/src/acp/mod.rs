@@ -859,7 +859,7 @@ impl LiveAcpSession {
         events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
     ) -> Result<Self, String> {
         let home = tempfile::Builder::new()
-            .prefix("ag-swarmer-acp-")
+            .prefix("qunica-acp-")
             .tempdir()
             .map_err(|err| format!("failed to create ACP home: {err}"))?;
         let env = build_child_env(config.profile, home.path(), &config.env)
@@ -1061,7 +1061,7 @@ async fn initialize_session(conn: &AcpConnection) -> Result<AgentCapabilities, P
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "clientCapabilities": {},
-                "clientInfo": { "name": "ag-swarmer", "title": "AG Swarmer", "version": "0.1.0" },
+                "clientInfo": { "name": "qunica", "title": "Qunica", "version": "0.1.0" },
             }),
         )
         .await?;

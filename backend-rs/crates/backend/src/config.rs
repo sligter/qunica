@@ -3,22 +3,22 @@ use std::path::PathBuf;
 use std::{ffi::OsStr, fs, path::Path};
 use thiserror::Error;
 
-const DEFAULT_DATABASE_URL: &str = "sqlite://ag-swarmer.db?mode=rwc";
+const DEFAULT_DATABASE_URL: &str = "sqlite://qunica.db?mode=rwc";
 const DEFAULT_SECRET_KEY: &str = "please-change-me-in-production";
 
 #[derive(Debug, Clone, Parser)]
 pub struct AppConfig {
-    #[arg(long, env = "AG_SWARMER_HOST", default_value = "127.0.0.1")]
+    #[arg(long, env = "QUNICA_HOST", default_value = "127.0.0.1")]
     pub host: String,
-    #[arg(long, env = "AG_SWARMER_PORT", default_value_t = 8765)]
+    #[arg(long, env = "QUNICA_PORT", default_value_t = 8765)]
     pub port: u16,
-    #[arg(long, env = "AG_SWARMER_APP_DATA")]
+    #[arg(long, env = "QUNICA_APP_DATA")]
     pub app_data_dir: Option<PathBuf>,
-    #[arg(long, env = "AG_SWARMER_LOG_LEVEL", default_value = "info")]
+    #[arg(long, env = "QUNICA_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
     #[arg(
         long,
-        env = "AG_SWARMER_DATABASE_URL",
+        env = "QUNICA_DATABASE_URL",
         default_value = DEFAULT_DATABASE_URL
     )]
     pub database_url: String,
@@ -48,7 +48,7 @@ impl AppConfig {
     }
 
     pub fn for_desktop_app_data(app_data_dir: PathBuf, port: u16) -> Result<Self, ConfigError> {
-        let log_level = std::env::var("AG_SWARMER_LOG_LEVEL")
+        let log_level = std::env::var("QUNICA_LOG_LEVEL")
             .ok()
             .or_else(|| {
                 fs::read_to_string(app_data_dir.join("logs").join("log-filter.txt"))
@@ -62,7 +62,7 @@ impl AppConfig {
             port,
             app_data_dir: Some(app_data_dir),
             log_level,
-            database_url: std::env::var("AG_SWARMER_DATABASE_URL")
+            database_url: std::env::var("QUNICA_DATABASE_URL")
                 .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string()),
             secret_key: std::env::var("SECRET_KEY")
                 .unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string()),
@@ -82,10 +82,10 @@ impl AppConfig {
         fs::create_dir_all(&app_data_dir)?;
 
         if self.database_url == DEFAULT_DATABASE_URL
-            && std::env::var_os("AG_SWARMER_DATABASE_URL").is_none()
+            && std::env::var_os("QUNICA_DATABASE_URL").is_none()
             && !arg_present("database-url")
         {
-            self.database_url = sqlite_url_for_path(&app_data_dir.join("ag-swarmer.sqlite3"));
+            self.database_url = sqlite_url_for_path(&app_data_dir.join("qunica.sqlite3"));
         }
 
         if self.secret_key == DEFAULT_SECRET_KEY
@@ -137,12 +137,12 @@ mod tests {
 
     #[test]
     fn config_app_data_sqlite_url_uses_desktop_database_name() {
-        let path = std::path::Path::new("C:/Users/Test/AppData/Roaming/ag-swarmer.desktop")
-            .join("ag-swarmer.sqlite3");
+        let path = std::path::Path::new("C:/Users/Test/AppData/Roaming/qunica.desktop")
+            .join("qunica.sqlite3");
         let url = sqlite_url_for_path(&path);
         assert!(url.starts_with("sqlite://"));
-        assert!(url.ends_with("/ag-swarmer.sqlite3?mode=rwc"));
-        assert!(url.contains("ag-swarmer.desktop"));
+        assert!(url.ends_with("/qunica.sqlite3?mode=rwc"));
+        assert!(url.contains("qunica.desktop"));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! list) and secret containment (no API key or MCP header value reaches the
 //! model, at any depth, in any field).
 
-use ag_swarmer_backend::{
+use qunica_backend::{
     api::router_with_state_for_tests,
     tools::{AppControlContext, ToolExecutor, ToolResult, ToolStatus},
 };
@@ -444,7 +444,7 @@ async fn app_control_hides_the_assistant_from_agent_listings() {
 
 #[test]
 fn every_bundled_doc_has_a_title_and_a_body() {
-    let docs = ag_swarmer_backend::docs::all();
+    let docs = qunica_backend::docs::all();
     assert!(!docs.is_empty());
     for doc in docs {
         assert!(!doc.slug.is_empty());
@@ -475,7 +475,7 @@ async fn app_docs_finds_a_real_feature_and_stays_bounded() {
         result.output
     );
     assert!(
-        result.output.len() <= ag_swarmer_backend::docs::MAX_DOCS_OUTPUT_BYTES,
+        result.output.len() <= qunica_backend::docs::MAX_DOCS_OUTPUT_BYTES,
         "output was {} bytes",
         result.output.len()
     );

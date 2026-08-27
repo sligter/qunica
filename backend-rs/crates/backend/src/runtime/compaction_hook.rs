@@ -373,7 +373,7 @@ mod tests {
         tx.send(ChatDelta::Token("a summary".to_string()))
             .await
             .unwrap();
-        tx.send(ChatDelta::Usage(ag_swarmer_domain::runtime::ContextUsage {
+        tx.send(ChatDelta::Usage(qunica_domain::runtime::ContextUsage {
             input_tokens: Some(1_200),
             output_tokens: Some(30),
             total_tokens: Some(1_230),

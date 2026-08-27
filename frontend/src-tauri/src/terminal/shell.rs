@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ag_swarmer_backend::tools::{shell_for, ResolvedShell, ShellDialect, ShellPreference};
+use qunica_backend::tools::{shell_for, ResolvedShell, ShellDialect, ShellPreference};
 
 use super::protocol::TerminalCommandError;
 
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn launch_directory_must_be_an_existing_absolute_directory() {
-        let root = std::env::temp_dir().join(format!("ag-swarmer-terminal-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("qunica-terminal-{}", std::process::id()));
         fs::create_dir_all(&root).expect("create temp directory");
         assert_eq!(validate_launch_directory(&root).unwrap(), root);
         assert!(validate_launch_directory(std::path::Path::new("relative")).is_err());
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(relative.code, "terminal.cwd_not_absolute");
 
         let root =
-            std::env::temp_dir().join(format!("ag-swarmer-terminal-errors-{}", std::process::id()));
+            std::env::temp_dir().join(format!("qunica-terminal-errors-{}", std::process::id()));
         fs::create_dir_all(&root).expect("create temp directory");
 
         let missing =

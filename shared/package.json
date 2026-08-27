@@ -1,5 +1,5 @@
 {
-  "name": "@ag-swarmer/shared",
+  "name": "@qunica/shared",
   "version": "0.1.1-alpha",
   "private": true,
   "type": "module",

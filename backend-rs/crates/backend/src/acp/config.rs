@@ -34,8 +34,8 @@ pub const BLOCKED_ENV_KEYS: [&str; 12] = [
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_HOME",
-    "AG_SWARMER_EXTERNAL_AGENT",
-    "AG_SWARMER_ACP_AGENT",
+    "QUNICA_EXTERNAL_AGENT",
+    "QUNICA_ACP_AGENT",
 ];
 
 /// How the ACP client answers permission requests from the agent process.

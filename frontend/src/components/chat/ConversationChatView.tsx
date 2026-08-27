@@ -29,7 +29,7 @@ import { useOptionalTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 import { useOptionalTerminalConversationRegistration } from '@/terminal/useTerminalConversationRegistration'
 import type { GroupAgentRead, MessageSendInput } from '@/types/api'
 
-const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'ag-swarmer:conversations:workspace-files-open:'
+const WORKSPACE_FILES_OPEN_KEY_PREFIX = 'qunica:conversations:workspace-files-open:'
 
 type WorkspaceFilesOpenUpdater = boolean | ((current: boolean) => boolean)
 
@@ -264,7 +264,7 @@ export function ConversationChatView({
   )
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const workspaceFilesPane = usePersistentPaneWidth({
-    storageKey: 'ag-swarmer:layout:workspace-files-pane-width',
+    storageKey: 'qunica:layout:workspace-files-pane-width',
     defaultWidth: 280,
     minWidth: 240,
     maxWidth: 560,

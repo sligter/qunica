@@ -222,7 +222,7 @@ fn is_stop_word(word: &str) -> bool {
             | "using"
             | "into"
             | "app"
-            | "swarmer"
+            | "qunica"
     )
 }
 

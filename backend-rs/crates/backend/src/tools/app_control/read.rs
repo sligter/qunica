@@ -492,7 +492,7 @@ pub(crate) fn docs(args: &Value) -> Result<ToolResult, ToolError> {
         return Ok(bounded_docs(json!({
             "documents": [],
             "message": format!(
-                "no matching page for '{query}'. This guide covers only AG Swarmer itself; \
+                "no matching page for '{query}'. This guide covers only Qunica itself; \
                  if the question is about something else, say so rather than guessing."
             ),
             "available": doc_index(),

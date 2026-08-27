@@ -232,9 +232,9 @@ describe('SystemSettingsPage preferences', () => {
 
 describe('SystemSettingsPage about and updates', () => {
   const about = {
-    name: 'AG Swarmer',
+    name: 'Qunica',
     version: '0.1.1-alpha',
-    identifier: 'ag-swarmer.desktop',
+    identifier: 'qunica.desktop',
     tauri_version: '2.11.2',
     os: 'windows',
     arch: 'x86_64',
@@ -277,7 +277,7 @@ describe('SystemSettingsPage about and updates', () => {
 
     expect(await screen.findByText('0.1.1-alpha')).toBeVisible()
     expect(screen.getByText('windows · x86_64')).toBeVisible()
-    expect(screen.getByText('ag-swarmer.desktop')).toBeVisible()
+    expect(screen.getByText('qunica.desktop')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Check for updates' }))
     expect(await screen.findByText('You are on the latest version.')).toBeVisible()

@@ -4,7 +4,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: ag-swarmer-postgres
+    container_name: qunica-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agentchat}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentchat}
@@ -21,7 +21,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: ag-swarmer-redis
+    container_name: qunica-redis
     ports:
       - "6379:6379"
     volumes:
@@ -34,7 +34,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: ag-swarmer-minio
+    container_name: qunica-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}

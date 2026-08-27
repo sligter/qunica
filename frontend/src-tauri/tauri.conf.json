@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AG Swarmer",
+  "productName": "Qunica",
   "version": "0.1.1-alpha",
-  "identifier": "ag-swarmer.desktop",
+  "identifier": "qunica.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
@@ -34,7 +34,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE4OTRCNTk0M0JFNzg5MTIKUldRU2llYzdsTFdVcUVFcUR6OFNmVWtRODdSdVd3dE5kbkVOeEdDY1kvczZmR1FISVkreStmUUcK",
       "endpoints": [
-        "https://github.com/sligter/ag-swarmer/releases/latest/download/latest.json"
+        "https://github.com/sligter/qunica/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

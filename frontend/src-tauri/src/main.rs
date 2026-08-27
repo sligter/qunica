@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ag_swarmer_backend::{config::AppConfig, server, telemetry};
+use qunica_backend::{config::AppConfig, server, telemetry};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::PageLoadEvent;
@@ -155,7 +155,7 @@ async fn show_notification(
         .config()
         .product_name
         .clone()
-        .unwrap_or_else(|| "AG Swarmer".to_string());
+        .unwrap_or_else(|| "Qunica".to_string());
     let result = tauri::async_runtime::spawn_blocking(move || {
         #[cfg(windows)]
         {
@@ -176,7 +176,7 @@ async fn show_notification(
     .await
     .map_err(|error| error.to_string())?;
     if let Err(error) = &result {
-        tracing::warn!(target: "ag_swarmer::desktop", error, "failed to show a notification");
+        tracing::warn!(target: "qunica::desktop", error, "failed to show a notification");
     }
     result
 }
@@ -675,6 +675,7 @@ fn open_aux_window(
     }
     let revealed = Arc::new(AtomicBool::new(false));
     WebviewWindowBuilder::new(app, label, WebviewUrl::App(route.into()))
+        .disable_drag_drop_handler()
         .title(title)
         .inner_size(width, height)
         .min_inner_size(560.0, 420.0)
@@ -720,7 +721,7 @@ async fn open_library_window(app: tauri::AppHandle, route: String) -> Result<(),
     open_aux_window(
         &app,
         LIBRARY_WINDOW_LABEL,
-        "AG Swarmer — Library",
+        "Qunica — Library",
         &route,
         1180.0,
         760.0,
@@ -736,7 +737,7 @@ async fn open_settings_window(app: tauri::AppHandle, route: String) -> Result<()
     open_aux_window(
         &app,
         SETTINGS_WINDOW_LABEL,
-        "AG Swarmer — Settings",
+        "Qunica — Settings",
         &route,
         900.0,
         680.0,
@@ -769,7 +770,8 @@ async fn toggle_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
         ASSISTANT_WINDOW_LABEL,
         WebviewUrl::App("/assistant-dock".into()),
     )
-    .title("AG Swarmer — Assistant")
+    .disable_drag_drop_handler()
+    .title("Qunica — Assistant")
     .inner_size(380.0, 520.0)
     .min_inner_size(300.0, 360.0)
     .decorations(false)
@@ -799,7 +801,7 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
     }
     WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
         .disable_drag_drop_handler()
-        .title("AG Swarmer")
+        .title("Qunica")
         .inner_size(1280.0, 800.0)
         .min_inner_size(1024.0, 680.0)
         .background_color(APP_WINDOW_BACKGROUND)
@@ -833,7 +835,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main-tray")
         .icon(tauri::include_image!("icons/32x32.png"))
-        .tooltip("AG Swarmer")
+        .tooltip("Qunica")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -848,7 +850,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                         open_settings_window(app, "/settings/system".to_string()).await
                     {
                         tracing::warn!(
-                            target: "ag_swarmer::desktop",
+                            target: "qunica::desktop",
                             %error,
                             "failed to open settings window from tray"
                         );
@@ -1132,14 +1134,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn registers_an_identity_and_raises_a_toast() {
-        const TEST_APP_ID: &str = "ag-swarmer.test.notification";
+        const TEST_APP_ID: &str = "qunica.test.notification";
 
-        super::register_windows_app_user_model_id(TEST_APP_ID, "AG Swarmer")
+        super::register_windows_app_user_model_id(TEST_APP_ID, "Qunica")
             .expect("register test AUMID");
 
         let raised = std::thread::spawn(|| {
             tauri_winrt_notification::Toast::new(TEST_APP_ID)
-                .title("AG Swarmer")
+                .title("Qunica")
                 .text1("Toast probe")
                 .show()
                 .map_err(|error| error.to_string())

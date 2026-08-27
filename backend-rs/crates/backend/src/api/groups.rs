@@ -5505,11 +5505,11 @@ mod tests {
     #[test]
     fn git_paths_accept_the_directory_suffix_from_status() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join(".ag-swarmer")).unwrap();
+        std::fs::create_dir(root.path().join(".qunica")).unwrap();
 
         assert_eq!(
-            validate_git_paths(root.path(), &[".ag-swarmer/".to_string()]).unwrap(),
-            [".ag-swarmer"]
+            validate_git_paths(root.path(), &[".qunica/".to_string()]).unwrap(),
+            [".qunica"]
         );
     }
 

@@ -6,8 +6,8 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 const releaseDir = path.join(rootDir, "frontend", "src-tauri", "target", "release");
 const portableDir = path.join(releaseDir, "bundle", "portable");
-const sourceExe = path.join(releaseDir, "ag-swarmer-desktop.exe");
-const portableExe = path.join(portableDir, `AG Swarmer_${pkg.version}_x64-portable.exe`);
+const sourceExe = path.join(releaseDir, "qunica-desktop.exe");
+const portableExe = path.join(portableDir, `Qunica_${pkg.version}_x64-portable.exe`);
 
 if (!fs.existsSync(sourceExe)) {
   throw new Error(`Missing desktop build artifact: ${sourceExe}`);

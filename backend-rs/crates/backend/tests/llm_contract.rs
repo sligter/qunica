@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
-use ag_swarmer_backend::llm::{
+use qunica_backend::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
     OpenAiCompatibleProvider, ReasoningEffort, ToolCall,
 };
-use ag_swarmer_domain::runtime::ChatContentPart;
+use qunica_domain::runtime::ChatContentPart;
 use axum::{body::Body, http::header, response::IntoResponse, Router};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

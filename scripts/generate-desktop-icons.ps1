@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$source = Join-Path $root 'assets/ag-swarmer-logo.png'
+$source = Join-Path $root 'assets/qunica-logo.png'
 $iconDir = Join-Path $root 'frontend/src-tauri/icons'
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-$tempDir = Join-Path $tempRoot "ag-swarmer-icons-$([guid]::NewGuid())"
+$tempDir = Join-Path $tempRoot "qunica-icons-$([guid]::NewGuid())"
 
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 try {

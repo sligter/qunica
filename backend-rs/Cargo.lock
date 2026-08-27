@@ -9,53 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "ag-swarmer-backend"
-version = "0.1.1-alpha"
-dependencies = [
- "ag-swarmer-domain",
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "bcrypt",
- "clap",
- "futures-util",
- "globset",
- "jsonwebtoken",
- "libc",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "sqlx",
- "tempfile",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "walkdir",
- "windows-sys 0.61.2",
- "zip",
-]
-
-[[package]]
-name = "ag-swarmer-domain"
-version = "0.1.1-alpha"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "time",
- "uuid",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1598,6 +1551,53 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "qunica-backend"
+version = "0.1.1-alpha"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "bcrypt",
+ "clap",
+ "futures-util",
+ "globset",
+ "jsonwebtoken",
+ "libc",
+ "qunica-domain",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
+name = "qunica-domain"
+version = "0.1.1-alpha"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "time",
+ "uuid",
 ]
 
 [[package]]

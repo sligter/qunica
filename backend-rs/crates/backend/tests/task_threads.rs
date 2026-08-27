@@ -1,4 +1,4 @@
-use ag_swarmer_backend::{
+use qunica_backend::{
     api::router_with_state_for_tests,
     runtime::{
         sequence::{NewMessage, SequenceAllocator},
@@ -527,7 +527,7 @@ async fn archived_task_threads_restore_and_delete() {
 }
 
 async fn seed_message(
-    state: &ag_swarmer_backend::api::AppState,
+    state: &qunica_backend::api::AppState,
     group_id: &str,
     thread_id: &str,
     content: &str,

@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
       id: 'workspace-1',
       name: 'Project workspace',
       backend_type: 'local' as const,
-      local_path: 'D:/projects/ag-swarmer',
+      local_path: 'D:/projects/qunica',
       sandbox_ref: null,
       config: null,
       status: 'active',
@@ -40,16 +40,16 @@ describe('WorkspaceField', () => {
     mocks.workspaces = [
       {
         ...mocks.workspaces[0],
-        local_path: 'D:/very/deeply/nested/company/projects/2026/ag-swarmer/backend',
+        local_path: 'D:/very/deeply/nested/company/projects/2026/qunica/backend',
       },
     ]
     render(<WorkspaceField variant="compact" value="workspace-1" onChange={vi.fn()} />)
 
-    const line = screen.getByText(/Location: …\/ag-swarmer\/backend/)
+    const line = screen.getByText(/Location: …\/qunica\/backend/)
     expect(line).toBeInTheDocument()
     expect(line).toHaveAttribute(
       'title',
-      'D:/very/deeply/nested/company/projects/2026/ag-swarmer/backend',
+      'D:/very/deeply/nested/company/projects/2026/qunica/backend',
     )
   })
 
@@ -58,7 +58,7 @@ describe('WorkspaceField', () => {
 
     expect(screen.getByRole('button', { name: 'New workspace' })).toBeInTheDocument()
     expect(screen.queryByText('Workspace', { selector: 'label' })).not.toBeInTheDocument()
-    expect(screen.getByText(/Location: D:\/projects\/ag-swarmer/)).toBeInTheDocument()
+    expect(screen.getByText(/Location: D:\/projects\/qunica/)).toBeInTheDocument()
   })
 
   it('creates and selects a random workspace in one click', async () => {
@@ -113,6 +113,6 @@ describe('WorkspaceField', () => {
 
     expect(screen.getByLabelText('工作区')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建本地工作区' })).toBeInTheDocument()
-    expect(screen.getByText(/绑定到本地：D:\/projects\/ag-swarmer/)).toBeInTheDocument()
+    expect(screen.getByText(/绑定到本地：D:\/projects\/qunica/)).toBeInTheDocument()
   })
 })

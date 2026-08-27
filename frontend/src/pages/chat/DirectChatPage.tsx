@@ -26,7 +26,7 @@ export function DirectChatPage() {
   const supportsReasoningEffort = Boolean(
     provider.data?.models?.find((model) => model.id === activeModel)?.supports_reasoning_effort,
   )
-  useEffect(() => { if (!chat.data?.title) return; const old = document.title; document.title = `${chat.data.title} · AG Swarmer`; return () => { document.title = old } }, [chat.data?.title])
+  useEffect(() => { if (!chat.data?.title) return; const old = document.title; document.title = `${chat.data.title} · Qunica`; return () => { document.title = old } }, [chat.data?.title])
   const onUpdated = useCallback((payload: ConversationUpdatedPayload) => {
     if (!chatId || payload.conversation_id !== chatId) return
     qc.setQueryData<DirectChatRead>(directChatQueryKey(chatId), (current) => current ? { ...current, title: payload.title, title_source: payload.title_source, updated_at: payload.updated_at } : current)

@@ -179,7 +179,7 @@ describe('useSendMessageStream conversation activity', () => {
   })
 
   it('says nothing when the user turned notifications off', () => {
-    localStorage.setItem('ag-swarmer:notifications:reply-finished', 'false')
+    localStorage.setItem('qunica:notifications:reply-finished', 'false')
     const handlers = sendMessage()
 
     emit(handlers, 'done', {}, 1)

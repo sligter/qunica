@@ -19,7 +19,7 @@ import {
   type ConversationActivityRun,
 } from '@/stores/conversationActivityStore'
 
-const ENABLED_STORAGE_KEY = 'ag-swarmer:notifications:reply-finished'
+const ENABLED_STORAGE_KEY = 'qunica:notifications:reply-finished'
 
 export type ReplyNotificationOutcome = 'completed' | 'waiting' | 'failed'
 

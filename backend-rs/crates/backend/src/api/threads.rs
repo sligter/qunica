@@ -6,7 +6,7 @@
 
 use std::{convert::Infallible, path::Path as FsPath};
 
-use ag_swarmer_domain::events::StreamEvent;
+use qunica_domain::events::StreamEvent;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},

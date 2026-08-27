@@ -28,14 +28,14 @@ The image and video create endpoints may be relative to the shared base URL or c
 **Settings → Logs** shows the launcher and backend logs. On the desktop app the log directory is also reachable from the tray menu, at:
 
 ```
-%APPDATA%\ag-swarmer.desktop\logs
+%APPDATA%\qunica.desktop\logs
 ```
 
 ## Desktop data
 
 ```
-%APPDATA%\ag-swarmer.desktop\ag-swarmer.sqlite3
-%APPDATA%\ag-swarmer.desktop\desktop-secret.key
+%APPDATA%\qunica.desktop\qunica.sqlite3
+%APPDATA%\qunica.desktop\desktop-secret.key
 ```
 
 `desktop-secret.key` signs login tokens. Deleting it invalidates existing sessions; logging in again is enough to recover.

@@ -33,7 +33,7 @@ const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_STREAM_RUNS: Record<string, never> = {}
 const EMPTY_STREAM_RUN_IDS: Record<string, never> = {}
 const BOTTOM_PROXIMITY_PX = 120
-const MESSAGE_SCROLL_KEY_PREFIX = 'ag-swarmer:groups:message-scroll:'
+const MESSAGE_SCROLL_KEY_PREFIX = 'qunica:groups:message-scroll:'
 const ASSISTANT_SUGGESTION_KEYS = [
   'messages.assistantSuggestions.inspect',
   'messages.assistantSuggestions.createAgent',

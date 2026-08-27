@@ -1,4 +1,4 @@
-export const TERMINAL_METADATA_STORAGE_KEY = 'ag-swarmer:terminal-metadata:v1'
+export const TERMINAL_METADATA_STORAGE_KEY = 'qunica:terminal-metadata:v1'
 
 export interface TerminalTabMetadata {
   id: string

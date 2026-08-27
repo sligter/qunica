@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use super::{
     pump, sse_data, ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolAccum,
 };
-use ag_swarmer_domain::runtime::ChatContentPart;
+use qunica_domain::runtime::ChatContentPart;
 
 /// Streams chat completions from any endpoint that speaks the OpenAI
 /// `/chat/completions` streaming protocol.

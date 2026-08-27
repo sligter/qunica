@@ -1,4 +1,4 @@
-use ag_swarmer_backend::api::{router_with_state_for_tests, AppState};
+use qunica_backend::api::{router_with_state_for_tests, AppState};
 use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode},

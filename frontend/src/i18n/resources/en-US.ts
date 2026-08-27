@@ -104,7 +104,7 @@ export const enUS = {
       unknown: 'Unknown status ({{status}})',
     },
     pageNotFound: 'Page not found',
-    backToApp: 'Back to AG Swarmer',
+    backToApp: 'Back to Qunica',
   },
   auth: {
     brand: {
@@ -269,7 +269,7 @@ export const enUS = {
     attachments: { uploading: 'Uploading…', uploaded: 'Uploaded', failed: 'Upload failed', workspace: 'Workspace file', unknownType: 'Unknown type', retry: 'Retry upload', remove: 'Remove attachment', open: 'Open attachment', retryNamed: 'Retry upload {{name}}', removeNamed: 'Remove {{name}}', openNamed: 'Open {{name}}', previewNamed: 'Preview {{name}}' },
     messages: {
       workspaceIsolated: 'Own folder', workspaceOwnFolder: 'Own folder mounted',
-      loadOlder: 'Load older messages', loadingOlder: 'Loading older messages…', empty: 'Start the conversation.', emptyHint: 'Try sending @AgentName hello to start.', assistantEmpty: 'What should we work on?', assistantEmptyHint: 'I can inspect your setup and organize Agents or groups. When a change needs confirmation, you decide before it runs.', assistantSuggestions: { inspect: 'Check my current setup and tell me what is missing', createAgent: 'Help me create an Agent for code review', template: 'Turn an existing group into a reusable template' }, copied: 'Copied', copy: 'Copy', copyMessage: 'Copy message', share: 'Share message to group', delete: 'Delete message', deleteTitle: 'Delete this message?', deleteDescription: 'The message is removed from the conversation. This cannot be undone.', shareTitle: 'Share to group chat', shareDescription: 'Choose another group to receive this message.', loadingGroups: 'Loading groups…', noOtherGroups: 'No other groups available.', shareFailed: 'Share failed', shareFailedDetail: 'Share failed: {{message}}', deleteFailed: 'Delete failed', deleteFailedDetail: 'Delete failed: {{message}}', jumpLatest: 'Jump to latest', you: 'You', user: 'User', agent: 'Agent', system: 'System', sending: 'Sending…', interrupted: 'interrupted', continue: 'Continue', resumeFailed: 'Resume failed: {{message}}', unknownTool: 'Unknown tool', copyCode: 'Copy code block', code: 'code', warnings: { noReply: 'No one replied.', noVisibleReply: 'No visible reply', waitingForInput: 'Waiting for your input', streamWarning: 'Stream warning', streamFailed: 'Stream failed', streamCancelled: 'Stream cancelled' }, context: { usageUnknown: 'Usage unknown', provider: 'Reported by provider', previousProvider: 'Previous provider + estimate', estimated: 'Estimated (tokenizer)', hostEstimate: 'Estimated by ag-swarmer', sourceUnknown: 'Source unknown', sourceUnknownDetail: 'Source: {{value}}', title: 'Context {{usage}}', tokens: '{{count}} tokens', outputTotal: 'Output {{output}} · Total {{total}}', updated: 'Updated {{time}}' },
+      loadOlder: 'Load older messages', loadingOlder: 'Loading older messages…', empty: 'Start the conversation.', emptyHint: 'Try sending @AgentName hello to start.', assistantEmpty: 'What should we work on?', assistantEmptyHint: 'I can inspect your setup and organize Agents or groups. When a change needs confirmation, you decide before it runs.', assistantSuggestions: { inspect: 'Check my current setup and tell me what is missing', createAgent: 'Help me create an Agent for code review', template: 'Turn an existing group into a reusable template' }, copied: 'Copied', copy: 'Copy', copyMessage: 'Copy message', share: 'Share message to group', delete: 'Delete message', deleteTitle: 'Delete this message?', deleteDescription: 'The message is removed from the conversation. This cannot be undone.', shareTitle: 'Share to group chat', shareDescription: 'Choose another group to receive this message.', loadingGroups: 'Loading groups…', noOtherGroups: 'No other groups available.', shareFailed: 'Share failed', shareFailedDetail: 'Share failed: {{message}}', deleteFailed: 'Delete failed', deleteFailedDetail: 'Delete failed: {{message}}', jumpLatest: 'Jump to latest', you: 'You', user: 'User', agent: 'Agent', system: 'System', sending: 'Sending…', interrupted: 'interrupted', continue: 'Continue', resumeFailed: 'Resume failed: {{message}}', unknownTool: 'Unknown tool', copyCode: 'Copy code block', code: 'code', warnings: { noReply: 'No one replied.', noVisibleReply: 'No visible reply', waitingForInput: 'Waiting for your input', streamWarning: 'Stream warning', streamFailed: 'Stream failed', streamCancelled: 'Stream cancelled' }, context: { usageUnknown: 'Usage unknown', provider: 'Reported by provider', previousProvider: 'Previous provider + estimate', estimated: 'Estimated (tokenizer)', hostEstimate: 'Estimated by Qunica', sourceUnknown: 'Source unknown', sourceUnknownDetail: 'Source: {{value}}', title: 'Context {{usage}}', tokens: '{{count}} tokens', outputTotal: 'Output {{output}} · Total {{total}}', updated: 'Updated {{time}}' },
     },
     approval: {
       title: 'Approval needed to {{capability}}',
@@ -379,7 +379,7 @@ export const enUS = {
     },
     workspacePicker: {
       new: 'New workspace', newLocal: 'New local workspace', quickCreate: 'Create workspace instantly', quickCreateHint: 'Create a random folder under the configured workspace root and bind it now.', rootRequired: 'Configure the group workspace root in system settings first.', select: 'Select workspace', additional: 'Additional workspaces', additionalDescription: 'Mounted only when the conversation explicitly allows the agent\'s own folders.', createFirst: 'Create a local workspace first. Cloud sandbox workspaces can use the same field later.', location: 'Location: {{location}}', bound: 'Bound to {{backend}}: {{location}}', notConfigured: 'not configured',
-      name: 'Workspace name', namePlaceholder: 'Current project', localPath: 'Backend local path', pathPlaceholder: 'D:/absolute/path/to/project or /absolute/path/to/project', pickFolder: 'Pick folder', creating: 'Creating…', create: 'Create workspace', absolutePath: 'Enter an absolute path that exists on the backend host, for example D:/file/learn/AIGC/ag-swarmer or /home/me/project.',
+      name: 'Workspace name', namePlaceholder: 'Current project', localPath: 'Backend local path', pathPlaceholder: 'D:/absolute/path/to/project or /absolute/path/to/project', pickFolder: 'Pick folder', creating: 'Creating…', create: 'Create workspace', absolutePath: 'Enter an absolute path that exists on the backend host, for example D:/file/learn/AIGC/qunica or /home/me/project.',
     },
     tools: {
       notice: 'Selected built-ins are bound as executable provider-native tools with bounded safeguards. Some tools may return setup-required or input-required results when a provider or resume contract is not configured; they are still truthful runtime tool calls, not saved-only claims.',
@@ -421,7 +421,7 @@ export const enUS = {
       restore: 'Restore task', delete: 'Delete task', deleteTitle: 'Delete “{{title}}”?', deleteDescription: 'The task and its messages are removed for good. Its git branch is kept; only the task worktree is removed.',
       clearMessages: 'Clear current task', clearMessagesTitle: 'Clear messages in “{{title}}”?', clearMessagesDescription: 'Only this task’s messages are cleared. The task and every other task in the group are kept.',
     },
-    pageTitle: 'AG Swarmer',
+    pageTitle: 'Qunica',
     loadError: 'Failed to load groups.',
     empty: 'No groups yet. Click New group to start one.',
     homeSubtitle: 'Start a conversation with your agents, or pick up where you left off.',
@@ -431,7 +431,7 @@ export const enUS = {
     noDescription: 'No description.',
     agent_one: '{{count}} agent',
     agent_other: '{{count}} agents',
-    documentTitle: '{{name}} · AG Swarmer',
+    documentTitle: '{{name}} · Qunica',
     noGroupSelected: 'No group selected.',
     header: { agent_one: '{{formattedCount}} agent', agent_other: '{{formattedCount}} agents', announcement: 'Announcement: {{text}}' },
     emptyAgents: 'No agents in this group yet — add one in group settings.',
@@ -439,7 +439,7 @@ export const enUS = {
     delegationDescription: 'An agent\'s @mention is text only. Delegation goes through AgentAsTool, and its helpers are the members that did not enter the turn; handoff is available only in a single bounded pass.',
     create: { title: 'Create a new group', description: 'A group is the shared context where users and agents collaborate. Choose an existing workspace, create a local workspace, or let the app auto-create one under your configured group workspace root.', name: 'Name', required: 'Required', nameTooLong: 'Must be 100 characters or fewer', template: 'Group template', noTemplate: 'Start from scratch', templateDescription: 'A template fills collaboration settings and the initial agent roster; workspace files and history are never copied.', workspace: 'Group workspace', workspaceDescription: 'Choose an existing workspace or create a local one. Leave it empty to auto-create from the system root.', workspaceSelected: 'The selected workspace will be used for this group.', workspaceLoading: 'Loading system settings…', workspaceAutoCreate: 'A new dedicated workspace will be created under', workspaceMissing: 'Group workspace root is not configured.', workspaceSettingsLink: 'Set it in system settings', workspaceMissingSuffix: 'before creating a group.', optionalDescription: 'Description (optional)', optionalAnnouncement: 'Announcement (optional)', announcementPlaceholder: "A short statement included in every agent's system prompt.", responseMode: 'Response mode', communicationMode: 'Collaboration topology', initialAgents: 'Initial agents (optional)', noAgents: 'No agents yet. Create one in the Agents tab first.', submit: 'Create group', creating: 'Creating…', cancel: 'Cancel' },
     manage: {
-      title: 'Manage group', documentTitle: '{{name}} · Manage · AG Swarmer', back: 'Back to group chat', members: 'Members', settings: 'Settings', notes: 'Notes', resize: 'Resize group settings', loading: 'Loading…', loadError: 'Failed to load group.', loadErrorDetail: 'Failed to load group: {{message}}', notFound: 'Group not found.',
+      title: 'Manage group', documentTitle: '{{name}} · Manage · Qunica', back: 'Back to group chat', members: 'Members', settings: 'Settings', notes: 'Notes', resize: 'Resize group settings', loading: 'Loading…', loadError: 'Failed to load group.', loadErrorDetail: 'Failed to load group: {{message}}', notFound: 'Group not found.',
       memberCount_one: '{{formattedCount}} member', memberCount_other: '{{formattedCount}} members',
       agentSearch: { placeholder: 'Search agents', noMatches: 'No matching agents.' },
       avatar: { edit: 'Set group avatar', title: 'Group avatar', description: 'Use a live ring of member avatars, or upload a square image.', composite: 'Member ring', compositeDescription: 'Default · updates with up to six members', upload: 'Upload image', uploadDescription: 'PNG, JPEG, or WebP · up to 8 MB', type: 'Choose a PNG, JPEG, or WebP image.', size: 'The image must be 8 MB or smaller.', processingFailed: 'Could not process this image.' },
@@ -641,7 +641,7 @@ export const enUS = {
     },
   },
   usage: {
-    documentTitle: 'Token usage · AG Swarmer',
+    documentTitle: 'Token usage · Qunica',
     title: 'Token usage',
     subtitle: 'Track model consumption across every group, provider, model, and Agent.',
     refresh: 'Refresh',
@@ -744,7 +744,7 @@ export const enUS = {
       replyFinished: 'Notify when a reply finishes',
       replyFinishedDescription:
         'Send a system notification when a group or direct chat reply finishes, needs your input, or fails. Stays quiet while you are watching that conversation. Saved on this device.',
-      permissionDenied: 'This device refused notification permission. Allow notifications for AG Swarmer, then try again.',
+      permissionDenied: 'This device refused notification permission. Allow notifications for Qunica, then try again.',
       unsupported: 'This runtime cannot show system notifications.',
       test: 'Send a test notification',
       testSent: 'Test notification sent. If nothing appeared, check the notification settings for this app in your OS.',
@@ -816,7 +816,7 @@ export const enUS = {
     },
     media: {
       title: 'Media generation',
-      documentTitle: 'Media generation · AG Swarmer',
+      documentTitle: 'Media generation · Qunica',
       subtitle: 'Connect GenerateImage and GenerateVideo to an OpenAI-compatible API.',
       configured: 'Ready',
       notConfigured: 'Setup required',
@@ -853,7 +853,7 @@ export const enUS = {
     },
     logs: {
       title: 'Runtime logs',
-      documentTitle: 'Runtime logs · AG Swarmer',
+      documentTitle: 'Runtime logs · Qunica',
       subtitle: 'View and configure application diagnostics written to the local log folder.',
       desktopRequired: 'Runtime logs are available in the desktop app. The browser build does not have access to local application files.',
       level: {

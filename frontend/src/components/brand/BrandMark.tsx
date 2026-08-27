@@ -29,7 +29,7 @@ const NODE = '#d1502a'
 const STAR = '#fdf8ef'
 
 /**
- * The AG Swarmer mark: a swarm of agents leaning in on one answer. Each node is
+ * The Qunica mark: a swarm of agents leaning in on one answer. Each node is
  * a speech bubble whose tail points at the centre star, so the shape reads as
  * "many voices, one room" at 20px as well as at 200px.
  *

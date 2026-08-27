@@ -54,7 +54,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { logTerminalCleanupError } from '@/terminal/logTerminalCleanupError'
 import { useTerminalRuntime } from '@/terminal/TerminalRuntimeProvider'
 
-const COLLAPSED_KEY = 'ag-swarmer:layout:sidebar-collapsed'
+const COLLAPSED_KEY = 'qunica:layout:sidebar-collapsed'
 const LIST_BATCH_SIZE = 20
 
 function useLazyList(total: number, active: boolean, resetKey: string) {
@@ -363,7 +363,7 @@ export function AppSidebar() {
               A
             </div>
             <span className="min-w-0 flex-1 truncate font-serif text-sm font-semibold tracking-tight">
-              AG Swarmer
+              Qunica
             </span>
           </>
         )}

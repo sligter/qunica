@@ -7,14 +7,14 @@
 //! `acp_lifecycle_fake_child_entrypoint` test speaks the ACP stdio JSON-RPC
 //! protocol instead of running assertions. No Python/Node and no live network.
 
-use ag_swarmer_backend::acp::{
+use qunica_backend::acp::{
     normalize_acp_runtime, probe_acp_runtime_capabilities, run_acp_agent_stream,
     shutdown_reusable_acp_session, shutdown_reusable_acp_sessions, AcpCapabilityError,
     AcpConfigValue, AcpEventKind, AcpImage, AcpRunAudit, AcpRunContext, AcpRunRequest,
     AcpRuntimeConfig, AcpRuntimeProfile, PermissionPolicy, BLOCKED_ENV_KEYS,
     DEFAULT_TIMEOUT_SECONDS, MAX_TAIL_CHARS,
 };
-use ag_swarmer_backend::db::Db;
+use qunica_backend::db::Db;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
@@ -760,11 +760,11 @@ async fn assert_child_env_is_isolated_for_profile(
     let child_env: Value = serde_json::from_str(&env_text.expect("env child echoes environment"))
         .expect("env summary is JSON");
 
-    assert_eq!(child_env["AG_SWARMER_ACP_AGENT"], json!("1"));
+    assert_eq!(child_env["QUNICA_ACP_AGENT"], json!("1"));
     assert_eq!(child_env["SAFE_KEY"], json!("safe"));
     let home = child_env["HOME"].as_str().expect("HOME set");
     assert!(
-        home.contains("ag-swarmer-acp-"),
+        home.contains("qunica-acp-"),
         "{profile}: expected isolated temp home, got {home:?}"
     );
 
@@ -1701,8 +1701,8 @@ async fn acp_capability_probe_uses_isolated_cwd_home_and_minimal_environment() {
     let cwd = summary["cwd"].as_str().expect("cwd present");
     let env = summary["env"].as_object().expect("env present");
     let home = env["HOME"].as_str().expect("isolated HOME present");
-    assert!(cwd.contains("ag-swarmer-acp-probe-"));
-    assert!(home.contains("ag-swarmer-acp-probe-"));
+    assert!(cwd.contains("qunica-acp-probe-"));
+    assert!(home.contains("qunica-acp-probe-"));
     assert_ne!(cwd, home);
     assert_eq!(
         std::path::Path::new(cwd).parent(),
@@ -1730,7 +1730,7 @@ async fn acp_capability_probe_uses_isolated_cwd_home_and_minimal_environment() {
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
         "CLAUDE_HOME",
-        "AG_SWARMER_ACP_AGENT",
+        "QUNICA_ACP_AGENT",
         "ACP_FAKE_CHILD_MODE",
         "ACP_FAKE_LOG",
     ];
@@ -2079,7 +2079,7 @@ fn run_fake_child(mode: &str) {
                 "env" => {
                     let mut env = serde_json::Map::new();
                     for key in [
-                        "AG_SWARMER_ACP_AGENT",
+                        "QUNICA_ACP_AGENT",
                         "HOME",
                         "USERPROFILE",
                         "APPDATA",

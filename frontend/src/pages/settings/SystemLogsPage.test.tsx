@@ -49,12 +49,12 @@ describe('SystemLogsPage', () => {
   it('shows, pauses, searches, and clears recent logs', async () => {
     desktop.getSystemLogs.mockResolvedValue({
       filter: 'info',
-      log_dir: 'C:/AG Swarmer/logs',
+      log_dir: 'C:/Qunica/logs',
       entries: [
         {
           timestamp: '2026-07-29T12:00:00Z',
           level: 'INFO',
-          target: 'ag_swarmer_backend::server',
+          target: 'qunica_backend::server',
           message: 'backend ready',
           fields: { message: 'backend ready', port: 8765 },
         },

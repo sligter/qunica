@@ -9,7 +9,7 @@ A workspace is the directory an agent's file and shell tools operate in. It is t
 
 ## Creating one
 
-The easiest way is `auto_create`: set `backend_type` to `local`, set `auto_create` to true, and leave `local_path` empty. AG Swarmer creates the folder under the workspace root from Settings, so nobody has to find or type a path. It requires that root to be configured, and refuses if `local_path` is also given.
+The easiest way is `auto_create`: set `backend_type` to `local`, set `auto_create` to true, and leave `local_path` empty. Qunica creates the folder under the workspace root from Settings, so nobody has to find or type a path. It requires that root to be configured, and refuses if `local_path` is also given.
 
 Otherwise provide `local_path` pointing at an existing folder.
 

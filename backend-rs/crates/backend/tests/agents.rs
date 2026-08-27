@@ -12,7 +12,7 @@ const SKILL_B: &str = "22222222-2222-2222-2222-222222222222";
 const PROVIDER_A: &str = "33333333-3333-3333-3333-333333333333";
 
 async fn app() -> Router {
-    ag_swarmer_backend::api::router_for_tests().await
+    qunica_backend::api::router_for_tests().await
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -305,7 +305,7 @@ async fn acp_runtime_capabilities_returns_normalized_warnings_for_failures() {
             "POST",
             "/api/v2/agents/acp-runtime-capabilities",
             &token,
-            json!({ "command": "ag-swarmer-definitely-missing-acp-command" }),
+            json!({ "command": "qunica-definitely-missing-acp-command" }),
         ),
     )
     .await;
