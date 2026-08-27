@@ -28,6 +28,7 @@ import {
   useRenameDirectChat,
 } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { BrandMark } from '@/components/brand/BrandMark'
 import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { OverlayNavLink, useOverlayLinkState } from '@/components/layout/overlayRouting'
@@ -359,9 +360,7 @@ export function AppSidebar() {
       >
         {!collapsed && (
           <>
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary font-serif text-sm font-semibold text-primary-foreground">
-              A
-            </div>
+            <BrandMark className="h-8 w-8" />
             <span className="min-w-0 flex-1 truncate font-serif text-sm font-semibold tracking-tight">
               Qunica
             </span>

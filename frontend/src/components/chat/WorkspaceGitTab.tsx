@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { useProviders } from '@/hooks/useProviders'
 import {
   useCommitGroupWorkspaceGit,
   useCreateGroupWorkspaceGitBranchFromCommit,
@@ -84,10 +85,12 @@ type RepositoryState = NonNullable<GroupWorkspaceGitStatus['state']>
 type DiffLineKind = 'addition' | 'deletion' | 'hunk' | 'meta' | 'context'
 
 const COMMIT_PROMPT_STORAGE_KEY = 'qunica:git:commit-message-prompt'
+const COMMIT_PROVIDER_STORAGE_KEY = 'qunica:git:commit-message-provider'
+const COMMIT_MODEL_STORAGE_KEY = 'qunica:git:commit-message-model'
 
-function readCommitPrompt(): string {
+function readStoredValue(key: string): string {
   try {
-    return localStorage.getItem(COMMIT_PROMPT_STORAGE_KEY) ?? ''
+    return localStorage.getItem(key) ?? ''
   } catch {
     return ''
   }
@@ -530,7 +533,9 @@ export function WorkspaceGitTab({
   const [selectedCommit, setSelectedCommit] = useState<string | undefined>()
   const [reviewOpen, setReviewOpen] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
-  const [commitPrompt, setCommitPrompt] = useState(readCommitPrompt)
+  const [commitPrompt, setCommitPrompt] = useState(() => readStoredValue(COMMIT_PROMPT_STORAGE_KEY))
+  const [commitProviderId, setCommitProviderId] = useState(() => readStoredValue(COMMIT_PROVIDER_STORAGE_KEY))
+  const [commitModel, setCommitModel] = useState(() => readStoredValue(COMMIT_MODEL_STORAGE_KEY))
   const [gitError, setGitError] = useState<string | null>(null)
   const [branchSheetOpen, setBranchSheetOpen] = useState(false)
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false)
@@ -547,6 +552,7 @@ export function WorkspaceGitTab({
   const [query, setQuery] = useState('')
   const actionsRef = useRef<HTMLDivElement>(null)
 
+  const providers = useProviders()
   const status = useGroupWorkspaceGitStatus(groupId, threadId)
   const branchDiff = useGroupWorkspaceGitDiff(
     status.data?.upstream && (status.data.ahead ?? 0) > 0 ? groupId : undefined,
@@ -620,6 +626,11 @@ export function WorkspaceGitTab({
     || item.subject.toLowerCase().includes(q)
     || item.author_name.toLowerCase().includes(q)
     || item.short_sha.toLowerCase().includes(q))
+  const commitProvider = providers.data?.find((provider) => provider.id === commitProviderId)
+  const selectedCommitProviderId = commitProvider?.id ?? ''
+  const selectedCommitModel = commitProvider?.models?.some((model) => model.id === commitModel)
+    ? commitModel
+    : ''
 
   useEffect(() => {
     setHistorySkip(0)
@@ -636,6 +647,15 @@ export function WorkspaceGitTab({
       // A custom prompt is a convenience; storage denial must not block Git.
     }
   }, [commitPrompt])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COMMIT_PROVIDER_STORAGE_KEY, commitProviderId)
+      localStorage.setItem(COMMIT_MODEL_STORAGE_KEY, commitModel)
+    } catch {
+      // Generator selection is a convenience; storage denial must not block Git.
+    }
+  }, [commitModel, commitProviderId])
 
   useEffect(() => {
     if (!log.data) return
@@ -891,6 +911,8 @@ export function WorkspaceGitTab({
             disabled={!canUseGit || staged.length === 0}
             onClick={() => run(() => generateMessage.mutateAsync({
               ...(commitPrompt.trim() ? { prompt: commitPrompt.trim() } : {}),
+              ...(selectedCommitProviderId ? { llm_provider_id: selectedCommitProviderId } : {}),
+              ...(selectedCommitModel ? { model: selectedCommitModel } : {}),
             }).then((result) => setCommitMessage(result.message)))}
             aria-label={t('chat:workspace.gitPanel.generateCommitMessage')}
             title={t('chat:workspace.gitPanel.generateCommitMessage')}
@@ -901,8 +923,50 @@ export function WorkspaceGitTab({
 
         <details className="rounded-md border border-border/70 bg-muted/20 px-2 py-1">
           <summary className="cursor-pointer select-none text-[10px] text-muted-foreground">
-            {t('chat:workspace.gitPanel.commitPrompt')}
+            {t('chat:workspace.gitPanel.commitSettings')}
           </summary>
+          <div className="mt-1 grid grid-cols-2 gap-1.5">
+            <label className="space-y-1 text-[10px] text-muted-foreground">
+              <span>{t('chat:workspace.gitPanel.commitProvider')}</span>
+              <select
+                value={selectedCommitProviderId}
+                onChange={(event) => {
+                  const providerId = event.target.value
+                  const provider = providers.data?.find((item) => item.id === providerId)
+                  setCommitProviderId(providerId)
+                  setCommitModel((current) => provider?.models?.some((model) => model.id === current)
+                    ? current
+                    : '')
+                }}
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                aria-label={t('chat:workspace.gitPanel.commitProvider')}
+              >
+                <option value="">{t('chat:workspace.gitPanel.commitProviderAuto')}</option>
+                {(providers.data ?? []).map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-[10px] text-muted-foreground">
+              <span>{t('chat:workspace.gitPanel.commitModel')}</span>
+              <select
+                value={selectedCommitModel}
+                disabled={!commitProvider}
+                onChange={(event) => setCommitModel(event.target.value)}
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground disabled:opacity-60"
+                aria-label={t('chat:workspace.gitPanel.commitModel')}
+              >
+                <option value="">
+                  {commitProvider?.default_model
+                    ? t('chat:workspace.gitPanel.commitProviderDefaultNamed', { model: commitProvider.default_model })
+                    : t('chat:workspace.gitPanel.commitProviderDefault')}
+                </option>
+                {(commitProvider?.models ?? []).map((model) => (
+                  <option key={model.id} value={model.id}>{model.id}</option>
+                ))}
+              </select>
+            </label>
+          </div>
           <Textarea
             value={commitPrompt}
             onChange={(event) => setCommitPrompt(event.target.value)}

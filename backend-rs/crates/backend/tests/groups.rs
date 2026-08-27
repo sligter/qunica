@@ -4173,6 +4173,56 @@ async fn workspace_git_commit_message_generates_from_staged_diff() {
 }
 
 #[tokio::test]
+async fn workspace_git_commit_message_uses_selected_provider_and_model() {
+    if !git_available() {
+        return;
+    }
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-git-selected-ai@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
+    let provider_body = format!(
+        "data: {}\ndata: [DONE]\n",
+        json!({"choices": [{"delta": {"content": "Selected provider message"}}]})
+    );
+    let provider = create_llm_provider(&app, &token, &fake_provider(provider_body).await).await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    init_git_repo(root.path());
+
+    std::fs::write(root.path().join("tracked.txt"), b"changed").unwrap();
+    run_git(root.path(), &["add", "tracked.txt"]);
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "commit-message"),
+            &token,
+            json!({"llm_provider_id": provider, "model": "missing-model"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not offered"));
+
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &workspace_git_url(group_id, "commit-message"),
+            &token,
+            json!({"llm_provider_id": provider, "model": "test-model"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body:?}");
+    assert_eq!(body["message"], "Selected provider message");
+}
+
+#[tokio::test]
 async fn workspace_git_commit_message_requires_staged_changes() {
     if !git_available() {
         return;

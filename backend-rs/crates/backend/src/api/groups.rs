@@ -477,6 +477,8 @@ pub struct GroupWorkspaceGitCommitRequest {
 #[serde(default)]
 pub struct GroupWorkspaceGitCommitMessageRequest {
     prompt: Option<String>,
+    llm_provider_id: Option<String>,
+    model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2414,12 +2416,38 @@ pub async fn generate_group_workspace_git_commit_message(
         ));
     }
 
-    let provider_row = load_group_commit_message_provider(state.db.pool(), &group_id, &owner_id)
-        .await?
-        .ok_or_else(|| {
-            ApiError::invalid_input("no active LLM provider is configured for this group")
-        })?;
-    let model = model_from_config(&provider_row.model_config_json, &provider_row.default_model);
+    let body = body.as_deref();
+    let provider_id = body
+        .and_then(|body| body.llm_provider_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| validate_uuid(value, "llm_provider_id"))
+        .transpose()?;
+    let requested_model = body
+        .and_then(|body| body.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if requested_model.is_some() && provider_id.is_none() {
+        return Err(ApiError::invalid_input(
+            "llm_provider_id is required when choosing a commit message model",
+        ));
+    }
+
+    let provider_row = load_group_commit_message_provider(
+        state.db.pool(),
+        &group_id,
+        &owner_id,
+        provider_id.as_deref(),
+    )
+    .await?
+    .ok_or_else(|| {
+        ApiError::invalid_input(if provider_id.is_some() {
+            "the selected LLM provider is not active"
+        } else {
+            "no active LLM provider is configured for this group"
+        })
+    })?;
+    let model = commit_message_model(&provider_row, requested_model)?;
     let reasoning_passback = crate::llm::model_reasoning_passback(
         provider_row.models_json.as_deref(),
         &model,
@@ -2438,7 +2466,6 @@ pub async fn generate_group_workspace_git_commit_message(
         ApiError::invalid_input(format!("commit message generation failed: {err}"))
     })?;
     let prompt = body
-        .as_deref()
         .and_then(|body| body.prompt.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty());
@@ -3826,7 +3853,22 @@ async fn load_group_commit_message_provider(
     pool: &SqlitePool,
     group_id: &str,
     owner_id: &str,
+    provider_id: Option<&str>,
 ) -> Result<Option<CommitMessageProviderRow>, ApiError> {
+    if let Some(provider_id) = provider_id {
+        return sqlx::query_as(
+            "SELECT kind, base_url, api_key, default_model, reasoning_passback, \
+                    models_json, NULL AS model_config_json \
+             FROM llm_providers \
+             WHERE id = ? AND owner_id = ? AND status = 'active'",
+        )
+        .bind(provider_id)
+        .bind(owner_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"));
+    }
+
     sqlx::query_as(
         "SELECT p.kind, p.base_url, p.api_key, p.default_model, p.reasoning_passback, \
                 p.models_json, a.model_config_json \
@@ -3851,6 +3893,37 @@ async fn load_group_commit_message_provider(
     .fetch_optional(pool)
     .await
     .map_err(|_| ApiError::internal("database error"))
+}
+
+fn commit_message_model(
+    provider: &CommitMessageProviderRow,
+    requested: Option<&str>,
+) -> Result<String, ApiError> {
+    let Some(requested) = requested else {
+        return Ok(model_from_config(
+            &provider.model_config_json,
+            &provider.default_model,
+        ));
+    };
+    let offered = requested == provider.default_model
+        || provider
+            .models_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|value| value.as_array().cloned())
+            .is_some_and(|models| {
+                models.iter().any(|model| {
+                    model.as_str() == Some(requested)
+                        || model.get("id").and_then(Value::as_str) == Some(requested)
+                })
+            });
+    if offered {
+        Ok(requested.to_string())
+    } else {
+        Err(ApiError::invalid_input(
+            "model is not offered by the selected provider",
+        ))
+    }
 }
 
 fn commit_message_prompt(diff: &str, custom_prompt: Option<&str>) -> Vec<ChatMessage> {

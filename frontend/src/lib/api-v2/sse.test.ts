@@ -99,4 +99,37 @@ describe('API v2 SSE retry policy', () => {
     expect(handlers.onEvent).toHaveBeenCalledOnce()
     expect(init.onerror?.(failure)).toBe(500)
   })
+
+  it('retries when applying a valid event throws', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    const handlers = open()
+    handlers.onEvent.mockImplementation(() => {
+      throw new Error('Minified React error #185')
+    })
+
+    const applyEvent = () => {
+      try {
+        init.onmessage?.({
+          id: '00000000-0000-0000-0000-000000000000:5',
+          event: '',
+          retry: undefined,
+          data: JSON.stringify({
+            stream_id: '00000000-0000-0000-0000-000000000000',
+            seq: 5,
+            event_id: '00000000-0000-0000-0000-000000000000:5',
+            kind: 'token',
+            payload: { delta: 'ok' },
+          }),
+        })
+      } catch (error) {
+        return error
+      }
+    }
+
+    expect(init.onerror?.(applyEvent())).toBe(500)
+    expect(init.onerror?.(applyEvent())).toBe(1_000)
+    expect(handlers.onRetry).toHaveBeenNthCalledWith(1, 1, 500)
+    expect(handlers.onRetry).toHaveBeenNthCalledWith(2, 2, 1_000)
+    expect(handlers.onError).not.toHaveBeenCalled()
+  })
 })

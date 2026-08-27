@@ -77,8 +77,12 @@ export function openApiV2SseStream(opts: {
         throw new FatalSseError(`SSE event was not valid JSON: ${errorMessage(err)}`)
       }
       terminalEventSeen = parsed.kind === 'done' || parsed.kind === 'error'
+      try {
+        opts.handlers.onEvent(parsed)
+      } catch (err) {
+        throw new RetryableSseError(`SSE event handler failed: ${errorMessage(err)}`)
+      }
       retryAttempts = 0
-      opts.handlers.onEvent(parsed)
     },
     onerror: (err) => {
       if (ctrl.signal.aborted || isAbortError(err)) {

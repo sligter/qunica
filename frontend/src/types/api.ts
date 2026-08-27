@@ -1024,6 +1024,8 @@ export interface GroupWorkspaceGitCommitMessageResponse {
 
 export interface GroupWorkspaceGitCommitMessageRequest {
   prompt?: string
+  llm_provider_id?: string
+  model?: string
 }
 
 export type GroupWorkspaceGitDiffMode = 'worktree' | 'staged' | 'branch' | 'commit'
