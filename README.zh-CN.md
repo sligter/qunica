@@ -1,23 +1,31 @@
 <p align="center">
-  <img src="assets/qunica-logo.png" alt="Qunica Logo" width="160">
+  <img src="assets/qunica-logo.png" alt="Qunica 标志" width="160">
 </p>
 
 <h1 align="center">Qunica</h1>
 
 <p align="center">
-  <strong>以群组为核心的工作台：人和多个 Agent 在同一间房间里一起做事。</strong>
+  <strong>以群组为核心的工作台：人和 AI Agent 在同一间房间里一起做事。</strong>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a>
-  ·
-  <a href="#这到底是什么">概览</a>
+  <img src="https://img.shields.io/badge/version-0.1.1_alpha-informational?style=flat" alt="版本">
+  <img src="https://img.shields.io/badge/desktop-Windows-0078D4?style=flat" alt="平台">
+  <img src="https://img.shields.io/badge/stack-Tauri%20%2B%20Rust%20%2B%20React-informational?style=flat" alt="技术栈">
+</p>
+
+<p align="center">
+  <a href="#这是什么">概览</a>
   ·
   <a href="#开始使用">开始使用</a>
   ·
-  <a href="#技术架构">架构</a>
+  <a href="#建好这个房间">功能</a>
   ·
-  <a href="#当前状态">状态</a>
+  <a href="#外部-runtime">Runtime</a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> | <b>简体中文</b>
 </p>
 
 <p align="center">
@@ -26,75 +34,84 @@
 
 ---
 
-## 这到底是什么？
+## 为什么叫 Qunica？
 
-Qunica 是一个以 **群组（Group）** 为主要交互容器的多 Agent 协作工作台。
+**群**（qún，the group）+ **quorum**——够人数到场，事才议得起来。Qunica 里的项目群正是如此：人和 Agent 在同一间房里到齐，工作才算开始。读作 /ˈkwiːnɪkə/（“KWI-ni-ka”），中文可叫「群卡」。
 
-多数 AI 产品是「一个聊天窗口 + 一个 Agent」。真实工作更像团队：产品、研究、研发、审查、文档——不同角色，同一项目上下文。Qunica 把项目当成一个 **群**：Agent 是你可以邀请、配置、观察的成员。人和 Agent 共享同一份消息历史、文件、工作区与执行轨迹。
-
-Agent 是群里的正式成员：有自己的角色、模型、工具、Skills、MCP 服务，也可以挂外部 CLI runtime（Codex CLI、Claude Code），在绑定的 workspace 里直接执行任务。
+Logo 讲的是同一个故事：五个对话气泡向同一个火花收敛——那就是 quorum 本身。
 
 ---
 
-## 你能用它做什么
+## 这是什么？
 
-- **拉起一个项目群**，按角色邀请多个专业 Agent，像拉同事进群一样。
-- **保留长期项目上下文**：消息、文件、工作区状态、执行记录与 Agent 回复都在同一空间。
-- **给每个 Agent 分派职责**：不同模型、工具权限、Skills 与工作区绑定。
-- **实时看执行过程**：流式 token、最终消息、错误与 turn trace 直接出现在群里。
-- **让外部 CLI Agent 动真实文件**（在用户确认过的 workspace 内），并保留命令、工作目录、退出码与 stdout/stderr tail 审计。
-- **在应用内查看工作区 Git**：分支、差异、历史、暂存、提交与同步操作都留在应用里。
-- **接入 MCP 工具**（stdio / Streamable HTTP / SSE），让外部能力像内置工具一样可调。
-- **使用内置助手** 解答配置与用法；代为改配置时先暂存，你批准后才生效。
-- **在本机轻量运行** Windows 桌面版：托盘常驻、原生目录选择、免安装可执行文件。
+多数 AI 产品只给你「一个聊天窗口 + 一个 Agent」。可真实工作是个团队：产品、研究、研发、审查、文档——不同角色，同一个项目上下文。Agent 越多，你花在几个互不认识的标签页之间搬运上下文的时间就越多。
+
+Qunica 把项目当成一个 **群（Group）**。Agent 是你可以邀请、配置、观察的成员；人和 Agent 共享同一份消息历史、文件、工作区与执行轨迹。每个 Agent 有自己的模型、工具、Skills 与工作区绑定，也可以通过 Agent Client Protocol 驱动外部 CLI Agent（Codex CLI、Claude Code、Pi、OpenCode、DeepSeek Harness），在你选定的 workspace 里干真实活。
+
+我们赌的是这一条：多 Agent 协作想变好，得让**房间本身成为产品**。一个群、一份对话日志、一条工作区边界。每个 Agent 各开一个聊天孤岛的路子，走不通。
 
 ---
 
-## 为什么是这种形态
+## 建好这个房间。
 
-一个群、一份对话日志、一条工作区边界，项目上下文都收在这三样里。
+*建群、拉人，项目的上下文从此都留在这一个房间里。*
 
-人、LLM Agent、外部 CLI Agent、MCP 工具与 Skills 汇合在同一个项目房间，不用在七个互不认识的标签页之间来回切。边界来自成员关系、工作区绑定与工具白名单，权限跟着成员走，全局开关那一套用不上。
+- **[群组](backend-rs/crates/backend/src/docs/guide/groups.md) →** 群是协作的容器。像拉同事进群一样邀请专业 Agent；所有成员共享一份历史和一个工作区。
+- **[群模板](backend-rs/crates/backend/src/docs/guide/groups.md) →** 把成员名单和设置存成可复用模板，下一个项目直接套用；名称、头像与工作区仍然每个群单独选。
+- **[Agent](backend-rs/crates/backend/src/docs/guide/agents.md) →** 每个成员有自己的名称、提示词、模型、工具、Skills 与工作区；同一个 Agent 可以加入多个群、开多段对话。
+- **[私聊](backend-rs/crates/backend/src/docs/guide/direct-chats.md) →** 同样跑在统一调度器上的一对一会话，适合不需要协调的活。
+- **任务线程 →** 一段对话里可以钉住多条工作线，各自归档、恢复、删除或单独清空。
+- **[共享笔记](backend-rs/crates/backend/src/docs/guide/groups.md#shared-notes) →** 群的 Markdown 记事本，每个成员都能读能改，就摆在聊天旁边，不塞进聊天里。
 
-这个项目的理念是 **房间** 本身就是产品：多 Agent 协作的上下文、执行与记录都在同一处，Agent 不必各开一个聊天孤岛。
+## 定好对话的规则。
 
----
+*谁先说、能说几句、烧多少 `token`，你来定；轮到谁接话，调度器自己走。*
 
-## 三个小故事
+- **[通信拓扑](backend-rs/crates/backend/src/docs/guide/groups.md#communication-modes) →** `mesh`、`star`、`hierarchical`、`ring` 决定合法的发言路径；`speaking_order` 让它确定化。
+- **[调度模式](GROUP_SCHEDULER.md) →** `bounded` 在预算内运行；`automatic` 让主持 Agent 反复派发或结束本轮。群聊与私聊共用同一个持久化调度器。
+- **主持 Agent →** 一个带着自己供应商与模型的成员，替你挑选下一个合法发言人，不用死守固定顺序。
+- **@ 提及 →** 提及模式下由 @ 指定应答者；群发模式下 @ 只决定开场发言人。Agent 写出来的 @ 只是展示文字，永远不会触发派发。
+- **[预算与失败熔断](GROUP_SCHEDULER.md#budget-profiles) →** 限制总步数、单人步数、交接跳数、主持调用次数与 token；连续失败会停掉本轮而不是烧穿它。
+- **[AgentAsTool](GROUP_SCHEDULER.md) →** 结构化委托：`call` 私下调用帮手并拿回结果，`handoff` 把公开回复交出去——同一个 Agent 不会被唤醒两次。
 
-**功能群蜂。** 你把 PRD 丢进有产品 / 后端 / 前端 / 测试 Agent 的群。它们讨论、起草接口、提出测试，并留下可回看的「为什么这样设计」痕迹。
+## 把真活交给它们。
 
-**绑定工作区落地。** 你把本地仓库绑成群 workspace，拉进 Codex 或 Claude Code，改动发生在你看得见的地方——讨论与实现同室，每条外部命令都有 runtime 审计。
+*干哪个目录、能用哪些工具，先过你这一关；跑过的每一步，都留下记录。*
 
-**安全的配置帮手。** 卡在供应商或 MCP 上时，内置助手用「暂存操作」提议更改；你点批准前什么都不会真改。密钥始终掩码，危险路径它够不着。
+- **[工作区](backend-rs/crates/backend/src/docs/guide/workspaces.md) →** 文件和 shell 工具的所有路径都对着根目录解析，越界的请求直接拒绝。
+- **[内置工具](backend-rs/crates/backend/src/docs/guide/agents.md#built-in-tools) →** 读、写、精确编辑、Glob、Grep、受守卫的 Bash、WebSearch、Fetch、图片与视频生成、AskUser、TodoWrite、计划审批。
+- **审批门禁 →** 破坏性 Bash 会让本轮暂停等你确认——可以记住规则，也可以给信得过的 Agent 开无人值守模式；高危一类命令（格式化磁盘、关停主机）永不执行。
+- **[外部 CLI Agent](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) →** 通过 ACP 驱动 Codex CLI、Claude Code、Pi、OpenCode、DeepSeek Harness，以及任何自定义 ACP 服务。每次运行都记录命令、工作目录、状态、退出码与 stdout/stderr 尾部。
+- **[MCP 服务](backend-rs/crates/backend/src/docs/guide/mcp-servers.md) →** 接入 `stdio`、Streamable HTTP、SSE 三种传输；工具以 `mcp__<服务>__<工具>` 命名，服务级白名单 + Agent 级再筛选。
+- **[Skills](backend-rs/crates/backend/src/docs/guide/skills.md) →** 可复用的指令块，Agent 需要时通过 `SkillManager` 加载；支持原文粘贴、包导入、GitHub 导入。
+- **[供应商](backend-rs/crates/backend/src/docs/guide/providers.md) →** OpenAI 兼容、Anthropic、Gemini 三种接口方言；模型发现由后端发起，API 密钥不出本机。
+- **单条消息覆盖 →** 只对某一条消息切换模型或思考程度。
+- **工作区 Git →** 状态、分支、差异、历史、暂存、提交与同步，都在应用内完成。
 
----
+## 全程看得见。
 
-## 当前状态
+*每轮对话都留底，能回放、能查——活干到哪，一眼就有。*
 
-| ✅ 已经可用 | 🚧 持续打磨 | 💭 方向，不是承诺 |
-|---|---|---|
-| 注册 / 登录 / JWT 鉴权 | Windows 以外的桌面打包 | 更丰富的多 Agent 编排策略 |
-| 群组、Agent、入群、群聊 | 更深入的工作区 Git 审查体验 | Agent 市场 / 能力包分发 |
-| 流式回复、清空消息、turn trace | 移动端 / 轻量远程查看 | 更强的企业知识库接入 |
-| 工作区文件浏览、引用、UTF-8 编辑、安全预览 | 从旧版 Docker/Postgres 环境迁移数据 | — |
-| 工作区 Git：状态、分支、差异、历史、暂存/提交/同步 | — | — |
-| LLM 供应商配置；单条消息覆盖模型与思考程度 | — | — |
-| Skills 管理与注入 | — | — |
-| MCP：stdio · Streamable HTTP · SSE | — | — |
-| 外部 CLI runtime：Codex CLI、Claude Code | — | — |
-| 内置助手 + 批准后才生效的应用内操作 | — | — |
-| Windows 桌面：Tauri、进程内 Rust 后端、SQLite、托盘、免安装可执行文件 | — | — |
+- **实时流式 →** token、消息、错误与 turn trace 实时出现在房间里。
+- **[Turn trace](GROUP_SCHEDULER.md) →** 哪个 Agent 跑了、为什么选它、花了多少——按次派发、按轮持久化。
+- **[终端](backend-rs/crates/backend/src/docs/guide/terminal.md) →** 仅桌面版的标签页终端，停靠在对话底部（`Ctrl`/`Cmd` + `` ` ``）。它从工作区启动但**故意不做**沙箱，用之前先读文档。
+- **[内置助手](backend-rs/crates/backend/src/docs/guide/assistant.md) →** 配置答疑，代改配置先暂存、你批准才生效；不碰文件，永远读不到明文密钥。
+- **日志 →** 应用内可见，落盘位置 `%APPDATA%\qunica.desktop\logs`。
 
-<sub>请围绕 ✅ 列规划使用；💭 列是产品方向，不是发版清单。</sub>
+## 机器是你的。
+
+*本地优先。数据在你自己的盘上，跑着的服务也只有你自己开的那一个。*
+
+- **Windows 桌面 →** Tauri 2 外壳 + 进程内 Rust 后端：托盘常驻、原生目录选择器、免安装的 portable 可执行文件。
+- **浏览器版 →** 同一个 React 前端可以跑在浏览器里（`pnpm dev`），连本地后端即可，不必套桌面壳。
+- **SQLite 存储 →** 群、Agent、轮次与历史都在 `%APPDATA%\qunica.desktop\qunica.sqlite3`。登录令牌由本机生成的密钥签名。
+- **还不是托管 SaaS →** 注册与登录都对着你自己的后端，没有别人服务器上的账号。
 
 ---
 
 ## 开始使用
 
-### 我想要 Windows 桌面版
-
-从源码构建（当前首要打包目标是 Windows）：
+当前首要打包目标是 Windows。从源码构建：
 
 ```powershell
 pnpm install
@@ -108,167 +125,77 @@ frontend/src-tauri/target/release/bundle/nsis/Qunica_<version>_x64-setup.exe
 frontend/src-tauri/target/release/bundle/portable/Qunica_<version>_x64-portable.exe
 ```
 
-免安装版：直接运行独立的 `Qunica_<version>_x64-portable.exe`。
+portable 版直接双击运行，无需安装。开发模式：
 
-### 我想开发 Web UI
+```powershell
+pnpm dev          # 浏览器里跑 Web UI
+pnpm desktop:dev  # 桌面应用开发模式
+```
+
+### 五分钟跑起你的第一个 Agent
+
+1. **添加供应商。** Qunica 调模型用的 API 密钥；没有它，任何 Agent 都无法回复。
+2. **添加工作区。** 一个允许 Agent 读写的本地目录。
+3. **创建 Agent。** 绑定供应商、工作区、系统提示词与工具集。
+4. **和它说话。** 开一个一对一的私聊，或者建个群多拉几个 Agent。
+
+完整教程：[快速上手](backend-rs/crates/backend/src/docs/guide/getting-started.md)。
+
+---
+
+## 外部 Runtime
+
+Qunica 不带模型。它驱动你已经安装并登录好的 Agent CLI，换供应商只是下拉框里选一下，用不着迁移。
+
+| Runtime | CLI | 说明 |
+| --- | --- | --- |
+| Claude Code | `claude` | 带工具调用的流式输出，处理权限问答 |
+| OpenAI Codex | `codex` | 沙箱执行剖面 |
+| Pi Agent | `pi` | ACP 适配器 |
+| OpenCode | `opencode` | ACP 服务 |
+| DeepSeek Harness | `dsh` | 仅提示词的 ACP 界面；按模式的沙箱隔离，不可用时闭合失败 |
+| 自定义 ACP 服务 | 任意 | 任何通过 stdio 说 Agent Client Protocol 的程序 |
+
+举例：`codex` 以 `codex exec --sandbox danger-full-access <prompt>` 运行，`claude` 以 `claude -p --output-format stream-json --permission-mode bypassPermissions --max-turns <n> <prompt>` 运行。Qunica 只负责检测与启动这些 CLI，**不保存**它们的账号凭据——请在应用外安装并登录。Full-auto 模式能力很强：只绑定你舍得让它改的工作区。细节见 [外部 CLI Agent](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md)。
+
+---
+
+## 文档
+
+| 我想… | 从这里开始 |
+| --- | --- |
+| 搞懂概念、今天就跑起来 | [快速上手](backend-rs/crates/backend/src/docs/guide/getting-started.md) |
+| 建群、定路由与对话规则 | [群组](backend-rs/crates/backend/src/docs/guide/groups.md) · [调度器设计](GROUP_SCHEDULER.md) |
+| 配置 Agent 与工具 | [Agent](backend-rs/crates/backend/src/docs/guide/agents.md) · [Skills](backend-rs/crates/backend/src/docs/guide/skills.md) |
+| 用 ACP 驱动外部 CLI Agent | [外部 CLI Agent](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) |
+| 接 MCP 工具服务 | [MCP 服务](backend-rs/crates/backend/src/docs/guide/mcp-servers.md) |
+| 配置供应商与全局设置 | [供应商](backend-rs/crates/backend/src/docs/guide/providers.md) · [设置](backend-rs/crates/backend/src/docs/guide/settings.md) |
+| 使用文件与工作区 | [工作区](backend-rs/crates/backend/src/docs/guide/workspaces.md) · [工作区文件](backend-rs/crates/backend/src/docs/guide/workspace-files.md) |
+| 使用终端或内置助手 | [终端](backend-rs/crates/backend/src/docs/guide/terminal.md) · [助手](backend-rs/crates/backend/src/docs/guide/assistant.md) |
+
+完整指南在 [`backend-rs/crates/backend/src/docs/guide/`](backend-rs/crates/backend/src/docs/guide/)。
+
+---
+
+## 开发
+
+环境要求：[Node.js](https://nodejs.org/) ≥ 20、[pnpm](https://pnpm.io/) 9、稳定的 [Rust](https://rust-lang.org/) 工具链；桌面打包需要 Windows。
 
 ```powershell
 pnpm install
-pnpm dev
+pnpm dev          # Web UI，带热更新
+pnpm desktop:dev  # 桌面应用开发模式
 ```
 
-### 我想跑桌面开发模式
-
-```powershell
-pnpm install
-pnpm desktop:dev
-```
-
-### 质量检查
+质量检查：
 
 ```powershell
 pnpm type-check
 pnpm lint
-```
-
-Rust 后端：
-
-```powershell
 cargo fmt --manifest-path backend-rs/crates/backend/Cargo.toml --all --check
 cargo clippy --manifest-path backend-rs/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
-
----
-
-## 核心概念
-
-| 概念 | 含义 |
-|---|---|
-| **Group** | 群组 / 项目空间，协作主容器 |
-| **Agent** | 可复用的 AI 成员，可加入不同群组 |
-| **Workspace** | 群组绑定的本地工作目录；外部 Agent 与工具在此读写 |
-| **Runtime** | Agent 执行方式：LLM chat runtime 或 external CLI runtime |
-| **Streaming** | 前端实时展示 token / 最终消息 / 错误 |
-| **Audit** | 外部运行记录命令、工作目录、状态、退出码、stdout/stderr tail |
-| **MCP** | 以 `mcp__<服务名>__<工具名>` 暴露的 Model Context Protocol 工具 |
-| **Assistant** | 内置助手：解答用法 + 暂存配置更改（批准后生效） |
-
----
-
-## 能力亮点
-
-### MCP 工具
-
-在资源库的 **MCP 服务** 中登记后，Agent 可像调用内置工具一样使用它们。
-
-| 协议 | 说明 |
-|---|---|
-| `stdio` | 启动本地进程，stdin/stdout 收发按行分隔的 JSON-RPC 2.0 |
-| `Streamable HTTP` | 单个 HTTP 端点；返回 JSON 或 SSE；会话靠 `Mcp-Session-Id` |
-| `SSE`（旧版） | GET 打开事件流，再 POST 到 `endpoint` 事件给出的消息地址 |
-
-- 工具命名：`mcp__<服务名 slug>__<工具名>`，避免跨服务重名冲突。
-- 服务级白名单 + Agent 级再筛选。
-- 保存前可「测试连接」，查看真实暴露的工具列表。
-- 连不上的服务只让本回合缺席其工具，并在系统提示中注明，不会拖垮整回合。
-- stdio 继承当前进程环境并叠加配置覆盖；HTTP 请求头值在接口中掩码返回。
-
-### 工作区文件引用与预览
-
-- 从工作区面板拖入文件时，消息保存的是工作区内 **相对路径引用**，不复制内容；发送前服务端确认路径属于当前会话绑定工作区。
-- 拖入目录不会递归塞文件，只在光标处插入目录相对路径。
-- 应用内编辑仅支持 UTF-8 文本；保存带打开时的内容摘要，外部已改则保留本地草稿并要求确认，避免静默覆盖。
-- HTML 预览在无脚本、无同源、无导航权限的沙箱 iframe 中；图片与 PDF 有大小限制的安全预览。
-- Office / 未知 / 无法安全预览的格式：仅元数据 + 原文件下载。
-
-### 内置助手
-
-悬浮面板，帮助配置、解答用法，并代为执行应用内操作。它是带 `is_system` 标记的系统 Agent，走普通私聊，因此流式、恢复、中断与 turn trace 全部复用现有机制。它不出现在 Agent 库与私聊列表中，也无法被通用 Agent 接口改删。
-
-**边界：**
-
-- 没有工作区、没有文件工具、没有 shell。需要读写文件请用绑定了 workspace 的普通 Agent。
-- 所有配置更改都是 **暂存** 的：`AppPropose` 只写待批准记录；**批准接口** 才是唯一改数据的路径，且走与 UI 相同的 handler。
-- 以下内容完全不能暂存，只能 `AppPrefill` 预填表单由你完成：供应商 API 密钥、stdio MCP、CLI runtime 安装、任何删除。
-- 读配置永远拿不到明文密钥。
-
-记录在 **设置 → 助手操作记录**。标题栏齿轮可改助手使用的供应商与模型；提示词、工具与「无工作区」固定不变，它才能安全持有配置工具。助手需 **单独绑定** 供应商，添加供应商不会自动绑定。
-
-### 单条消息的模型与思考程度
-
-输入框可为单条消息覆盖模型与思考程度。
-
-- 模型选择器仅在「会话只有一个 Agent 且供应商提供多模型」时出现。
-- 思考程度仅在模型声明支持时出现（OpenAI `reasoning_effort`、Anthropic `thinking.budget_tokens`、Gemini `thinkingConfig`）。
-
-### 外部 CLI Agent
-
-独立于普通 LLM chat 的 runtime，在解析后的 workspace 中运行，流式回传到会话。
-
-| Runtime | 调用形态（示意） |
-|---|---|
-| Codex CLI | `codex exec --sandbox danger-full-access <prompt>` |
-| Claude Code | `claude -p --output-format stream-json --permission-mode bypassPermissions --max-turns <n> <prompt>` |
-
-应用只负责检测与启动 CLI，**不保存** 其账号凭据。请在应用外自行安装并登录。Full-auto CLI 能力很强：只绑定你确认过的 workspace。
-
----
-
-## 技术架构
-
-```text
-frontend/
-  React + Vite + TypeScript + TanStack Query + Zustand
-  Tauri desktop shell：src-tauri/；进程内链接 Rust 后端
-
-backend-rs/
-  Rust backend workspace
-  Axum HTTP API 与 API v2 runtime
-  SQLite 桌面数据存储
-  外部 CLI runtime 适配
-
-shared/
-  跨包 TypeScript 事件 / 契约
-```
-
-桌面运行结构：
-
-```text
-Qunica.exe
-  ├─ Tauri WebView shell
-  ├─ 在进程内启动 Rust / Axum 后端
-  ├─ 监听 http://127.0.0.1:8765
-  └─ 前端通过 runtime API base URL 访问后端
-```
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ 客户端                                                       │
-│  Web (Vite)          Desktop (Tauri WebView)                 │
-└──────────────┬───────────────────────────┬───────────────────┘
-               │ HTTP / 流式事件           │
-               ▼                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│ qunica-backend（Rust / Axum）                            │
-│  鉴权 · 群组 · Agent · 聊天 · 工作区 · MCP · runtime         │
-└──────────────┬───────────────────────────┬───────────────────┘
-               │                           │
-        ┌──────▼──────┐             ┌──────▼──────┐
-        │   SQLite    │             │  Workspace  │
-        │  （桌面）   │             │  + CLI/MCP  │
-        └─────────────┘             └─────────────┘
-```
-
----
-
-## 它不是什么
-
-- **不是单聊聊天机器人。** 工作单元是「有成员的群」。
-- **还不是托管多租户 SaaS。** 桌面默认本机 SQLite。
-- **还没做完。** 首个打包目标是 Windows；外部 CLI 的 full-auto 请谨慎使用。
-
-**它是什么：** 群形态的多 Agent 工作台——共享上下文、执行过程可见，Agent 能在你选定的工作区里干活。
 
 ---
 

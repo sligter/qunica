@@ -7,6 +7,7 @@
 
 import { create } from 'zustand'
 
+import { clearComposerDrafts } from '@/lib/composerDraft'
 import { queryClient } from '@/lib/queryClient'
 import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
 import type { UserRead } from '@/types/api'
@@ -102,6 +103,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: () => {
     clearStorage()
     queryClient.clear()
+    clearComposerDrafts()
     useQueuedMessagesStore.getState().clearAll()
     set({ token: null, user: null })
   },
@@ -128,6 +130,7 @@ if (typeof window !== 'undefined') {
     if (event.key !== STORAGE_KEY) return
     const { token } = parsePersistedAuth(event.newValue)
     queryClient.clear()
+    clearComposerDrafts()
     useQueuedMessagesStore.getState().clearAll()
     useAuthStore.setState({
       token,

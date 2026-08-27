@@ -465,6 +465,7 @@ export function ConversationChatView({
               <Composer
                 supportsReasoningEffort={supportsReasoningEffort}
                 key={`${scope}:${conversationId}:${threadId ?? 'no-thread'}:${workspaceId ?? 'no-workspace'}`}
+                draftKey={`${scope}:${stateId}`}
                 conversationId={conversationId}
                 workspaceId={workspaceId}
                 scope={scope}

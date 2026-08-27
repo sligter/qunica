@@ -21,6 +21,7 @@ import {
   conversationIdFromDataTransfer,
   hasConversationIdDrag,
 } from '@/lib/conversationDrag'
+import { readComposerDraft, writeComposerDraft } from '@/lib/composerDraft'
 import { useAuthStore } from '@/stores/authStore'
 import {
   isWorkspaceRelativePath,
@@ -76,6 +77,8 @@ interface ComposerProps {
   isStreaming?: boolean
   hint?: string
   placeholder?: string
+  /** Stable per-conversation/task identity used to restore unsent text. */
+  draftKey?: string
   groupAgents?: GroupAgentRead[]
   conversationId?: string
   workspaceId?: string | null
@@ -98,8 +101,6 @@ interface ComposerProps {
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
-/** ~10 lines of text-sm (20px line-height) plus padding. */
-const MAX_TEXTAREA_HEIGHT = 208
 const MAX_ATTACHMENTS_PER_MESSAGE = 10
 
 function formatSize(size: number) {
@@ -187,6 +188,7 @@ export function Composer({
   isStreaming,
   hint,
   placeholder,
+  draftKey,
   groupAgents = [],
   conversationId,
   workspaceId,
@@ -198,7 +200,7 @@ export function Composer({
   allowConversationDrop = false,
 }: ComposerProps) {
   const { t } = useTranslation('chat')
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(() => readComposerDraft(draftKey))
   const [attachments, setAttachmentState] = useState<PendingAttachment[]>([])
   const [uploadError, setUploadError] = useState<WorkspaceErrorMessageKey | null>(null)
   const [notice, setNotice] = useState<ComposerNotice | null>(null)
@@ -216,9 +218,11 @@ export function Composer({
   const [mentionStart, setMentionStart] = useState(-1)
   const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const autoTextareaHeightRef = useRef<number | null>(null)
+  const manualTextareaHeightRef = useRef<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const attachmentsRef = useRef<PendingAttachment[]>([])
-  const valueRef = useRef('')
+  const valueRef = useRef(value)
   const draftRevisionRef = useRef(0)
   const dragDepthRef = useRef(0)
   const token = useAuthStore((state) => state.token)
@@ -239,8 +243,9 @@ export function Composer({
   const updateValue = useCallback((next: string) => {
     draftRevisionRef.current += 1
     valueRef.current = next
+    writeComposerDraft(draftKey, next)
     setValue(next)
-  }, [])
+  }, [draftKey])
 
   const updateAttachments = useCallback(
     (update: (current: PendingAttachment[]) => PendingAttachment[]) => {
@@ -269,8 +274,25 @@ export function Composer({
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current
     if (!textarea) return
+
+    if (manualTextareaHeightRef.current !== null) {
+      textarea.style.height = `${manualTextareaHeightRef.current}px`
+      return
+    }
+
+    const renderedHeight = textarea.getBoundingClientRect().height
+    if (
+      autoTextareaHeightRef.current !== null
+      && Math.abs(renderedHeight - autoTextareaHeightRef.current) > 1
+    ) {
+      manualTextareaHeightRef.current = renderedHeight
+      textarea.style.height = `${renderedHeight}px`
+      return
+    }
+
     textarea.style.height = 'auto'
-    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`
+    textarea.style.height = `${textarea.scrollHeight}px`
+    autoTextareaHeightRef.current = textarea.getBoundingClientRect().height
   }, [])
 
   useEffect(() => {
@@ -787,7 +809,7 @@ export function Composer({
             aria-describedby="composer-drop-status"
             disabled={isDisabled}
             className={cn(
-              'block max-h-52 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-3.5',
+              'block max-h-[50vh] min-h-10 w-full resize-y overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-3.5',
               'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
             )}
           />

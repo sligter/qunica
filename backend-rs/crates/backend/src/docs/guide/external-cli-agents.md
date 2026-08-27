@@ -6,8 +6,10 @@ An agent with `runtime_kind` set to `acp` drives an external command-line agent 
 
 - **Codex CLI** — `codex exec --sandbox danger-full-access <prompt>`
 - **Claude Code** — `claude -p --output-format stream-json --permission-mode bypassPermissions --max-turns <n> <prompt>`
-
-Other presets, including Pi and OpenCode, are listed but not all are implemented.
+- **Pi Agent** — the Pi ACP adapter (`pi`)
+- **OpenCode** — the OpenCode ACP server (`opencode`)
+- **DeepSeek Harness** — `dsh`, a Cordis plugin tree whose ACP surface is prompt-only (no `session/set_model` or tool-call updates over the wire). Its per-mode sandbox confinement (bwrap/Landlock/Seatbelt/Windows restricted tokens) fails closed with `SANDBOX_UNAVAILABLE` when unusable.
+- **Custom** — any program speaking the Agent Client Protocol over stdio.
 
 ## Installing
 

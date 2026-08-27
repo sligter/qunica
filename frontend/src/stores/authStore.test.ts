@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { readComposerDraft, writeComposerDraft } from '@/lib/composerDraft'
 import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
 import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
@@ -85,5 +86,14 @@ describe('authStore window synchronization', () => {
 
     expect(useQueuedMessagesStore.getState().byStateId).toEqual({})
     expect(useQueuedMessagesStore.getState().dispatchingByStateId).toEqual({})
+  })
+
+  it('clears private composer drafts on logout', () => {
+    writeComposerDraft('direct-chats:chat-1', 'old-account secret')
+    useAuthStore.setState({ token: 'old-token' })
+
+    useAuthStore.getState().logout()
+
+    expect(readComposerDraft('direct-chats:chat-1')).toBe('')
   })
 })

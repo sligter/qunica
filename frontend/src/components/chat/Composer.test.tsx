@@ -124,6 +124,7 @@ function conversationDataTransfer(id: string) {
 
 describe('Composer', () => {
   beforeEach(() => {
+    localStorage.clear()
     mocks.getFile.mockReset()
     mocks.getMetadata.mockReset()
     mocks.upload.mockReset()
@@ -445,6 +446,43 @@ describe('Composer', () => {
 
     fireEvent.drop(dropZone, { dataTransfer })
     await waitFor(() => expect(textarea).toHaveAccessibleDescription('Workspace file added.'))
+  })
+
+  it('restores each conversation draft until it is sent', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn().mockResolvedValue(undefined)
+    const first = render(<Composer draftKey="direct-chats:chat-1" onSend={onSend} />)
+
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'keep this')
+    first.unmount()
+    const other = render(<Composer draftKey="direct-chats:chat-2" onSend={onSend} />)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+
+    other.unmount()
+    const restored = render(<Composer draftKey="direct-chats:chat-1" onSend={onSend} />)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('keep this')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    restored.unmount()
+
+    render(<Composer draftKey="direct-chats:chat-1" onSend={onSend} />)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  })
+
+  it('allows vertical resizing without undoing it on the next keystroke', () => {
+    let renderedHeight = 40
+    const rect = vi.spyOn(HTMLTextAreaElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(() => ({ height: renderedHeight }) as DOMRect)
+    render(<Composer onSend={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    expect(textarea).toHaveClass(
+      'resize-y',
+      'max-h-[50vh]',
+    )
+
+    renderedHeight = 160
+    fireEvent.change(textarea, { target: { value: 'after resize' } })
+    expect(textarea).toHaveStyle({ height: '160px' })
+    rect.mockRestore()
   })
 
   it('inserts a sidebar conversation ID in the Assistant composer', async () => {
