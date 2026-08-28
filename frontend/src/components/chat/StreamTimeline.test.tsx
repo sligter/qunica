@@ -94,6 +94,10 @@ describe('StreamTimeline activity rendering', () => {
     // Nothing has happened past the dispatch yet.
     const { rerender } = render(<StreamTimeline run={run([agentStart], 'active')} />)
     expect(screen.getByText('Getting ready')).toBeVisible()
+    expect(screen.getByLabelText('Researcher').closest('[data-chat-agent-id]')).toHaveAttribute(
+      'data-chat-conversation-id',
+      'group-1',
+    )
 
     rerender(<StreamTimeline run={run([agentStart, reasoning], 'active')} />)
     expect(screen.getByText('Thinking')).toBeVisible()

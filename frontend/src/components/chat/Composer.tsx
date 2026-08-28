@@ -993,6 +993,7 @@ export function Composer({
           ) : null}
           <textarea
             ref={textareaRef}
+            data-chat-composer={resolvedConversationId}
             value={value}
             onChange={handleChange}
             onKeyDown={onKeyDown}

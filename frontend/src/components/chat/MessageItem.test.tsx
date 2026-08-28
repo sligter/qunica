@@ -90,6 +90,10 @@ describe('MessageItem', () => {
       'data-copy-text',
       '# Heading\n\nBody',
     )
+    expect(screen.getByLabelText('Researcher').closest('[data-chat-agent-id]')).toHaveAttribute(
+      'data-chat-conversation-id',
+      'group-1',
+    )
   })
 
   it('shows a locally echoed message as sending until the server acknowledges it', () => {

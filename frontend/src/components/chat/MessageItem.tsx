@@ -123,6 +123,8 @@ export function MessageItemView({
       <AgentAvatar
         name={isUser && message.sender_id === currentUser?.id ? currentUser.name : senderName}
         kind={isUser ? 'user' : agentIsSystem ? 'system' : 'agent'}
+        agentId={!isUser && !agentIsSystem ? message.sender_id ?? undefined : undefined}
+        conversationId={groupId}
         avatarUrl={
           isUser && message.sender_id === currentUser?.id
             ? currentUser.avatar_url

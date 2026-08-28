@@ -579,12 +579,11 @@ fn route_script(route: &str) -> String {
     )
 }
 
-fn open_route(app: &tauri::AppHandle, route: &str) {
+fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let _ = window.eval(route_script(route));
     }
 }
 
@@ -839,7 +838,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            TRAY_OPEN_MAIN_ID => open_route(app, "/groups"),
+            TRAY_OPEN_MAIN_ID => show_main_window(app),
             TRAY_OPEN_SETTINGS_ID => {
                 // WebView2 can deadlock when a webview window is created from
                 // this synchronous event handler. Run the same async path as
@@ -876,7 +875,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
-            } => open_route(tray.app_handle(), "/groups"),
+            } => show_main_window(tray.app_handle()),
             _ => {}
         })
         .build(app)?;

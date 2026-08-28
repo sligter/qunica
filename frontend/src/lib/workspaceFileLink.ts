@@ -104,7 +104,7 @@ export function parseWorkspaceFileHref(
 
   if (!encoded && (driveAbsolute || posixAbsolute)) {
     if (!root) return null
-    const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
+    const normalizedRoot = root.replace(/\\/g, '/').replace(/^\/\/\?\//, '').replace(/\/+$/, '')
     const foldedRoot = driveAbsolute ? normalizedRoot.toLowerCase() : normalizedRoot
     const foldedRaw = driveAbsolute ? raw.toLowerCase() : raw
     if (!foldedRaw.startsWith(`${foldedRoot}/`)) return null

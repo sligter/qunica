@@ -6,7 +6,7 @@ import { useFileNavStore } from '@/stores/fileNavStore'
 
 vi.mock('@/hooks/useGroupFiles', () => ({
   useGroupWorkspaceRoot: () => ({
-    data: { root: 'D:\\file\\learn\\AIGC\\LandPPT', separator: '\\' },
+    data: { root: '\\\\?\\D:\\file\\learn\\AIGC\\ag-swarmer', separator: '\\' },
   }),
 }))
 
@@ -44,17 +44,17 @@ describe('MarkdownMessage overflow containment', () => {
     render(
       <MarkdownMessage
         groupId="group-1"
-        content="[todo_board](D:/file/learn/AIGC/LandPPT/src/landppt/web/templates/components/project/todo_board/extra_js_1.html:5425)"
+        content="[workspace_files.rs](D:/file/learn/AIGC/ag-swarmer/backend-rs/crates/backend/src/api/workspace_files.rs:497)"
       />,
     )
 
-    const file = screen.getByRole('button', { name: 'todo_board' })
+    const file = screen.getByRole('button', { name: 'workspace_files.rs' })
     fireEvent.click(file)
 
-    expect(screen.queryByRole('link', { name: 'todo_board' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'workspace_files.rs' })).not.toBeInTheDocument()
     expect(useFileNavStore.getState().request).toMatchObject({
       groupId: 'group-1',
-      path: 'src/landppt/web/templates/components/project/todo_board/extra_js_1.html',
+      path: 'backend-rs/crates/backend/src/api/workspace_files.rs',
     })
   })
 })

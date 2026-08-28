@@ -17,6 +17,9 @@ export const zhCN: TranslationShape<typeof enUS> = {
       copySelection: '复制所选内容',
       copyMessage: '复制整条消息',
       selectMessage: '选中整条消息',
+      agentLabel: '{{name}} 的 Agent 操作',
+      viewAgent: '查看 Agent 信息',
+      mentionAgent: '@{{name}}',
     },
     actions: {
       save: '保存',

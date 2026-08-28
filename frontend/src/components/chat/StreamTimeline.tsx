@@ -516,6 +516,8 @@ function AgentBlockView({
       <AgentAvatar
         name={block.displayName}
         kind={agentIsSystem ? 'system' : 'agent'}
+        agentId={agentIsSystem ? undefined : block.agentId}
+        conversationId={groupId}
         avatarUrl={avatarUrl}
         className="mt-0.5"
         contextUsage={block.contextUsage ?? fallbackUsage}

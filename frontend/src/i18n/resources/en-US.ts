@@ -11,6 +11,9 @@ export const enUS = {
       copySelection: 'Copy selection',
       copyMessage: 'Copy whole message',
       selectMessage: 'Select message text',
+      agentLabel: 'Actions for {{name}}',
+      viewAgent: 'View agent details',
+      mentionAgent: 'Mention @{{name}}',
     },
     actions: {
       save: 'Save',

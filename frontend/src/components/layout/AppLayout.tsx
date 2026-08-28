@@ -11,13 +11,15 @@ import {
   isGroupManagePath,
   isOverlayPath,
   overlayAreaLabelKey,
+  overlayLinkState,
   type OverlayLocationState,
 } from '@/components/layout/overlayRouting'
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay'
 import { UnsavedChangesProvider } from '@/components/layout/UnsavedChangesProvider'
 import { appChildren } from '@/routes/appRoutes'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
-import { isAuxiliaryDesktopWindow } from '@/lib/desktop'
+import { isAuxiliaryDesktopWindow, openLibraryWindow } from '@/lib/desktop'
+import { isDesktopRuntime } from '@/lib/runtime'
 import {
   TerminalRuntimeProvider,
   type TerminalRuntimeProviderProps,
@@ -47,6 +49,19 @@ type TextField = HTMLInputElement | HTMLTextAreaElement
 
 /** Right-clicking a text field offers editing; anywhere else offers copying. */
 type MenuState =
+  | {
+      kind: 'agent'
+      x: number
+      y: number
+      id: string
+      name: string
+      composer: {
+        field: HTMLTextAreaElement
+        start: number
+        end: number
+        direction: 'forward' | 'backward' | 'none'
+      } | null
+    }
   | {
       kind: 'field'
       x: number
@@ -94,6 +109,19 @@ function copyableFromTarget(target: EventTarget | null): HTMLElement | null {
   return node instanceof HTMLElement ? node : null
 }
 
+function chatAgentFromTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null
+  const node = target.closest('[data-chat-agent-id]')
+  return node instanceof HTMLElement ? node : null
+}
+
+function composerForConversation(conversationId: string | undefined): HTMLTextAreaElement | null {
+  if (!conversationId) return null
+  return Array.from(
+    document.querySelectorAll<HTMLTextAreaElement>('textarea[data-chat-composer]'),
+  ).find((field) => field.dataset.chatComposer === conversationId) ?? null
+}
+
 /**
  * Highlighted text, but only when the click landed in it. A selection left
  * behind in another message must not quietly become what "copy" yields.
@@ -125,7 +153,11 @@ async function writeClipboard(text: string): Promise<void> {
   }
 }
 
-function replaceSelection(menu: Extract<MenuState, { kind: 'field' }>, text: string, inputType: string) {
+function replaceSelection(
+  menu: Pick<Extract<MenuState, { kind: 'field' }>, 'field' | 'start' | 'end'>,
+  text: string,
+  inputType: string,
+) {
   const { field, start, end } = menu
   const value = `${field.value.slice(0, start)}${text}${field.value.slice(end)}`
   const prototype = field instanceof HTMLTextAreaElement
@@ -259,6 +291,32 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
     await writeClipboard(action === 'copy' ? selection || text : text)
   }
 
+  const runAgentAction = (action: 'view' | 'mention') => {
+    if (menu?.kind !== 'agent') return
+    const current = menu
+    setMenu(null)
+
+    if (action === 'view') {
+      const route = `/agents/${encodeURIComponent(current.id)}`
+      if (isDesktopRuntime()) {
+        void openLibraryWindow(route).catch(() => undefined)
+      } else {
+        void navigate(route, { state: overlayLinkState(location) })
+      }
+      return
+    }
+
+    const selection = current.composer
+    if (!selection || !selection.field.isConnected || selection.field.disabled || selection.field.readOnly) return
+    const before = selection.field.value.slice(0, selection.start)
+    const after = selection.field.value.slice(selection.end)
+    const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
+    const trailingSpace = after && /^\s/.test(after) ? '' : ' '
+    selection.field.focus()
+    selection.field.setSelectionRange(selection.start, selection.end, selection.direction)
+    replaceSelection(selection, `${leadingSpace}@${current.name}${trailingSpace}`, 'insertText')
+  }
+
   const openMenu = (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault()
     const clamp = (items: number) => ({
@@ -268,6 +326,29 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         Math.min(event.clientY, window.innerHeight - (items * MENU_ITEM_HEIGHT + MENU_PADDING) - 8),
       ),
     })
+
+    const agent = chatAgentFromTarget(event.target)
+    const agentId = agent?.dataset.chatAgentId
+    if (agent && agentId) {
+      const field = composerForConversation(agent.dataset.chatConversationId)
+      const append = field?.value.length ?? 0
+      const active = field !== null && document.activeElement === field
+      const start = active ? field.selectionStart ?? append : append
+      const end = active ? field.selectionEnd ?? start : append
+      setMenu({
+        kind: 'agent',
+        id: agentId,
+        name: agent.dataset.chatAgentName || agentId,
+        composer: field ? {
+          field,
+          start,
+          end,
+          direction: field.selectionDirection ?? 'none',
+        } : null,
+        ...clamp(2),
+      })
+      return
+    }
 
     const field = textFieldFromTarget(event.target)
     if (field) {
@@ -299,7 +380,24 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const menuItems: Array<{ key: string; label: string; shortcut: string; disabled: boolean; run: () => void }> =
     menu === null
       ? []
-      : menu.kind === 'field'
+      : menu.kind === 'agent'
+        ? [
+            {
+              key: 'viewAgent',
+              label: t('textMenu.viewAgent'),
+              shortcut: '',
+              disabled: false,
+              run: () => runAgentAction('view'),
+            },
+            {
+              key: 'mentionAgent',
+              label: t('textMenu.mentionAgent', { name: menu.name }),
+              shortcut: '',
+              disabled: !menu.composer || menu.composer.field.disabled || menu.composer.field.readOnly,
+              run: () => runAgentAction('mention'),
+            },
+          ]
+        : menu.kind === 'field'
         ? ([
             ['cut', t('textMenu.cut'), 'Ctrl+X'],
             ['copy', t('textMenu.copy'), 'Ctrl+C'],
@@ -384,7 +482,11 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         <div
           ref={menuRef}
           role="menu"
-          aria-label={menu.kind === 'field' ? t('textMenu.label') : t('textMenu.contentLabel')}
+          aria-label={menu.kind === 'agent'
+            ? t('textMenu.agentLabel', { name: menu.name })
+            : menu.kind === 'field'
+              ? t('textMenu.label')
+              : t('textMenu.contentLabel')}
           className="fixed z-[100] w-56 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg"
           style={{ left: menu.x, top: menu.y }}
         >

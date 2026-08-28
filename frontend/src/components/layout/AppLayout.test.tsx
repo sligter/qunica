@@ -26,12 +26,24 @@ vi.mock('@/pages/home/ChatHomePage', () => ({
       <div>Settings content</div>
       <input aria-label="Settings input" />
       <article data-copy-text="Full agent reply">Full agent reply</article>
+      <span
+        data-chat-agent-id="agent-1"
+        data-chat-agent-name="Researcher"
+        data-chat-conversation-id="group-1"
+      >
+        Researcher avatar
+      </span>
+      <textarea aria-label="Chat composer" data-chat-composer="group-1" defaultValue="Plan" />
     </>
   ),
 }))
 
 vi.mock('@/pages/agents/AgentsIndexPage', () => ({
   AgentsIndexPage: () => <div>Agents content</div>,
+}))
+
+vi.mock('@/pages/agents/AgentDetailPage', () => ({
+  AgentDetailPage: () => <div>Agent details</div>,
 }))
 
 vi.mock('@/hooks/useAgents', () => ({
@@ -157,6 +169,27 @@ describe('AppLayout', () => {
     // Right-clicking the selection copies the excerpt rather than the message.
     fireEvent.contextMenu(message, { clientX: 20, clientY: 30 })
     expect(await screen.findByRole('menuitem', { name: /Copy selection/ })).toBeVisible()
+  })
+
+  it('opens chat agent actions, inserts a mention, and links to the agent details', async () => {
+    const { router } = await renderAppLayout()
+    const avatar = screen.getByText('Researcher avatar')
+    const composer = screen.getByRole('textbox', { name: 'Chat composer' })
+
+    fireEvent.contextMenu(avatar, { clientX: 20, clientY: 30 })
+    const menu = await screen.findByRole('menu', { name: 'Actions for Researcher' })
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'View agent details',
+      'Mention @Researcher',
+    ])
+
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Mention @Researcher' }))
+    expect(composer).toHaveValue('Plan @Researcher ')
+    expect(composer).toHaveFocus()
+
+    fireEvent.contextMenu(avatar, { clientX: 20, clientY: 30 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'View agent details' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents/agent-1'))
   })
 
   it('ignores a selection left behind somewhere else', async () => {

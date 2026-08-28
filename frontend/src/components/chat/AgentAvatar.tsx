@@ -20,6 +20,9 @@ interface AgentAvatarProps {
   contextUsage?: ContextUsage | null
   avatarUrl?: string | null
   size?: 'xs' | 'sm' | 'md' | 'lg'
+  /** Enables the chat avatar actions handled by AppLayout's shared context menu. */
+  agentId?: string
+  conversationId?: string
 }
 
 const AVATAR_SIZE = { xs: 'h-4 w-4', sm: 'h-6 w-6', md: 'h-8 w-8', lg: 'h-12 w-12' } as const
@@ -120,6 +123,8 @@ export function AgentAvatar({
   contextUsage,
   avatarUrl,
   size = 'md',
+  agentId,
+  conversationId,
 }: AgentAvatarProps) {
   const customizable = kind !== 'system'
   const preset = customizable ? findAgentAvatarPreset(avatarUrl) : undefined
@@ -136,6 +141,13 @@ export function AgentAvatar({
     kind !== 'user' && contextUsage?.ratio !== null && contextUsage?.ratio !== undefined
       ? Math.max(0, Math.min(1, contextUsage.ratio))
       : null
+  const menuProps = kind === 'agent' && agentId
+    ? {
+        'data-chat-agent-id': agentId,
+        'data-chat-agent-name': name,
+        'data-chat-conversation-id': conversationId,
+      }
+    : {}
 
   const avatar = (
     <Avatar
@@ -157,12 +169,14 @@ export function AgentAvatar({
 
   let visual: ReactNode
   if (ratio === null) {
-    visual = <span className={cn('inline-flex shrink-0', AVATAR_SIZE[size], className)}>{avatar}</span>
+    visual = <span {...menuProps} className={cn('inline-flex shrink-0', AVATAR_SIZE[size], agentId && kind === 'agent' && 'cursor-context-menu', className)}>{avatar}</span>
   } else {
     visual = (
       <span
+        {...menuProps}
         className={cn(
           'relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full p-[3px] shadow-sm',
+          agentId && kind === 'agent' && 'cursor-context-menu',
           className,
         )}
         style={{
