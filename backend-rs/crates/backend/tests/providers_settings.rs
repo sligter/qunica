@@ -411,6 +411,11 @@ async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fie
             json!({
                 "name": "Patched",
                 "api_key": "",
+                "headers": {
+                    "X-Keep": "header-secret-5678",
+                    "X-Remove": "remove-me"
+                },
+                "user_agent": "Qunica-Patch/1.0",
                 "base_url": Value::Null,
                 "context_window_tokens": Value::Null,
                 "context_output_reserve_ratio": Value::Null,
@@ -423,6 +428,9 @@ async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fie
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["name"], "Patched");
     assert_eq!(updated["api_key_masked"], "****1234");
+    assert_eq!(updated["headers_masked"]["X-Keep"], "****5678");
+    assert_eq!(updated["headers_masked"]["X-Remove"], "****e-me");
+    assert_eq!(updated["user_agent"], "Qunica-Patch/1.0");
     assert_eq!(updated["base_url"], Value::Null);
     assert_eq!(updated["context_window_tokens"], Value::Null);
     assert_eq!(updated["context_output_reserve_ratio"], Value::Null);
@@ -436,12 +444,22 @@ async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fie
             "PATCH",
             &format!("/api/v2/llm-providers/{provider_id}"),
             &token,
-            json!({"api_key": Value::Null}),
+            json!({
+                "api_key": Value::Null,
+                "headers": {"X-Keep": Value::Null},
+                "user_agent": Value::Null
+            }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(still_preserved["api_key_masked"], "****1234");
+    assert_eq!(still_preserved["headers_masked"]["X-Keep"], "****5678");
+    assert_eq!(
+        still_preserved["headers_masked"].as_object().unwrap().len(),
+        1
+    );
+    assert_eq!(still_preserved["user_agent"], Value::Null);
 
     let (status, changed_key) = send(
         &app,
@@ -456,6 +474,32 @@ async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fie
     assert_eq!(status, StatusCode::OK);
     assert_eq!(changed_key["api_key_masked"], "****9999");
     assert!(!changed_key.to_string().contains("replacement-secret-9999"));
+
+    let (status, invalid_header) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/llm-providers/{provider_id}"),
+            &token,
+            json!({"headers": {"X-Test": "ok\r\nInjected: no"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(invalid_header["error"]["code"], "invalid_input");
+
+    let (status, missing_header_value) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/llm-providers/{provider_id}"),
+            &token,
+            json!({"headers": {"X-New": Value::Null}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing_header_value["error"]["code"], "invalid_input");
 }
 
 #[tokio::test]
@@ -520,6 +564,23 @@ async fn providers_settings_model_test_uses_the_selected_provider_credentials() 
     )
     .await;
     let provider_id = provider["id"].as_str().unwrap();
+    let (status, provider) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/llm-providers/{provider_id}"),
+            &owner_token,
+            json!({
+                "headers": {"X-Tenant-Token": "tenant-secret-9876"},
+                "user_agent": "Qunica-Test/1.0"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(provider["headers_masked"]["X-Tenant-Token"], "****9876");
+    assert_eq!(provider["user_agent"], "Qunica-Test/1.0");
+    assert!(!provider.to_string().contains("tenant-secret-9876"));
     let body = json!({
         "provider_id": provider_id,
         "kind": "openai-compatible",
@@ -568,6 +629,8 @@ async fn providers_settings_model_test_uses_the_selected_provider_credentials() 
             .unwrap(),
         "Bearer saved-test-secret"
     );
+    assert_eq!(captures[0].headers["x-tenant-token"], "tenant-secret-9876");
+    assert_eq!(captures[0].headers[header::USER_AGENT], "Qunica-Test/1.0");
 }
 
 #[tokio::test]
@@ -685,7 +748,9 @@ async fn providers_settings_discovers_models_before_provider_is_saved() {
             json!({
                 "kind": "openai-compatible",
                 "base_url": base_url,
-                "api_key": "unsaved-secret"
+                "api_key": "unsaved-secret",
+                "headers": {"X-Tenant": "acme"},
+                "user_agent": "Qunica-Discovery/1.0"
             }),
         ),
     )
@@ -699,6 +764,11 @@ async fn providers_settings_discovers_models_before_provider_is_saved() {
     assert_eq!(
         captures[0].headers["authorization"],
         "Bearer unsaved-secret"
+    );
+    assert_eq!(captures[0].headers["x-tenant"], "acme");
+    assert_eq!(
+        captures[0].headers[header::USER_AGENT],
+        "Qunica-Discovery/1.0"
     );
 }
 

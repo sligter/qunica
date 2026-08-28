@@ -220,6 +220,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(groups::delete),
         )
         .route(
+            "/api/v2/groups/:group_id/prompt/enhance",
+            axum::routing::post(groups::enhance_group_prompt),
+        )
+        .route(
             "/api/v2/groups/:group_id/members",
             axum::routing::post(groups::add_group_member).get(groups::list_group_members),
         )

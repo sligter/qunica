@@ -448,6 +448,41 @@ describe('Composer', () => {
     await waitFor(() => expect(textarea).toHaveAccessibleDescription('Workspace file added.'))
   })
 
+  it('enhances an unchanged draft with the selected group member', async () => {
+    const user = userEvent.setup()
+    const onEnhance = vi.fn().mockResolvedValue('Implement the current group task.')
+    const enhanceAgents = [
+      { ...groupAgents[0], prompt_enhancement_available: true },
+      {
+        ...groupAgents[0],
+        id: 'group-agent-2',
+        agent_id: 'agent-2',
+        display_name: 'Reviewer',
+        prompt_enhancement_available: true,
+      },
+    ]
+    render(
+      <Composer
+        onSend={vi.fn()}
+        onEnhance={onEnhance}
+        enhanceAgents={enhanceAgents}
+      />,
+    )
+
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    await user.type(textarea, 'do it')
+    // The member list is a menu rather than a permanent select: the toolbar
+    // has room for icons, not for a 140px dropdown.
+    expect(screen.queryByText('Reviewer')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Enhancement member' }))
+    await user.click(screen.getByRole('option', { name: 'Reviewer' }))
+    expect(screen.queryByRole('listbox')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Enhance with group context' }))
+
+    await waitFor(() => expect(textarea).toHaveValue('Implement the current group task.'))
+    expect(onEnhance).toHaveBeenCalledWith('do it', 'agent-2')
+  })
+
   it('restores each conversation draft until it is sent', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn().mockResolvedValue(undefined)
@@ -469,20 +504,47 @@ describe('Composer', () => {
   })
 
   it('allows vertical resizing without undoing it on the next keystroke', () => {
-    let renderedHeight = 40
-    const rect = vi.spyOn(HTMLTextAreaElement.prototype, 'getBoundingClientRect')
-      .mockImplementation(() => ({ height: renderedHeight }) as DOMRect)
     render(<Composer onSend={vi.fn()} />)
     const textarea = screen.getByRole('textbox', { name: 'Message' })
-    expect(textarea).toHaveClass(
-      'resize-y',
-      'max-h-[50vh]',
-    )
+    const grip = screen.getByRole('button', { name: 'Resize the message box' })
+    // The native handle drew itself between the text and the toolbar rather
+    // than on an edge, so height is driven from the grip instead.
+    expect(textarea).toHaveClass('resize-none', 'max-h-[50vh]')
 
-    renderedHeight = 160
+    fireEvent.pointerDown(grip, { button: 0, clientY: 500 })
+    fireEvent.pointerMove(window, { clientY: 400 })
+    fireEvent.pointerUp(window)
+    // Dragging the grip up grows the box: the composer is pinned to the bottom.
+    expect(textarea).toHaveStyle({ height: '140px' })
+
     fireEvent.change(textarea, { target: { value: 'after resize' } })
-    expect(textarea).toHaveStyle({ height: '160px' })
-    rect.mockRestore()
+    expect(textarea).toHaveStyle({ height: '140px' })
+  })
+
+  it('returns a hand-resized box to fitting the text on a double-click', () => {
+    render(<Composer onSend={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    const grip = screen.getByRole('button', { name: 'Resize the message box' })
+
+    fireEvent.pointerDown(grip, { button: 0, clientY: 500 })
+    fireEvent.pointerMove(window, { clientY: 300 })
+    fireEvent.pointerUp(window)
+    expect(textarea).toHaveStyle({ height: '240px' })
+
+    fireEvent.doubleClick(grip)
+    expect(textarea).not.toHaveStyle({ height: '240px' })
+  })
+
+  it('never lets a drag grow the box past half the window', () => {
+    render(<Composer onSend={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    const grip = screen.getByRole('button', { name: 'Resize the message box' })
+
+    fireEvent.pointerDown(grip, { button: 0, clientY: 500 })
+    fireEvent.pointerMove(window, { clientY: -10_000 })
+    fireEvent.pointerUp(window)
+
+    expect(textarea).toHaveStyle({ height: `${Math.round(window.innerHeight * 0.5)}px` })
   })
 
   it('inserts a sidebar conversation ID in the Assistant composer', async () => {

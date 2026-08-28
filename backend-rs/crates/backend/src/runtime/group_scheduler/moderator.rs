@@ -4,7 +4,9 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
 
-use crate::llm::{build_provider, ChatDelta, ChatMessage, ChatRequest, ProviderConfig};
+use crate::llm::{
+    build_provider, provider_headers_from_json, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
+};
 
 pub const MAX_OBJECTIVE_CHARS: usize = 2_000;
 pub const MAX_RECENT_MESSAGES: usize = 4;
@@ -99,6 +101,8 @@ struct ProviderRow {
     kind: String,
     base_url: Option<String>,
     api_key: String,
+    headers_json: String,
+    user_agent: Option<String>,
     default_model: String,
     reasoning_passback: i64,
     context_window_tokens: Option<i64>,
@@ -153,7 +157,7 @@ async fn resolve_provider(
     config: &ModeratorConfig,
 ) -> Result<ProviderConfig, ModeratorFailure> {
     let row: Option<ProviderRow> = sqlx::query_as(
-        "SELECT kind, base_url, api_key, default_model, reasoning_passback, \
+        "SELECT kind, base_url, api_key, headers_json, user_agent, default_model, reasoning_passback, \
                 context_window_tokens, context_output_reserve_ratio, models_json \
         FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
@@ -175,6 +179,8 @@ async fn resolve_provider(
         kind: row.kind,
         base_url: row.base_url,
         api_key: row.api_key,
+        headers: provider_headers_from_json(Some(&row.headers_json)),
+        user_agent: row.user_agent,
         default_model: row.default_model,
         reasoning_passback,
         context_window_tokens: model_window.or(row.context_window_tokens),

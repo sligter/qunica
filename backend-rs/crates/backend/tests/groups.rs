@@ -1,16 +1,18 @@
-use qunica_backend::api::{
-    router_with_state_for_tests, workspace_files::MAX_WORKSPACE_TEXT_BYTES, AppState,
-};
 use axum::{
     body::Body,
     http::{header, HeaderMap, Request, StatusCode},
     Router,
 };
+use qunica_backend::api::{
+    router_with_state_for_tests, workspace_files::MAX_WORKSPACE_TEXT_BYTES, AppState,
+};
 use serde_json::{json, Value};
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
 };
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -378,6 +380,33 @@ async fn fake_provider(body: String) -> String {
         axum::serve(listener, app).await.unwrap();
     });
     format!("http://{addr}")
+}
+
+async fn fake_capturing_provider(body: String) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().fallback({
+        let captures = Arc::clone(&captures);
+        move |request: Request<Body>| {
+            let body = body.clone();
+            let captures = Arc::clone(&captures);
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                captures
+                    .lock()
+                    .await
+                    .push(serde_json::from_slice(&bytes).unwrap());
+                ([(header::CONTENT_TYPE, "text/event-stream")], body)
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), captures)
 }
 
 fn git_status_file<'a>(status: &'a Value, path: &str) -> &'a Value {
@@ -4133,6 +4162,138 @@ async fn workspace_git_commit_details_diff_and_branch_creation_validate_inputs()
         let (status, response) = send(&app, request).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response:?}");
         assert_eq!(response["error"]["code"], "invalid_input");
+    }
+}
+
+#[tokio::test]
+async fn group_prompt_enhancement_uses_selected_member_and_current_context() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-prompt-enhance@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Prompt Workspace").await;
+    std::fs::write(
+        root.path().join("README.md"),
+        "# Project Atlas\nUse a staged rollout.",
+    )
+    .unwrap();
+    let default_provider_body = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": "Wrong member"}}]})
+    );
+    let default_provider =
+        create_llm_provider(&app, &token, &fake_provider(default_provider_body).await).await;
+    let default_agent =
+        create_llm_agent(&app, &token, &workspace, &default_provider, "Writer").await;
+    let provider_body = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": "```\nImplement the Atlas release with Planner.\n```"}}]})
+    );
+    let (base_url, captures) = fake_capturing_provider(provider_body).await;
+    let provider = create_llm_provider(&app, &token, &base_url).await;
+    let selected_agent = create_llm_agent(&app, &token, &workspace, &provider, "Planner").await;
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{selected_agent}"),
+            &token,
+            json!({"system_prompt": "Prioritize release risk."}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let group = create_group_with_initial_agents(
+        &app,
+        &token,
+        &workspace,
+        "mesh",
+        &[default_agent.as_str(), selected_agent.as_str()],
+    )
+    .await;
+    let group_id = group["id"].as_str().unwrap();
+    let (status, agents) = send(
+        &app,
+        authed("GET", &format!("/api/v2/groups/{group_id}/agents"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let selected = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["agent_id"] == selected_agent)
+        .unwrap();
+    assert_eq!(selected["prompt_enhancement_available"], true);
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group_id}"),
+            &token,
+            json!({
+                "description": "Atlas delivery team",
+                "announcement": "Ship by Friday"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    create_group_note(
+        &app,
+        &token,
+        group_id,
+        "Release checklist",
+        "Use staged rollout",
+    )
+    .await;
+
+    let (status, response) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/prompt/enhance"),
+            &token,
+            json!({"prompt": "ship it", "agent_id": selected_agent}),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body: {response:?}");
+    assert_eq!(
+        response["prompt"],
+        "Implement the Atlas release with Planner."
+    );
+    let (status, rejected) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/prompt/enhance"),
+            &token,
+            json!({"prompt": "ship it", "agent_id": Uuid::new_v4()}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(rejected["error"]["code"], "invalid_input");
+    let captures = captures.lock().await;
+    assert_eq!(captures.len(), 1);
+    let prompt = captures[0]["messages"][1]["content"].as_str().unwrap();
+    for expected in [
+        "Atlas delivery team",
+        "Ship by Friday",
+        "Planner",
+        "Release checklist",
+        "Use staged rollout",
+        "Prompt Workspace",
+        "README.md",
+        "Project Atlas",
+        "\"name\":\"Planner\"",
+        "Prioritize release risk.",
+        "\"draft\":\"ship it\"",
+    ] {
+        assert!(
+            prompt.contains(expected),
+            "missing {expected:?} in {prompt}"
+        );
     }
 }
 

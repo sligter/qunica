@@ -98,6 +98,8 @@ export function useDiscoverProviderModels() {
       kind: ProviderKind
       base_url?: string | null
       api_key: string
+      headers?: Record<string, string>
+      user_agent?: string | null
       default_model?: string | null
     }) =>
       fetchJson<ModelInfo[]>('/llm-providers/discover-models', {

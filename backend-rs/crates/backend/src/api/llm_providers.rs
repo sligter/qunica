@@ -1,12 +1,12 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header::HeaderValue, HeaderMap, HeaderName, StatusCode},
     Json,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     time::{Duration, Instant},
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -14,13 +14,15 @@ use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::llm::{
-    build_provider, discover_models, ChatDelta, ChatMessage, ChatRequest, ModelCatalogError,
-    ModelInfo, ProviderConfig, ProviderHttpError, ProviderModelConfig, MODEL_CATALOG_TIMEOUT,
+    build_http_client, build_provider, discover_models, provider_headers_from_json, ChatDelta,
+    ChatMessage, ChatRequest, ModelCatalogError, ModelInfo, ProviderConfig, ProviderHttpError,
+    ProviderModelConfig, MODEL_CATALOG_TIMEOUT,
 };
 
 const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-const PROVIDER_COLUMNS: &str = "id, owner_id, name, kind, base_url, api_key, default_model, \
+const PROVIDER_COLUMNS: &str =
+    "id, owner_id, name, kind, base_url, api_key, headers_json, user_agent, default_model, \
      context_window_tokens, context_output_reserve_ratio, description, reasoning_passback, \
      models_json, status, created_at, updated_at";
 
@@ -38,6 +40,10 @@ pub struct CreateRequest {
     #[serde(default)]
     base_url: Option<String>,
     api_key: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    user_agent: Option<String>,
     default_model: String,
     #[serde(default)]
     context_window_tokens: Option<i64>,
@@ -61,6 +67,10 @@ pub struct UpdateRequest {
     base_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     api_key: Option<Option<String>>,
+    #[serde(default)]
+    headers: Option<BTreeMap<String, Option<String>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    user_agent: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     default_model: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -82,6 +92,10 @@ pub struct DiscoverRequest {
     base_url: Option<String>,
     api_key: String,
     #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    user_agent: Option<String>,
+    #[serde(default)]
     default_model: Option<String>,
 }
 
@@ -94,6 +108,10 @@ pub struct TestModelRequest {
     base_url: Option<String>,
     #[serde(default)]
     api_key: Option<String>,
+    #[serde(default)]
+    headers: Option<BTreeMap<String, Option<String>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    user_agent: Option<Option<String>>,
     model: String,
 }
 
@@ -111,6 +129,8 @@ pub struct ProviderResponse {
     kind: String,
     base_url: Option<String>,
     api_key_masked: String,
+    headers_masked: BTreeMap<String, String>,
+    user_agent: Option<String>,
     default_model: String,
     context_window_tokens: Option<i64>,
     context_output_reserve_ratio: Option<f64>,
@@ -129,6 +149,8 @@ struct ProviderRow {
     kind: String,
     base_url: Option<String>,
     api_key: String,
+    headers_json: String,
+    user_agent: Option<String>,
     default_model: String,
     context_window_tokens: Option<i64>,
     context_output_reserve_ratio: Option<f64>,
@@ -144,12 +166,15 @@ struct ProviderRow {
 impl From<ProviderRow> for ProviderResponse {
     fn from(row: ProviderRow) -> Self {
         let models = stored_models(&row);
+        let headers_masked = mask_headers(&stored_headers(&row));
         Self {
             id: row.id,
             name: row.name,
             kind: row.kind,
             base_url: row.base_url,
             api_key_masked: mask_api_key(&row.api_key),
+            headers_masked,
+            user_agent: row.user_agent,
             default_model: row.default_model,
             context_window_tokens: row.context_window_tokens,
             context_output_reserve_ratio: row.context_output_reserve_ratio,
@@ -173,6 +198,9 @@ pub async fn create(
     let kind = validate_kind(&body.kind)?;
     let base_url = normalize_nullable_text(body.base_url.as_deref());
     let api_key = validate_api_key(&body.api_key)?;
+    let headers = validate_headers(body.headers)?;
+    let headers_json = serialize_headers(&headers)?;
+    let user_agent = validate_user_agent(body.user_agent.as_deref())?;
     let default_model = validate_default_model(&body.default_model)?;
     validate_context_window(body.context_window_tokens)?;
     validate_reserve_ratio(body.context_output_reserve_ratio)?;
@@ -205,10 +233,10 @@ pub async fn create(
 
     sqlx::query(
         "INSERT INTO llm_providers \
-         (id, owner_id, name, kind, base_url, api_key, default_model, \
+         (id, owner_id, name, kind, base_url, api_key, headers_json, user_agent, default_model, \
           context_window_tokens, context_output_reserve_ratio, description, \
           reasoning_passback, models_json, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
@@ -216,6 +244,8 @@ pub async fn create(
     .bind(&kind)
     .bind(&base_url)
     .bind(&api_key)
+    .bind(&headers_json)
+    .bind(&user_agent)
     .bind(&default_model)
     .bind(default_config.context_window_tokens)
     .bind(default_config.context_output_reserve_ratio)
@@ -290,6 +320,15 @@ pub async fn update(
         Some(Some(ref raw)) if !raw.trim().is_empty() => validate_api_key(raw)?,
         _ => existing.api_key.clone(),
     };
+    let headers = match body.headers {
+        Some(provided) => resolve_header_updates(provided, &stored_headers(&existing))?,
+        None => stored_headers(&existing),
+    };
+    let headers_json = serialize_headers(&headers)?;
+    let user_agent = match body.user_agent {
+        Some(ref provided) => validate_user_agent(provided.as_deref())?,
+        None => existing.user_agent.clone(),
+    };
     let default_model = match body.default_model {
         Some(Some(ref raw)) => validate_default_model(raw)?,
         _ => existing.default_model.clone(),
@@ -359,7 +398,7 @@ pub async fn update(
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE llm_providers SET \
-         name = ?, kind = ?, base_url = ?, api_key = ?, default_model = ?, \
+         name = ?, kind = ?, base_url = ?, api_key = ?, headers_json = ?, user_agent = ?, default_model = ?, \
          context_window_tokens = ?, context_output_reserve_ratio = ?, description = ?, \
          reasoning_passback = ?, models_json = ?, updated_at = ? \
          WHERE id = ? AND owner_id = ?",
@@ -368,6 +407,8 @@ pub async fn update(
     .bind(&kind)
     .bind(&base_url)
     .bind(&api_key)
+    .bind(&headers_json)
+    .bind(&user_agent)
     .bind(&default_model)
     .bind(context_window_tokens)
     .bind(context_output_reserve_ratio)
@@ -419,10 +460,13 @@ pub async fn models(
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let provider_id = validate_uuid(&provider_id, "provider id")?;
     let provider = load_active_owned(state.db.pool(), &provider_id, &owner_id).await?;
+    let custom_headers = stored_headers(&provider);
     let config = ProviderConfig {
         kind: provider.kind,
         base_url: provider.base_url,
         api_key: provider.api_key,
+        headers: custom_headers,
+        user_agent: provider.user_agent,
         default_model: provider.default_model,
         reasoning_passback: provider.reasoning_passback != 0,
         context_window_tokens: provider.context_window_tokens,
@@ -441,6 +485,8 @@ pub async fn discover(
         kind: validate_kind(&body.kind)?,
         base_url: normalize_nullable_text(body.base_url.as_deref()),
         api_key: validate_api_key(&body.api_key)?,
+        headers: validate_headers(body.headers)?,
+        user_agent: validate_user_agent(body.user_agent.as_deref())?,
         default_model: body
             .default_model
             .as_deref()
@@ -460,25 +506,40 @@ pub async fn test_model(
     Json(body): Json<TestModelRequest>,
 ) -> Result<Json<TestModelResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let stored_key = match body.provider_id.as_deref() {
+    let stored_provider = match body.provider_id.as_deref() {
         Some(provider_id) => {
             let provider_id = validate_uuid(provider_id, "provider id")?;
-            Some(
-                load_active_owned(state.db.pool(), &provider_id, &owner_id)
-                    .await?
-                    .api_key,
-            )
+            Some(load_active_owned(state.db.pool(), &provider_id, &owner_id).await?)
         }
         None => None,
     };
     let api_key = match body.api_key.as_deref() {
         Some(key) if !key.trim().is_empty() => validate_api_key(key)?,
-        _ => stored_key.ok_or_else(|| ApiError::invalid_input("api_key must not be empty"))?,
+        _ => stored_provider
+            .as_ref()
+            .map(|provider| provider.api_key.clone())
+            .ok_or_else(|| ApiError::invalid_input("api_key must not be empty"))?,
+    };
+    let saved_headers = stored_provider
+        .as_ref()
+        .map(stored_headers)
+        .unwrap_or_default();
+    let custom_headers = match body.headers {
+        Some(provided) => resolve_header_updates(provided, &saved_headers)?,
+        None => saved_headers,
+    };
+    let user_agent = match body.user_agent {
+        Some(ref provided) => validate_user_agent(provided.as_deref())?,
+        None => stored_provider
+            .as_ref()
+            .and_then(|provider| provider.user_agent.clone()),
     };
     let config = ProviderConfig {
         kind: validate_kind(&body.kind)?,
         base_url: normalize_nullable_text(body.base_url.as_deref()),
         api_key,
+        headers: custom_headers,
+        user_agent,
         default_model: validate_default_model(&body.model)?,
         reasoning_passback: false,
         context_window_tokens: None,
@@ -563,12 +624,14 @@ fn safe_model_test_error(error: &anyhow::Error) -> String {
 }
 
 async fn discover_provider_models(config: ProviderConfig) -> Result<Vec<ModelInfo>, ApiError> {
-    let client = reqwest::Client::builder()
-        .timeout(MODEL_CATALOG_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .referer(false)
-        .build()
-        .map_err(|_| ApiError::internal("failed to create provider model discovery client"))?;
+    let client = build_http_client(
+        &config,
+        reqwest::Client::builder()
+            .timeout(MODEL_CATALOG_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false),
+    )
+    .map_err(|_| ApiError::internal("failed to create provider model discovery client"))?;
     let models = discover_models(&client, &config)
         .await
         .map_err(model_catalog_api_error)?;
@@ -610,6 +673,80 @@ async fn fetch_row(pool: &SqlitePool, provider_id: &str) -> Result<Option<Provid
         .fetch_optional(pool)
         .await
         .map_err(|_| ApiError::internal("database error"))
+}
+
+fn validate_headers(
+    headers: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ApiError> {
+    if headers.len() > 64 {
+        return Err(ApiError::invalid_input(
+            "headers must contain at most 64 entries",
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut validated = BTreeMap::new();
+    for (raw_name, value) in headers {
+        let name = raw_name.trim();
+        let parsed_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| ApiError::invalid_input("header name is invalid"))?;
+        if !seen.insert(parsed_name.as_str().to_string()) {
+            return Err(ApiError::invalid_input(
+                "header names must be unique ignoring case",
+            ));
+        }
+        if value.len() > 8_192 || HeaderValue::from_str(&value).is_err() {
+            return Err(ApiError::invalid_input("header value is invalid"));
+        }
+        validated.insert(name.to_string(), value);
+    }
+    Ok(validated)
+}
+
+fn resolve_header_updates(
+    provided: BTreeMap<String, Option<String>>,
+    stored: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ApiError> {
+    let mut resolved = BTreeMap::new();
+    for (name, value) in provided {
+        let value = match value {
+            Some(value) => value,
+            None => stored
+                .iter()
+                .find(|(stored_name, _)| stored_name.eq_ignore_ascii_case(&name))
+                .map(|(_, value)| value.clone())
+                .ok_or_else(|| {
+                    ApiError::invalid_input("a value is required for each new header")
+                })?,
+        };
+        resolved.insert(name, value);
+    }
+    validate_headers(resolved)
+}
+
+fn validate_user_agent(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(value) = normalize_nullable_text(raw) else {
+        return Ok(None);
+    };
+    if value.len() > 1_024 || HeaderValue::from_str(&value).is_err() {
+        return Err(ApiError::invalid_input("user_agent is invalid"));
+    }
+    Ok(Some(value))
+}
+
+fn stored_headers(row: &ProviderRow) -> BTreeMap<String, String> {
+    provider_headers_from_json(Some(&row.headers_json))
+}
+
+fn serialize_headers(headers: &BTreeMap<String, String>) -> Result<String, ApiError> {
+    serde_json::to_string(headers)
+        .map_err(|_| ApiError::internal("failed to serialize provider headers"))
+}
+
+fn mask_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .map(|(name, value)| (name.clone(), mask_api_key(value)))
+        .collect()
 }
 
 fn validate_name(raw: &str) -> Result<String, ApiError> {

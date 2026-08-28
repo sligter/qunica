@@ -436,6 +436,8 @@ export interface ProviderModelTestRequest {
   kind: ProviderKind
   base_url?: string | null
   api_key?: string
+  headers?: Record<string, string | null>
+  user_agent?: string | null
   model: string
 }
 
@@ -451,6 +453,8 @@ export interface LLMProviderRead {
   kind: ProviderKind
   base_url: string | null
   api_key_masked: string
+  headers_masked: Record<string, string>
+  user_agent: string | null
   default_model: string
   context_window_tokens: number | null
   context_output_reserve_ratio: number | null
@@ -466,6 +470,8 @@ export interface LLMProviderCreate {
   kind: ProviderKind
   base_url?: string | null
   api_key: string
+  headers?: Record<string, string>
+  user_agent?: string | null
   default_model: string
   context_window_tokens?: number | null
   context_output_reserve_ratio?: number | null
@@ -479,6 +485,8 @@ export interface LLMProviderUpdate {
   kind?: ProviderKind
   base_url?: string | null
   api_key?: string | null
+  headers?: Record<string, string | null>
+  user_agent?: string | null
   default_model?: string | null
   context_window_tokens?: number | null
   context_output_reserve_ratio?: number | null
@@ -688,6 +696,7 @@ export interface GroupAgentRead {
   workspace_mode: GroupWorkspaceMode
   /** Derived from `workspace_mode`: true unless the agent is isolated. */
   share_group_workspace: boolean
+  prompt_enhancement_available?: boolean
   context_usage: ContextUsage | null
   status: string
   joined_at: string
@@ -709,6 +718,16 @@ export interface GroupAgentWorkspaceSharingUpdate {
 
 export interface ClearGroupMessagesResponse {
   cleared_count: number
+}
+
+export interface GroupPromptEnhanceRequest {
+  prompt: string
+  thread_id?: string | null
+  agent_id?: string | null
+}
+
+export interface GroupPromptEnhanceResponse {
+  prompt: string
 }
 
 export interface GroupThread {

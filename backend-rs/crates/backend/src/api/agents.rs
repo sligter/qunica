@@ -24,7 +24,8 @@ use crate::acp::{
 };
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::llm::{
-    build_provider, model_reasoning_passback, ChatDelta, ChatMessage, ChatRequest, ProviderConfig,
+    build_provider, model_reasoning_passback, provider_headers_from_json, ChatDelta, ChatMessage,
+    ChatRequest, ProviderConfig,
 };
 use crate::process::tokio_command_no_window;
 
@@ -269,6 +270,8 @@ struct PromptProviderRow {
     kind: String,
     base_url: Option<String>,
     api_key: String,
+    headers_json: String,
+    user_agent: Option<String>,
     default_model: String,
     reasoning_passback: i64,
     models_json: Option<String>,
@@ -319,7 +322,7 @@ pub async fn generate_system_prompt(
     let provider_id =
         validate_provider(state.db.pool(), body.llm_provider_id.trim(), &owner_id).await?;
     let provider_row: PromptProviderRow = sqlx::query_as(
-        "SELECT kind, base_url, api_key, default_model, reasoning_passback, models_json \
+        "SELECT kind, base_url, api_key, headers_json, user_agent, default_model, reasoning_passback, models_json \
          FROM llm_providers WHERE id = ?",
     )
     .bind(&provider_id)
@@ -369,6 +372,8 @@ pub async fn generate_system_prompt(
         kind: provider_row.kind,
         base_url: provider_row.base_url,
         api_key: provider_row.api_key,
+        headers: provider_headers_from_json(Some(&provider_row.headers_json)),
+        user_agent: provider_row.user_agent,
         default_model: provider_row.default_model,
         reasoning_passback,
         context_window_tokens: None,

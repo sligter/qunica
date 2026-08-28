@@ -20,8 +20,16 @@ impl GeminiProvider {
     /// Create a provider targeting `base_url` (the API root, e.g.
     /// `https://generativelanguage.googleapis.com`).
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::with_client(reqwest::Client::new(), base_url, api_key)
+    }
+
+    pub(crate) fn with_client(
+        client: reqwest::Client,
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: base_url.into(),
             api_key: api_key.into(),
         }

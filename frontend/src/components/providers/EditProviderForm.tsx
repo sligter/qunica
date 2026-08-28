@@ -8,6 +8,12 @@ import {
   ProviderModelsField,
   type ProviderModelDraft,
 } from '@/components/providers/ProviderModelsField'
+import { KeyValueEditor } from '@/components/mcp/KeyValueEditor'
+import {
+  maskedRowsFromRecord,
+  secretRecordFromRows,
+  type KeyValueRow,
+} from '@/components/mcp/keyValueRows'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -26,6 +32,7 @@ function createSchema(required: string) { return z.object({
   kind: z.enum(['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().optional(),
+  user_agent: z.string().optional(),
   description: z.string().optional(),
 }) }
 
@@ -82,6 +89,9 @@ export function EditProviderForm({
     providerModelsToDrafts(provider),
   )
   const [defaultModel, setDefaultModel] = useState(provider.default_model)
+  const [headerRows, setHeaderRows] = useState<KeyValueRow[]>(() =>
+    maskedRowsFromRecord(provider.headers_masked),
+  )
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
   const validationLanguage = useRef(i18n.resolvedLanguage)
 
@@ -92,6 +102,7 @@ export function EditProviderForm({
       kind: provider.kind,
       base_url: provider.base_url ?? '',
       api_key: '',
+      user_agent: provider.user_agent ?? '',
       description: provider.description ?? '',
     },
   })
@@ -112,7 +123,10 @@ export function EditProviderForm({
   const dirty =
     form.formState.isDirty ||
     defaultModel !== provider.default_model ||
-    JSON.stringify(models) !== JSON.stringify(initialModels)
+    JSON.stringify(models) !== JSON.stringify(initialModels) ||
+    headerRows.some((row) => row.dirty) ||
+    JSON.stringify(headerRows.map((row) => row.key))
+      !== JSON.stringify(Object.keys(provider.headers_masked))
 
   useEffect(() => {
     onDirtyChange?.(dirty)
@@ -140,6 +154,8 @@ export function EditProviderForm({
         kind: values.kind,
         base_url: values.base_url || null,
         api_key: values.api_key ? values.api_key : undefined,
+        headers: secretRecordFromRows(headerRows),
+        user_agent: values.user_agent || null,
         default_model: resolvedDefault,
         models: normalizedModels.map((model) => ({
           id: model.id,
@@ -213,6 +229,29 @@ export function EditProviderForm({
         </p>
       </div>
 
+      <div className="space-y-1.5">
+        <Label htmlFor={`provider-user-agent-${provider.id}`}>{t('fields.userAgent')}</Label>
+        <Input
+          id={`provider-user-agent-${provider.id}`}
+          placeholder="Qunica/1.0"
+          {...form.register('user_agent')}
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>{t('fields.headers')}</Label>
+        <KeyValueEditor
+          rows={headerRows}
+          onChange={setHeaderRows}
+          keyPlaceholder="X-Organization"
+          valuePlaceholder={t('form.headerValuePlaceholder')}
+          addLabel={t('form.addHeader')}
+          secret
+          storedHints={provider.headers_masked}
+        />
+        <p className="text-2xs text-muted-foreground">{t('form.headersMaskedHint')}</p>
+      </div>
+
       <ProviderModelsField
         models={models}
         defaultModel={defaultModel}
@@ -230,6 +269,8 @@ export function EditProviderForm({
             kind: values.kind,
             base_url: values.base_url || null,
             api_key: values.api_key?.trim() || undefined,
+            headers: secretRecordFromRows(headerRows),
+            user_agent: values.user_agent || null,
             model,
           })
         }}

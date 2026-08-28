@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, FileText, Image, Paperclip, RotateCw, Square, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { ArrowUp, Check, ChevronDown, FileText, Image, Paperclip, RotateCw, Sparkles, Square, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
@@ -73,6 +73,8 @@ type ComposerNotice = {
 
 interface ComposerProps {
   onSend: (input: MessageSendInput) => void | Promise<void>
+  onEnhance?: (prompt: string, agentId?: string) => Promise<string>
+  enhanceAgents?: GroupAgentRead[]
   onCancel?: () => void
   isStreaming?: boolean
   hint?: string
@@ -102,6 +104,29 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 10
+
+/**
+ * Hand-resizing bounds for the text area. The native `resize-y` handle sat in
+ * the middle of the card — below the text, above the toolbar — so it read as a
+ * rendering glitch; the grip on the card's top edge replaces it. The composer
+ * is anchored to the bottom of the window, so it grows upward, and it never
+ * takes more than half the window.
+ */
+const MIN_TEXTAREA_HEIGHT = 40
+const MAX_TEXTAREA_HEIGHT_RATIO = 0.5
+/** One line of text per arrow key, for resizing without a pointer. */
+const KEYBOARD_RESIZE_STEP = 20
+
+function maxTextareaHeight() {
+  return Math.max(
+    MIN_TEXTAREA_HEIGHT,
+    Math.round(window.innerHeight * MAX_TEXTAREA_HEIGHT_RATIO),
+  )
+}
+
+function clampTextareaHeight(height: number) {
+  return Math.min(maxTextareaHeight(), Math.max(MIN_TEXTAREA_HEIGHT, Math.round(height)))
+}
 
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`
@@ -136,6 +161,78 @@ function isRecognizedDrop(dataTransfer: DataTransfer, allowConversationDrop: boo
     || types.includes(WORKSPACE_ITEM_MIME)
     || types.includes('text/plain')
     || (allowConversationDrop && types.includes(CONVERSATION_ID_MIME))
+}
+
+/**
+ * Small menu that opens above the toolbar. The toolbar has room for icons, not
+ * for lists, so anything with more than a couple of choices lives in here
+ * instead of taking a permanent slice of the row.
+ */
+function ComposerMenu({
+  label,
+  closeLabel,
+  onClose,
+  children,
+}: {
+  label: string
+  closeLabel: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 z-40 cursor-default"
+        aria-label={closeLabel}
+        onClick={onClose}
+      />
+      <div
+        role="listbox"
+        aria-label={label}
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return
+          event.stopPropagation()
+          onClose()
+        }}
+        className="absolute bottom-full left-0 z-50 mb-2 max-h-56 w-56 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+      >
+        {children}
+      </div>
+    </>
+  )
+}
+
+function ComposerMenuItem({
+  children,
+  onClick,
+  selected,
+  title,
+}: {
+  children: ReactNode
+  onClick: () => void
+  /** Omitted for menus that act rather than choose, which need no check column. */
+  selected?: boolean
+  title?: string
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected ?? false}
+      title={title}
+      onClick={onClick}
+      className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+    >
+      {selected === undefined ? null : (
+        <Check
+          className={cn('h-3.5 w-3.5 shrink-0 text-primary', !selected && 'opacity-0')}
+          aria-hidden="true"
+        />
+      )}
+      <span className="truncate">{children}</span>
+    </button>
+  )
 }
 
 function PendingAttachmentRow({
@@ -184,6 +281,8 @@ function PendingAttachmentRow({
 
 export function Composer({
   onSend,
+  onEnhance,
+  enhanceAgents = [],
   onCancel,
   isStreaming,
   hint,
@@ -206,6 +305,9 @@ export function Composer({
   const [notice, setNotice] = useState<ComposerNotice | null>(null)
   const [isDragActive, setIsDragActive] = useState(false)
   const [isSending, setIsSending] = useState(false)
+  const [isEnhancing, setIsEnhancing] = useState(false)
+  const [enhanceError, setEnhanceError] = useState<string | null>(null)
+  const [enhanceAgentId, setEnhanceAgentId] = useState('')
   const [mentionQuery, setMentionQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
   // null means "whatever the agent is configured with"; only an explicit pick
@@ -217,9 +319,13 @@ export function Composer({
   const effortSupported = supportsReasoningEffort
   const [mentionStart, setMentionStart] = useState(-1)
   const [agentSummaryOpen, setAgentSummaryOpen] = useState(false)
+  const [enhanceAgentOpen, setEnhanceAgentOpen] = useState(false)
+  const [isResizing, setIsResizing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const autoTextareaHeightRef = useRef<number | null>(null)
-  const manualTextareaHeightRef = useRef<number | null>(null)
+  // null means "grow with the text"; a number is a height the user set by hand
+  // and we stop touching until they reset it.
+  const manualHeightRef = useRef<number | null>(null)
+  const endResizeRef = useRef<(() => void) | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const attachmentsRef = useRef<PendingAttachment[]>([])
   const valueRef = useRef(value)
@@ -275,29 +381,93 @@ export function Composer({
     const textarea = textareaRef.current
     if (!textarea) return
 
-    if (manualTextareaHeightRef.current !== null) {
-      textarea.style.height = `${manualTextareaHeightRef.current}px`
-      return
-    }
-
-    const renderedHeight = textarea.getBoundingClientRect().height
-    if (
-      autoTextareaHeightRef.current !== null
-      && Math.abs(renderedHeight - autoTextareaHeightRef.current) > 1
-    ) {
-      manualTextareaHeightRef.current = renderedHeight
-      textarea.style.height = `${renderedHeight}px`
+    const manual = manualHeightRef.current
+    if (manual !== null) {
+      // Clamp on the way out rather than in the ref: a hand-set height that a
+      // shrinking window cut short should come back when the window grows.
+      textarea.style.height = `${clampTextareaHeight(manual)}px`
       return
     }
 
     textarea.style.height = 'auto'
-    textarea.style.height = `${textarea.scrollHeight}px`
-    autoTextareaHeightRef.current = textarea.getBoundingClientRect().height
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maxTextareaHeight())}px`
   }, [])
 
   useEffect(() => {
     resizeTextarea()
   }, [value, resizeTextarea])
+
+  useEffect(() => {
+    window.addEventListener('resize', resizeTextarea)
+    return () => window.removeEventListener('resize', resizeTextarea)
+  }, [resizeTextarea])
+
+  // A drag that outlives the composer would keep writing to a detached node.
+  useEffect(() => () => endResizeRef.current?.(), [])
+
+  const startResize = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const textarea = textareaRef.current
+    if (event.button !== 0 || !textarea) return
+    event.preventDefault()
+
+    const startY = event.clientY
+    const startHeight = Math.max(
+      MIN_TEXTAREA_HEIGHT,
+      manualHeightRef.current ?? textarea.getBoundingClientRect().height,
+    )
+    setIsResizing(true)
+
+    const onMove = (moveEvent: PointerEvent) => {
+      // The card sits at the bottom of the window and grows upward, so a grip
+      // dragged up has to make the box taller.
+      const height = clampTextareaHeight(startHeight + (startY - moveEvent.clientY))
+      manualHeightRef.current = height
+      textarea.style.height = `${height}px`
+    }
+    const onEnd = () => {
+      endResizeRef.current = null
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onEnd)
+      window.removeEventListener('pointercancel', onEnd)
+      setIsResizing(false)
+    }
+
+    endResizeRef.current = onEnd
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onEnd)
+    window.addEventListener('pointercancel', onEnd)
+  }, [])
+
+  /** Back to growing with the text — the grip's only way out of a hand-set height. */
+  const resetResize = useCallback(() => {
+    manualHeightRef.current = null
+    resizeTextarea()
+  }, [resizeTextarea])
+
+  const handleResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      resetResize()
+      return
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    event.preventDefault()
+    const current = manualHeightRef.current ?? textarea.getBoundingClientRect().height
+    const step = event.key === 'ArrowUp' ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP
+    manualHeightRef.current = clampTextareaHeight(Math.max(MIN_TEXTAREA_HEIGHT, current) + step)
+    resizeTextarea()
+  }, [resetResize, resizeTextarea])
+
+  useEffect(() => {
+    if (
+      enhanceAgentId
+      && !enhanceAgents.some((agent) => agent.agent_id === enhanceAgentId)
+    ) {
+      setEnhanceAgentId('')
+    }
+  }, [enhanceAgentId, enhanceAgents])
 
   const insertTextAtCursor = useCallback((inserted: string) => {
     const textarea = textareaRef.current
@@ -465,7 +635,7 @@ export function Composer({
   }, [addWorkspaceFiles, ensureWorkspaceContext, insertDirectoryPaths, resolvedConversationId, scope, showNotice, token])
 
   const send = async () => {
-    if (isSending) return
+    if (isSending || isEnhancing) return
     if (attachmentsRef.current.some((attachment) => (
       attachment.kind === 'upload' && attachment.status === 'uploading'
     ))) return
@@ -507,6 +677,22 @@ export function Composer({
       })
     } finally {
       setIsSending(false)
+    }
+  }
+
+  const enhance = async () => {
+    const prompt = valueRef.current.trim()
+    if (!onEnhance || !prompt || isEnhancing) return
+    const revision = draftRevisionRef.current
+    setEnhanceError(null)
+    setIsEnhancing(true)
+    try {
+      const enhanced = (await onEnhance(prompt, enhanceAgentId || undefined)).trim()
+      if (enhanced && draftRevisionRef.current === revision) updateValue(enhanced)
+    } catch (error) {
+      setEnhanceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsEnhancing(false)
     }
   }
 
@@ -758,11 +944,19 @@ export function Composer({
   const showStopAsPrimary = Boolean(isStreaming) && !hasText
   const noticeText = notice ? t(notice.key, notice.values ?? {}) : ''
   const liveStatus = notice?.tone === 'status' ? noticeText : ''
+  const selectedEnhanceAgent = enhanceAgents.find(
+    (agent) => agent.agent_id === enhanceAgentId,
+  ) ?? null
+  const enhanceAgentLabel = selectedEnhanceAgent?.display_name
+    ?? t('composer.enhanceAgentAuto')
+  const visibleAgents = groupAgents.slice(0, 3)
+  const hiddenAgentCount = groupAgents.length - visibleAgents.length
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-1">
       <div className="mx-auto w-full max-w-6xl">
         {uploadError ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: t(uploadError) })}</p> : null}
+        {enhanceError ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('composer.enhanceFailed', { message: enhanceError })}</p> : null}
         {notice?.tone === 'error' ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{noticeText}</p> : null}
         {disabledReason ? (
           <p className="mb-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
@@ -809,10 +1003,38 @@ export function Composer({
             aria-describedby="composer-drop-status"
             disabled={isDisabled}
             className={cn(
-              'block max-h-[50vh] min-h-10 w-full resize-y overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-3.5',
+              // Height is driven from JS, so the native handle is off: it drew
+              // itself between the text and the toolbar instead of on an edge.
+              'block max-h-[50vh] min-h-10 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-4',
               'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
             )}
           />
+          {/* Sits in the text area's top padding so it costs no height, and on
+              the card's edge so it never looks like it is floating mid-card.
+              Placed after the text area so Tab reaches the message first. */}
+          <button
+            type="button"
+            onPointerDown={startResize}
+            onDoubleClick={resetResize}
+            onKeyDown={handleResizeKeyDown}
+            aria-label={t('composer.resize')}
+            title={t('composer.resizeTitle')}
+            className={cn(
+              'group absolute left-1/2 top-0 z-20 flex h-3.5 w-16 -translate-x-1/2 cursor-ns-resize items-center justify-center',
+              'rounded-b focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              isDisabled && 'pointer-events-none opacity-0',
+            )}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                'h-1 w-9 rounded-full transition-colors',
+                isResizing
+                  ? 'bg-primary/70'
+                  : 'bg-border group-hover:bg-muted-foreground/60 group-focus-visible:bg-muted-foreground/60',
+              )}
+            />
+          </button>
           {attachments.length > 0 ? (
             <div className="space-y-1 px-3 pb-1">
               {attachments.map((attachment) => {
@@ -820,7 +1042,7 @@ export function Composer({
               })}
             </div>
           ) : null}
-          <div className="flex items-center gap-1.5 px-2.5 pb-2.5 pt-1">
+          <div className="flex items-center gap-1 px-2.5 pb-2 pt-0.5">
             {hasWorkspace ? (
               <>
                 <input
@@ -851,62 +1073,123 @@ export function Composer({
                 </Button>
               </>
             ) : null}
+            {onEnhance ? (
+              <div className="relative flex shrink-0 items-center">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    'h-8 rounded-full hover:text-foreground',
+                    selectedEnhanceAgent ? 'text-primary' : 'text-muted-foreground',
+                    // A caret follows only when there is a member to choose, so
+                    // the pair reads as one control instead of two buttons.
+                    enhanceAgents.length > 0 ? 'w-7 rounded-r-none' : 'w-8',
+                  )}
+                  onClick={() => void enhance()}
+                  disabled={isDisabled || isSending || isEnhancing || !hasText}
+                  aria-label={isEnhancing ? t('composer.enhancing') : t('composer.enhance')}
+                  aria-busy={isEnhancing}
+                  title={enhanceAgents.length > 0
+                    ? t('composer.enhanceWith', { name: enhanceAgentLabel })
+                    : t('composer.enhance')}
+                >
+                  <Sparkles className={cn('h-4 w-4', isEnhancing && 'animate-pulse')} />
+                </Button>
+                {enhanceAgents.length > 0 ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      'h-8 w-5 rounded-full rounded-l-none hover:text-foreground',
+                      selectedEnhanceAgent ? 'text-primary' : 'text-muted-foreground',
+                    )}
+                    onClick={() => setEnhanceAgentOpen((open) => !open)}
+                    disabled={isDisabled || isSending || isEnhancing}
+                    aria-label={t('composer.enhanceAgent')}
+                    aria-expanded={enhanceAgentOpen}
+                    aria-haspopup="listbox"
+                    title={t('composer.enhanceWith', { name: enhanceAgentLabel })}
+                  >
+                    <ChevronDown className="h-3 w-3" />
+                  </Button>
+                ) : null}
+                {enhanceAgentOpen ? (
+                  <ComposerMenu
+                    label={t('composer.enhanceAgent')}
+                    closeLabel={t('composer.closeEnhanceAgents')}
+                    onClose={() => setEnhanceAgentOpen(false)}
+                  >
+                    <ComposerMenuItem
+                      selected={!selectedEnhanceAgent}
+                      onClick={() => {
+                        setEnhanceAgentId('')
+                        setEnhanceAgentOpen(false)
+                      }}
+                    >
+                      {t('composer.enhanceAgentAuto')}
+                    </ComposerMenuItem>
+                    {enhanceAgents.map((agent) => (
+                      <ComposerMenuItem
+                        key={agent.agent_id}
+                        selected={agent.agent_id === enhanceAgentId}
+                        onClick={() => {
+                          setEnhanceAgentId(agent.agent_id)
+                          setEnhanceAgentOpen(false)
+                        }}
+                      >
+                        {agent.display_name}
+                      </ComposerMenuItem>
+                    ))}
+                  </ComposerMenu>
+                ) : null}
+              </div>
+            ) : null}
             {allowMentions && groupAgents.length > 0 ? (
               <div className="relative min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-1 px-1 text-2xs text-muted-foreground">
-                  {groupAgents.slice(0, 3).map((agent) => (
+                <div className="flex min-w-0 items-center gap-1 pl-1">
+                  {visibleAgents.map((agent) => (
                     <button
                       key={agent.id}
                       type="button"
-                      className="truncate whitespace-nowrap rounded hover:text-foreground"
+                      className="max-w-36 truncate whitespace-nowrap rounded-full bg-muted/60 px-2 py-0.5 text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                       title={t('composer.mentionTitle', { name: agent.display_name })}
                       onClick={() => insertTextAtCursor(`@${agent.display_name}`)}
                     >
                       @{agent.display_name}
                     </button>
                   ))}
-                  {groupAgents.length > 3 ? (
-                    <Button
+                  {hiddenAgentCount > 0 ? (
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 shrink-0 gap-0.5 px-1 text-2xs"
+                      className="flex shrink-0 items-center gap-0.5 rounded-full bg-muted/60 py-0.5 pl-2 pr-1 text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                       onClick={() => setAgentSummaryOpen((open) => !open)}
                       aria-expanded={agentSummaryOpen}
-                      aria-label={t('composer.showMore', { count: groupAgents.length - 3 })}
+                      aria-haspopup="listbox"
+                      aria-label={t('composer.showMore', { count: hiddenAgentCount })}
                     >
-                      +{groupAgents.length - 3}
+                      +{hiddenAgentCount}
                       <ChevronDown className="h-3 w-3" />
-                    </Button>
+                    </button>
                   ) : null}
                 </div>
                 {agentSummaryOpen ? (
-                  <>
-                    <button
-                      type="button"
-                      className="fixed inset-0 z-40 cursor-default"
-                      aria-label={t('composer.closeAgents')}
-                      onClick={() => setAgentSummaryOpen(false)}
-                    />
-                    <div
-                      role="listbox"
-                      aria-label={t('composer.membersList')}
-                      className="absolute bottom-full left-0 z-50 mb-2 max-h-48 w-64 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md"
-                    >
-                      {groupAgents.map((agent) => (
-                        <button
-                          key={agent.id}
-                          type="button"
-                          role="option"
-                          className="block w-full truncate rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
-                          title={t('composer.mentionTitle', { name: agent.display_name })}
-                          onClick={() => insertTextAtCursor(`@${agent.display_name}`)}
-                        >
-                          @{agent.display_name}
-                        </button>
-                      ))}
-                    </div>
-                  </>
+                  <ComposerMenu
+                    label={t('composer.membersList')}
+                    closeLabel={t('composer.closeAgents')}
+                    onClose={() => setAgentSummaryOpen(false)}
+                  >
+                    {groupAgents.map((agent) => (
+                      <ComposerMenuItem
+                        key={agent.id}
+                        title={t('composer.mentionTitle', { name: agent.display_name })}
+                        onClick={() => insertTextAtCursor(`@${agent.display_name}`)}
+                      >
+                        @{agent.display_name}
+                      </ComposerMenuItem>
+                    ))}
+                  </ComposerMenu>
                 ) : null}
               </div>
             ) : hint ? (
@@ -917,8 +1200,8 @@ export function Composer({
               <div className="flex-1" />
             )}
             {effortSupported ? (
-              <div className="flex w-36 shrink-0 items-center gap-2 px-1">
-                <span className="w-11 truncate text-right text-2xs text-muted-foreground">
+              <div className="flex w-32 shrink-0 items-center gap-1.5 pl-1">
+                <span className="w-10 shrink-0 truncate text-right text-2xs text-muted-foreground">
                   {effortOverride
                     ? t(`composer.effort.${effortOverride}`)
                     : t('composer.effort.auto')}
@@ -933,7 +1216,7 @@ export function Composer({
                     const value = Number(event.target.value)
                     setEffortOverride(EFFORT_LEVELS[value - 1] ?? null)
                   }}
-                  className="h-1.5 min-w-0 flex-1 cursor-pointer accent-primary"
+                  className="h-1 min-w-0 flex-1 cursor-pointer accent-primary"
                   aria-label={t('composer.effort.label')}
                   aria-valuetext={effortOverride
                     ? t(`composer.effort.${effortOverride}`)
@@ -971,7 +1254,7 @@ export function Composer({
                 size="icon"
                 className="h-8 w-8 shrink-0 rounded-full"
                 onClick={() => void send()}
-                disabled={isDisabled || isSending || hasUploading || (!hasText && !hasUploaded)}
+                disabled={isDisabled || isSending || isEnhancing || hasUploading || (!hasText && !hasUploaded)}
                 aria-label={t('composer.send')}
                 title={t('composer.sendTitle')}
               >

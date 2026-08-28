@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { PageState } from '@/components/ui/page-state'
 import {
   type ConversationScope,
+  useEnhanceGroupPrompt,
   useConversationMessages,
 } from '@/hooks/useGroupMessages'
 import { usePersistentPaneWidth } from '@/hooks/usePersistentPaneWidth'
@@ -154,6 +155,13 @@ export function ConversationChatView({
   )
   const stateId = threadId ?? conversationId
   const messagesQuery = useConversationMessages(scope, conversationId, threadId)
+  const enhancePrompt = useEnhanceGroupPrompt(conversationId, threadId)
+  const enhancementAgents = useMemo(
+    () => scope === 'groups'
+      ? agents.filter((agent) => agent.prompt_enhancement_available)
+      : [],
+    [agents, scope],
+  )
   const stream = useSendMessageStream(conversationId, {
     scope,
     threadId,
@@ -471,6 +479,13 @@ export function ConversationChatView({
                 scope={scope}
                 isStreaming={isConversationStreaming}
                 onSend={sendOrQueueMessage}
+                onEnhance={enhancementAgents.length > 0
+                  ? async (prompt, agentId) => (await enhancePrompt.mutateAsync({
+                      prompt,
+                      agent_id: agentId ?? null,
+                    })).prompt
+                  : undefined}
+                enhanceAgents={enhancementAgents}
                 onCancel={cancelConversationStream}
                 hint={hint}
                 groupAgents={agents}

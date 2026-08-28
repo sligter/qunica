@@ -101,6 +101,7 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     isFetchingNextPage: false,
     fetchNextPage: vi.fn(),
   }),
+  useEnhanceGroupPrompt: () => ({ mutateAsync: vi.fn() }),
   useClearConversationMessages: () => ({
     mutateAsync: maintenanceMocks.clear,
     isPending: false,

@@ -5,7 +5,13 @@ import type { InfiniteData } from '@tanstack/react-query'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
-import type { ClearGroupMessagesResponse, Message, MessageSendResponse } from '@/types/api'
+import type {
+  ClearGroupMessagesResponse,
+  GroupPromptEnhanceRequest,
+  GroupPromptEnhanceResponse,
+  Message,
+  MessageSendResponse,
+} from '@/types/api'
 
 const MESSAGE_PAGE_SIZE = 30
 const INITIAL_PAGE_PARAM: string | undefined = undefined
@@ -169,6 +175,21 @@ export function useSendGroupMessage() {
     onSuccess: (_, variables) => {
       void qc.invalidateQueries({ queryKey: ['groups', variables.groupId, 'messages'] })
     },
+  })
+}
+
+export function useEnhanceGroupPrompt(groupId: string, threadId?: string) {
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: (body: Omit<GroupPromptEnhanceRequest, 'thread_id'>) =>
+      fetchJson<GroupPromptEnhanceResponse>(`/groups/${groupId}/prompt/enhance`, {
+        method: 'POST',
+        token,
+        body: {
+          ...body,
+          thread_id: threadId ?? null,
+        } satisfies GroupPromptEnhanceRequest,
+      }),
   })
 }
 

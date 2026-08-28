@@ -8,6 +8,11 @@ import {
   ProviderModelsField,
   type ProviderModelDraft,
 } from '@/components/providers/ProviderModelsField'
+import { KeyValueEditor } from '@/components/mcp/KeyValueEditor'
+import {
+  recordFromRows,
+  type KeyValueRow,
+} from '@/components/mcp/keyValueRows'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -27,6 +32,7 @@ function createSchema(required: string) { return z.object({
   kind: z.enum(['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().min(1, required),
+  user_agent: z.string().optional(),
   description: z.string().optional(),
 }) }
 
@@ -62,6 +68,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
     },
   ])
   const [defaultModel, setDefaultModel] = useState('')
+  const [headerRows, setHeaderRows] = useState<KeyValueRow[]>([])
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
   const validationLanguage = useRef(i18n.resolvedLanguage)
 
@@ -72,6 +79,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
       kind: 'openai-compatible',
       base_url: '',
       api_key: '',
+      user_agent: '',
       description: '',
     },
   })
@@ -106,6 +114,8 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         kind: values.kind,
         base_url: values.base_url || null,
         api_key: values.api_key,
+        headers: recordFromRows(headerRows),
+        user_agent: values.user_agent || null,
         default_model: resolvedDefault,
         models: normalizedModels.map((model) => ({
           id: model.id,
@@ -189,6 +199,28 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         )}
       </div>
 
+      <div className="space-y-1.5">
+        <Label htmlFor="provider-user-agent">{t('fields.userAgent')}</Label>
+        <Input
+          id="provider-user-agent"
+          placeholder="Qunica/1.0"
+          {...form.register('user_agent')}
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>{t('fields.headers')}</Label>
+        <KeyValueEditor
+          rows={headerRows}
+          onChange={setHeaderRows}
+          keyPlaceholder="X-Organization"
+          valuePlaceholder={t('form.headerValuePlaceholder')}
+          addLabel={t('form.addHeader')}
+          secret
+        />
+        <p className="text-2xs text-muted-foreground">{t('form.headersHint')}</p>
+      </div>
+
       <ProviderModelsField
         models={models}
         defaultModel={defaultModel}
@@ -208,6 +240,8 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
             kind: values.kind,
             base_url: values.base_url || null,
             api_key: values.api_key,
+            headers: recordFromRows(headerRows),
+            user_agent: values.user_agent || null,
             default_model: defaultModel || null,
           })
         }}
@@ -221,6 +255,8 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
             kind: values.kind,
             base_url: values.base_url || null,
             api_key: values.api_key,
+            headers: recordFromRows(headerRows),
+            user_agent: values.user_agent || null,
             model,
           })
         }}

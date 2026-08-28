@@ -51,9 +51,9 @@ use crate::acp::{
     AcpRunRequest, AcpRuntimeProfile,
 };
 use crate::llm::{
-    build_provider, effort_from_config, model_from_config, vision_enabled, ChatDelta, ChatMessage,
-    ChatRequest, LlmProvider, ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall,
-    ToolDefinition,
+    build_provider, effort_from_config, model_from_config, provider_headers_from_json,
+    vision_enabled, ChatDelta, ChatMessage, ChatRequest, LlmProvider, ProviderConfig,
+    ProviderHttpError, ReasoningEffort, ToolCall, ToolDefinition,
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
@@ -6986,6 +6986,8 @@ struct ProviderRow {
     kind: String,
     base_url: Option<String>,
     api_key: String,
+    headers_json: String,
+    user_agent: Option<String>,
     default_model: String,
     reasoning_passback: i64,
     context_window_tokens: Option<i64>,
@@ -7016,7 +7018,7 @@ pub(crate) async fn resolve_provider_for_binding(
     model_config_json: &Option<String>,
 ) -> anyhow::Result<(ProviderConfig, String)> {
     let row: Option<ProviderRow> = sqlx::query_as(
-        "SELECT name, kind, base_url, api_key, default_model, reasoning_passback, \
+        "SELECT name, kind, base_url, api_key, headers_json, user_agent, default_model, reasoning_passback, \
                 context_window_tokens, context_output_reserve_ratio, models_json \
          FROM llm_providers WHERE id = ? AND owner_id = ? AND status = 'active'",
     )
@@ -7037,12 +7039,15 @@ pub(crate) async fn resolve_provider_for_binding(
     // Agent-level overrides in model_config_json win over the provider defaults.
     let (window_override, reserve_override) = context_window_override(model_config_json.as_deref());
 
+    let headers = provider_headers_from_json(Some(&row.headers_json));
     let name = row.name;
     Ok((
         ProviderConfig {
             kind: row.kind,
             base_url: row.base_url,
             api_key: row.api_key,
+            headers,
+            user_agent: row.user_agent,
             default_model: row.default_model,
             reasoning_passback,
             context_window_tokens: window_override

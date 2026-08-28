@@ -369,6 +369,8 @@ mod tests {
             kind: kind.to_string(),
             base_url: base_url.map(str::to_string),
             api_key: "catalog-secret".to_string(),
+            headers: Default::default(),
+            user_agent: None,
             default_model: "saved-default".to_string(),
             reasoning_passback: false,
             context_window_tokens: None,
