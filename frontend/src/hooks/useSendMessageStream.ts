@@ -673,6 +673,7 @@ export function useSendMessageStream(
           body: message,
           token,
           handlers: {
+          onOpen: () => clearRetry(id),
           onEvent: (event) => {
             clearRetry(id)
             const streamId = event.stream_id

@@ -237,6 +237,24 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
   })
 
+  it('dims files and folders ignored by Git', () => {
+    renderTab({
+      files: [
+        { ...rawFolder, ignored: true },
+        { ...rawFile, ignored: true },
+        notesFile,
+      ],
+    })
+
+    for (const name of [rawFolder.name, rawFile.name]) {
+      expect(screen.getByText(name).closest('button')).toHaveAttribute('data-git-ignored', 'true')
+      expect(screen.getByText(name).closest('button')).toHaveClass('opacity-60')
+    }
+    expect(screen.getByText(notesFile.name).closest('button')).not.toHaveAttribute(
+      'data-git-ignored',
+    )
+  })
+
   it('opens multiple files as editor tabs when editor mode is selected', async () => {
     const user = userEvent.setup()
     const firstGroup = renderTab({ files: [rawFile, notesFile] })

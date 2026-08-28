@@ -5,17 +5,14 @@
 //! its bounded channel, then shapes a frontend-compatible response from the
 //! durable runtime events and persisted message rows.
 
-use std::convert::Infallible;
-
-use qunica_domain::events::{StreamEvent, StreamEventKind};
-use qunica_domain::runtime::ReasoningEffort;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::sse::{Event, Sse},
     Json,
 };
-use futures_util::{stream::BoxStream, StreamExt};
+use futures_util::StreamExt;
+use qunica_domain::events::{StreamEvent, StreamEventKind};
+use qunica_domain::runtime::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -28,8 +25,8 @@ use crate::{
         conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
         sse_replay::{
-            event_kind_from_wire, fetch_replay_events_for_group, fetch_replay_events_for_stream,
-            last_event_id, parse_replay_cursor,
+            event_kind_from_wire, last_event_id, parse_replay_cursor, replay_existing_stream,
+            replay_group_stream, sse_response, SseResponse,
         },
         workspace_files::{validate_conversation_attachments, ConversationScope},
         AppState,
@@ -916,7 +913,7 @@ pub async fn stream_group(
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<StreamRequest>,
-) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
+) -> Result<SseResponse, ApiError> {
     stream_for_kind(state, headers, group_id, body, ConversationKind::Group).await
 }
 
@@ -925,7 +922,7 @@ pub async fn stream_direct(
     headers: HeaderMap,
     Path(group_id): Path<String>,
     Json(body): Json<StreamRequest>,
-) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
+) -> Result<SseResponse, ApiError> {
     stream_for_kind(state, headers, group_id, body, ConversationKind::Direct).await
 }
 
@@ -935,7 +932,7 @@ async fn stream_for_kind(
     group_id: String,
     body: StreamRequest,
     expected: ConversationKind,
-) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
+) -> Result<SseResponse, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
@@ -977,9 +974,8 @@ async fn stream_for_kind(
 
     if let Some(cursor) = last_event_id(&headers)? {
         let cursor = parse_replay_cursor(&cursor)?;
-        let events = fetch_replay_events_for_group(state.db.pool(), &group_id, &cursor).await?;
-        let body = futures_util::stream::iter(events.into_iter().map(event_to_sse)).boxed();
-        return Ok(Sse::new(body));
+        let body = replay_group_stream(state.db.pool().clone(), group_id, cursor).await?;
+        return Ok(sse_response(body));
     }
 
     let stream_id = body
@@ -989,10 +985,10 @@ async fn stream_for_kind(
         .transpose()
         .map_err(|_| ApiError::invalid_input("client_request_id must be a UUID"))?
         .unwrap_or_else(Uuid::new_v4);
-    let replay = fetch_replay_events_for_stream(state.db.pool(), &group_id, stream_id).await?;
-    if !replay.is_empty() {
-        let body = futures_util::stream::iter(replay.into_iter().map(event_to_sse)).boxed();
-        return Ok(Sse::new(body));
+    if let Some(body) =
+        replay_existing_stream(state.db.pool().clone(), group_id.clone(), stream_id).await?
+    {
+        return Ok(sse_response(body));
     }
     if let Some(thread_id) = thread_id.as_deref() {
         ensure_writable_thread(&state, &group_id, thread_id).await?;
@@ -1024,16 +1020,11 @@ async fn stream_for_kind(
 
     let body = futures_util::stream::unfold(rx, |mut rx| async move {
         let event = rx.recv().await?;
-        Some((event_to_sse(event), rx))
+        Some((event, rx))
     })
     .boxed();
 
-    Ok(Sse::new(body))
-}
-
-fn event_to_sse(event: StreamEvent<Value>) -> Result<Event, Infallible> {
-    let data = serde_json::to_string(&event).unwrap_or_default();
-    Ok(Event::default().id(event.event_id.clone()).data(data))
+    Ok(sse_response(body))
 }
 
 async fn fetch_persisted_event(

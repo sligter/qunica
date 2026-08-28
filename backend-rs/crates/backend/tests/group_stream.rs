@@ -15,6 +15,12 @@ use std::{
     time::Duration,
 };
 
+use axum::{
+    body::Body,
+    http::{header, Request, StatusCode},
+    response::IntoResponse,
+    Router,
+};
 use qunica_backend::{
     api::{router_with_state_for_tests, AppState},
     runtime::{
@@ -24,12 +30,6 @@ use qunica_backend::{
         group::{run_thread_resume, ResumeRequest},
         run_group_turn, RuntimeServices, StreamEventKind, TurnOutcome, TurnRequest,
     },
-};
-use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
-    response::IntoResponse,
-    Router,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex, Notify};
@@ -7728,6 +7728,86 @@ async fn bounded_stream_client_disconnect_runs_to_replayable_scheduler_terminal_
         .await
         .unwrap();
     assert_eq!(turn_count, 1);
+}
+
+#[tokio::test]
+async fn replay_connection_stays_open_until_the_running_turn_finishes() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "live-replay@example.com").await;
+    let owner = owner_id(&state, "live-replay@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (provider_url, _requests, provider_started, release_provider) =
+        controlled_recording_fake_provider(text_body("after reconnect")).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v2/groups/{group}/messages/stream"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(json!({"content": "hi"}).to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    provider_started.notified().await;
+    let first_event_id: String = sqlx::query_scalar(
+        "SELECT se.event_id FROM stream_events se \
+         JOIN threads t ON t.id = se.thread_id \
+         WHERE t.group_id = ? ORDER BY se.seq ASC LIMIT 1",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    drop(response);
+
+    let replay = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v2/groups/{group}/messages/stream"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .header("last-event-id", first_event_id)
+        .body(Body::from(
+            json!({"content": "must not start another turn"}).to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(replay).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let replay_body = tokio::spawn(async move {
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !replay_body.is_finished(),
+        "a successful replay must stay attached instead of triggering another reconnect"
+    );
+
+    release_provider.notify_one();
+    let bytes = tokio::time::timeout(Duration::from_secs(5), replay_body)
+        .await
+        .expect("replay reaches the terminal event")
+        .unwrap();
+    let replay_text = String::from_utf8(bytes.to_vec()).unwrap();
+    let replay_events: Vec<Value> = parse_sse_frames(&replay_text)
+        .into_iter()
+        .map(|frame| frame.data)
+        .collect();
+    assert_eq!(
+        kinds(&replay_events).last().map(String::as_str),
+        Some("done")
+    );
 }
 
 #[tokio::test]

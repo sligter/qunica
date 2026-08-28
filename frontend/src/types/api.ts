@@ -932,6 +932,7 @@ export interface ConversationWorkspaceFileRead {
   path: string
   name: string
   is_dir: boolean
+  ignored?: boolean
   size: number | null
   modified_at: string | null
   abs_path?: string | null

@@ -1,9 +1,9 @@
-use std::{fmt, fs, path::Path};
+use std::{collections::HashSet, fmt, fs, path::Path};
 
 use super::{
     runner::{
         format_git_failure, git_command_error_message, git_output_is_not_repository,
-        run_git_command,
+        run_git_command, run_git_command_with_input,
     },
     status::{not_repo_status, parse_status, unavailable_status},
     WorkspaceGitStatus,
@@ -223,6 +223,34 @@ pub async fn ignore(root: &Path, path: &str) -> Result<(), GitOperationError> {
         .map_err(|_| GitOperationError::new("failed to update .gitignore"))
 }
 
+pub async fn ignored_paths(root: &Path, paths: &[String]) -> HashSet<String> {
+    if paths.is_empty() {
+        return HashSet::new();
+    }
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    let args = git_args(&[
+        "--no-optional-locks",
+        "-c",
+        "core.quotePath=false",
+        "check-ignore",
+        "--stdin",
+        "-z",
+    ]);
+    let Ok(output) = run_git_command_with_input(root, &args, &input, input.len() + 1).await else {
+        return HashSet::new();
+    };
+    output
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub async fn stash_push(root: &Path, message: Option<&str>) -> Result<(), GitOperationError> {
     let mut args = git_args(&["stash", "push", "-u"]);
     if let Some(message) = message.map(str::trim).filter(|message| !message.is_empty()) {
@@ -421,9 +449,9 @@ async fn run_git_or_error(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, process::Command};
+    use std::{collections::HashSet, path::Path, process::Command};
 
-    use super::{force_push, push};
+    use super::{force_push, ignored_paths, push};
 
     fn git(root: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -469,6 +497,26 @@ mod tests {
         assert_eq!(
             git(local.path(), &["rev-parse", "HEAD"]).trim(),
             git(remote.path(), &["rev-parse", "refs/heads/feature/test"]).trim(),
+        );
+    }
+
+    #[tokio::test]
+    async fn ignored_paths_checks_a_batch_with_gitignore_rules() {
+        let local = tempfile::tempdir().unwrap();
+        git(local.path(), &["init"]);
+        std::fs::write(
+            local.path().join(".gitignore"),
+            "target/\n*.log\n!keep.log\n",
+        )
+        .unwrap();
+        std::fs::create_dir(local.path().join("target")).unwrap();
+        std::fs::write(local.path().join("debug log.log"), "ignored").unwrap();
+        std::fs::write(local.path().join("keep.log"), "kept").unwrap();
+
+        let paths = ["target", "debug log.log", "keep.log", "src"].map(str::to_string);
+        assert_eq!(
+            ignored_paths(local.path(), &paths).await,
+            HashSet::from(["target".to_string(), "debug log.log".to_string()]),
         );
     }
 }

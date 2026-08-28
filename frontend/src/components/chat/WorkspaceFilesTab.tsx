@@ -957,7 +957,13 @@ export function WorkspaceFilesTab({
                     }}
                     type="button"
                     draggable
-                    className="flex h-8 w-full min-w-0 items-center gap-1.5 rounded-sm px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    data-git-ignored={file.ignored || undefined}
+                    className={cn(
+                      'flex h-8 w-full min-w-0 items-center gap-1.5 rounded-sm px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      file.ignored
+                        && !isSelected
+                        && 'opacity-60 hover:opacity-80 focus-visible:opacity-100',
+                    )}
                     onClick={(event) => handleFileClick(event, file)}
                     onKeyDown={(event) => handleFileKeyDown(event, file)}
                     onDragStart={(event) => handleFileDragStart(event, file)}

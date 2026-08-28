@@ -15,7 +15,7 @@ pub use log::{
     WorkspaceGitCommitDetails, WorkspaceGitCommitFile, WorkspaceGitCommitSummary, WorkspaceGitLog,
 };
 pub use ops::{
-    commit, discard, fetch, force_push, ignore, init, pull, push, rebase, set_remote, stage,
-    staged_diff, stash_pop, stash_push, status, unstage, GitOperationError,
+    commit, discard, fetch, force_push, ignore, ignored_paths, init, pull, push, rebase,
+    set_remote, stage, staged_diff, stash_pop, stash_push, status, unstage, GitOperationError,
 };
 pub use status::{WorkspaceGitDirtyCounts, WorkspaceGitFileStatus, WorkspaceGitStatus};

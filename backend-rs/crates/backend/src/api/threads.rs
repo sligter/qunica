@@ -4,16 +4,15 @@
 //! and non-paused threads return normal JSON errors rather than in-stream
 //! failures.
 
-use std::{convert::Infallible, path::Path as FsPath};
+use std::path::Path as FsPath;
 
-use qunica_domain::events::StreamEvent;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::sse::{Event, Sse},
     Json,
 };
-use futures_util::{stream::BoxStream, StreamExt};
+use futures_util::StreamExt;
+use qunica_domain::events::StreamEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -25,7 +24,9 @@ use crate::{
         auth::current_user_id,
         conversations::{ensure_active_owned_conversation, ConversationKind},
         error::ApiError,
-        sse_replay::{fetch_replay_events_for_thread, last_event_id, parse_replay_cursor},
+        sse_replay::{
+            last_event_id, parse_replay_cursor, replay_thread_stream, sse_response, SseResponse,
+        },
         workspace_files::{self, ConversationRoot, ConversationScope},
         AppState,
     },
@@ -483,18 +484,17 @@ pub async fn resume(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
     body: Option<Json<ResumeBody>>,
-) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
+) -> Result<SseResponse, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
 
     if let Some(cursor) = last_event_id(&headers)? {
         let cursor = parse_replay_cursor(&cursor)?;
-        let events =
-            fetch_replay_events_for_thread(state.db.pool(), &thread.id, &thread.group_id, &cursor)
+        let body =
+            replay_thread_stream(state.db.pool().clone(), thread.id, thread.group_id, cursor)
                 .await?;
-        let body = futures_util::stream::iter(events.into_iter().map(event_to_sse)).boxed();
-        return Ok(Sse::new(body));
+        return Ok(sse_response(body));
     }
 
     let approval = body.and_then(|Json(body)| body.approval);
@@ -525,11 +525,11 @@ pub async fn resume(
 
     let body = futures_util::stream::unfold(rx, |mut rx| async move {
         let event = rx.recv().await?;
-        Some((event_to_sse(event), rx))
+        Some((event, rx))
     })
     .boxed();
 
-    Ok(Sse::new(body))
+    Ok(sse_response(body))
 }
 
 async fn resolve_resume_target(
@@ -692,11 +692,6 @@ async fn ensure_active_group_agent(
         return Err(ApiError::not_found("agent not found in group"));
     }
     Ok(())
-}
-
-fn event_to_sse(event: StreamEvent<Value>) -> Result<Event, Infallible> {
-    let data = serde_json::to_string(&event).unwrap_or_default();
-    Ok(Event::default().id(event.event_id.clone()).data(data))
 }
 
 fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {

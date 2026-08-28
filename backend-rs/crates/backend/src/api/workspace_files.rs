@@ -175,6 +175,7 @@ pub struct WorkspaceFileResponse {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
+    pub ignored: bool,
     pub size: Option<i64>,
     pub modified_at: Option<String>,
     pub abs_path: String,
@@ -512,19 +513,27 @@ pub async fn list_workspace_files(
         let name = entry_name
             .to_str()
             .ok_or_else(|| ApiError::invalid_input("workspace path is not valid UTF-8"))?;
-        if !show_hidden && is_hidden_entry(&entry, name) {
+        let metadata = fs::symlink_metadata(&entry_path)
+            .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        if !show_hidden && is_hidden_entry(name, &metadata) {
             continue;
         }
-        rows.push(workspace_file_response(&entry_path, &workspace.root)?);
+        rows.push(workspace_file_response(
+            &entry_path,
+            &workspace.root,
+            metadata,
+        )?);
     }
-    rows.sort_by(|left, right| {
-        (if left.is_dir { 0 } else { 1 }, left.name.to_lowercase())
-            .cmp(&(if right.is_dir { 0 } else { 1 }, right.name.to_lowercase()))
-    });
+    rows.sort_by_cached_key(|row| (if row.is_dir { 0 } else { 1 }, row.name.to_lowercase()));
+    let paths = rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>();
+    let ignored = crate::git::ignored_paths(&workspace.root, &paths).await;
+    for row in &mut rows {
+        row.ignored = ignored.contains(&row.path);
+    }
     Ok(rows)
 }
 
-fn is_hidden_entry(entry: &fs::DirEntry, name: &str) -> bool {
+fn is_hidden_entry(name: &str, metadata: &fs::Metadata) -> bool {
     if name.starts_with('.') {
         return true;
     }
@@ -532,12 +541,13 @@ fn is_hidden_entry(entry: &fs::DirEntry, name: &str) -> bool {
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-        return entry
-            .metadata()
-            .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0);
+        metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
     }
     #[cfg(not(windows))]
-    false
+    {
+        let _ = metadata;
+        false
+    }
 }
 
 /// Compatibility preview response used by both conversation scopes.
@@ -938,13 +948,19 @@ fn normalize_relative_path(raw: &str, allow_empty: bool) -> Result<Option<String
     Ok(Some(normalized))
 }
 
-fn workspace_file_response(path: &Path, root: &Path) -> Result<WorkspaceFileResponse, ApiError> {
-    let canonical =
-        fs::canonicalize(path).map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
-    ensure_inside_root(root, &canonical)?;
+fn workspace_file_response(
+    path: &Path,
+    root: &Path,
+    mut metadata: fs::Metadata,
+) -> Result<WorkspaceFileResponse, ApiError> {
+    if metadata_is_link_or_reparse(&metadata) {
+        let canonical = fs::canonicalize(path)
+            .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        ensure_inside_root(root, &canonical)?;
+        metadata =
+            fs::metadata(path).map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+    }
     ensure_utf8_path(path)?;
-    let metadata =
-        fs::metadata(path).map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
     let modified_at = metadata
         .modified()
         .ok()
@@ -953,6 +969,7 @@ fn workspace_file_response(path: &Path, root: &Path) -> Result<WorkspaceFileResp
         path: display_workspace_path(root, path)?,
         name: workspace_file_name(path)?,
         is_dir: metadata.is_dir(),
+        ignored: false,
         size: if metadata.is_dir() {
             None
         } else {
@@ -961,6 +978,20 @@ fn workspace_file_response(path: &Path, root: &Path) -> Result<WorkspaceFileResp
         modified_at,
         abs_path: path_to_utf8(path)?,
     })
+}
+
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 fn display_workspace_path(root: &Path, path: &Path) -> Result<String, ApiError> {

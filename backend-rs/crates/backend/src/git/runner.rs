@@ -5,7 +5,11 @@ use std::{
     time::Duration,
 };
 
-use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+    time::timeout,
+};
 
 use crate::process::tokio_command_no_window;
 
@@ -38,24 +42,54 @@ pub(super) async fn run_git_command_with_output_limit(
     args: &[String],
     max_output_chars: usize,
 ) -> Result<GitCommandOutput, GitCommandError> {
-    let mut child = git_command(root, args).spawn().map_err(|err| {
-        if err.kind() == io::ErrorKind::NotFound {
-            GitCommandError::MissingGit
-        } else {
-            GitCommandError::Io("failed to start git command")
-        }
-    })?;
+    run_git_command_inner(root, args, None, max_output_chars).await
+}
 
+pub(super) async fn run_git_command_with_input(
+    root: &Path,
+    args: &[String],
+    input: &[u8],
+    max_output_chars: usize,
+) -> Result<GitCommandOutput, GitCommandError> {
+    run_git_command_inner(root, args, Some(input), max_output_chars).await
+}
+
+async fn run_git_command_inner(
+    root: &Path,
+    args: &[String],
+    input: Option<&[u8]>,
+    max_output_chars: usize,
+) -> Result<GitCommandOutput, GitCommandError> {
+    let mut child = git_command(root, args, input.is_some())
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                GitCommandError::MissingGit
+            } else {
+                GitCommandError::Io("failed to start git command")
+            }
+        })?;
+
+    let stdin_handle = child.stdin.take();
     let mut stdout_handle = child.stdout.take().expect("stdout was piped");
     let mut stderr_handle = child.stderr.take().expect("stderr was piped");
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
     let wait = async {
-        let (stdout_result, stderr_result, status_result) = tokio::join!(
+        let write_stdin = async {
+            if let (Some(mut stdin), Some(input)) = (stdin_handle, input) {
+                stdin.write_all(input).await?;
+                stdin.shutdown().await?;
+            }
+            Ok::<(), io::Error>(())
+        };
+        let (stdin_result, stdout_result, stderr_result, status_result) = tokio::join!(
+            write_stdin,
             stdout_handle.read_to_end(&mut stdout_buf),
             stderr_handle.read_to_end(&mut stderr_buf),
             child.wait(),
         );
+        stdin_result.map_err(|_| GitCommandError::Io("failed to write git stdin"))?;
         stdout_result.map_err(|_| GitCommandError::Io("failed to read git stdout"))?;
         stderr_result.map_err(|_| GitCommandError::Io("failed to read git stderr"))?;
         status_result.map_err(|_| GitCommandError::Io("failed to wait for git command"))
@@ -83,13 +117,17 @@ pub(super) async fn run_git_command_with_output_limit(
     }
 }
 
-fn git_command(root: &Path, args: &[String]) -> Command {
+fn git_command(root: &Path, args: &[String], pipe_stdin: bool) -> Command {
     let mut command = StdCommand::new("git");
     command
         .args(args)
         .current_dir(root)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
+        .stdin(if pipe_stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

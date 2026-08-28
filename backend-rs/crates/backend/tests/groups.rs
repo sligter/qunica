@@ -2217,6 +2217,8 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
     let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
     let group_id = group["id"].as_str().unwrap();
 
+    run_git(root.path(), &["init"]);
+    std::fs::write(root.path().join(".gitignore"), "Zoo/\nBeta.txt\n").unwrap();
     std::fs::create_dir(root.path().join("Zoo")).unwrap();
     std::fs::create_dir(root.path().join("alpha")).unwrap();
     std::fs::create_dir(root.path().join(".secret")).unwrap();
@@ -2266,6 +2268,7 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
     assert!(!rows.iter().any(|row| row["path"] == "alpha/nested.txt"));
     assert_eq!(rows[0]["path"], "alpha");
     assert_eq!(rows[0]["is_dir"], true);
+    assert_eq!(rows[0]["ignored"], false);
     assert_eq!(rows[0]["size"], Value::Null);
     assert!(rows[0]["modified_at"].as_str().is_some());
     assert_eq!(
@@ -2277,6 +2280,8 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
     assert_eq!(rows[2]["path"], "aardvark.txt");
     assert_eq!(rows[2]["is_dir"], false);
     assert_eq!(rows[2]["size"], 5);
+    assert_eq!(rows[1]["ignored"], true);
+    assert_eq!(rows[3]["ignored"], true);
 
     let (status, hidden_list) = send(
         &app,
@@ -4732,6 +4737,18 @@ async fn workspace_files_reject_path_traversal_and_symlink_escapes() {
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
     if create_dir_symlink(outside.path(), &root.path().join("link")).is_ok() {
+        let (status, body) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/groups/{group_id}/workspace-files"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+        assert_eq!(body["error"]["code"], "invalid_input");
+
         for request in [
             authed("GET", &workspace_file_url(group_id, "link"), &token),
             authed(

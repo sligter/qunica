@@ -13,6 +13,7 @@ import type { StreamEvent } from './types'
 
 export interface ApiV2SseHandlers {
   onEvent: (event: StreamEvent) => void
+  onOpen?: () => void
   onRetry?: (attempt: number, delayMs: number) => void
   onError?: (err: unknown) => void
   onClose?: () => void
@@ -68,6 +69,7 @@ export function openApiV2SseStream(opts: {
         }
         throw new FatalSseError(`SSE open failed: ${response.status}`)
       }
+      opts.handlers.onOpen?.()
     },
     onmessage: (msg) => {
       let parsed: StreamEvent

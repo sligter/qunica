@@ -287,6 +287,7 @@ export function useResumeStream(
       body: approval ? { approval } : {},
       token,
       handlers: {
+        onOpen: () => setRetry(null),
         onEvent: (event) => {
           setRetry(null)
           const streamId = event.stream_id

@@ -23,6 +23,7 @@ describe('API v2 SSE retry policy', () => {
   function open() {
     const handlers = {
       onEvent: vi.fn(),
+      onOpen: vi.fn(),
       onRetry: vi.fn(),
       onError: vi.fn(),
       onClose: vi.fn(),
@@ -69,6 +70,8 @@ describe('API v2 SSE retry policy', () => {
     const retryable = await init.onopen?.(new Response(null, { status: 503 }))
       .catch((error: unknown) => error)
     expect(init.onerror?.(retryable)).toBe(500)
+    await init.onopen?.(new Response(null, { status: 200 }))
+    expect(handlers.onOpen).toHaveBeenCalledOnce()
 
     const fatal = await init.onopen?.(new Response(null, { status: 401 }))
       .catch((error: unknown) => error)

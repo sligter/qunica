@@ -629,6 +629,7 @@ pub struct GroupWorkspaceFileResponse {
     path: String,
     name: String,
     is_dir: bool,
+    ignored: bool,
     size: Option<i64>,
     modified_at: Option<String>,
     abs_path: String,
@@ -1862,6 +1863,7 @@ pub async fn list_group_workspace_files(
         path: row.path,
         name: row.name,
         is_dir: row.is_dir,
+        ignored: row.ignored,
         size: row.size,
         modified_at: row.modified_at,
         abs_path: row.abs_path,
@@ -5545,6 +5547,7 @@ fn workspace_file_response(
         path: display_workspace_path(root, path)?,
         name: workspace_file_name(path)?,
         is_dir: metadata.is_dir(),
+        ignored: false,
         size: if metadata.is_dir() {
             None
         } else {
