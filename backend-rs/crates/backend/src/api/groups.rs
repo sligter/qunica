@@ -1856,6 +1856,7 @@ pub async fn list_group_workspace_files(
         ),
         &query.path,
         query.show_hidden,
+        query.search(),
     )
     .await?
     .into_iter()
@@ -4238,7 +4239,7 @@ async fn group_prompt_context(
         &group.id,
         owner_id,
     );
-    if let Ok(files) = workspace_files::list_workspace_files(pool, target, "", false).await {
+    if let Ok(files) = workspace_files::list_workspace_files(pool, target, "", false, None).await {
         let workspace_name = match group.workspace_id.as_deref() {
             Some(workspace_id) => sqlx::query_scalar::<_, String>(
                 "SELECT name FROM workspaces WHERE id = ? AND owner_id = ?",

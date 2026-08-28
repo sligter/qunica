@@ -74,12 +74,14 @@ function workspaceQuery(
   agentId: WorkspaceAgentScope,
   showHidden = false,
   uniqueName = false,
+  search = '',
 ): string {
   const parts: string[] = []
   if (path !== undefined) parts.push(`path=${encodeURIComponent(path)}`)
   if (agentId) parts.push(`agent_id=${encodeURIComponent(agentId)}`)
   if (showHidden) parts.push('show_hidden=true')
   if (uniqueName) parts.push('unique_name=true')
+  if (search) parts.push(`search=${encodeURIComponent(search)}`)
   return parts.length > 0 ? `?${parts.join('&')}` : ''
 }
 
@@ -99,9 +101,10 @@ function conversationWorkspaceFileEndpoint(
   agentId?: WorkspaceAgentScope,
   showHidden?: boolean,
   uniqueName?: boolean,
+  search?: string,
 ): string {
   const suffix = endpoint ? `/${endpoint}` : ''
-  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId, showHidden, uniqueName)}`
+  return `${conversationWorkspaceFilesApiPath(scope, conversationId)}${suffix}${workspaceQuery(path, agentId, showHidden, uniqueName, search)}`
 }
 
 export function conversationWorkspaceRootsApiPath(
@@ -125,6 +128,7 @@ export function conversationWorkspaceFileListQueryKey(
   path = '',
   agentId: WorkspaceAgentScope = null,
   showHidden = false,
+  search = '',
 ) {
   return [
     ...conversationWorkspaceFilesQueryKey(scope, conversationId),
@@ -132,6 +136,7 @@ export function conversationWorkspaceFileListQueryKey(
     agentId ?? null,
     path,
     showHidden,
+    search,
   ] as const
 }
 
@@ -211,8 +216,10 @@ export function useConversationWorkspaceFiles(
   path = '',
   agentId: WorkspaceAgentScope = null,
   showHidden = false,
+  search = '',
 ) {
   const token = useAuthStore((state) => state.token)
+  const normalizedSearch = search.trim()
   return useQuery({
     queryKey: conversationWorkspaceFileListQueryKey(
       scope,
@@ -220,6 +227,7 @@ export function useConversationWorkspaceFiles(
       path,
       agentId,
       showHidden,
+      normalizedSearch,
     ),
     queryFn: () =>
       fetchJson<ConversationWorkspaceFileRead[]>(
@@ -230,6 +238,8 @@ export function useConversationWorkspaceFiles(
           path,
           agentId,
           showHidden,
+          undefined,
+          normalizedSearch,
         ),
         { token },
       ),

@@ -88,6 +88,7 @@ interface RenderTabOptions {
   workspaceId?: string | null
   files?: ConversationWorkspaceFileRead[]
   hiddenFiles?: ConversationWorkspaceFileRead[]
+  searchFiles?: Record<string, ConversationWorkspaceFileRead[]>
   roots?: ConversationWorkspaceRootEntry[]
   agentFiles?: Record<string, ConversationWorkspaceFileRead[]>
 }
@@ -98,6 +99,7 @@ function renderTab({
   workspaceId = 'workspace-1',
   files = [rawFile],
   hiddenFiles,
+  searchFiles = {},
   roots,
   agentFiles = {},
 }: RenderTabOptions = {}) {
@@ -110,6 +112,12 @@ function renderTab({
     queryClient.setQueryData(
       conversationWorkspaceFileListQueryKey(scope, conversationId, '', null, true),
       [...hiddenFiles, ...files],
+    )
+  }
+  for (const [search, matches] of Object.entries(searchFiles)) {
+    queryClient.setQueryData(
+      conversationWorkspaceFileListQueryKey(scope, conversationId, '', null, false, search),
+      matches,
     )
   }
   if (roots) {
@@ -253,6 +261,48 @@ describe('WorkspaceFilesTab', () => {
     expect(screen.getByText(notesFile.name).closest('button')).not.toHaveAttribute(
       'data-git-ignored',
     )
+  })
+
+  it('searches the whole workspace by relative path after a short debounce', async () => {
+    const match: ConversationWorkspaceFileRead = {
+      ...notesFile,
+      path: 'docs/guides/README.md',
+      name: 'README.md',
+    }
+    renderTab({
+      files: [notesFile],
+      searchFiles: { 'guide readme': [match] },
+    })
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Find files' }), {
+      target: { value: 'guide readme' },
+    })
+
+    expect(screen.getByText('Searching files…')).toBeVisible()
+    expect(await screen.findByText(match.path)).toBeVisible()
+    expect(screen.queryByText(notesFile.name)).toBeNull()
+  })
+
+  it('renders only the visible file rows and updates them while scrolling', async () => {
+    const manyFiles = Array.from({ length: 200 }, (_, index) => ({
+      path: `file-${String(index).padStart(3, '0')}.txt`,
+      name: `file-${String(index).padStart(3, '0')}.txt`,
+      is_dir: false,
+      size: index,
+      modified_at: null,
+    })) satisfies ConversationWorkspaceFileRead[]
+    const { container } = renderTab({ files: manyFiles })
+
+    expect(container.querySelectorAll('[data-virtual-index]').length).toBeLessThan(manyFiles.length)
+    expect(screen.getByText('file-000.txt')).toBeVisible()
+    expect(screen.queryByText('file-199.txt')).toBeNull()
+
+    fireEvent.scroll(screen.getByRole('region', { name: 'Files' }), {
+      target: { scrollTop: 190 * 32 },
+    })
+
+    await waitFor(() => expect(screen.getByText('file-199.txt')).toBeVisible())
+    expect(screen.queryByText('file-000.txt')).toBeNull()
   })
 
   it('opens multiple files as editor tabs when editor mode is selected', async () => {

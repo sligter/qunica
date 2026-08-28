@@ -2226,6 +2226,11 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
     std::fs::write(root.path().join("Beta.txt"), b"second").unwrap();
     std::fs::write(root.path().join(".hidden"), b"hidden").unwrap();
     std::fs::write(root.path().join("alpha").join("nested.txt"), b"nested").unwrap();
+    std::fs::write(
+        root.path().join(".secret").join("hidden-guide.md"),
+        b"secret",
+    )
+    .unwrap();
 
     let (status, body) = send(
         &app,
@@ -2302,6 +2307,44 @@ async fn workspace_files_root_and_list_returns_canonical_children() {
         true
     );
     assert!(hidden_rows.iter().any(|row| row["name"] == ".hidden"));
+
+    let (status, search) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files?search=ALPHA%20NESTED"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let search_rows = search.as_array().unwrap();
+    assert_eq!(search_rows.len(), 1);
+    assert_eq!(search_rows[0]["path"], "alpha/nested.txt");
+
+    let (_, hidden_search) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/groups/{group_id}/workspace-files?search=hidden%20guide"),
+            &token,
+        ),
+    )
+    .await;
+    assert!(hidden_search.as_array().unwrap().is_empty());
+    let (status, hidden_search) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "/api/v2/groups/{group_id}/workspace-files?search=hidden%20guide&show_hidden=true"
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(hidden_search[0]["path"], ".secret/hidden-guide.md");
 
     let (status, body) = send(
         &app,

@@ -34,6 +34,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { SearchInput } from '@/components/ui/search-input'
 import {
   useConversationWorkspaceFiles,
   useConversationWorkspaceRoots,
@@ -71,6 +72,9 @@ type WorkspacePreviewMode = 'dialog' | 'editor'
 
 const WORKSPACE_PREVIEW_MODE_KEY_PREFIX = 'qunica:conversations:workspace-preview-mode:'
 const WORKSPACE_SHOW_HIDDEN_KEY_PREFIX = 'qunica:conversations:workspace-show-hidden:'
+const FILE_ROW_HEIGHT = 32
+const FILE_LIST_OVERSCAN = 8
+const FILE_LIST_FALLBACK_HEIGHT = 320
 
 function previewModeStorageKey(scope: ConversationScope, conversationId: string): string {
   return `${WORKSPACE_PREVIEW_MODE_KEY_PREFIX}${scope}:${conversationId}`
@@ -145,6 +149,10 @@ export function WorkspaceFilesTab({
   const [showHidden, setShowHidden] = useState(
     () => readShowHidden(scope, conversationId),
   )
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [fileListFirstRow, setFileListFirstRow] = useState(0)
+  const [fileListHeight, setFileListHeight] = useState(FILE_LIST_FALLBACK_HEIGHT)
   const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
   const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead[] | null>(null)
   const [pendingClear, setPendingClear] = useState(false)
@@ -164,6 +172,7 @@ export function WorkspaceFilesTab({
     file: ConversationWorkspaceFileRead | null
   } | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const fileListRef = useRef<HTMLDivElement | null>(null)
   const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const menuFirstItemRef = useRef<HTMLButtonElement | null>(null)
   const selectionAnchorRef = useRef<string | null>(null)
@@ -186,9 +195,10 @@ export function WorkspaceFilesTab({
   const files = useConversationWorkspaceFiles(
     scope,
     activeConversationId,
-    currentPath,
+    search ? '' : currentPath,
     activeAgentId,
     showHidden,
+    search,
   )
   const upload = useUploadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
   const download = useDownloadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
@@ -206,6 +216,19 @@ export function WorkspaceFilesTab({
     || activeRoot?.name
     || t('chat:workspace.root')
   const sortedFiles = files.data ?? []
+  const isSearchMode = Boolean(searchInput.trim())
+  const isSearchPending = searchInput.trim() !== search
+  const visibleRowCount = Math.ceil(fileListHeight / FILE_ROW_HEIGHT)
+  const effectiveFirstRow = Math.min(
+    fileListFirstRow,
+    Math.max(0, sortedFiles.length - visibleRowCount),
+  )
+  const visibleStart = Math.max(0, effectiveFirstRow - FILE_LIST_OVERSCAN)
+  const visibleEnd = Math.min(
+    sortedFiles.length,
+    effectiveFirstRow + visibleRowCount + FILE_LIST_OVERSCAN,
+  )
+  const visibleFiles = isSearchPending ? [] : sortedFiles.slice(visibleStart, visibleEnd)
   const selectedCount = selectedWorkspacePaths.size
   const selectedFiles = sortedFiles.filter((file) => selectedWorkspacePaths.has(file.path))
 
@@ -214,6 +237,11 @@ export function WorkspaceFilesTab({
     if (conversationId) {
       localStorage.setItem(previewModeStorageKey(scope, conversationId), mode)
     }
+  }
+
+  const changeSearchInput = (value: string) => {
+    setSearchInput(value)
+    if (!value.trim()) setSearch('')
   }
 
   const toggleShowHidden = () => {
@@ -282,6 +310,8 @@ export function WorkspaceFilesTab({
   const openEntry = (file: ConversationWorkspaceFileRead) => {
     if (file.is_dir) {
       selectOnlyPath(file.path)
+      setSearchInput('')
+      setSearch('')
       setCurrentPath(file.path)
     } else {
       openFile(file)
@@ -356,6 +386,31 @@ export function WorkspaceFilesTab({
   }
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchInput.trim()
+      setSearch((current) => (current === next ? current : next))
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [searchInput])
+
+  useEffect(() => {
+    const node = fileListRef.current
+    if (!node) return
+    const measure = () => {
+      const next = node.clientHeight || FILE_LIST_FALLBACK_HEIGHT
+      setFileListHeight((current) => (current === next ? current : next))
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure)
+      return () => window.removeEventListener('resize', measure)
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
     setCurrentPath('')
     setPreviewFile(null)
     setIsPreviewOpen(false)
@@ -365,6 +420,8 @@ export function WorkspaceFilesTab({
     setMovePaths(null)
     setMoveDestination('')
     setClipboard(null)
+    setSearchInput('')
+    setSearch('')
     setOperationError(null)
     setMenu(null)
   }, [conversationId, scope, workspaceId])
@@ -375,6 +432,8 @@ export function WorkspaceFilesTab({
     setIsPreviewOpen(false)
     setClipboard(null)
     setMovePaths(null)
+    setSearchInput('')
+    setSearch('')
   }, [activeAgentId])
 
   useEffect(() => {
@@ -386,6 +445,8 @@ export function WorkspaceFilesTab({
     }
     // An empty path means "show me this root", not "open this file".
     if (!navRequest.path) {
+      setSearchInput('')
+      setSearch('')
       setCurrentPath('')
       setPreviewFile(null)
       setIsPreviewOpen(false)
@@ -403,6 +464,8 @@ export function WorkspaceFilesTab({
       size: null,
       modified_at: null,
     }
+    setSearchInput('')
+    setSearch('')
     setCurrentPath(parentPath(requestedFile.path))
     selectionAnchorRef.current = requestedFile.path
     setSelectedWorkspacePaths(new Set([requestedFile.path]))
@@ -418,7 +481,9 @@ export function WorkspaceFilesTab({
   useEffect(() => {
     setSelectedWorkspacePaths(new Set())
     selectionAnchorRef.current = null
-  }, [currentPath, conversationId, scope])
+    setFileListFirstRow(0)
+    if (fileListRef.current) fileListRef.current.scrollTop = 0
+  }, [currentPath, conversationId, scope, search])
 
   useEffect(() => {
     if (!menu) return
@@ -516,7 +581,11 @@ export function WorkspaceFilesTab({
     setOperationError(null)
     void upload
       .mutateAsync(file)
-      .then(() => setCurrentPath('uploads'))
+      .then(() => {
+        setSearchInput('')
+        setSearch('')
+        setCurrentPath('uploads')
+      })
       .catch(() => undefined)
       .finally(() => {
         if (fileInputRef.current) fileInputRef.current.value = ''
@@ -780,7 +849,16 @@ export function WorkspaceFilesTab({
         </div>
       </div>
 
-      {currentPath ? (
+      <div className="shrink-0 border-b border-border px-2 py-1.5">
+        <SearchInput
+          value={searchInput}
+          onChange={changeSearchInput}
+          label={t('chat:workspace.filePanel.search')}
+          className="max-w-none sm:max-w-none"
+        />
+      </div>
+
+      {currentPath && !isSearchMode ? (
         <button
           type="button"
           className="flex h-8 items-center gap-1.5 border-b border-border px-2 text-xs text-muted-foreground hover:bg-muted/70 hover:text-foreground"
@@ -894,9 +972,13 @@ export function WorkspaceFilesTab({
       ) : null}
 
       <div
+        ref={fileListRef}
         className="min-h-0 flex-1 overflow-y-auto py-1"
         role="region"
         aria-label={t('chat:workspace.files')}
+        onScroll={(event) => {
+          setFileListFirstRow(Math.floor(event.currentTarget.scrollTop / FILE_ROW_HEIGHT))
+        }}
         onClick={(event) => {
           if (event.target instanceof Element && event.target.closest('li')) return
           selectionAnchorRef.current = null
@@ -918,32 +1000,47 @@ export function WorkspaceFilesTab({
             {t('chat:workspace.filePanel.noWorkspace')}
           </p>
         ) : null}
-        {hasConversation && files.isLoading ? (
+        {hasConversation && (files.isLoading || isSearchPending) ? (
           <p className="p-3 text-sm text-muted-foreground" role="status">
-            {t('chat:workspace.loading')}
+            {isSearchMode
+              ? t('chat:workspace.filePanel.searching')
+              : t('chat:workspace.loading')}
           </p>
         ) : null}
-        {hasConversation && !files.isLoading && !files.error && sortedFiles.length === 0 ? (
+        {hasConversation
+          && !files.isLoading
+          && !isSearchPending
+          && !files.error
+          && sortedFiles.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
             <Folder className="h-8 w-8" />
-            <p>{t('chat:workspace.empty')}</p>
+            <p>
+              {isSearchMode
+                ? t('chat:workspace.filePanel.noSearchMatches')
+                : t('chat:workspace.empty')}
+            </p>
           </div>
         ) : null}
-        {sortedFiles.length > 0 ? (
-          <ul>
-            {sortedFiles.map((file) => {
+        {sortedFiles.length > 0 && !isSearchPending ? (
+          <ul className="relative" style={{ height: sortedFiles.length * FILE_ROW_HEIGHT }}>
+            {visibleFiles.map((file, index) => {
+              const absoluteIndex = visibleStart + index
               const isSelected = selectedWorkspacePaths.has(file.path)
               const kind = file.is_dir ? 'directory' : 'file'
               return (
                 <li
                   key={file.path}
+                  aria-posinset={absoluteIndex + 1}
+                  aria-setsize={sortedFiles.length}
+                  data-virtual-index={absoluteIndex}
                   className={cn(
-                    'mx-1 rounded-sm hover:bg-muted/70',
+                    'absolute inset-x-0 mx-1 rounded-sm hover:bg-muted/70',
                     isSelected && 'bg-muted text-foreground',
                     clipboard?.mode === 'move'
                       && clipboard.paths.includes(file.path)
                       && 'opacity-60',
                   )}
+                  style={{ transform: `translateY(${absoluteIndex * FILE_ROW_HEIGHT}px)` }}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
@@ -985,7 +1082,9 @@ export function WorkspaceFilesTab({
                         <File className="h-4 w-4 shrink-0 text-muted-foreground" />
                       </>
                     )}
-                    <span className="min-w-0 flex-1 truncate text-xs">{file.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs" title={file.path}>
+                      {isSearchMode ? file.path : file.name}
+                    </span>
                     {!file.is_dir ? (
                       <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
                         {formatSize(file.size, language)}

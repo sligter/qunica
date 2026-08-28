@@ -327,6 +327,7 @@ pub async fn list_workspace_files(
             ),
             &query.path,
             query.show_hidden,
+            query.search(),
         )
         .await?,
     ))

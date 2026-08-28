@@ -30,6 +30,7 @@ use tempfile::NamedTempFile;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 use crate::{
     api::error::ApiError,
@@ -47,6 +48,9 @@ pub const MAX_WORKSPACE_PREVIEW_BYTES: usize = 64 * 1024;
 pub const TEXT_WORKSPACE_PREVIEW_CHARS: usize = 20_000;
 /// Maximum number of durable attachment references in one message.
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+const MAX_WORKSPACE_SEARCH_QUERY_BYTES: usize = 2 * 1024;
+// ponytail: bounded search output; paginate if 2,000 results becomes limiting.
+const MAX_WORKSPACE_SEARCH_RESULTS: usize = 2_000;
 
 const BINARY_PREVIEW_MESSAGE: &str = "Preview is not available for binary or unsupported files.";
 const PATH_ERROR_MESSAGE: &str =
@@ -141,12 +145,21 @@ pub struct WorkspaceFilePathQuery {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub show_hidden: bool,
+    #[serde(default)]
+    pub search: Option<String>,
 }
 
 impl WorkspaceFilePathQuery {
     /// The agent selector, treating blank as absent.
     pub fn agent_id(&self) -> Option<&str> {
         self.agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn search(&self) -> Option<&str> {
+        self.search
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -500,36 +513,94 @@ pub async fn list_workspace_files(
     target: ConversationRoot<'_>,
     relative: &str,
     show_hidden: bool,
+    search: Option<&str>,
 ) -> Result<Vec<WorkspaceFileResponse>, ApiError> {
     let workspace = load_owned_local_workspace(pool, target).await?;
     let directory = resolve_workspace_directory(&workspace.root, relative)?;
-    let mut rows = Vec::new();
-    for entry in fs::read_dir(&directory)
-        .map_err(|_| ApiError::invalid_input("workspace path is not a directory"))?
-    {
-        let entry = entry.map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
-        let entry_path = entry.path();
-        let entry_name = entry.file_name();
-        let name = entry_name
-            .to_str()
-            .ok_or_else(|| ApiError::invalid_input("workspace path is not valid UTF-8"))?;
-        let metadata = fs::symlink_metadata(&entry_path)
-            .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
-        if !show_hidden && is_hidden_entry(name, &metadata) {
-            continue;
+    let mut rows = if let Some(search) = search {
+        let root = workspace.root.clone();
+        let search = search.to_string();
+        tokio::task::spawn_blocking(move || {
+            search_workspace_files(&root, &directory, &search, show_hidden)
+        })
+        .await
+        .map_err(|_| ApiError::internal("workspace file search failed"))??
+    } else {
+        let mut rows = Vec::new();
+        for entry in fs::read_dir(&directory)
+            .map_err(|_| ApiError::invalid_input("workspace path is not a directory"))?
+        {
+            let entry = entry.map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+            let entry_path = entry.path();
+            let entry_name = entry.file_name();
+            let name = entry_name
+                .to_str()
+                .ok_or_else(|| ApiError::invalid_input("workspace path is not valid UTF-8"))?;
+            let metadata = fs::symlink_metadata(&entry_path)
+                .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+            if !show_hidden && is_hidden_entry(name, &metadata) {
+                continue;
+            }
+            rows.push(workspace_file_response(
+                &entry_path,
+                &workspace.root,
+                metadata,
+            )?);
         }
-        rows.push(workspace_file_response(
-            &entry_path,
-            &workspace.root,
-            metadata,
-        )?);
-    }
-    rows.sort_by_cached_key(|row| (if row.is_dir { 0 } else { 1 }, row.name.to_lowercase()));
+        rows.sort_by_cached_key(|row| (if row.is_dir { 0 } else { 1 }, row.name.to_lowercase()));
+        rows
+    };
     let paths = rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>();
     let ignored = crate::git::ignored_paths(&workspace.root, &paths).await;
     for row in &mut rows {
         row.ignored = ignored.contains(&row.path);
     }
+    Ok(rows)
+}
+
+fn search_workspace_files(
+    root: &Path,
+    directory: &Path,
+    search: &str,
+    show_hidden: bool,
+) -> Result<Vec<WorkspaceFileResponse>, ApiError> {
+    if search.len() > MAX_WORKSPACE_SEARCH_QUERY_BYTES {
+        return Err(ApiError::invalid_input("workspace file search is too long"));
+    }
+    let tokens = search
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+    let entries = WalkDir::new(directory)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if show_hidden || entry.depth() == 0 {
+                return true;
+            }
+            let Some(name) = entry.file_name().to_str() else {
+                return true;
+            };
+            fs::symlink_metadata(entry.path())
+                .map(|metadata| !is_hidden_entry(name, &metadata))
+                .unwrap_or(true)
+        });
+    for entry in entries {
+        let entry = entry.map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|_| ApiError::invalid_input("workspace path is invalid"))?;
+        let row = workspace_file_response(entry.path(), root, metadata)?;
+        let path = row.path.to_lowercase();
+        if tokens.iter().all(|token| path.contains(token)) {
+            rows.push(row);
+            if rows.len() >= MAX_WORKSPACE_SEARCH_RESULTS {
+                break;
+            }
+        }
+    }
+    rows.sort_by_cached_key(|row| (if row.is_dir { 0 } else { 1 }, row.path.to_lowercase()));
     Ok(rows)
 }
 

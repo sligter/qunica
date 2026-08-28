@@ -116,6 +116,12 @@ describe('conversation workspace file client', () => {
     )
     await waitFor(() => expect(hidden.result.current.isSuccess).toBe(true))
 
+    const searched = renderHook(
+      () => useConversationWorkspaceFiles('groups', 'group-1', '', null, false, ' README guide '),
+      { wrapper: wrapper(client) },
+    )
+    await waitFor(() => expect(searched.result.current.isSuccess).toBe(true))
+
     expect(conversationWorkspaceFilesApiPath('groups', 'group-1')).toBe(
       '/groups/group-1/workspace-files',
     )
@@ -138,6 +144,10 @@ describe('conversation workspace file client', () => {
     )
     expect(mockedFetchJson).toHaveBeenCalledWith(
       '/groups/group-1/workspace-files?path=docs&show_hidden=true',
+      { token: 'owner-token' },
+    )
+    expect(mockedFetchJson).toHaveBeenCalledWith(
+      '/groups/group-1/workspace-files?path=&search=README%20guide',
       { token: 'owner-token' },
     )
   })
