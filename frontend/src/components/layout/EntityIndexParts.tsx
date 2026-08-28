@@ -68,12 +68,12 @@ interface MetricCardProps {
 /** One figure with its name above it: the summary strip above a gallery grid. */
 export function MetricCard({ label, value, icon: Icon, marker, tone = 'default' }: MetricCardProps) {
   return (
-    <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
+    <div className="rounded-xl border border-border/80 bg-card/60 px-3.5 py-3 shadow-xs">
       <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">{label}</span>
-        {marker ?? (Icon ? <Icon aria-hidden className={cn('h-4 w-4 shrink-0', TONE_ICON[tone])} /> : null)}
+        <span className="min-w-0 truncate text-2xs font-medium text-muted-foreground">{label}</span>
+        {marker ?? (Icon ? <Icon aria-hidden className={cn('h-3.5 w-3.5 shrink-0', TONE_ICON[tone])} /> : null)}
       </div>
-      <p className={cn('mt-2 text-2xl font-semibold tabular-nums tracking-tight', TONE_VALUE[tone])}>
+      <p className={cn('mt-1 text-xl font-semibold tabular-nums tracking-tight', TONE_VALUE[tone])}>
         {value}
       </p>
     </div>
@@ -188,28 +188,30 @@ export function EntityIndexSkeleton({ cards = 6 }: { cards?: number }) {
     <div className="space-y-6" aria-hidden>
       <MetricRow>
         {Array.from({ length: 4 }, (_, index) => (
-          <div key={index} className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
+          <div key={index} className="rounded-xl border border-border/80 bg-card/60 px-3.5 py-3 shadow-xs">
             <div className="flex items-start justify-between gap-2">
-              <Skeleton className="h-3 w-16" />
-              <Skeleton className="h-4 w-4 rounded-sm" />
+              <Skeleton className="h-2.5 w-16" />
+              <Skeleton className="h-3.5 w-3.5 rounded-sm" />
             </div>
-            <Skeleton className="mt-2 h-7 w-12" />
+            <Skeleton className="mt-1 h-6 w-12" />
           </div>
         ))}
       </MetricRow>
-      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+      {/* Mirrors `EntityCard` exactly — same padding, avatar, rhythm and
+          footer — so the swap to real content shifts nothing. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {Array.from({ length: cards }, (_, index) => (
-          <div key={index} className="rounded-xl border border-border/80 bg-card p-4">
-            <div className="flex items-start gap-3">
-              <Skeleton className="h-10 w-10 rounded-xl" />
+          <div key={index} className="rounded-xl border border-border/80 bg-card p-3">
+            <div className="flex items-start gap-2.5">
+              <Skeleton className="h-9 w-9 rounded-lg" />
               <div className="min-w-0 flex-1 space-y-2 pt-1">
                 <Skeleton className="h-3 w-2/3" />
                 <Skeleton className="h-2.5 w-16" />
               </div>
             </div>
-            <Skeleton className="mt-3 h-2.5 w-full opacity-60" />
+            <Skeleton className="mt-2 h-2.5 w-full opacity-60" />
             <Skeleton className="mt-1.5 h-2.5 w-5/6 opacity-60" />
-            <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-3">
+            <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5">
               <Skeleton className="h-4 w-14 rounded-md" />
               <Skeleton className="h-3 w-12 opacity-60" />
             </div>

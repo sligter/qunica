@@ -59,7 +59,7 @@ export function EntityCard({
   return (
     <div
       className={cn(
-        'group relative flex flex-col justify-between rounded-xl border border-border/80 bg-card p-4',
+        'group relative flex flex-col justify-between rounded-xl border border-border/80 bg-card p-3',
         'transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md',
       )}
     >
@@ -75,12 +75,12 @@ export function EntityCard({
         className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
       <div>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
             <span
               aria-hidden
               className={cn(
-                'flex h-10 w-10 shrink-0 select-none items-center justify-center rounded-xl text-sm font-semibold shadow-xs transition-transform group-hover:scale-105',
+                'flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-lg text-sm font-semibold shadow-xs transition-transform group-hover:scale-105',
                 !avatarIcon && 'uppercase',
                 avatarClass ?? 'bg-primary/10 text-primary',
               )}
@@ -94,7 +94,7 @@ export function EntityCard({
               {metaBadge ? (
                 <span
                   className={cn(
-                    'mt-1 inline-block rounded-md border px-1.5 py-0.5 text-2xs font-medium uppercase leading-none',
+                    'mt-0.5 inline-block rounded-md border px-1.5 py-0.5 text-2xs font-medium uppercase leading-none',
                     metaBadge.className,
                   )}
                 >
@@ -144,14 +144,14 @@ export function EntityCard({
         </div>
 
         {description ? (
-          <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-2xs">
+          <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-2xs">
             {description}
           </p>
         ) : null}
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-3 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
+      <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
+        <div className="flex items-center gap-1.5">
           {(stats ?? []).map((stat) => (
             <span
               key={stat.key}

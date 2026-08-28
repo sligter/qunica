@@ -107,7 +107,7 @@ export function McpServersIndexPage() {
         </MetricRow>
 
         {/* Gallery Grid */}
-          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {filtered.map((server) => {
               const endpoint =
                 server.transport === 'stdio' ? server.command ?? '-' : server.url ?? '-'
