@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
     id: 'agent-1', name: 'Agent one', description: null, system_prompt: 'Keep this prompt.',
     llm_config: null, tool_config: null, runtime_kind: 'llm_chat' as const, acp_runtime: null,
     workspace_id: 'workspace-1', llm_provider_id: null, skill_ids: [], visibility: 'private',
-    status: 'active', created_at: '2026-07-18T00:00:00Z',
+    group_ids: ['group-1'], status: 'active', created_at: '2026-07-18T00:00:00Z',
   },
   provider: {
     id: 'provider-1', name: 'Provider one', kind: 'openai-compatible' as const, base_url: null,
@@ -62,7 +62,7 @@ vi.mock('@/hooks/useWorkspaces', () => ({
   useDeleteWorkspace: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 vi.mock('@/hooks/useGroups', () => ({
-  useGroups: () => ({ data: [], isLoading: false }),
+  useGroups: () => ({ data: [{ id: 'group-1', name: 'Review room' }], isLoading: false }),
 }))
 
 function renderPage(Page: ComponentType, path: string) {
@@ -87,7 +87,6 @@ describe('resource detail status labels', () => {
   })
 
   it.each([
-    [AgentDetailPage, '/agents/agent-1'],
     [ProviderDetailPage, '/providers/provider-1'],
     [SkillDetailPage, '/skills/skill-1'],
     [WorkspaceDetailPage, '/workspaces/workspace-1'],
@@ -97,6 +96,14 @@ describe('resource detail status labels', () => {
 
     expect(screen.getByText('启用')).toBeInTheDocument()
     expect(screen.queryByText('active')).not.toBeInTheDocument()
+  })
+
+  it('shows agent group chats as plain text without a fake enabled state', () => {
+    renderPage(AgentDetailPage, '/agents/agent-1')
+
+    expect(screen.getByText('Review room')).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Review room' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
   })
 
   it('uses the available width when editing a skill', () => {

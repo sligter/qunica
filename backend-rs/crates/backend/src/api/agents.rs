@@ -62,6 +62,12 @@ For an enhancement, preserve the original intent and useful constraints while re
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, \
      COALESCE((SELECT json_group_array(workspace_id) FROM agent_workspaces WHERE agent_id = agents.id), '[]') AS workspace_ids_json, \
+     COALESCE((SELECT json_group_array(group_id) FROM group_agents \
+               JOIN groups ON groups.id = group_agents.group_id \
+               WHERE group_agents.agent_id = agents.id \
+                 AND group_agents.status = 'active' \
+                 AND groups.status = 'active' \
+                 AND groups.conversation_kind = 'group'), '[]') AS group_ids_json, \
      name, description, avatar_url, system_prompt, \
      runtime_kind, provider_id, model_config_json, tool_config_json, external_runtime_json, \
      skill_ids_json, status, is_system, created_at, updated_at";
@@ -153,6 +159,7 @@ pub struct AgentResponse {
     acp_runtime: Option<Value>,
     workspace_id: Option<String>,
     workspace_ids: Vec<String>,
+    group_ids: Vec<String>,
     llm_provider_id: Option<String>,
     skill_ids: Vec<String>,
     status: String,
@@ -247,6 +254,7 @@ struct AgentRow {
     owner_id: String,
     workspace_id: Option<String>,
     workspace_ids_json: String,
+    group_ids_json: String,
     name: String,
     description: Option<String>,
     avatar_url: Option<String>,
@@ -299,6 +307,7 @@ impl From<AgentRow> for AgentResponse {
             acp_runtime: canonicalized_acp_runtime_json(row.external_runtime_json.as_deref()),
             workspace_id: row.workspace_id,
             workspace_ids,
+            group_ids: serde_json::from_str(&row.group_ids_json).unwrap_or_default(),
             llm_provider_id: row.provider_id,
             skill_ids,
             status: row.status,
@@ -848,7 +857,52 @@ pub async fn delete(
     // Confirms existence/ownership (and that it is not already deleted) first.
     load_active_owned_writable(state.db.pool(), &agent_id, &owner_id).await?;
 
+    // Scheduler dispatch transitions use this lock too. The check and delete
+    // therefore cannot race a queued/running reply into existence.
+    let _guard = state.write_lock.lock().await;
+    let mut tx = state
+        .db
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("failed to start agent delete transaction"))?;
+    let replying: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_dispatches \
+         WHERE target_agent_id = ? AND status IN ('queued', 'running', 'waiting_for_user'))",
+    )
+    .bind(&agent_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to check active agent replies"))?;
+    if replying != 0 {
+        return Err(ApiError::conflict(
+            "agent is replying and cannot be deleted",
+        ));
+    }
+
+    let groups = sqlx::query_as::<_, (String, String)>(
+        "SELECT group_agents.group_id, groups.communication_mode \
+         FROM group_agents JOIN groups ON groups.id = group_agents.group_id \
+         WHERE group_agents.agent_id = ? AND group_agents.status = 'active' \
+           AND groups.owner_id = ? AND groups.conversation_kind = 'group'",
+    )
+    .bind(&agent_id)
+    .bind(&owner_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to load agent group memberships"))?;
+
     let now = now_rfc3339();
+    for (group_id, communication_mode) in groups {
+        super::groups::remove_group_agent_in_tx(
+            &mut tx,
+            &group_id,
+            &agent_id,
+            &communication_mode,
+            &now,
+        )
+        .await?;
+    }
     sqlx::query(
         "UPDATE agents SET status = 'deleted', workspace_id = NULL, updated_at = ? \
          WHERE id = ? AND owner_id = ?",
@@ -856,9 +910,13 @@ pub async fn delete(
     .bind(&now)
     .bind(&agent_id)
     .bind(&owner_id)
-    .execute(state.db.pool())
+    .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("failed to delete agent"))?;
+
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("failed to commit agent deletion"))?;
 
     Ok(StatusCode::NO_CONTENT)
 }

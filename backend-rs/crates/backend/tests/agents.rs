@@ -3,6 +3,12 @@ use axum::{
     http::{Request, StatusCode},
     Router,
 };
+use qunica_backend::{
+    api::{router_with_state_for_tests, AppState},
+    runtime::group_scheduler::{
+        ActionKind, NewDispatch, NewTurn, SchedulerStore, SelectionReason, TurnStatus,
+    },
+};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -13,6 +19,10 @@ const PROVIDER_A: &str = "33333333-3333-3333-3333-333333333333";
 
 async fn app() -> Router {
     qunica_backend::api::router_for_tests().await
+}
+
+async fn app_with_state() -> (Router, AppState) {
+    router_with_state_for_tests().await
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -1065,7 +1075,7 @@ async fn acp_runtime_presets_include_pi_opencode_and_dsh() {
 
 #[tokio::test]
 async fn agent_delete_soft_deletes_and_hides_from_list() {
-    let app = app().await;
+    let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "delete@example.com").await;
     let workspace = create_workspace(&app, &token).await;
 
@@ -1082,6 +1092,91 @@ async fn agent_delete_soft_deletes_and_hides_from_list() {
     assert_eq!(status, StatusCode::CREATED);
     let agent_id = agent["id"].as_str().unwrap().to_string();
 
+    let (status, group) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/groups",
+            &token,
+            json!({
+                "name": "Deletion group",
+                "workspace_id": workspace,
+                "initial_agents": [agent_id]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group_id = group["id"].as_str().unwrap().to_string();
+
+    let (status, fetched) = send(
+        &app,
+        authed("GET", &format!("/api/v2/agents/{agent_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["group_ids"], json!([group_id]));
+
+    let thread_id = "delete-thread".to_string();
+    sqlx::query("INSERT INTO threads (id, group_id, created_at, updated_at) VALUES (?, ?, ?, ?)")
+        .bind(&thread_id)
+        .bind(&group_id)
+        .bind("2026-08-28T00:00:00Z")
+        .bind("2026-08-28T00:00:00Z")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let store = SchedulerStore::new(state.db.pool().clone(), state.write_lock.clone());
+    store
+        .create_turn(NewTurn {
+            id: "delete-turn".to_string(),
+            thread_id,
+            group_id: group_id.clone(),
+            trigger_message_id: None,
+            scheduler_strategy: "deterministic".to_string(),
+            config_snapshot: json!({}),
+            topology_snapshot: json!({"mode": "mesh"}),
+        })
+        .await
+        .unwrap();
+    store
+        .transition_turn(
+            "delete-turn",
+            TurnStatus::Pending,
+            TurnStatus::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .queue_dispatch(NewDispatch {
+            id: "delete-dispatch".to_string(),
+            turn_id: "delete-turn".to_string(),
+            parent_dispatch_id: None,
+            source_agent_id: None,
+            target_agent_id: agent_id.clone(),
+            selection_reason: SelectionReason::DeterministicOrder,
+            action_kind: ActionKind::Speak,
+            hop: 0,
+            input_message_id: None,
+        })
+        .await
+        .unwrap();
+    store.start_dispatch("delete-dispatch").await.unwrap();
+
+    let (status, body) = send(
+        &app,
+        authed("DELETE", &format!("/api/v2/agents/{agent_id}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body["error"]["message"],
+        "agent is replying and cannot be deleted"
+    );
+
+    store.cancel_turn("delete-turn").await.unwrap();
+
     let (status, body) = send(
         &app,
         authed("DELETE", &format!("/api/v2/agents/{agent_id}"), &token),
@@ -1089,6 +1184,15 @@ async fn agent_delete_soft_deletes_and_hides_from_list() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(body, Value::Null);
+
+    let membership_status: String =
+        sqlx::query_scalar("SELECT status FROM group_agents WHERE group_id = ? AND agent_id = ?")
+            .bind(&group_id)
+            .bind(&agent_id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(membership_status, "removed");
 
     // Get now returns 404.
     let (status, body) = send(

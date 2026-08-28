@@ -153,11 +153,12 @@ impl SchedulerStore {
         let _guard = self.write_lock.lock().await;
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO agent_dispatches \
              (id, turn_id, parent_dispatch_id, source_agent_id, target_agent_id, \
               selection_reason, action_kind, hop, status, input_message_id, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+             FROM agents WHERE id = ? AND status = 'active'",
         )
         .bind(&input.id)
         .bind(&input.turn_id)
@@ -171,8 +172,14 @@ impl SchedulerStore {
         .bind(&input.input_message_id)
         .bind(&now)
         .bind(&now)
+        .bind(&input.target_agent_id)
         .execute(&mut *tx)
         .await?;
+        if result.rows_affected() == 0 {
+            return Err(SchedulerStoreError::InvalidInput(
+                "dispatch target agent is inactive".to_owned(),
+            ));
+        }
 
         let snapshot = fetch_dispatch_in_tx(&mut tx, &input.id).await?;
         tx.commit().await?;

@@ -199,7 +199,7 @@ pub fn resource_storage_path(
 ) -> Result<PathBuf, ApiError> {
     let canonical_root = storage_root
         .canonicalize()
-        .map_err(|_| ApiError::internal("failed to resolve skill storage root"))?;
+        .map_err(|_| ApiError::not_found("skill resources not found"))?;
     let canonical_skill = skill_storage
         .canonicalize()
         .map_err(|_| ApiError::not_found("skill resources not found"))?;

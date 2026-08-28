@@ -9,9 +9,10 @@ import type { SkillRead } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
   update: vi.fn(),
+  readPath: vi.fn(),
   resources: [
-    { path: 'references/first.md', size: 12, category: 'reference' },
-    { path: 'scripts/second.ts', size: 24, category: 'script' },
+    { path: 'references/first.md', size: 12, category: 'reference', is_text: true },
+    { path: 'scripts/second.ts', size: 24, category: 'script', is_text: true },
   ],
   content: {
     'references/first.md': {
@@ -41,12 +42,16 @@ vi.mock('@/hooks/useSkills', () => ({
   useSkillResources: () => ({
     data: mocks.resources,
     error: null,
-  }),
-  useSkillResource: (_skillId: string, path: string | null) => ({
-    data: path ? mocks.content[path] : undefined,
     isLoading: false,
-    error: null,
   }),
+  useSkillResource: (_skillId: string, path: string | null) => {
+    mocks.readPath(path)
+    return {
+      data: path ? mocks.content[path] : undefined,
+      isLoading: false,
+      error: null,
+    }
+  },
   useUpdateSkillResource: () => ({ mutate: mocks.update, isPending: false }),
 }))
 
@@ -69,6 +74,9 @@ const skill: SkillRead = {
 describe('SkillResourcesPanel', () => {
   beforeEach(async () => {
     mocks.update.mockReset()
+    mocks.readPath.mockReset()
+    mocks.resources[0].is_text = true
+    mocks.resources[1].is_text = true
     await i18n.changeLanguage('en-US')
   })
 
@@ -96,5 +104,17 @@ describe('SkillResourcesPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Discard and leave' }))
     expect(await screen.findByDisplayValue('second body')).toBeVisible()
+  })
+
+  it('does not request a resource already marked as non-text', async () => {
+    mocks.resources[0].is_text = false
+    render(
+      <UnsavedChangesProvider>
+        <SkillResourcesPanel skill={skill} />
+      </UnsavedChangesProvider>,
+    )
+
+    expect(await screen.findByText(/This file cannot be previewed/)).toBeVisible()
+    expect(mocks.readPath).not.toHaveBeenCalledWith('references/first.md')
   })
 })

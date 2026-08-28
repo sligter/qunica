@@ -272,6 +272,7 @@ export interface AgentRead {
   acp_runtime: AcpRuntimeConfig | null
   workspace_id: string | null
   workspace_ids?: string[]
+  group_ids?: string[]
   llm_provider_id: string | null
   skill_ids: string[]
   visibility: string

@@ -3380,26 +3380,43 @@ pub(crate) async fn remove_group_agent_inner(
         .await
         .map_err(|_| ApiError::internal("failed to start group agent transaction"))?;
 
-    sqlx::query(
-        "UPDATE group_agents SET status = 'removed', updated_at = ? \
-         WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+    remove_group_agent_in_tx(
+        &mut tx,
+        &group_id,
+        &agent_id,
+        &group.communication_mode,
+        &now,
     )
-    .bind(&now)
-    .bind(&group_id)
-    .bind(&agent_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|_| ApiError::internal("failed to remove group agent"))?;
-
-    remove_agent_from_group_lists(&mut tx, &group_id, &agent_id, &now).await?;
-    // Removing the hub or the last leader would leave a topology the runtime
-    // cannot schedule, so the remaining members are re-normalized.
-    normalize_group_agent_topology(&mut tx, &group_id, &group.communication_mode, &now).await?;
+    .await?;
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group agent removal"))?;
 
     Ok(())
+}
+
+pub(crate) async fn remove_group_agent_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_id: &str,
+    agent_id: &str,
+    communication_mode: &str,
+    now: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "UPDATE group_agents SET status = 'removed', updated_at = ? \
+         WHERE group_id = ? AND agent_id = ? AND status = 'active'",
+    )
+    .bind(now)
+    .bind(group_id)
+    .bind(agent_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("failed to remove group agent"))?;
+
+    remove_agent_from_group_lists(tx, group_id, agent_id, now).await?;
+    // Removing the hub or the last leader would leave a topology the runtime
+    // cannot schedule, so the remaining members are re-normalized.
+    normalize_group_agent_topology(tx, group_id, communication_mode, now).await
 }
 
 pub async fn set_group_agent_muted(

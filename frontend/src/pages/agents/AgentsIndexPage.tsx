@@ -9,7 +9,6 @@ import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { SearchInput } from '@/components/ui/search-input'
 import { useAgents } from '@/hooks/useAgents'
-import { formatResourceStatus } from '@/i18n/resourceStatus'
 
 export function AgentsIndexPage() {
   const { t } = useTranslation(['agents', 'common'])
@@ -31,7 +30,6 @@ export function AgentsIndexPage() {
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps -- list is stable per query cache entry; keying on ids avoids re-running the filter on unrelated renders
   }, [listKey, query])
-  const activeCount = list.filter((a) => a.status === 'active').length
   const acpCount = list.filter((a) => a.runtime_kind === 'acp').length
   const totalMountedSkills = list.reduce((acc, a) => acc + (a.skill_ids?.length ?? 0), 0)
 
@@ -56,20 +54,13 @@ export function AgentsIndexPage() {
     >
       <div className="space-y-6">
         {/* Metric Cards Row */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground">{t('agents:title')}</span>
               <Bot className="h-4 w-4 text-primary/70" />
             </div>
             <p className="mt-2 text-2xl font-semibold tracking-tight">{list.length}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('agents:detail.status')}</span>
-              <span className="h-2 w-2 rounded-full bg-success ring-4 ring-success/20" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-success">{activeCount}</p>
           </div>
           <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
             <div className="flex items-center justify-between">
@@ -116,8 +107,6 @@ export function AgentsIndexPage() {
                   title={agent.name}
                   avatarIcon={<AgentAvatar name={agent.name} avatarUrl={agent.avatar_url} />}
                   avatarClass="bg-transparent p-0 shadow-none"
-                  statusLabel={formatResourceStatus(agent.status, t)}
-                  statusActive={agent.status === 'active'}
                   description={
                     agent.description || agent.system_prompt || t('common:state.noDescription')
                   }

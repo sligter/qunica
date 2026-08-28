@@ -26,8 +26,8 @@ interface EntityCardProps {
   avatarClass?: string
   /** Optional glyph instead of an initial (MCP server, provider). */
   avatarIcon?: ReactNode
-  statusLabel: string
-  statusActive: boolean
+  statusLabel?: string
+  statusActive?: boolean
   /** Typed badge next to the title (transport, kind, source). */
   metaBadge?: { label: string; className?: string }
   stats?: EntityCardStat[]
@@ -38,9 +38,7 @@ interface EntityCardProps {
  *
  * The whole card links to the detail view; a quiet pencil in the top-right on
  * hover deep-links straight into the edit form (`?edit=1`), so editing is one
- * click from anywhere instead of open-then-find-the-button. The card stops
- * being translated on hover — the same treatment GitHub and Linear use — and
- * the status dot keeps its colour when the rest goes quiet.
+ * click from anywhere instead of open-then-find-the-button.
  */
 export function EntityCard({
   to,
@@ -107,14 +105,18 @@ export function EntityCard({
           </div>
 
           <span className="flex shrink-0 items-center gap-1.5">
-            <span
-              aria-hidden
-              className={cn(
-                'h-2 w-2 rounded-full',
-                statusActive ? 'bg-success' : 'bg-muted-foreground/40',
-              )}
-            />
-            <span className="text-[10px] font-medium text-muted-foreground">{statusLabel}</span>
+            {statusLabel ? (
+              <>
+                <span
+                  aria-hidden
+                  className={cn(
+                    'h-2 w-2 rounded-full',
+                    statusActive ? 'bg-success' : 'bg-muted-foreground/40',
+                  )}
+                />
+                <span className="text-[10px] font-medium text-muted-foreground">{statusLabel}</span>
+              </>
+            ) : null}
             {editTo ? (
               <button
                 type="button"

@@ -180,6 +180,37 @@ async fn store_enforces_one_active_turn_per_thread() {
 }
 
 #[tokio::test]
+async fn store_does_not_queue_a_deleted_agent() {
+    let fixture = Fixture::new().await;
+    fixture
+        .store
+        .create_turn(fixture.turn("turn-deleted-agent"))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE agents SET status = 'deleted' WHERE id = ?")
+        .bind(&fixture.agent_a)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+
+    let error = fixture
+        .store
+        .queue_dispatch(fixture.dispatch(
+            "dispatch-deleted-agent",
+            "turn-deleted-agent",
+            &fixture.agent_a,
+        ))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SchedulerStoreError::InvalidInput(ref message)
+            if message == "dispatch target agent is inactive"
+    ));
+}
+
+#[tokio::test]
 async fn store_supersede_and_create_replaces_the_active_turn_atomically() {
     let fixture = Fixture::new().await;
     let (nothing_superseded, first) = fixture

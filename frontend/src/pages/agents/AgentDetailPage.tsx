@@ -30,11 +30,11 @@ import { useAgent } from '@/hooks/useAgents'
 import { useDeleteAgent } from '@/hooks/useDeleteAgent'
 import { useCreateDirectChat } from '@/hooks/useDirectChats'
 import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
+import { useGroups } from '@/hooks/useGroups'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
-import { formatResourceStatus } from '@/i18n/resourceStatus'
 
 export function AgentDetailPage() {
   const { t } = useTranslation(['agents', 'common'])
@@ -42,6 +42,7 @@ export function AgentDetailPage() {
   const agent = useAgent(agentId)
   const providers = useProviders()
   const skills = useSkills()
+  const groups = useGroups()
   const workspaces = useWorkspaces()
   const createDirectChat = useCreateDirectChat()
   const navigate = useNavigate()
@@ -86,6 +87,7 @@ export function AgentDetailPage() {
     : null
   const workspace = workspaces.data?.find((w) => w.id === a.workspace_id)
   const mountedSkills = (skills.data ?? []).filter((s) => a.skill_ids.includes(s.id))
+  const joinedGroups = (groups.data ?? []).filter((group) => a.group_ids?.includes(group.id))
 
   if (editing) {
     return (
@@ -158,12 +160,6 @@ export function AgentDetailPage() {
       subtitle={
         <div className="flex flex-wrap items-center gap-2">
           {a.description ? <span className="text-foreground/80">{a.description}</span> : null}
-          <Badge
-            variant={a.status === 'active' ? 'default' : 'secondary'}
-            className="text-[10px]"
-          >
-            {formatResourceStatus(a.status, t)}
-          </Badge>
           <Badge variant="outline" className="text-[10px] font-mono">
             {a.runtime_kind === 'acp' ? 'ACP' : 'LLM Chat'}
           </Badge>
@@ -258,6 +254,34 @@ export function AgentDetailPage() {
                 )}
               </Field>
             </FieldGrid>
+
+            <Section
+              title={t('agents:detail.groups')}
+              as="h3"
+              aside={
+                <Badge variant="outline" className="text-[10px] font-medium">
+                  {a.group_ids?.length ?? 0}
+                </Badge>
+              }
+            >
+              {groups.isLoading ? (
+                <p className="text-xs text-muted-foreground">{t('agents:detail.loadingGroups')}</p>
+              ) : joinedGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t('agents:detail.noGroups')}</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                  {joinedGroups.map((group) => (
+                    <div
+                      key={group.id}
+                      className="flex items-center gap-2.5 rounded-xl border border-border/80 bg-card p-3 text-xs"
+                    >
+                      <MessageSquare className="h-4 w-4 shrink-0 text-primary" />
+                      <span className="truncate font-medium text-foreground">{group.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Section>
 
             {a.llm_config && Object.keys(a.llm_config).length > 0 && (
               <Section title={t('agents:detail.modelParameters')} as="h3">

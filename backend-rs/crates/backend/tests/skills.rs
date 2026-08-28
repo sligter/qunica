@@ -351,6 +351,35 @@ async fn skills_import_zip_rejects_traversal_and_persists_resources() {
     assert_eq!(resource["path"], "references/readme.md");
     assert_eq!(resource["content"], "hello from a reference");
     assert_eq!(resource["is_text"], true);
+
+    std::fs::remove_dir_all(skill["storage_path"].as_str().unwrap()).unwrap();
+    let (status, resources) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/skills/{skill_id}/resources"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resources
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|resource| resource["is_text"] == false));
+
+    let (status, missing) = send(
+        &app,
+        authed(
+            "GET",
+            &format!("/api/v2/skills/{skill_id}/resources/references/readme.md"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(missing["error"]["code"], "not_found");
 }
 
 #[tokio::test]

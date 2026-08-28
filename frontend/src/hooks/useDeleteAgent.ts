@@ -11,7 +11,8 @@ export function useDeleteAgent() {
       fetchJson<void>(`/agents/${agentId}`, { token, method: 'DELETE' }),
     onSuccess: (_data, agentId) => {
       void qc.invalidateQueries({ queryKey: ['agents'] })
-      void qc.invalidateQueries({ queryKey: ['group-agents'] })
+      void qc.invalidateQueries({ queryKey: ['groups'] })
+      void qc.invalidateQueries({ queryKey: ['direct-chats'] })
       qc.removeQueries({ queryKey: ['agents', agentId] })
     },
   })

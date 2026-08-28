@@ -136,7 +136,12 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
           </div>
         </div>
 
-        <ResourceViewer skillId={skill.id} path={selectedPath} meta={selectedMeta} />
+        <ResourceViewer
+          skillId={skill.id}
+          path={selectedPath}
+          meta={selectedMeta}
+          metadataLoading={resources.isLoading}
+        />
       </div>
     </Section>
   )
@@ -146,12 +151,15 @@ interface ResourceViewerProps {
   skillId: string
   path: string | null
   /** File metadata for the viewer header while content loads (or fails). */
-  meta: SkillFileInfo | null
+  meta: (SkillFileInfo & { is_text?: boolean }) | null
+  metadataLoading: boolean
 }
 
-function ResourceViewer({ skillId, path, meta }: ResourceViewerProps) {
+function ResourceViewer({ skillId, path, meta, metadataLoading }: ResourceViewerProps) {
   const { t } = useTranslation('skills')
-  const resource = useSkillResource(skillId, path)
+  // The list endpoint already marks missing and binary resources as non-text.
+  // Do not turn that known result into a retried per-file request.
+  const resource = useSkillResource(skillId, metadataLoading || meta?.is_text === false ? null : path)
   const update = useUpdateSkillResource(skillId, path)
   const [draft, setDraft] = useState('')
   const [saveError, setSaveError] = useState<LocalizedError | null>(null)
@@ -202,7 +210,7 @@ function ResourceViewer({ skillId, path, meta }: ResourceViewerProps) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {resource.isLoading ? (
+        {metadataLoading || resource.isLoading ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">{t('resources.loading')}</p>
         ) : loadErrorMessage ? (
           <PageState
