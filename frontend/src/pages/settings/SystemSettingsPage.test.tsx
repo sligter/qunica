@@ -330,7 +330,7 @@ describe('SystemSettingsPage about and updates', () => {
 
     expect(
       await screen.findByText(
-        'Updates are handled by the desktop app. A browser tab loads the latest version on reload.',
+        'Updates are handled by the desktop app. A browser tab updates on reload.',
       ),
     ).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull()

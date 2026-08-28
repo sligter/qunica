@@ -3,6 +3,7 @@ node_modules/
 dist/
 build/
 target/
+Notes/
 *.log
 .pnpm-debug.log*
 *.tsbuildinfo
@@ -11,7 +12,9 @@ target/
 # Root-level scratch docs and plans only. Leading slash matters: a bare `docs/`
 # also swallows source directories such as backend-rs/crates/backend/src/docs/,
 # whose markdown is include_str!'d into the binary.
-/docs/
+# GROUP_SCHEDULER.md is the tracked scheduler design doc referenced from the READMEs.
+/docs/*
+!/docs/GROUP_SCHEDULER.md
 llm_config-for-test.txt
 *.html
 

@@ -68,11 +68,11 @@ The bet is simple: multi-agent work gets better when the **room** is the product
 *Who speaks, in what order, under which budget — you set the rules, the scheduler enforces them.*
 
 - **[Communication topologies](backend-rs/crates/backend/src/docs/guide/groups.md#communication-modes) →** `mesh`, `star`, `hierarchical`, or `ring` define the legal speaking route; `speaking_order` fixes it deterministically.
-- **[Scheduler modes](GROUP_SCHEDULER.md) →** `bounded` runs within work budgets; `automatic` lets a moderator keep dispatching or close the turn. Both share one persisted scheduler for groups and direct chats.
+- **[Scheduler modes](docs/GROUP_SCHEDULER.md) →** `bounded` runs within work budgets; `automatic` lets a moderator keep dispatching or close the turn. Both share one persisted scheduler for groups and direct chats.
 - **A moderator →** An agent with its own provider and model that picks the next legal speaker, instead of leaving routing to fixed order.
 - **@-mentions →** Pick responders in mention mode, or pick the *first* speaker in group-wide mode. Mentions written by agents are display-only — they never dispatch anyone.
-- **[Budgets and failure fuses](GROUP_SCHEDULER.md#budget-profiles) →** Cap agent steps, per-agent steps, handoff hops, moderator calls, and tokens; consecutive failures stop the turn instead of burning it down.
-- **[AgentAsTool](GROUP_SCHEDULER.md) →** Structured delegation: `call` a helper privately and get the result back, or `handoff` the public reply — without ever waking the same agent twice.
+- **[Budgets and failure fuses](docs/GROUP_SCHEDULER.md#budget-profiles) →** Cap agent steps, per-agent steps, handoff hops, moderator calls, and tokens; consecutive failures stop the turn instead of burning it down.
+- **[AgentAsTool](docs/GROUP_SCHEDULER.md) →** Structured delegation: `call` a helper privately and get the result back, or `handoff` the public reply — without ever waking the same agent twice.
 
 ## Hand them real work.
 
@@ -93,7 +93,7 @@ The bet is simple: multi-agent work gets better when the **room** is the product
 *Every turn is persisted, replayable, and auditable — you watch the work instead of chasing it.*
 
 - **Live streaming →** Tokens, messages, errors, and turn traces appear in the room as they happen.
-- **[Turn traces](GROUP_SCHEDULER.md) →** Which agent ran, why it was selected, and what it cost — persisted per dispatch and per turn.
+- **[Turn traces](docs/GROUP_SCHEDULER.md) →** Which agent ran, why it was selected, and what it cost — persisted per dispatch and per turn.
 - **[Terminal](backend-rs/crates/backend/src/docs/guide/terminal.md) →** Desktop-only tabbed shell docked to the conversation (`Ctrl`/`Cmd` + `` ` ``). It starts in the workspace but is deliberately *not* sandboxed — read the guide before using it.
 - **[Built-in assistant](backend-rs/crates/backend/src/docs/guide/assistant.md) →** Configuration help with staged changes that apply only after you approve. It never touches files and never reads raw secrets.
 - **Logs →** Launcher and backend logs in the app, or on disk under `%APPDATA%\qunica.desktop\logs`.
@@ -165,7 +165,7 @@ For example, `codex` runs as `codex exec --sandbox danger-full-access <prompt>` 
 | I want to… | Start here |
 | --- | --- |
 | Understand the pieces and set up today | [Getting started](backend-rs/crates/backend/src/docs/guide/getting-started.md) |
-| Create groups, routing, and conversation rules | [Groups](backend-rs/crates/backend/src/docs/guide/groups.md) · [Scheduler design](GROUP_SCHEDULER.md) |
+| Create groups, routing, and conversation rules | [Groups](backend-rs/crates/backend/src/docs/guide/groups.md) · [Scheduler design](docs/GROUP_SCHEDULER.md) |
 | Configure agents and their tools | [Agents](backend-rs/crates/backend/src/docs/guide/agents.md) · [Skills](backend-rs/crates/backend/src/docs/guide/skills.md) |
 | Drive external CLI agents over ACP | [External CLI agents](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) |
 | Connect MCP tool servers | [MCP servers](backend-rs/crates/backend/src/docs/guide/mcp-servers.md) |

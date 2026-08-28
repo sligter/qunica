@@ -68,11 +68,11 @@ Qunica 把项目当成一个 **群（Group）**。Agent 是你可以邀请、配
 *谁先说、能说几句、烧多少 `token`，你来定；轮到谁接话，调度器自己走。*
 
 - **[通信拓扑](backend-rs/crates/backend/src/docs/guide/groups.md#communication-modes) →** `mesh`、`star`、`hierarchical`、`ring` 决定合法的发言路径；`speaking_order` 让它确定化。
-- **[调度模式](GROUP_SCHEDULER.md) →** `bounded` 在预算内运行；`automatic` 让主持 Agent 反复派发或结束本轮。群聊与私聊共用同一个持久化调度器。
+- **[调度模式](docs/GROUP_SCHEDULER.md) →** `bounded` 在预算内运行；`automatic` 让主持 Agent 反复派发或结束本轮。群聊与私聊共用同一个持久化调度器。
 - **主持 Agent →** 一个带着自己供应商与模型的成员，替你挑选下一个合法发言人，不用死守固定顺序。
 - **@ 提及 →** 提及模式下由 @ 指定应答者；群发模式下 @ 只决定开场发言人。Agent 写出来的 @ 只是展示文字，永远不会触发派发。
-- **[预算与失败熔断](GROUP_SCHEDULER.md#budget-profiles) →** 限制总步数、单人步数、交接跳数、主持调用次数与 token；连续失败会停掉本轮而不是烧穿它。
-- **[AgentAsTool](GROUP_SCHEDULER.md) →** 结构化委托：`call` 私下调用帮手并拿回结果，`handoff` 把公开回复交出去——同一个 Agent 不会被唤醒两次。
+- **[预算与失败熔断](docs/GROUP_SCHEDULER.md#budget-profiles) →** 限制总步数、单人步数、交接跳数、主持调用次数与 token；连续失败会停掉本轮而不是烧穿它。
+- **[AgentAsTool](docs/GROUP_SCHEDULER.md) →** 结构化委托：`call` 私下调用帮手并拿回结果，`handoff` 把公开回复交出去——同一个 Agent 不会被唤醒两次。
 
 ## 把真活交给它们。
 
@@ -93,7 +93,7 @@ Qunica 把项目当成一个 **群（Group）**。Agent 是你可以邀请、配
 *每轮对话都留底，能回放、能查——活干到哪，一眼就有。*
 
 - **实时流式 →** token、消息、错误与 turn trace 实时出现在房间里。
-- **[Turn trace](GROUP_SCHEDULER.md) →** 哪个 Agent 跑了、为什么选它、花了多少——按次派发、按轮持久化。
+- **[Turn trace](docs/GROUP_SCHEDULER.md) →** 哪个 Agent 跑了、为什么选它、花了多少——按次派发、按轮持久化。
 - **[终端](backend-rs/crates/backend/src/docs/guide/terminal.md) →** 仅桌面版的标签页终端，停靠在对话底部（`Ctrl`/`Cmd` + `` ` ``）。它从工作区启动但**故意不做**沙箱，用之前先读文档。
 - **[内置助手](backend-rs/crates/backend/src/docs/guide/assistant.md) →** 配置答疑，代改配置先暂存、你批准才生效；不碰文件，永远读不到明文密钥。
 - **日志 →** 应用内可见，落盘位置 `%APPDATA%\qunica.desktop\logs`。
@@ -165,7 +165,7 @@ Qunica 不带模型。它驱动你已经安装并登录好的 Agent CLI，换供
 | 我想… | 从这里开始 |
 | --- | --- |
 | 搞懂概念、今天就跑起来 | [快速上手](backend-rs/crates/backend/src/docs/guide/getting-started.md) |
-| 建群、定路由与对话规则 | [群组](backend-rs/crates/backend/src/docs/guide/groups.md) · [调度器设计](GROUP_SCHEDULER.md) |
+| 建群、定路由与对话规则 | [群组](backend-rs/crates/backend/src/docs/guide/groups.md) · [调度器设计](docs/GROUP_SCHEDULER.md) |
 | 配置 Agent 与工具 | [Agent](backend-rs/crates/backend/src/docs/guide/agents.md) · [Skills](backend-rs/crates/backend/src/docs/guide/skills.md) |
 | 用 ACP 驱动外部 CLI Agent | [外部 CLI Agent](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) |
 | 接 MCP 工具服务 | [MCP 服务](backend-rs/crates/backend/src/docs/guide/mcp-servers.md) |

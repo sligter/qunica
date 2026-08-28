@@ -706,7 +706,7 @@ describe('group management i18n', () => {
     expect(screen.queryByText(/Mounted at/)).not.toBeInTheDocument()
     expect(
       screen.getByText(
-        'Isolated: group files and message attachments are out of reach, and its output stays out of the group workspace.',
+        'Isolated: no access to group files, and its output stays out of the group workspace.',
       ),
     ).toBeVisible()
   })

@@ -56,7 +56,7 @@ Budgets that end a turn when exhausted:
 
 A **moderator** can be enabled with its own provider and model to pick the next legal speaker. Automatic mode requires it. `turn_timeout_seconds` currently limits moderator calls; it is not an agent execution timeout.
 
-See [the scheduler design](../../../../../../GROUP_SCHEDULER.md) for the runtime and persistence contract.
+See [the scheduler design](../../../../../../docs/GROUP_SCHEDULER.md) for the runtime and persistence contract.
 
 ## Shared notes
 

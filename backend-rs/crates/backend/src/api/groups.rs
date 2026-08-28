@@ -4187,8 +4187,8 @@ async fn group_prompt_context(
     ));
 
     if let Some(thread_id) = thread_id {
-        let thread: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT title, goal, git_branch FROM threads \
+        let thread: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT title, git_branch FROM threads \
              WHERE id = ? AND group_id = ? AND agent_id IS NULL AND status != 'cleared'",
         )
         .bind(thread_id)
@@ -4196,11 +4196,10 @@ async fn group_prompt_context(
         .fetch_optional(pool)
         .await
         .map_err(|_| ApiError::internal("database error"))?;
-        let (title, goal, branch) = thread.ok_or_else(|| ApiError::not_found("task not found"))?;
+        let (title, branch) = thread.ok_or_else(|| ApiError::not_found("task not found"))?;
         sections.push(format!(
-            "Current task:\n- title: {}\n- goal: {}\n- git_branch: {}",
+            "Current task:\n- title: {}\n- git_branch: {}",
             title.as_deref().unwrap_or("none"),
-            goal.as_deref().unwrap_or("none"),
             branch.as_deref().unwrap_or("none"),
         ));
     }

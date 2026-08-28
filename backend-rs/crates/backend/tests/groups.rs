@@ -4245,6 +4245,18 @@ async fn group_prompt_enhancement_uses_selected_member_and_current_context() {
         "Use staged rollout",
     )
     .await;
+    let (status, task) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/threads"),
+            &token,
+            json!({"title": "Atlas rollout"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {task:?}");
+    let thread_id = task["id"].as_str().unwrap();
 
     let (status, response) = send(
         &app,
@@ -4252,7 +4264,7 @@ async fn group_prompt_enhancement_uses_selected_member_and_current_context() {
             "POST",
             &format!("/api/v2/groups/{group_id}/prompt/enhance"),
             &token,
-            json!({"prompt": "ship it", "agent_id": selected_agent}),
+            json!({"prompt": "ship it", "thread_id": thread_id, "agent_id": selected_agent}),
         ),
     )
     .await;
@@ -4283,6 +4295,7 @@ async fn group_prompt_enhancement_uses_selected_member_and_current_context() {
         "Planner",
         "Release checklist",
         "Use staged rollout",
+        "Atlas rollout",
         "Prompt Workspace",
         "README.md",
         "Project Atlas",
