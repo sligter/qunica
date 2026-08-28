@@ -10,9 +10,11 @@ import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { FieldError } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { PageState } from '@/components/ui/page-state'
 import { Section } from '@/components/ui/section'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import {
   useSkillResource,
@@ -80,15 +82,13 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
       title={t('resources.title')}
       as="h3"
       aside={
-        <Badge variant="outline" className="text-[10px] font-medium">
+        <Badge variant="outline" className="text-2xs font-medium">
           {t('resources.file', { count: skill.files.length })}
         </Badge>
       }
       contentClassName="space-y-3"
     >
-      {resources.error && (
-        <p className="text-xs text-destructive">{t('resources.metadataError')}</p>
-      )}
+      {resources.error ? <FieldError>{t('resources.metadataError')}</FieldError> : null}
 
       <div className="grid min-h-80 gap-3 lg:grid-cols-[minmax(0,17rem),minmax(0,1fr)]">
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -121,7 +121,7 @@ export function SkillResourcesPanel({ skill }: SkillResourcesPanelProps) {
                     <span className="block truncate text-xs leading-5">
                       {resourceFileName(file.path)}
                     </span>
-                    <span className="block truncate text-[10px] font-normal leading-4 text-muted-foreground">
+                    <span className="block truncate text-2xs font-normal leading-4 text-muted-foreground">
                       {resourceDirName(file.path)}
                     </span>
                   </span>
@@ -194,6 +194,7 @@ function ResourceViewer({ skillId, path, meta, metadataLoading }: ResourceViewer
       : resource.error
         ? t('resources.loadError')
         : null
+  const saveErrorText = localizedErrorText(saveError, t)
 
   return (
     <div className="flex min-h-72 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -204,14 +205,25 @@ function ResourceViewer({ skillId, path, meta, metadataLoading }: ResourceViewer
           <ResourceFileIcon category={meta.category} />
           <p className="truncate text-sm font-medium">{resourceFileName(meta.path)}</p>
         </div>
-        <Badge variant="outline" className="shrink-0 text-[10px] font-medium">
+        <Badge variant="outline" className="shrink-0 text-2xs font-medium">
           {meta.category}
         </Badge>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {metadataLoading || resource.isLoading ? (
-          <p className="px-4 py-6 text-sm text-muted-foreground">{t('resources.loading')}</p>
+          // Lines rather than a sentence: the editor that arrives is a block of
+          // monospace text, so a skeleton in that shape is what keeps the pane
+          // from resizing when the content lands.
+          <div className="space-y-2 p-4" aria-hidden>
+            <span className="sr-only">{t('resources.loading')}</span>
+            <Skeleton className="h-3 w-4/5" />
+            <Skeleton className="h-3 w-2/3 opacity-70" />
+            <Skeleton className="h-3 w-11/12 opacity-70" />
+            <Skeleton className="h-3 w-1/2 opacity-60" />
+            <Skeleton className="h-3 w-3/4 opacity-60" />
+            <Skeleton className="h-3 w-2/5 opacity-50" />
+          </div>
         ) : loadErrorMessage ? (
           <PageState
             variant="error"
@@ -224,7 +236,10 @@ function ResourceViewer({ skillId, path, meta, metadataLoading }: ResourceViewer
             onChange={(event) => setDraft(event.target.value)}
             spellCheck={false}
             aria-label={t('resources.editable')}
-            className="h-full min-h-64 resize-none rounded-none border-none bg-code font-mono text-xs text-code-foreground shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            // `ring-inset` on focus: the editor has no border of its own, so
+            // dropping the ring entirely (as it did) left keyboard focus with
+            // no visible sign at all.
+            className="h-full min-h-64 resize-none overflow-auto rounded-none border-none bg-code font-mono text-xs leading-relaxed text-code-foreground shadow-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           />
         ) : (
           <PageState
@@ -236,37 +251,39 @@ function ResourceViewer({ skillId, path, meta, metadataLoading }: ResourceViewer
         )}
       </div>
 
-      {(canEdit || localizedErrorText(saveError, t)) && (
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-background/60 px-3 py-2">
-          <p className="min-w-0 truncate text-xs text-muted-foreground">
-            {formatSize(meta.size)}
-            {' · '}
-            {canEdit ? t('resources.text') : t('resources.notEditable')}
-          </p>
-          {localizedErrorText(saveError, t) && (
-            <p className="truncate text-xs text-destructive" role="alert">
-              {localizedErrorText(saveError, t)}
+      {(canEdit || saveErrorText) && (
+        // The error takes its own row. Sharing one line with the file size and
+        // the Save button meant a message longer than about twelve characters
+        // was truncated to an ellipsis — the least useful part of a failure is
+        // the part you cannot read.
+        <div className="shrink-0 border-t border-border bg-background/60 px-3 py-2">
+          {saveErrorText ? <FieldError className="mb-2">{saveErrorText}</FieldError> : null}
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 truncate text-2xs text-muted-foreground">
+              {formatSize(meta.size)}
+              {' · '}
+              {canEdit ? t('resources.text') : t('resources.notEditable')}
             </p>
-          )}
-          <Button
-            size="sm"
-            className="ml-auto shrink-0"
-            disabled={update.isPending || !dirty}
-            onClick={() => {
-              setSaveError(null)
-              update.mutate(draft, {
-                onError: (err) => {
-                  setSaveError(
-                    err instanceof ApiError
-                      ? messageError(err.message, 'resources.saveErrorDetail')
-                      : translatedError('resources.saveError'),
-                  )
-                },
-              })
-            }}
-          >
-            {update.isPending ? t('resources.saving') : t('resources.save')}
-          </Button>
+            <Button
+              size="sm"
+              className="shrink-0"
+              disabled={update.isPending || !dirty}
+              onClick={() => {
+                setSaveError(null)
+                update.mutate(draft, {
+                  onError: (err) => {
+                    setSaveError(
+                      err instanceof ApiError
+                        ? messageError(err.message, 'resources.saveErrorDetail')
+                        : translatedError('resources.saveError'),
+                    )
+                  },
+                })
+              }}
+            >
+              {update.isPending ? t('resources.saving') : t('resources.save')}
+            </Button>
+          </div>
         </div>
       )}
     </div>

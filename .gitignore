@@ -17,7 +17,7 @@ Notes/
 !/docs/GROUP_SCHEDULER.md
 llm_config-for-test.txt
 *.html
-
+.workbuddy/
 # Python
 __pycache__/
 *.py[cod]

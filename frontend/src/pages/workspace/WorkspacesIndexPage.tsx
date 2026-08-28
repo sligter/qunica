@@ -1,11 +1,18 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Folder, HardDrive, Plus, Users } from 'lucide-react'
-import { Bot, Plus as PlusIcon } from 'lucide-react'
+import { Bot, Folder, HardDrive, Plus, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { EntityCard } from '@/components/layout/EntityCard'
 import { DetailShell } from '@/components/layout/DetailShell'
+import {
+  EntityEmptyState,
+  EntityIndexSkeleton,
+  IndexErrorState,
+  MetricCard,
+  MetricRow,
+  NoMatchesState,
+} from '@/components/layout/EntityIndexParts'
 import { Button } from '@/components/ui/button'
 import { SearchInput } from '@/components/ui/search-input'
 import { useAgents } from '@/hooks/useAgents'
@@ -61,57 +68,59 @@ export function WorkspacesIndexPage() {
         </>
       }
     >
-      <div className="space-y-6">
+      {workspaces.isLoading ? (
+        <EntityIndexSkeleton />
+      ) : workspaces.error ? (
+        <IndexErrorState
+          title={t('workspaces:loadError')}
+          detail={workspaces.error instanceof Error ? workspaces.error.message : undefined}
+          onRetry={() => void workspaces.refetch()}
+          retryLabel={t('common:actions.retry')}
+        />
+      ) : list.length === 0 ? (
+        <EntityEmptyState
+          icon={Folder}
+          title={t('workspaces:empty')}
+          description={t('workspaces:form.createSubtitle')}
+          actionLabel={
+            <>
+              <Plus className="h-4 w-4" />
+              {t('workspaces:new')}
+            </>
+          }
+          actionTo="/workspaces/new"
+        />
+      ) : (
+        <div className="space-y-6">
         {/* Metric Cards Row */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('workspaces:title')}</span>
-              <Folder className="h-4 w-4 text-primary/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight">{list.length}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('workspaces:backendTypes.local')}</span>
-              <HardDrive className="h-4 w-4 text-info/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-info">{localCount}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('workspaces:detail.usedBy')}</span>
-              <Users className="h-4 w-4 text-success/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-success">{boundWorkspaces}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('workspaces:detail.agent')}</span>
-              <Bot className="h-4 w-4 text-warning-foreground/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight">{agentList.length}</p>
-          </div>
-        </div>
+        <MetricRow>
+          <MetricCard
+            label={t('workspaces:title')}
+            value={list.length}
+            icon={Folder}
+            tone="primary"
+          />
+          <MetricCard
+            label={t('workspaces:backendTypes.local')}
+            value={localCount}
+            icon={HardDrive}
+            tone="info"
+          />
+          <MetricCard
+            label={t('workspaces:detail.usedBy')}
+            value={boundWorkspaces}
+            icon={Users}
+            tone="success"
+          />
+          <MetricCard
+            label={t('workspaces:detail.agent')}
+            value={agentList.length}
+            icon={Bot}
+            tone="warning"
+          />
+        </MetricRow>
 
-        {/* Gallery Grid or Empty State */}
-        {list.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/80 bg-card/30 p-12 text-center">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <Folder className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-semibold">{t('workspaces:empty')}</h3>
-            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              {t('workspaces:form.createSubtitle')}
-            </p>
-            <Button className="mt-6 gap-2" asChild>
-              <Link to="/workspaces/new">
-                <PlusIcon className="h-4 w-4" />
-                {t('workspaces:new')}
-              </Link>
-            </Button>
-          </div>
-        ) : (
+        {/* Gallery Grid */}
           <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
             {filtered.map((workspace) => {
               const boundGroups = groupList.filter((g) => g.workspace_id === workspace.id)
@@ -154,13 +163,11 @@ export function WorkspacesIndexPage() {
               )
             })}
             {filtered.length === 0 ? (
-              <p className="col-span-full py-12 text-center text-sm text-muted-foreground">
-                {t('workspaces:noMatches', '没有匹配的工作区。')}
-              </p>
+              <NoMatchesState message={t('workspaces:noMatches', '没有匹配的工作区。')} />
             ) : null}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </DetailShell>
   )
 }

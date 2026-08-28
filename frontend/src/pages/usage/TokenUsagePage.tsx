@@ -104,7 +104,9 @@ function FilterSelect({
         {label}
       </span>
       <Select value={value ?? ALL} onValueChange={(next) => onChange(next === ALL ? undefined : next)}>
-        <SelectTrigger className="bg-background shadow-none">
+        {/* `shadow-none` only: the trigger used to be transparent by default,
+            which is what the `bg-background` here was compensating for. */}
+        <SelectTrigger className="shadow-none">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

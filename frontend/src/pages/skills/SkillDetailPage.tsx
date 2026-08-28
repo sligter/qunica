@@ -9,8 +9,8 @@ import { DetailShell } from '@/components/layout/DetailShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { FieldError, FormField } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { PageState } from '@/components/ui/page-state'
 import { Section, SectionStack } from '@/components/ui/section'
 import { DetailSkeleton } from '@/components/ui/skeleton'
@@ -21,6 +21,7 @@ import { ApiError } from '@/lib/api-v2/client'
 import type { SkillRead } from '@/types/api'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
+import { errorMessage } from '@/lib/utils'
 
 const EDIT_SKILL_FORM_ID = 'edit-skill-form'
 
@@ -54,7 +55,7 @@ export function SkillDetailPage() {
     return (
       <PageState
         variant="error"
-        title={t('skills:detail.loadError', { error: String(skill.error) })}
+        title={t('skills:detail.loadError', { error: errorMessage(skill.error) })}
       />
     )
   }
@@ -102,13 +103,13 @@ export function SkillDetailPage() {
       subtitle={
         <div className="flex flex-wrap items-center gap-2">
           {s.description ? <span className="max-w-prose text-foreground/80">{s.description}</span> : null}
-          <Badge variant="outline" className="gap-1 font-mono text-[10px] uppercase tracking-wide">
+          <Badge variant="outline" className="gap-1 font-mono text-2xs uppercase tracking-wide">
             {t('skills:detail.sourceShort')}
             <span className="font-semibold">{s.source}</span>
           </Badge>
           <Badge
             variant={s.status === 'active' ? 'default' : 'secondary'}
-            className="text-[10px]"
+            className="text-2xs"
           >
             {formatResourceStatus(s.status, t)}
           </Badge>
@@ -148,7 +149,7 @@ export function SkillDetailPage() {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-semibold">{s.name}</h2>
-                <Badge variant="outline" className="text-[10px] font-mono uppercase">
+                <Badge variant="outline" className="text-2xs font-mono uppercase">
                   {s.source}
                 </Badge>
               </div>
@@ -203,7 +204,7 @@ function EditSkillForm({
   onCanSaveChange,
   onSavingChange,
 }: EditSkillFormProps) {
-  const { t } = useTranslation('skills')
+  const { t } = useTranslation(['skills', 'common'])
   const update = useUpdateSkill(skill.id)
   const [name, setName] = useState(skill.name)
   const [description, setDescription] = useState(skill.description ?? '')
@@ -242,36 +243,35 @@ function EditSkillForm({
     )
   }
 
+  const nameError = trimmedName.length === 0 ? t('common:validation.required') : null
+  const visibleError = localizedErrorText(error, t)
+
   return (
     <form
       id={EDIT_SKILL_FORM_ID}
       onSubmit={onSubmit}
       className="grid items-start gap-5 xl:grid-cols-[minmax(14rem,0.7fr)_minmax(24rem,1.3fr)]"
     >
-      <div className="space-y-1.5">
-        <Label htmlFor="skill-edit-name">{t('form.name')}</Label>
-        <Input
-          id="skill-edit-name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="skill-edit-description">{t('form.description')}</Label>
-        <Textarea
-          id="skill-edit-description"
-          rows={3}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder={t('form.descriptionPlaceholder')}
-          className="min-h-28 max-h-64 resize-y"
-        />
-      </div>
-      {localizedErrorText(error, t) && (
-        <p className="text-sm text-destructive xl:col-span-2" role="alert">
-          {localizedErrorText(error, t)}
-        </p>
-      )}
+      <FormField name="skill-edit-name" label={t('form.name')} required error={nameError}>
+        {(field) => (
+          <Input {...field} value={name} onChange={(e) => setName(e.target.value)} />
+        )}
+      </FormField>
+      <FormField name="skill-edit-description" label={t('form.description')}>
+        {(field) => (
+          <Textarea
+            {...field}
+            rows={3}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder={t('form.descriptionPlaceholder')}
+            className="min-h-28 max-h-64 resize-y"
+          />
+        )}
+      </FormField>
+      {visibleError ? (
+        <FieldError className="text-sm xl:col-span-2">{visibleError}</FieldError>
+      ) : null}
     </form>
   )
 }

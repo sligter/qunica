@@ -35,6 +35,7 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useProviders } from '@/hooks/useProviders'
 import { useSkills } from '@/hooks/useSkills'
 import { useWorkspaces } from '@/hooks/useWorkspaces'
+import { errorMessage } from '@/lib/utils'
 
 export function AgentDetailPage() {
   const { t } = useTranslation(['agents', 'common'])
@@ -73,7 +74,7 @@ export function AgentDetailPage() {
     return (
       <PageState
         variant="error"
-        title={t('agents:detail.loadError', { error: String(agent.error) })}
+        title={t('agents:detail.loadError', { error: errorMessage(agent.error) })}
       />
     )
   }
@@ -160,7 +161,7 @@ export function AgentDetailPage() {
       subtitle={
         <div className="flex flex-wrap items-center gap-2">
           {a.description ? <span className="text-foreground/80">{a.description}</span> : null}
-          <Badge variant="outline" className="text-[10px] font-mono">
+          <Badge variant="outline" className="text-2xs font-mono">
             {a.runtime_kind === 'acp' ? 'ACP' : 'LLM Chat'}
           </Badge>
         </div>
@@ -207,7 +208,7 @@ export function AgentDetailPage() {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-semibold">{a.name}</h2>
-                <Badge variant="outline" className="text-[10px] font-mono">
+                <Badge variant="outline" className="text-2xs font-mono">
                   {a.runtime_kind === 'acp' ? 'ACP' : 'LLM Chat'}
                 </Badge>
               </div>
@@ -259,7 +260,7 @@ export function AgentDetailPage() {
               title={t('agents:detail.groups')}
               as="h3"
               aside={
-                <Badge variant="outline" className="text-[10px] font-medium">
+                <Badge variant="outline" className="text-2xs font-medium">
                   {a.group_ids?.length ?? 0}
                 </Badge>
               }

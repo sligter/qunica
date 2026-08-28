@@ -1,6 +1,13 @@
 @import "katex/dist/katex.min.css";
 @import "tailwindcss";
 
+/* The app switches themes by writing `data-theme` on <html> (see
+   useApplyAppearance). Tailwind's stock `dark:` variant keys off the OS
+   prefers-color-scheme instead, so any `dark:` utility kept following the
+   system while the app itself was in the other theme. Bind the variant to
+   the attribute the app actually sets. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
   /* Claude-style warm palette — light */
   --color-background: hsl(48 33% 97%);

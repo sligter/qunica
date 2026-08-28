@@ -11,6 +11,7 @@ import {
   type KeyValueRow,
 } from '@/components/mcp/keyValueRows'
 import { Button } from '@/components/ui/button'
+import { FieldError, FormField } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -35,6 +36,23 @@ const TRANSPORT_KEYS: Record<McpTransport, 'stdio' | 'streamableHttp' | 'sse'> =
   stdio: 'stdio',
   'streamable-http': 'streamableHttp',
   sse: 'sse',
+}
+
+/** Names the transport radiogroup for assistive technology. */
+const TRANSPORT_LABEL_ID = 'mcp-transport-label'
+
+/**
+ * Arrow-key traversal inside the transport radiogroup.
+ *
+ * Matches what a native radio group does: one tab stop, arrows to choose, and
+ * the selection moves as focus moves rather than requiring a second press.
+ */
+function transportStep(key: string, current: number): number {
+  const forward = key === 'ArrowRight' || key === 'ArrowDown'
+  const back = key === 'ArrowLeft' || key === 'ArrowUp'
+  if (!forward && !back) return -1
+  const delta = forward ? 1 : -1
+  return (current + delta + TRANSPORTS.length) % TRANSPORTS.length
 }
 
 interface McpServerFormProps {
@@ -100,6 +118,17 @@ export function McpServerForm({
 
   const isHttp = transport !== 'stdio'
   const saving = create.isPending || update.isPending
+
+  // Moves focus with the selection, the way a native radio group behaves. The
+  // buttons are keyed by transport so React keeps the same nodes across the
+  // update, which is what lets the focus call survive the re-render.
+  const onTransportKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const next = transportStep(event.key, TRANSPORTS.indexOf(transport))
+    if (next < 0) return
+    event.preventDefault()
+    setTransport(TRANSPORTS[next]!)
+    event.currentTarget.querySelectorAll<HTMLElement>('[data-transport-option]')[next]?.focus()
+  }
 
   useEffect(() => {
     onSavingChange?.(saving)
@@ -253,16 +282,22 @@ export function McpServerForm({
         </div>
       ) : null}
 
-      <div className="space-y-1.5">
-        <Label htmlFor="mcp-name">{t('mcp:fields.name')}</Label>
-        <Input
-          id="mcp-name"
-          value={name}
-          placeholder={t('mcp:fields.namePlaceholder')}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <p className="text-xs text-muted-foreground">{t('mcp:fields.nameHint')}</p>
-      </div>
+      <FormField
+        name="mcp-name"
+        label={t('mcp:fields.name')}
+        required
+        description={t('mcp:fields.nameHint')}
+        error={name.trim() ? undefined : t('common:validation.required')}
+      >
+        {(field) => (
+          <Input
+            {...field}
+            value={name}
+            placeholder={t('mcp:fields.namePlaceholder')}
+            onChange={(event) => setName(event.target.value)}
+          />
+        )}
+      </FormField>
 
       <div className="space-y-1.5">
         <Label htmlFor="mcp-description">{t('mcp:fields.description')}</Label>
@@ -275,16 +310,31 @@ export function McpServerForm({
       </div>
 
       <div className="space-y-1.5">
-        <Label>{t('mcp:fields.transport')}</Label>
-        <div className="grid gap-2 sm:grid-cols-3">
+        {/* A span, not a <label>: it names the group rather than one control.
+            These cards are the transport picker, and without the radiogroup
+            role a screen reader announced three unrelated buttons. */}
+        <span id={TRANSPORT_LABEL_ID} className="text-sm font-medium leading-none">
+          {t('mcp:fields.transport')}
+        </span>
+        <div
+          role="radiogroup"
+          aria-labelledby={TRANSPORT_LABEL_ID}
+          className="grid gap-2 sm:grid-cols-3"
+          onKeyDown={onTransportKeys}
+        >
           {TRANSPORTS.map((option) => (
             <button
               key={option}
               type="button"
               role="radio"
+              data-transport-option=""
               aria-checked={transport === option}
+              // Roving tabindex: a radiogroup is one stop in the tab order, and
+              // the arrow keys move within it. Three tabbable radios meant three
+              // stops and no way to tell where the group began.
+              tabIndex={transport === option ? 0 : -1}
               onClick={() => setTransport(option)}
-              className={`rounded-md border p-3 text-left transition-colors ${
+              className={`rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background ${
                 transport === option
                   ? 'border-primary bg-accent'
                   : 'border-border hover:bg-accent/50'
@@ -412,11 +462,7 @@ export function McpServerForm({
 
       {testResult ? <TestResultPanel result={testResult} /> : null}
 
-      {error ? (
-        <p className="text-sm text-destructive" role="alert">
-          {error}
-        </p>
-      ) : null}
+      {error ? <FieldError className="text-sm">{error}</FieldError> : null}
 
       <div className="flex items-center gap-2">
         {!server ? (

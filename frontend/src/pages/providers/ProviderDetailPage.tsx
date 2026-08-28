@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Check, Key, Plug } from 'lucide-react'
+import { Check, Key, Layers, Plug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -21,17 +21,14 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { formatNumber } from '@/lib/format'
 import type { Language } from '@/i18n'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
+import { TINTED_BADGE } from '@/lib/tintedBadge'
 import type { ProviderKind } from '@/types/api'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 function kindBadgeClass(kind: ProviderKind): string {
-  if (kind === 'anthropic' || kind === 'anthropic-compatible') {
-    return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
-  }
-  if (kind === 'gemini') {
-    return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
-  }
-  return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') return TINTED_BADGE.amber
+  if (kind === 'gemini') return TINTED_BADGE.blue
+  return TINTED_BADGE.green
 }
 
 export function ProviderDetailPage() {
@@ -65,7 +62,7 @@ export function ProviderDetailPage() {
     return (
       <PageState
         variant="error"
-        title={t('providers:detail.loadError', { error: String(provider.error) })}
+        title={t('providers:detail.loadError', { error: errorMessage(provider.error) })}
       />
     )
   }
@@ -124,7 +121,7 @@ export function ProviderDetailPage() {
       subtitle={
         <div className="flex flex-wrap items-center gap-2">
           <span>{`${p.kind} · ${p.default_model}`}</span>
-          <Badge variant={p.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">
+          <Badge variant={p.status === 'active' ? 'default' : 'secondary'} className="text-2xs">
             {formatResourceStatus(p.status, t)}
           </Badge>
         </div>
@@ -164,7 +161,7 @@ export function ProviderDetailPage() {
                 <h2 className="text-base font-semibold">{p.name}</h2>
                 <span
                   className={cn(
-                    'inline-block rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none',
+                    'inline-block rounded-md border px-1.5 py-0.5 text-2xs font-medium leading-none',
                     kindBadgeClass(p.kind),
                   )}
                 >
@@ -215,6 +212,17 @@ export function ProviderDetailPage() {
           as="h3"
           description={t('providers:models.description')}
         >
+          {/* A provider with only a default model is the normal case, so an
+              empty grid here is not an error — but it was rendering as a
+              heading with nothing under it. */}
+          {(p.models ?? []).length === 0 ? (
+            <PageState
+              inset
+              icon={Layers}
+              title={t('providers:models.none')}
+              className="px-0"
+            />
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             {(p.models ?? []).map((model) => {
               const isDefault = model.id === p.default_model
@@ -234,7 +242,7 @@ export function ProviderDetailPage() {
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="font-semibold truncate text-foreground">{model.id}</span>
                       {isDefault && (
-                        <Badge variant="default" className="text-[10px] shrink-0">
+                        <Badge variant="default" className="text-2xs shrink-0">
                           {t('providers:models.default')}
                         </Badge>
                       )}

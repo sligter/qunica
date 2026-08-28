@@ -41,7 +41,7 @@ import {
   type LocalizedError,
 } from '@/i18n/localizedError'
 import { avatarColorClass } from '@/lib/avatarColor'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 const PICKER_SCOPE = 'workspace-management-root'
 
@@ -58,7 +58,7 @@ export function WorkspaceDetailPage() {
     return (
       <PageState
         variant="error"
-        title={t('detail.loadError', { error: String(workspaces.error) })}
+        title={t('detail.loadError', { error: errorMessage(workspaces.error) })}
       />
     )
   }
@@ -178,12 +178,12 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
       title={workspace.name}
       subtitle={
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline" className="text-[10px] font-mono uppercase">
+          <Badge variant="outline" className="text-2xs font-mono uppercase">
             {workspace.backend_type}
           </Badge>
           <Badge
             variant={workspace.status === 'active' ? 'default' : 'secondary'}
-            className="text-[10px]"
+            className="text-2xs"
           >
             {formatResourceStatus(workspace.status, t)}
           </Badge>
@@ -215,7 +215,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-semibold">{workspace.name}</h2>
-                <span className="inline-block rounded-md border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                <span className="inline-block rounded-md border border-border/60 bg-muted/60 px-1.5 py-0.5 text-2xs font-mono uppercase tracking-wider text-muted-foreground">
                   {workspace.backend_type}
                 </span>
               </div>
@@ -357,7 +357,7 @@ function WorkspaceUsageSection({ workspaceId }: WorkspaceUsageSectionProps) {
                   <Link to={`/agents/${agent.id}`} className="truncate font-medium hover:underline text-foreground">
                     {agent.name}
                   </Link>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge variant="secondary" className="text-2xs">
                     {t('workspaces:detail.agent')}
                   </Badge>
                 </div>
@@ -389,7 +389,7 @@ function BoundGroupRow({ group }: { group: GroupRead }) {
         <Link to={`/groups/${group.id}`} className="truncate font-medium hover:underline text-foreground">
           {group.name}
         </Link>
-        <Badge variant="secondary" className="text-[10px]">
+        <Badge variant="secondary" className="text-2xs">
           {t('workspaces:detail.group')}
         </Badge>
         {error ? (

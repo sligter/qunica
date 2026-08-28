@@ -5,20 +5,25 @@ import { useTranslation } from 'react-i18next'
 
 import { EntityCard } from '@/components/layout/EntityCard'
 import { DetailShell } from '@/components/layout/DetailShell'
+import {
+  EntityEmptyState,
+  EntityIndexSkeleton,
+  IndexErrorState,
+  MetricCard,
+  MetricRow,
+  NoMatchesState,
+} from '@/components/layout/EntityIndexParts'
 import { Button } from '@/components/ui/button'
 import { SearchInput } from '@/components/ui/search-input'
 import { useProviders } from '@/hooks/useProviders'
 import { formatResourceStatus } from '@/i18n/resourceStatus'
+import { TINTED_BADGE } from '@/lib/tintedBadge'
 import type { ProviderKind } from '@/types/api'
 
 function kindBadgeClass(kind: ProviderKind): string {
-  if (kind === 'anthropic' || kind === 'anthropic-compatible') {
-    return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
-  }
-  if (kind === 'gemini') {
-    return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
-  }
-  return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+  if (kind === 'anthropic' || kind === 'anthropic-compatible') return TINTED_BADGE.amber
+  if (kind === 'gemini') return TINTED_BADGE.blue
+  return TINTED_BADGE.green
 }
 
 export function ProvidersIndexPage() {
@@ -65,57 +70,54 @@ export function ProvidersIndexPage() {
         </>
       }
     >
-      <div className="space-y-6">
+      {providers.isLoading ? (
+        <EntityIndexSkeleton />
+      ) : providers.error ? (
+        <IndexErrorState
+          title={t('providers:loadError')}
+          detail={providers.error instanceof Error ? providers.error.message : undefined}
+          onRetry={() => void providers.refetch()}
+          retryLabel={t('common:actions.retry')}
+        />
+      ) : list.length === 0 ? (
+        <EntityEmptyState
+          icon={Plug}
+          title={t('providers:empty')}
+          description={t('providers:form.createSubtitle')}
+          actionLabel={
+            <>
+              <Plus className="h-4 w-4" />
+              {t('providers:new')}
+            </>
+          }
+          actionTo="/providers/new"
+        />
+      ) : (
+        <div className="space-y-6">
         {/* Metric Cards Row */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('providers:title')}</span>
-              <Plug className="h-4 w-4 text-primary/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight">{list.length}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('providers:fields.status')}</span>
-              <span className="h-2 w-2 rounded-full bg-success ring-4 ring-success/20" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-success">{activeCount}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('providers:models.title')}</span>
-              <Layers className="h-4 w-4 text-info/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-info">{totalModels}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('providers:fields.apiKey')}</span>
-              <ShieldCheck className="h-4 w-4 text-emerald-500/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">{list.length}</p>
-          </div>
-        </div>
+        <MetricRow>
+          <MetricCard label={t('providers:title')} value={list.length} icon={Plug} tone="primary" />
+          <MetricCard
+            label={t('providers:fields.status')}
+            value={activeCount}
+            tone="success"
+            marker={<span className="h-2 w-2 rounded-full bg-success ring-4 ring-success/20" />}
+          />
+          <MetricCard
+            label={t('providers:models.title')}
+            value={totalModels}
+            icon={Layers}
+            tone="info"
+          />
+          <MetricCard
+            label={t('providers:fields.apiKey')}
+            value={list.length}
+            icon={ShieldCheck}
+            tone="success"
+          />
+        </MetricRow>
 
-        {/* Gallery Grid or Empty State */}
-        {list.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/80 bg-card/30 p-12 text-center">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <Plug className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-semibold">{t('providers:empty')}</h3>
-            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              {t('providers:form.createSubtitle')}
-            </p>
-            <Button className="mt-6 gap-2" asChild>
-              <Link to="/providers/new">
-                <Plus className="h-4 w-4" />
-                {t('providers:new')}
-              </Link>
-            </Button>
-          </div>
-        ) : (
+          {/* Gallery Grid */}
           <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
             {filtered.map((provider) => {
               const modelList = provider.models ?? []
@@ -152,13 +154,11 @@ export function ProvidersIndexPage() {
               )
             })}
             {filtered.length === 0 ? (
-              <p className="col-span-full py-12 text-center text-sm text-muted-foreground">
-                {t('providers:noMatches', '没有匹配的服务商。')}
-              </p>
+              <NoMatchesState message={t('providers:noMatches', '没有匹配的服务商。')} />
             ) : null}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </DetailShell>
   )
 }

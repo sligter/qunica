@@ -27,8 +27,9 @@ import {
   useTestMcpServer,
 } from '@/hooks/useMcpServers'
 import { useEditSaveGuard } from '@/hooks/useEditSaveGuard'
+import { TINTED_BADGE } from '@/lib/tintedBadge'
 import type { McpTransport } from '@/types/api'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 const TRANSPORT_KEYS: Record<McpTransport, 'stdio' | 'streamableHttp' | 'sse'> = {
   stdio: 'stdio',
@@ -37,13 +38,9 @@ const TRANSPORT_KEYS: Record<McpTransport, 'stdio' | 'streamableHttp' | 'sse'> =
 }
 
 function transportBadgeClass(transport: McpTransport): string {
-  if (transport === 'stdio') {
-    return 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20'
-  }
-  if (transport === 'sse') {
-    return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
-  }
-  return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+  if (transport === 'stdio') return TINTED_BADGE.violet
+  if (transport === 'sse') return TINTED_BADGE.blue
+  return TINTED_BADGE.amber
 }
 
 export function McpServerDetailPage() {
@@ -76,7 +73,7 @@ export function McpServerDetailPage() {
     return (
       <PageState
         variant="error"
-        title={t('mcp:detail.loadError', { error: String(server.error) })}
+        title={t('mcp:detail.loadError', { error: errorMessage(server.error) })}
       />
     )
   }
@@ -146,7 +143,7 @@ export function McpServerDetailPage() {
       subtitle={
         <div className="flex flex-wrap items-center gap-2">
           <span>{`${t(`mcp:transports.${TRANSPORT_KEYS[s.transport]}.label`)} · ${endpoint}`}</span>
-          <Badge variant={s.enabled ? 'default' : 'secondary'} className="text-[10px]">
+          <Badge variant={s.enabled ? 'default' : 'secondary'} className="text-2xs">
             {s.enabled ? t('mcp:states.enabled') : t('mcp:states.disabled')}
           </Badge>
         </div>
@@ -195,7 +192,7 @@ export function McpServerDetailPage() {
                 <h2 className="text-base font-semibold">{s.name}</h2>
                 <span
                   className={cn(
-                    'inline-block rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none uppercase',
+                    'inline-block rounded-md border px-1.5 py-0.5 text-2xs font-medium leading-none uppercase',
                     transportBadgeClass(s.transport),
                   )}
                 >

@@ -66,7 +66,9 @@ export function DetailShell({
   useDocumentTitle(typeof title === 'string' ? title : null)
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
-      <header className="flex min-h-14 shrink-0 items-center border-b border-border bg-background px-6 py-2.5">
+      {/* `px-4` on phones: 24px of gutter on each side left a 375px screen with
+          barely 300px of content inside a card that then padded it again. */}
+      <header className="flex min-h-14 shrink-0 items-center border-b border-border bg-background px-4 py-2.5 sm:px-6">
         <div
           className={cn(
             'flex w-full min-w-0 items-center justify-between gap-4',
@@ -92,7 +94,7 @@ export function DetailShell({
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className={cn('w-full px-6 py-5 pb-8', measureClass, contentClassName)}>
+        <div className={cn('w-full px-4 py-5 pb-8 sm:px-6', measureClass, contentClassName)}>
           {children}
         </div>
       </div>

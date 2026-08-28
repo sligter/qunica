@@ -31,14 +31,12 @@ interface PageStateProps {
 }
 
 /**
- * Centered states own their pane, so the message is that pane's heading. Inset
- * states are a note beside content that already has one.
- */
-
-/**
  * The single loading / error / empty surface. Every route and panel renders its
  * non-content states through this so a missing record, a failed fetch and an
  * empty list all look like the same product.
+ *
+ * Centered states own their pane, so the message is that pane's heading. Inset
+ * states are a note beside content that already has one.
  */
 export function PageState({
   variant = 'empty',

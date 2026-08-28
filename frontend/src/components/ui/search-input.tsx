@@ -37,14 +37,17 @@ export function SearchInput({
         aria-label={label}
         // Webkit shows its own × inside type=search; ours is the single
         // control, so suppress the native one.
-        className="h-8 bg-card pl-8 pr-7 text-xs [&::-webkit-search-cancel-button]:hidden"
+        className="h-8 bg-card pl-8 pr-9 text-xs [&::-webkit-search-cancel-button]:hidden"
       />
       {showClear ? (
         <button
           type="button"
           onClick={() => onChange('')}
           aria-label={t('actions.clear')}
-          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          // Sized for a fingertip rather than for the glyph: `p-1.5` around a
+          // 14px icon is a 26px target, and the field reserves `pr-9` for it so
+          // the button never sits over the text it clears.
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="h-3.5 w-3.5" />
         </button>

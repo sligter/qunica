@@ -94,7 +94,7 @@ export function EntityCard({
               {metaBadge ? (
                 <span
                   className={cn(
-                    'mt-1 inline-block rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none',
+                    'mt-1 inline-block rounded-md border px-1.5 py-0.5 text-2xs font-medium uppercase leading-none',
                     metaBadge.className,
                   )}
                 >
@@ -114,7 +114,7 @@ export function EntityCard({
                     statusActive ? 'bg-success' : 'bg-muted-foreground/40',
                   )}
                 />
-                <span className="text-[10px] font-medium text-muted-foreground">{statusLabel}</span>
+                <span className="text-2xs font-medium text-muted-foreground">{statusLabel}</span>
               </>
             ) : null}
             {editTo ? (
@@ -125,7 +125,15 @@ export function EntityCard({
                   event.stopPropagation()
                   navigate(editTo)
                 }}
-                className="relative rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+                // `p-1.5` rather than `p-1`: with the 14px glyph that is a 26px
+                // target, where the old 22px one sat under the smallest size a
+                // pointer or thumb lands on reliably.
+                //
+                // `pointer-coarse:opacity-100` matters more than it looks: the
+                // pencil used to be reachable only through hover, which a
+                // touchscreen never produces — on a tablet there was no way to
+                // edit from the gallery at all.
+                className="relative rounded-md p-1.5 text-muted-foreground opacity-0 transition-[opacity,color,background-color] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:opacity-100"
                 aria-label={t('actions.edit')}
                 title={t('actions.edit')}
               >
@@ -147,7 +155,7 @@ export function EntityCard({
           {(stats ?? []).map((stat) => (
             <span
               key={stat.key}
-              className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground/80"
+              className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-2xs font-medium text-foreground/80"
             >
               {stat.icon ? <stat.icon className="h-3 w-3 text-primary" /> : null}
               {stat.content}

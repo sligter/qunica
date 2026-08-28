@@ -15,14 +15,25 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      // `bg-background`, not transparent: a trigger sitting beside an Input on
+      // the same form used to show the card through it, so the two controls
+      // read as different materials. Callers patched this one by one; the
+      // default is now the one they were reaching for.
+      'flex h-9 w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm ring-offset-background transition-colors placeholder:text-muted-foreground',
+      // `focus-visible` rather than `focus`: Radix keeps the trigger focused
+      // after a mouse pick, which used to leave a ring on the closed control.
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+      'data-[placeholder]:text-muted-foreground',
+      'disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted/60 disabled:text-muted-foreground disabled:shadow-none',
+      'aria-[invalid=true]:border-destructive aria-[invalid=true]:focus-visible:ring-destructive',
+      '[&>span]:line-clamp-1',
       className,
     )}
     {...props}
   >
     {children}
     <SelectPrimitive.Icon asChild>
-      <ChevronDown className="h-4 w-4 opacity-50" />
+      <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ))
@@ -107,12 +118,14 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-2 pr-8 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      // `data-[highlighted]` is what Radix sets during keyboard traversal, so
+      // arrowing down the list now highlights the same way hovering does.
+      'relative flex w-full cursor-default select-none items-center gap-2 rounded-md py-1.5 pl-2.5 pr-8 text-sm outline-none transition-colors data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
     )}
     {...props}
   >
-    <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center text-primary">
       <SelectPrimitive.ItemIndicator>
         <Check className="h-4 w-4" />
       </SelectPrimitive.ItemIndicator>

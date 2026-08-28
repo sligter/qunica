@@ -6,6 +6,14 @@ import { useTranslation } from 'react-i18next'
 import { EntityCard } from '@/components/layout/EntityCard'
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { DetailShell } from '@/components/layout/DetailShell'
+import {
+  EntityEmptyState,
+  EntityIndexSkeleton,
+  IndexErrorState,
+  MetricCard,
+  MetricRow,
+  NoMatchesState,
+} from '@/components/layout/EntityIndexParts'
 import { Button } from '@/components/ui/button'
 import { SearchInput } from '@/components/ui/search-input'
 import { useAgents } from '@/hooks/useAgents'
@@ -52,50 +60,53 @@ export function AgentsIndexPage() {
         </>
       }
     >
-      <div className="space-y-6">
-        {/* Metric Cards Row */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('agents:title')}</span>
-              <Bot className="h-4 w-4 text-primary/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight">{list.length}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('agents:runtime.acpLabel')}</span>
-              <Terminal className="h-4 w-4 text-info/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-info">{acpCount}</p>
-          </div>
-          <div className="rounded-xl border border-border/80 bg-card/60 p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">{t('agents:detail.mountedSkills')}</span>
-              <Sparkles className="h-4 w-4 text-warning-foreground/70" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-tight">{totalMountedSkills}</p>
-          </div>
-        </div>
+      {agents.isLoading ? (
+        <EntityIndexSkeleton />
+      ) : agents.error ? (
+        <IndexErrorState
+          title={t('agents:loadError')}
+          detail={agents.error instanceof Error ? agents.error.message : undefined}
+          onRetry={() => void agents.refetch()}
+          retryLabel={t('common:actions.retry')}
+        />
+      ) : list.length === 0 ? (
+        <EntityEmptyState
+          icon={Bot}
+          title={t('agents:empty')}
+          description={t('agents:form.createSubtitle')}
+          actionLabel={
+            <>
+              <Plus className="h-4 w-4" />
+              {t('agents:new')}
+            </>
+          }
+          actionTo="/agents/new"
+        />
+      ) : (
+        <div className="space-y-6">
+          {/* Metric Cards Row */}
+          <MetricRow>
+            <MetricCard
+              label={t('agents:title')}
+              value={list.length}
+              icon={Bot}
+              tone="primary"
+            />
+            <MetricCard
+              label={t('agents:runtime.acpLabel')}
+              value={acpCount}
+              icon={Terminal}
+              tone="info"
+            />
+            <MetricCard
+              label={t('agents:detail.mountedSkills')}
+              value={totalMountedSkills}
+              icon={Sparkles}
+              tone="warning"
+            />
+          </MetricRow>
 
-        {/* Gallery Grid or Empty State */}
-        {list.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/80 bg-card/30 p-12 text-center">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <Bot className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-semibold">{t('agents:empty')}</h3>
-            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              {t('agents:form.createSubtitle')}
-            </p>
-            <Button className="mt-6 gap-2" asChild>
-              <Link to="/agents/new">
-                <Plus className="h-4 w-4" />
-                {t('agents:new')}
-              </Link>
-            </Button>
-          </div>
-        ) : (
+          {/* Gallery Grid */}
           <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
             {filtered.map((agent) => {
               const mountedCount = agent.skill_ids?.length ?? 0
@@ -122,13 +133,11 @@ export function AgentsIndexPage() {
               )
             })}
             {filtered.length === 0 ? (
-              <p className="col-span-full py-12 text-center text-sm text-muted-foreground">
-                {t('agents:noMatches', '没有匹配的 Agent。')}
-              </p>
+              <NoMatchesState message={t('agents:noMatches', '没有匹配的 Agent。')} />
             ) : null}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </DetailShell>
   )
 }

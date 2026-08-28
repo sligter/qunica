@@ -184,7 +184,7 @@ export function ToolSelector({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-sm font-medium">{tool.name}</span>
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-2xs text-muted-foreground">
                         {statusText(tool)}
                       </span>
                     </div>
