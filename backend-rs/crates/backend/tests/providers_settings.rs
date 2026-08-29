@@ -1251,6 +1251,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(defaults["reply_insert_mode"], "instant");
     assert_eq!(defaults["assistant_enabled"], true);
     assert_eq!(defaults["assistant_auto_approve"], false);
+    assert_eq!(defaults["onboarding_completed"], false);
     assert_eq!(defaults["group_workspace_root"], Value::Null);
     assert_eq!(defaults["shell_preference"], "auto");
     assert_eq!(defaults["web_search_provider"], "tavily");
@@ -1296,6 +1297,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
                 "reply_insert_mode": "queue",
                 "assistant_enabled": false,
                 "assistant_auto_approve": true,
+                "onboarding_completed": true,
                 "group_workspace_root": raw_root,
                 "shell_preference": "Git Bash",
                 "web_search_provider": "tavily",
@@ -1322,6 +1324,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(updated["reply_insert_mode"], "queue");
     assert_eq!(updated["assistant_enabled"], false);
     assert_eq!(updated["assistant_auto_approve"], true);
+    assert_eq!(updated["onboarding_completed"], true);
     assert_eq!(updated["group_workspace_root"], expected_root);
     assert_eq!(updated["tavily_api_key_configured"], true);
     assert!(!updated.to_string().contains("tvly-secret-value"));
@@ -1348,6 +1351,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(fetched["reply_insert_mode"], "queue");
     assert_eq!(fetched["assistant_enabled"], false);
     assert_eq!(fetched["assistant_auto_approve"], true);
+    assert_eq!(fetched["onboarding_completed"], true);
     assert_eq!(fetched["tavily_api_key_configured"], true);
     assert_eq!(fetched["tavily_search_depth"], "advanced");
     assert_eq!(fetched["shell_preference"], "bash");
@@ -1366,6 +1370,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
                 "reply_insert_mode": Value::Null,
                 "assistant_enabled": Value::Null,
                 "assistant_auto_approve": Value::Null,
+                "onboarding_completed": Value::Null,
                 "group_workspace_root": "",
                 "tavily_api_key": Value::Null,
                 "tavily_search_url": Value::Null,
@@ -1391,6 +1396,7 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
     assert_eq!(reset["reply_insert_mode"], "instant");
     assert_eq!(reset["assistant_enabled"], true);
     assert_eq!(reset["assistant_auto_approve"], false);
+    assert_eq!(reset["onboarding_completed"], false);
     assert_eq!(reset["group_workspace_root"], Value::Null);
     assert_eq!(reset["tavily_api_key_configured"], false);
     assert_eq!(reset["tavily_search_url"], "https://api.tavily.com/search");

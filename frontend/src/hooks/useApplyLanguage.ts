@@ -8,7 +8,9 @@ export function useApplyLanguage(): void {
   const currentUserId = useAuthStore((state) => state.user?.id)
   const settings = useSystemSettings()
   const serverLanguage =
-    currentUserId !== undefined && settings.data?.owner_id === currentUserId
+    currentUserId !== undefined &&
+    settings.data?.owner_id === currentUserId &&
+    settings.data.onboarding_completed !== false
       ? settings.data.language
       : undefined
 

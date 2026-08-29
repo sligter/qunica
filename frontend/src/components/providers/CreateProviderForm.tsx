@@ -25,7 +25,7 @@ import {
 import { ApiError } from '@/lib/api-v2/client'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
-import type { ProviderKind } from '@/types/api'
+import type { LLMProviderRead, ProviderKind } from '@/types/api'
 
 function createSchema(required: string) { return z.object({
   name: z.string().min(1, required).max(100),
@@ -39,7 +39,7 @@ function createSchema(required: string) { return z.object({
 type FormValues = z.infer<ReturnType<typeof createSchema>>
 
 interface CreateProviderFormProps {
-  onCreated?: (newProviderId: string) => void
+  onCreated?: (provider: LLMProviderRead) => void
 }
 
 const KIND_OPTIONS: ProviderKind[] = ['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']
@@ -126,7 +126,7 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
         description: values.description || null,
       })
       form.reset()
-      onCreated?.(created.id)
+      onCreated?.(created)
     } catch (err) {
       setSubmitError(err instanceof ApiError ? messageError(err.message) : translatedError('errors.network'))
     }

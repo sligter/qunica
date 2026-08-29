@@ -38,7 +38,7 @@ Some changes it cannot stage at all, and will instead hand you a prefilled form 
 
 The assistant is an LLM agent, so it needs its own provider binding before it can talk. This is separate from the providers your other agents use: adding a provider does not bind it.
 
-Until one is bound, the panel shows the providers you have and lets you pick which the assistant should use. If you have none yet, it links to the provider form instead.
+Until one is bound, the panel shows the providers you have and lets you pick which the assistant should use. If you have none yet, it opens the provider form directly in the panel.
 
 ## Changing its settings
 

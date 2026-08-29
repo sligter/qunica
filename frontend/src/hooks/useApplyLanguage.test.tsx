@@ -74,6 +74,21 @@ describe('useApplyLanguage', () => {
     expect(mocks.writeLanguageMirror).not.toHaveBeenCalled()
   })
 
+  it('keeps the device language during first-run setup', () => {
+    mocks.useSystemSettings.mockReturnValue({
+      data: {
+        owner_id: 'current-owner',
+        language: 'zh-CN',
+        onboarding_completed: false,
+      },
+    })
+
+    renderHook(() => useApplyLanguage())
+
+    expect(mocks.changeLanguage).not.toHaveBeenCalled()
+    expect(mocks.writeLanguageMirror).not.toHaveBeenCalled()
+  })
+
   it('does not ask i18next to change when it already uses the server language', async () => {
     mocks.i18n.language = 'zh-CN'
     mocks.i18n.resolvedLanguage = 'zh-CN'

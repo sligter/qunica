@@ -12,7 +12,7 @@ export function ProviderCreatePage() {
       title={t('form.createTitle')}
       subtitle={t('form.createSubtitle')}
     >
-      <CreateProviderForm onCreated={(id) => void navigate(`/providers/${id}`)} />
+      <CreateProviderForm onCreated={(provider) => void navigate(`/providers/${provider.id}`)} />
     </DetailShell>
   )
 }

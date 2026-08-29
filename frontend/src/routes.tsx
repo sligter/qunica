@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom'
 
 import { AppLayout } from '@/components/layout/AppLayout'
 import { RequireAuth } from '@/components/layout/RequireAuth'
+import { FirstRunGate } from '@/components/onboarding/FirstRunGate'
 import { appChildren } from '@/routes/appRoutes'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { AssistantDockWindow } from '@/pages/assistant/AssistantDockWindow'
@@ -19,8 +20,13 @@ export const router = createBrowserRouter([
       // else so a stale token lands on /login instead of a half-built dock.
       { path: '/assistant-dock', element: <AssistantDockWindow /> },
       {
-        element: <AppLayout />,
-        children: appChildren,
+        element: <FirstRunGate />,
+        children: [
+          {
+            element: <AppLayout />,
+            children: appChildren,
+          },
+        ],
       },
     ],
   },

@@ -144,7 +144,7 @@ describe('AssistantDock', () => {
           method: 'PATCH',
           // Both fields always travel: the backend treats an omitted one as
           // "clear", so a partial send would silently drop the other.
-          body: { llm_provider_id: 'provider-1', model: null },
+          body: { llm_provider_id: 'provider-1', model: 'deepseek-v4-flash' },
         }),
       ),
     )
@@ -152,17 +152,15 @@ describe('AssistantDock', () => {
     expect(await screen.findByTestId('assistant-chat')).toBeVisible()
   })
 
-  it('points at creating a provider when there are none at all', async () => {
+  it('embeds provider creation when there are none at all', async () => {
     const user = userEvent.setup()
     await renderDock(
       { agent_id: 'agent-1', chat_id: 'chat-1', provider_id: null, provider_configured: false },
       [],
     )
     await user.click(await screen.findByRole('button', { name: /assistant/i }))
-    expect(await screen.findByRole('link', { name: /provider/i })).toHaveAttribute(
-      'href',
-      '/providers/new',
-    )
+    expect(await screen.findByLabelText('Name')).toBeVisible()
+    expect(screen.queryByRole('link', { name: /provider/i })).toBeNull()
   })
 
   it('shows the chat once a provider is configured', async () => {

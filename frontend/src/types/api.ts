@@ -772,6 +772,7 @@ export interface SystemSettingsRead {
   reply_insert_mode: ReplyInsertMode
   assistant_enabled: boolean
   assistant_auto_approve: boolean
+  onboarding_completed: boolean
   group_workspace_root: string | null
   shell_preference: ShellPreference
   web_search_provider: WebSearchProvider
@@ -799,6 +800,7 @@ export interface SystemSettingsUpdate {
   reply_insert_mode?: ReplyInsertMode | null
   assistant_enabled?: boolean | null
   assistant_auto_approve?: boolean | null
+  onboarding_completed?: boolean | null
   group_workspace_root?: string | null
   shell_preference?: ShellPreference | null
   web_search_provider?: WebSearchProvider | null

@@ -23,6 +23,7 @@ const settings: SystemSettingsRead = {
   reply_insert_mode: 'instant',
   assistant_enabled: true,
   assistant_auto_approve: false,
+  onboarding_completed: true,
   group_workspace_root: null,
   shell_preference: 'auto',
   web_search_provider: 'tavily',

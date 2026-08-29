@@ -25,7 +25,7 @@ const DEFAULT_LANGUAGE: &str = "en-US";
 const DEFAULT_REPLY_INSERT_MODE: &str = "instant";
 
 const SETTINGS_COLUMNS: &str =
-    "id, owner_id, appearance, language, reply_insert_mode, assistant_enabled, assistant_auto_approve, group_workspace_root, shell_preference, web_search_provider, \
+    "id, owner_id, appearance, language, reply_insert_mode, assistant_enabled, assistant_auto_approve, onboarding_completed, group_workspace_root, shell_preference, web_search_provider, \
      tavily_api_key, tavily_search_url, tavily_max_results, tavily_search_depth, \
      tavily_include_answer, tavily_include_raw_content, media_base_url, media_api_key, \
      image_generation_model, image_generation_endpoint, video_generation_model, \
@@ -43,6 +43,8 @@ pub struct UpdateRequest {
     assistant_enabled: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     assistant_auto_approve: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    onboarding_completed: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     group_workspace_root: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -88,6 +90,7 @@ pub struct SettingsResponse {
     reply_insert_mode: String,
     assistant_enabled: bool,
     assistant_auto_approve: bool,
+    onboarding_completed: bool,
     group_workspace_root: Option<String>,
     shell_preference: String,
     web_search_provider: String,
@@ -118,6 +121,7 @@ struct SettingsRow {
     reply_insert_mode: String,
     assistant_enabled: i64,
     assistant_auto_approve: i64,
+    onboarding_completed: i64,
     group_workspace_root: Option<String>,
     shell_preference: String,
     web_search_provider: String,
@@ -149,6 +153,7 @@ impl From<SettingsRow> for SettingsResponse {
             reply_insert_mode: row.reply_insert_mode,
             assistant_enabled: row.assistant_enabled != 0,
             assistant_auto_approve: row.assistant_auto_approve != 0,
+            onboarding_completed: row.onboarding_completed != 0,
             group_workspace_root: row.group_workspace_root,
             shell_preference: row.shell_preference,
             web_search_provider: row.web_search_provider,
@@ -279,6 +284,11 @@ pub async fn update(
         Some(None) => false,
         None => existing.assistant_auto_approve != 0,
     };
+    let onboarding_completed = match body.onboarding_completed {
+        Some(Some(value)) => value,
+        Some(None) => false,
+        None => existing.onboarding_completed != 0,
+    };
     let group_workspace_root = match body.group_workspace_root {
         Some(ref value) => normalize_root(value.as_deref())?,
         None => existing.group_workspace_root.clone(),
@@ -373,7 +383,7 @@ pub async fn update(
     let now = now_rfc3339();
     sqlx::query(
         "UPDATE system_settings SET \
-         appearance = ?, language = ?, reply_insert_mode = ?, assistant_enabled = ?, assistant_auto_approve = ?, group_workspace_root = ?, shell_preference = ?, web_search_provider = ?, tavily_api_key = ?, \
+         appearance = ?, language = ?, reply_insert_mode = ?, assistant_enabled = ?, assistant_auto_approve = ?, onboarding_completed = ?, group_workspace_root = ?, shell_preference = ?, web_search_provider = ?, tavily_api_key = ?, \
          tavily_search_url = ?, tavily_max_results = ?, tavily_search_depth = ?, \
          tavily_include_answer = ?, tavily_include_raw_content = ?, media_base_url = ?, media_api_key = ?, \
          image_generation_model = ?, image_generation_endpoint = ?, video_generation_model = ?, \
@@ -385,6 +395,7 @@ pub async fn update(
     .bind(&reply_insert_mode)
     .bind(if assistant_enabled { 1_i64 } else { 0_i64 })
     .bind(if assistant_auto_approve { 1_i64 } else { 0_i64 })
+    .bind(if onboarding_completed { 1_i64 } else { 0_i64 })
     .bind(&group_workspace_root)
     .bind(&shell_preference)
     .bind(&web_search_provider)
