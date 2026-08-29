@@ -1,10 +1,11 @@
 //! Built-in Assistant agent bootstrap and visibility tests.
 //!
-//! The Assistant is an ordinary `llm_chat` agent row flagged `is_system = 1`
-//! with no bound workspace, reached through an ordinary direct chat. These
-//! tests pin the two properties that make that safe: it is created lazily and
-//! exactly once per owner, and it is invisible to — and unwritable through —
-//! the generic agent and direct-chat routes.
+//! The Assistant is an ordinary `llm_chat` agent row flagged `is_system = 1`,
+//! bound to a scratch workspace of its own, reached through an ordinary direct
+//! chat. These tests pin the properties that make that safe: it is created
+//! lazily and exactly once per owner, its workspace is a temp directory rather
+//! than anything of the user's, and it is invisible to — and unwritable
+//! through — the generic agent and direct-chat routes.
 
 use qunica_backend::api::{router_for_tests, router_with_state_for_tests};
 use axum::{
@@ -157,20 +158,43 @@ async fn existing_assistant_gets_the_current_prompt_and_tools_after_an_upgrade()
             .await
             .unwrap();
     assert!(prompt.contains("group_template"));
-    assert_eq!(
-        serde_json::from_str::<Value>(&tools).unwrap()["tools"]["app_propose"]["enabled"],
-        json!(true)
-    );
+    let tools = serde_json::from_str::<Value>(&tools).unwrap();
+    assert_eq!(tools["tools"]["app_propose"]["enabled"], json!(true));
+    for id in ["read", "write", "bash", "web_search", "fetch"] {
+        assert_eq!(
+            tools["tools"][id]["enabled"],
+            json!(true),
+            "{id} should be on"
+        );
+    }
 }
 
 #[tokio::test]
-async fn assistant_has_no_workspace_so_file_tools_stay_unreachable() {
-    let app = router_for_tests().await;
-    let token = register(&app, "assistant-no-workspace@example.com").await;
+async fn assistant_is_bound_to_a_scratch_workspace_in_the_temp_directory() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "assistant-scratch@example.com").await;
 
     let assistant = get_assistant(&app, &token).await;
-    let chat_id = assistant["chat_id"].as_str().unwrap();
+    let agent_id = assistant["agent_id"].as_str().unwrap();
 
+    let (name, backend_type, local_path): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT w.name, w.backend_type, w.local_path \
+         FROM agents a JOIN workspaces w ON w.id = a.workspace_id \
+         WHERE a.id = ? AND w.status = 'active'",
+    )
+    .bind(agent_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(name, "Assistant Workspace");
+    assert_eq!(backend_type, "local");
+    let path = std::path::PathBuf::from(local_path.expect("a local path"));
+    assert!(path.is_dir(), "{path:?} should have been created");
+    assert!(path.ends_with("qunica-assistant"), "{path:?}");
+
+    // The chat itself is still given no workspace: `SelfOnly` means the agent's
+    // scratch directory is the only root any turn can address.
+    let chat_id = assistant["chat_id"].as_str().unwrap();
     let (status, chat) = send(
         &app,
         authed("GET", &format!("/api/v2/direct-chats/{chat_id}"), &token),
@@ -178,6 +202,23 @@ async fn assistant_has_no_workspace_so_file_tools_stay_unreachable() {
     .await;
     assert_eq!(status, StatusCode::OK, "body: {chat:?}");
     assert_eq!(chat["workspace_id"], Value::Null);
+}
+
+#[tokio::test]
+async fn assistant_workspace_is_bound_once_however_often_the_dock_loads() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "assistant-scratch-once@example.com").await;
+
+    let first = get_assistant(&app, &token).await;
+    get_assistant(&app, &token).await;
+    let third = get_assistant(&app, &token).await;
+    assert_eq!(first["agent_id"], third["agent_id"]);
+
+    let workspaces: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspaces")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(workspaces, 1);
 }
 
 #[tokio::test]

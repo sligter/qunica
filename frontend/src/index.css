@@ -1,4 +1,24 @@
 @import "katex/dist/katex.min.css";
+
+/* Bundled rather than system-resolved so every machine renders the editor at
+   the same advance width — the highlight layer under the textarea is a separate
+   element, and a substituted font of different metrics would shear the caret
+   off the glyphs. Latin + latin-ext only: the CJK glyphs a mixed file needs
+   come from the system stack in --font-mono, and shipping Cyrillic/Greek
+   subsets nobody in this app types would be dead weight in the desktop bundle.
+   400/500/600/700 plus 400 italic — italic because the syntax theme leans on
+   it for comments, 600 because it leans on it for keywords. */
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-400-italic.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-ext-400.css";
+@import "@fontsource/jetbrains-mono/latin-ext-400-italic.css";
+@import "@fontsource/jetbrains-mono/latin-ext-500.css";
+@import "@fontsource/jetbrains-mono/latin-ext-600.css";
+@import "@fontsource/jetbrains-mono/latin-ext-700.css";
+
 @import "tailwindcss";
 
 /* The app switches themes by writing `data-theme` on <html> (see
@@ -80,6 +100,27 @@
   --shadow-lg: 0 4px 8px -4px hsl(30 20% 20% / 0.1), 0 12px 28px -8px hsl(30 20% 20% / 0.1);
 
   --font-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+
+  /* JetBrains Mono first (bundled, see the imports above); the rest of the
+     stack is only ever reached for glyphs JetBrains Mono does not carry —
+     notably CJK, which is why the Chinese faces sit here rather than being
+     left to the browser's per-glyph fallback. Without them a mixed
+     Chinese/Latin line resolves the Han glyphs to whatever the OS picks, and
+     that font's x-height fights the mono baseline next to it. */
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
+    monospace;
+
+  /* Code-editor metrics. The syntax-highlighted <pre> and the transparent
+     <textarea> stacked on top of it must agree on these to the pixel — any
+     drift reads as the caret landing between characters. Kept as one pair of
+     tokens for exactly that reason. 14px/22px, the same pair VS Code ships as
+     its default: the previous 12px/20px was set for density on a file viewer
+     and stayed too small once this became something you type in. */
+  --text-editor: 0.875rem;
+  --text-editor--line-height: 1.375rem;
+  --leading-editor: 1.375rem;
 }
 
 @layer base {

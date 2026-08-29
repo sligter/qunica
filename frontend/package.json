@@ -14,9 +14,10 @@
     "type-check": "tsc -b --noEmit"
   },
   "dependencies": {
-    "@qunica/shared": "workspace:*",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@hookform/resolvers": "^3.9.1",
     "@microsoft/fetch-event-source": "^2.0.1",
+    "@qunica/shared": "workspace:*",
     "@radix-ui/react-alert-dialog": "^1.1.23",
     "@radix-ui/react-avatar": "^1.2.6",
     "@radix-ui/react-dialog": "^1.1.23",

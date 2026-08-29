@@ -357,8 +357,9 @@ export function AssistantDock() {
               showAnnouncement: false,
               showManage: false,
               showTurnTrace: false,
-              // The Assistant has no workspace, so a file panel would only ever
-              // report that none is configured.
+              // The Assistant's only workspace is the scratch temp directory it
+              // manages itself. A file browser over disposable files is not
+              // worth the room in a panel this small.
               showWorkspace: false,
               showTerminal: false,
               allowMentions: false,

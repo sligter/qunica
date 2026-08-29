@@ -120,7 +120,7 @@ static DOCS: &[Doc] = &[
         "assistant",
         "The built-in assistant",
         "assistant helper floating dock panel approve approval propose staged action \
-         prefill history"
+         prefill history scratch temp shell"
     ),
 ];
 

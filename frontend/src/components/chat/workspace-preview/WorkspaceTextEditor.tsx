@@ -100,14 +100,18 @@ function revealTextareaPosition(
   const line = before.split('\n').length - 1
   const column = position - (before.lastIndexOf('\n') + 1)
   const style = getComputedStyle(editor)
-  const fontSize = Number.parseFloat(style.fontSize) || 12
-  const lineHeight = Number.parseFloat(style.lineHeight) || 20
+  const fontSize = Number.parseFloat(style.fontSize) || 14
+  const lineHeight = Number.parseFloat(style.lineHeight) || 22
   const paddingTop = Number.parseFloat(style.paddingTop) || 0
   const paddingLeft = Number.parseFloat(style.paddingLeft) || 0
   const top = paddingTop + line * lineHeight
   editor.scrollTop = Math.max(0, top - editor.clientHeight / 2 + lineHeight / 2)
 
-  const characterWidth = fontSize * 0.62
+  // JetBrains Mono advances 600/1000 em per glyph. Horizontal scrolling only
+  // has to be close enough to bring the match into view, so the exact metric
+  // beats a fudge factor — 0.62 was tuned against the old fallback stack and
+  // drifted a column and a half every 40 characters.
+  const characterWidth = fontSize * 0.6
   const left = paddingLeft + column * characterWidth
   const right = left + length * characterWidth
   if (left < editor.scrollLeft || right > editor.scrollLeft + editor.clientWidth) {
@@ -414,7 +418,7 @@ export function WorkspaceTextEditor({
               value={searchValue}
               aria-label={t('workspace.previewPanel.find')}
               placeholder={t('workspace.previewPanel.findPlaceholder')}
-              className="h-7 min-w-0 flex-1 rounded-sm border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+              className="h-7 min-w-0 flex-1 rounded-sm border border-input bg-background px-2 font-mono text-sm outline-none focus:ring-1 focus:ring-ring"
               onChange={(event) => {
                 const query = event.target.value
                 setSearchValue(query)
@@ -451,7 +455,7 @@ export function WorkspaceTextEditor({
                 value={replaceValue}
                 aria-label={t('workspace.previewPanel.replace')}
                 placeholder={t('workspace.previewPanel.replacePlaceholder')}
-                className="h-7 min-w-0 flex-1 rounded-sm border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+                className="h-7 min-w-0 flex-1 rounded-sm border border-input bg-background px-2 font-mono text-sm outline-none focus:ring-1 focus:ring-ring"
                 onChange={(event) => setReplaceValue(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -509,7 +513,7 @@ export function WorkspaceTextEditor({
             ref={highlightRef}
             aria-hidden="true"
             data-language={language}
-            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre px-3 py-2 font-mono text-xs leading-5"
+            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre px-3.5 py-2.5 font-mono text-editor leading-editor"
           >
             <code dangerouslySetInnerHTML={{ __html: highlighted }} />
           </pre>
@@ -529,7 +533,7 @@ export function WorkspaceTextEditor({
             }}
             spellCheck={false}
             wrap="off"
-            className="workspace-code-input absolute inset-0 z-10 resize-none whitespace-pre border-0 bg-transparent font-mono text-xs leading-5 shadow-none focus-visible:ring-0"
+            className="workspace-code-input absolute inset-0 z-10 resize-none whitespace-pre border-0 bg-transparent px-3.5 py-2.5 font-mono text-editor leading-editor shadow-none focus-visible:ring-0"
           />
         </div>
       ) : (
@@ -544,7 +548,7 @@ export function WorkspaceTextEditor({
           onKeyDown={handleEditorKeyDown}
           spellCheck={false}
           className={cn(
-            'mt-3 flex-1 whitespace-pre font-mono text-xs leading-5',
+            'mt-3 flex-1 whitespace-pre px-3.5 py-2.5 font-mono text-editor leading-editor',
             presentation === 'editor' ? 'min-h-[24rem] resize-none' : 'min-h-[20rem] resize-y',
           )}
         />

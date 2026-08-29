@@ -9,7 +9,13 @@ import {
   type TerminalRuntimeTab,
 } from '@/terminal/TerminalRuntimeProvider'
 
-const TERMINAL_FONT = '"Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace'
+// JetBrains Mono leads so the terminal renders in the same face as the code
+// editor. The CJK faces are not decoration: xterm measures a cell once, from
+// this whole string, and a Han glyph that falls through to an unlisted font
+// gets measured wrong — the line wraps a column early and the box-drawing
+// characters lose their alignment with the text above them.
+const TERMINAL_FONT =
+  '"JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", monospace'
 
 function cssVariable(styles: CSSStyleDeclaration, name: string, fallback: string): string {
   return styles.getPropertyValue(name).trim() || fallback
@@ -49,7 +55,7 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
       convertEol: false,
       cursorBlink: true,
       fontFamily: TERMINAL_FONT,
-      fontSize: 13,
+      fontSize: 14,
       scrollback: 5_000,
       theme: terminalThemeFromDocument(),
     })

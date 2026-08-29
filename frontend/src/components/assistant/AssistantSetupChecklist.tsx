@@ -6,8 +6,8 @@
  * with — its own setup — is the one thing it cannot do conversationally.
  *
  * There are only two states worth distinguishing, and both are about the
- * Assistant's own provider binding. A workspace and other agents are unrelated:
- * the Assistant has no workspace, and it *is* its agent.
+ * Assistant's own provider binding. Nothing else is a setup step: its scratch
+ * workspace is created for it on first load, and it *is* its agent.
  */
 
 import { useState } from 'react'

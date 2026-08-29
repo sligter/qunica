@@ -8,9 +8,10 @@
 //!
 //! - `agents.is_system = 1` hides it from the agent library and makes the
 //!   generic update/delete routes refuse it.
-//! - It has no bound workspace, and its tool set contains no file, shell or MCP
-//!   tool. Its only capabilities are reading configuration and *proposing*
-//!   changes the user must approve.
+//! - Its file and shell tools reach one scratch workspace of its own under the
+//!   system temp directory and nothing else, and it has no MCP tools. The
+//!   user's own directories stay out of reach, and configuration still only
+//!   changes by *proposing* something the user approves.
 
 use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,15 @@ use crate::runtime::workspace_scope::WorkspaceMode;
 
 /// Name shown on the Assistant's messages.
 const ASSISTANT_NAME: &str = "AG Assistant";
+
+/// Directory holding the Assistant's scratch workspace, created under the
+/// system temp directory: `/tmp/qunica-assistant` on Unix, and the platform
+/// equivalent (`%TEMP%\qunica-assistant`) elsewhere.
+const ASSISTANT_WORKSPACE_DIR: &str = "qunica-assistant";
+
+/// Name of the workspace row bound to the Assistant. It shows up in the user's
+/// workspace list like any other, so it says what it is.
+const ASSISTANT_WORKSPACE_NAME: &str = "Assistant Workspace";
 
 /// The Assistant's system prompt.
 ///
@@ -55,6 +65,11 @@ Your capabilities:
   that launch local processes, CLI runtime installs, and resource deletion \
   (group membership removal is supported) — use AppPrefill to hand the user \
   a prefilled form to complete themselves.
+- Work with files and run commands in your own scratch workspace using Read, \
+  Write and Bash. It is a temporary directory that belongs to you, not the \
+  user's project: use it for drafts, notes, generated files and one-off \
+  commands, and do not keep anything there the user would miss.
+- Look things up online with WebSearch, and read one specific page with Fetch.
 
 Rules:
 - Prefer doing the work over asking. If something is missing but you can \
@@ -68,17 +83,21 @@ Rules:
   it takes effect once they approve.
 - Check the current state with AppList or AppGet before proposing a change, so \
   you do not propose something that already exists.
-- You cannot browse the filesystem, run a shell, or access arbitrary workspace \
-  files. AppGet can read app-managed group notes only. For other file work, \
-  suggest a regular agent with a workspace bound to it.
+- Your file and shell tools reach your own scratch workspace only. You cannot \
+  browse the user's other directories, and AppGet can read app-managed group \
+  notes only. For work on their own files, suggest a regular agent with that \
+  workspace bound to it.
 - Be concise. The user is reading you in a small floating panel.";
 
 /// Tools mounted on the Assistant.
 ///
 /// Stored in the same `tool_config_json` shape `enabled_tool_names` reads. The
-/// absence of `read`/`write`/`edit`/`glob`/`grep`/`bash` here is the point: with
-/// no workspace bound they would report `WORKSPACE_REQUIRED` anyway, but not
-/// offering them keeps the model from trying and keeps the prompt honest.
+/// file and shell tools are safe to offer because [`ensure_workspace`] is the
+/// only thing that ever binds a workspace to this agent, and it binds a scratch
+/// directory — so `Bash` and `Write` have somewhere to work without reaching
+/// anything the user cares about. `edit`, `glob` and `grep` stay off: read and
+/// write already cover what a scratch directory is for, and the shell covers
+/// the rest.
 fn assistant_tool_config() -> serde_json::Value {
     json!({
         "tools": {
@@ -89,7 +108,12 @@ fn assistant_tool_config() -> serde_json::Value {
             "app_propose": { "enabled": true },
             "app_prefill": { "enabled": true },
             "ask_user": { "enabled": true },
-            "todo_write": { "enabled": true }
+            "todo_write": { "enabled": true },
+            "read": { "enabled": true },
+            "write": { "enabled": true },
+            "bash": { "enabled": true },
+            "web_search": { "enabled": true },
+            "fetch": { "enabled": true }
         }
     })
 }
@@ -234,18 +258,30 @@ pub(crate) async fn ensure(
     state: &AppState,
     owner_id: &str,
 ) -> Result<AssistantResponse, ApiError> {
-    if let Some(found) = load(state.db.pool(), owner_id).await? {
-        sync_definition(state.db.pool(), owner_id, &found.agent_id).await?;
-        return Ok(found);
-    }
+    let found = match load(state.db.pool(), owner_id).await? {
+        Some(found) => {
+            sync_definition(state.db.pool(), owner_id, &found.agent_id).await?;
+            found
+        }
+        None => {
+            create(state, owner_id).await?;
+            load(state.db.pool(), owner_id)
+                .await?
+                .ok_or_else(|| ApiError::internal("assistant vanished after insert"))?
+        }
+    };
+    ensure_workspace(state, owner_id, &found.agent_id).await?;
+    Ok(found)
+}
 
+/// Insert the Assistant's agent row and the direct chat it is reached through.
+async fn create(state: &AppState, owner_id: &str) -> Result<(), ApiError> {
     // Serialize against a concurrent first request from the same account: two
     // dock mounts racing would otherwise each insert an Assistant, and the
     // loser's chat would be orphaned.
     let _guard = state.write_lock.lock().await;
-    if let Some(found) = load(state.db.pool(), owner_id).await? {
-        sync_definition(state.db.pool(), owner_id, &found.agent_id).await?;
-        return Ok(found);
+    if load(state.db.pool(), owner_id).await?.is_some() {
+        return Ok(());
     }
 
     let agent_id = Uuid::new_v4().to_string();
@@ -268,9 +304,9 @@ pub(crate) async fn ensure(
     .await
     .map_err(|_| ApiError::internal("failed to create the assistant"))?;
 
-    // `SelfOnly` against a null `workspace_id` makes `resolve_workspaces`
-    // return no primary root at all, so the workspace-scoped tools stay
-    // unreachable even if one is ever enabled on this row by mistake.
+    // `SelfOnly` is what keeps the scratch workspace the *only* root in reach:
+    // the chat itself is given no conversation workspace, and this mode stops
+    // the agent following one if a later feature ever binds it one.
     crate::api::direct_chats::insert_direct_chat(
         state.db.pool(),
         owner_id,
@@ -281,9 +317,135 @@ pub(crate) async fn ensure(
     )
     .await?;
 
-    load(state.db.pool(), owner_id)
+    Ok(())
+}
+
+/// Bind the Assistant to a scratch workspace of its own, creating both the
+/// directory and the workspace row on first use.
+///
+/// The Assistant has file and shell tools, so it needs somewhere to put things.
+/// A temp directory is what keeps those tools somewhere harmless: it is not a
+/// place the user keeps work, and losing it costs them nothing.
+///
+/// Called on every fetch rather than only at creation, so accounts that predate
+/// the workspace pick one up, and so a directory a temp sweep removed between
+/// sessions is restored before the next turn tries to use it.
+async fn ensure_workspace(
+    state: &AppState,
+    owner_id: &str,
+    agent_id: &str,
+) -> Result<(), ApiError> {
+    if let Some(bound) = bound_workspace_path(state.db.pool(), owner_id, agent_id).await? {
+        if let Err(error) = std::fs::create_dir_all(&bound) {
+            tracing::warn!(%error, path = %bound, "failed to restore the assistant workspace");
+        }
+        return Ok(());
+    }
+
+    // Same race as [`create`]: two dock mounts arriving together would each
+    // insert a workspace row, and the loser's would be left unreferenced.
+    let _guard = state.write_lock.lock().await;
+    if bound_workspace_path(state.db.pool(), owner_id, agent_id)
         .await?
-        .ok_or_else(|| ApiError::internal("assistant vanished after insert"))
+        .is_some()
+    {
+        return Ok(());
+    }
+    let Some(path) = prepare_workspace_dir() else {
+        return Ok(());
+    };
+
+    // Reuse the row an earlier bind left behind. Deleting the workspace clears
+    // the agent's binding but keeps its own row, so re-opening the dock would
+    // otherwise stack up workspaces over the same directory.
+    let existing = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM workspaces \
+         WHERE owner_id = ? AND status = 'active' AND backend_type = 'local' AND local_path = ? \
+         ORDER BY created_at ASC, id ASC LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(&path)
+    .fetch_optional(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    let workspace_id = match existing {
+        Some(id) => id,
+        None => insert_workspace(state.db.pool(), owner_id, &path).await?,
+    };
+
+    sqlx::query("UPDATE agents SET workspace_id = ?, updated_at = ? WHERE id = ? AND owner_id = ?")
+        .bind(&workspace_id)
+        .bind(now_rfc3339())
+        .bind(agent_id)
+        .bind(owner_id)
+        .execute(state.db.pool())
+        .await
+        .map_err(|_| ApiError::internal("failed to bind the assistant workspace"))?;
+    Ok(())
+}
+
+/// The local path of the Assistant's workspace, or `None` when it has no usable
+/// one — never bound, deleted since, or bound to a backend with no local path.
+async fn bound_workspace_path(
+    pool: &SqlitePool,
+    owner_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT w.local_path FROM agents a \
+         JOIN workspaces w ON w.id = a.workspace_id \
+         WHERE a.id = ? AND a.owner_id = ? AND w.status = 'active' AND w.backend_type = 'local'",
+    )
+    .bind(agent_id)
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map(Option::flatten)
+    .map_err(|_| ApiError::internal("database error"))
+}
+
+/// Create the scratch directory and return its canonical path.
+///
+/// A temp directory that cannot be created costs the Assistant its file tools —
+/// they report `WORKSPACE_REQUIRED` with nothing bound — rather than costing the
+/// user the whole dock, which is why this warns instead of returning an error.
+fn prepare_workspace_dir() -> Option<String> {
+    let path = std::env::temp_dir().join(ASSISTANT_WORKSPACE_DIR);
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        tracing::warn!(%error, path = %path.display(), "failed to create the assistant workspace");
+        return None;
+    }
+    match std::fs::canonicalize(&path) {
+        Ok(canonical) => Some(canonical.to_string_lossy().into_owned()),
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "failed to resolve the assistant workspace");
+            None
+        }
+    }
+}
+
+async fn insert_workspace(
+    pool: &SqlitePool,
+    owner_id: &str,
+    local_path: &str,
+) -> Result<String, ApiError> {
+    let id = Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+    sqlx::query(
+        "INSERT INTO workspaces \
+         (id, owner_id, name, backend_type, local_path, config_json, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'local', ?, NULL, 'active', ?, ?)",
+    )
+    .bind(&id)
+    .bind(owner_id)
+    .bind(ASSISTANT_WORKSPACE_NAME)
+    .bind(local_path)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .map_err(|_| ApiError::internal("failed to create the assistant workspace"))?;
+    Ok(id)
 }
 
 /// Keep existing system agents aligned with the build that is running.

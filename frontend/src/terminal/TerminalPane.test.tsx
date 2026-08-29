@@ -115,7 +115,7 @@ describe('TerminalPane', () => {
       allowProposedApi: false,
       convertEol: false,
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: 14,
       scrollback: 5000,
     })
 
