@@ -36,7 +36,7 @@ export function DirectChatPage() {
     })
   }, [chatId, qc])
   if (!chatId) return <PageState title={t('direct.notFound')} />
-  if (chat.isLoading) return <PageState variant="loading" title={t('direct.loading')} />
+  if (chat.isLoading) return <div role="status" aria-busy="true" aria-label={t('direct.loading')} className="h-full bg-background" />
   if (chat.error || !chat.data) return <PageState variant="error" title={t('direct.notFound')} />
   const item = chat.data
   const agents: GroupAgentRead[] = item.agent_id && item.agent_name ? [{ id: `${item.id}:${item.agent_id}`, group_id: item.id, agent_id: item.agent_id, display_name: item.agent_name, avatar_url: item.agent_avatar_url, role: null, topology_role: null, speaking_order: 1, response_mode: 'default', workspace_mode: 'group', share_group_workspace: true, context_usage: null, status: item.agent_status ?? 'deleted', joined_at: item.created_at }] : []

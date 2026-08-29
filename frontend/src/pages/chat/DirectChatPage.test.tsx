@@ -20,6 +20,21 @@ vi.mock('@/components/chat/ConversationChatView', () => ({
 }))
 
 describe('DirectChatPage', () => {
+  it('does not replace the chat surface with loading copy', async () => {
+    await i18n.changeLanguage('en-US')
+    mocks.useDirectChat.mockReturnValue({ isLoading: true, error: null, data: undefined })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={new QueryClient()}>
+          <MemoryRouter initialEntries={['/chats/chat-1']}><Routes><Route path="/chats/:chatId" element={<DirectChatPage />} /></Routes></MemoryRouter>
+        </QueryClientProvider>
+      </I18nextProvider>,
+    )
+
+    expect(screen.queryByText('Loading chat…')).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Loading chat…' })).toHaveAttribute('aria-busy', 'true')
+  })
+
   it('shows the sole Agent and disables composition when unavailable', () => {
     mocks.useDirectChat.mockReturnValue({ isLoading: false, error: null, data: { id: 'chat-1', title: 'Direct', title_source: 'automatic', agent_id: 'agent-1', agent_name: 'Solo', agent_status: 'deleted', workspace_id: null, status: 'active', created_at: '2026-07-19T00:00:00Z', updated_at: '2026-07-19T00:00:00Z' } })
     render(

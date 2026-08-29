@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   agents: [] as { id: string; workspace_id: string | null; name?: string; description?: string | null }[],
   workspaces: [] as { id: string; local_path: string | null }[],
   groupThreads: [] as GroupThread[],
+  groupThreadsLoading: false,
   useGroupAgents: vi.fn(),
   gitBranches: {
     branches: [
@@ -110,6 +111,7 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     isPending: false,
     mutateAsync: mocks.clearMutateAsync,
   }),
+  useConversationPrefetch: () => vi.fn(),
 }))
 vi.mock('@/hooks/useGroupTemplates', () => ({
   useGroupTemplates: () => ({ data: [], error: null, isLoading: false }),
@@ -121,7 +123,11 @@ vi.mock('@/hooks/useGroupTemplates', () => ({
   useDeleteGroupTemplate: () => ({ isPending: false, mutateAsync: vi.fn() }),
 }))
 vi.mock('@/hooks/useGroupThreads', () => ({
-  useGroupThreads: () => ({ data: mocks.groupThreads, error: null, isLoading: false }),
+  useGroupThreads: () => ({
+    data: mocks.groupThreads,
+    error: null,
+    isLoading: mocks.groupThreadsLoading,
+  }),
   useCreateGroupThread: () => ({
     error: null,
     isPending: false,
@@ -299,6 +305,7 @@ describe('group management i18n', () => {
     mocks.agents = []
     mocks.workspaces = []
     mocks.groupThreads = [taskThread]
+    mocks.groupThreadsLoading = false
     mocks.useGroupAgents.mockReset()
     mocks.setWorkspaceMode.mockReset()
     mocks.mutateAsync.mockReset()
@@ -407,6 +414,23 @@ describe('group management i18n', () => {
     expect(screen.getByRole('button', { name: '隐藏工作区文件' })).toBeVisible()
     expect(document.title).toBe('原样 Group 42 · Qunica')
     expect(mocks.registerTerminal).toHaveBeenCalledWith('thread-1', 'workspace-1', null)
+  })
+
+  it('keeps the group chrome visible while its tasks load for the first time', async () => {
+    mocks.groupThreadsLoading = true
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter initialEntries={['/groups/group-1']}>
+        <Routes>
+          <Route path="/groups/:groupId" element={<GroupChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('banner')).toHaveTextContent('原样 Group 42')
+    expect(screen.queryByText('Loading tasks…')).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Loading tasks…' })).toHaveAttribute('aria-busy', 'true')
+    expect(screen.queryByText('message list')).not.toBeInTheDocument()
   })
 
   it('creates and selects a named group task', async () => {

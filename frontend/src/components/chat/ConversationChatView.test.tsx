@@ -17,6 +17,7 @@ const terminalMocks = vi.hoisted(() => ({
 
 const composerMocks = vi.hoisted(() => ({ render: vi.fn() }))
 const messageListMocks = vi.hoisted(() => ({ render: vi.fn() }))
+const messageQueryMocks = vi.hoisted(() => ({ error: null as Error | null, isLoading: false }))
 const workspacePanelMocks = vi.hoisted(() => ({ group: vi.fn() }))
 const maintenanceMocks = vi.hoisted(() => ({
   clear: vi.fn(),
@@ -76,7 +77,7 @@ vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
   },
 }))
 vi.mock('@/components/chat/MessageList', () => ({
-  MessageList: (props: { agentIsSystem?: boolean; stateId?: string }) => {
+  MessageList: (props: { agentIsSystem?: boolean; isInitialLoading?: boolean; stateId?: string }) => {
     messageListMocks.render(props)
     return <div>message list</div>
   },
@@ -95,8 +96,8 @@ vi.mock('@/hooks/useGroupMessages', () => ({
     threadId,
   ],
   useConversationMessages: () => ({
-    error: null,
-    isLoading: false,
+    error: messageQueryMocks.error,
+    isLoading: messageQueryMocks.isLoading,
     hasNextPage: false,
     isFetchingNextPage: false,
     fetchNextPage: vi.fn(),
@@ -218,6 +219,8 @@ describe('ConversationChatView', () => {
     terminalMocks.runtimeAvailable = true
     composerMocks.render.mockReset()
     messageListMocks.render.mockReset()
+    messageQueryMocks.error = null
+    messageQueryMocks.isLoading = false
     workspacePanelMocks.group.mockReset()
     maintenanceMocks.clear.mockReset().mockResolvedValue(undefined)
     maintenanceMocks.reset.mockReset().mockResolvedValue(undefined)
@@ -449,6 +452,19 @@ describe('ConversationChatView', () => {
 
     expect(event.defaultPrevented).toBe(false)
     expect(terminalMocks.toggleDock).not.toHaveBeenCalled()
+  })
+
+  it('keeps cached chat interactive while messages refresh', () => {
+    messageQueryMocks.isLoading = true
+    renderConversation()
+
+    expect(screen.getByRole('banner')).toHaveTextContent('Direct chat')
+    expect(screen.queryByText('Loading chat…')).not.toBeInTheDocument()
+    expect(screen.getByText('composer:false:enabled')).toBeInTheDocument()
+    expect(screen.getByText('message list')).toBeInTheDocument()
+    expect(messageListMocks.render).toHaveBeenCalledWith(
+      expect.objectContaining({ isInitialLoading: true }),
+    )
   })
 
   it('does not claim the terminal shortcut when no terminal runtime is mounted', () => {

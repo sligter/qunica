@@ -5,6 +5,7 @@ import { MessageSquarePlus } from 'lucide-react'
 
 import { useGroups } from '@/hooks/useGroups'
 import { useDirectChats } from '@/hooks/useDirectChats'
+import { useConversationPrefetch } from '@/hooks/useGroupMessages'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { GroupAvatar } from '@/components/groups/GroupAvatar'
@@ -25,6 +26,7 @@ export function ChatHomePage() {
   const { t } = useTranslation(['groups', 'navigation'])
   const groups = useGroups()
   const directChats = useDirectChats()
+  const prefetchConversation = useConversationPrefetch()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [directDialogOpen, setDirectDialogOpen] = useState(false)
 
@@ -98,6 +100,14 @@ export function ChatHomePage() {
                 <li key={`${conversation.kind}:${conversation.id}`}>
                   <Link
                     to={conversation.to}
+                    onPointerEnter={() => prefetchConversation(
+                      conversation.kind === 'direct' ? 'direct-chats' : 'groups',
+                      conversation.id,
+                    )}
+                    onFocus={() => prefetchConversation(
+                      conversation.kind === 'direct' ? 'direct-chats' : 'groups',
+                      conversation.id,
+                    )}
                     className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:bg-card-hover"
                   >
                     {conversation.kind === 'direct' ? (

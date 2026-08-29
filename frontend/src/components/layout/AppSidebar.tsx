@@ -22,6 +22,7 @@ import { setConversationIdDrag } from '@/lib/conversationDrag'
 import { cn } from '@/lib/utils'
 import { normalizeLanguage } from '@/i18n'
 import { useGroups } from '@/hooks/useGroups'
+import { useConversationPrefetch } from '@/hooks/useGroupMessages'
 import {
   useDeleteDirectChat,
   useDirectChats,
@@ -179,6 +180,7 @@ export function AppSidebar() {
   const chatMenuRef = useRef<HTMLDivElement>(null)
   const chatMenuFirstItemRef = useRef<HTMLButtonElement>(null)
   const navigate = useNavigate()
+  const prefetchConversation = useConversationPrefetch()
   // Carried on the library jump so the conversation underneath stays mounted,
   // exactly as the sidebar's OverlayLinks do.
   const overlayState = useOverlayLinkState()
@@ -493,6 +495,8 @@ export function AppSidebar() {
                         <NavLink
                           to={`/chats/${chat.id}`}
                           draggable
+                          onPointerEnter={() => prefetchConversation('direct-chats', chat.id)}
+                          onFocus={() => prefetchConversation('direct-chats', chat.id)}
                           onDragStart={(event) => setConversationIdDrag(event.dataTransfer, chat.id)}
                           aria-haspopup="menu"
                           aria-controls={chatMenu?.id === chat.id ? 'direct-chat-context-menu' : undefined}
@@ -584,6 +588,8 @@ export function AppSidebar() {
                         <NavLink
                           to={`/groups/${g.id}`}
                           draggable
+                          onPointerEnter={() => prefetchConversation('groups', g.id)}
+                          onFocus={() => prefetchConversation('groups', g.id)}
                           onDragStart={(event) => setConversationIdDrag(event.dataTransfer, g.id)}
                           className={({ isActive }) =>
                             cn(

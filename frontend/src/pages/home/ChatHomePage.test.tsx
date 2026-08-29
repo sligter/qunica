@@ -9,6 +9,7 @@ import i18n from '@/i18n'
 const mocks = vi.hoisted(() => ({ groups: vi.fn(), directChats: vi.fn() }))
 vi.mock('@/hooks/useGroups', () => ({ useGroups: mocks.groups }))
 vi.mock('@/hooks/useDirectChats', () => ({ useDirectChats: mocks.directChats }))
+vi.mock('@/hooks/useGroupMessages', () => ({ useConversationPrefetch: () => vi.fn() }))
 vi.mock('@/components/groups/GroupFormDialog', () => ({ GroupFormDialog: () => null }))
 vi.mock('@/components/direct-chats/DirectChatPickerDialog', () => ({ DirectChatPickerDialog: () => null }))
 

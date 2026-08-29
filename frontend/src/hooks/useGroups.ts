@@ -15,10 +15,14 @@ export function useGroups() {
 
 export function useGroup(groupId: string | undefined) {
   const token = useAuthStore((s) => s.token)
+  const queryClient = useQueryClient()
   return useQuery({
     queryKey: ['groups', groupId],
     queryFn: () => fetchJson<GroupRead>(`/groups/${groupId}`, { token }),
     enabled: token !== null && groupId !== undefined,
+    placeholderData: () => queryClient
+      .getQueryData<GroupRead[]>(['groups'])
+      ?.find((group) => group.id === groupId),
   })
 }
 

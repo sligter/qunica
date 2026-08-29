@@ -79,6 +79,7 @@ The bet is simple: multi-agent work gets better when the **room** is the product
 *A workspace you chose, tools you allowed, and an audit trail for everything that ran.*
 
 - **[Workspaces](backend-rs/crates/backend/src/docs/guide/workspaces.md) →** The boundary: file and shell tools resolve every path against a root, and anything that escapes it is rejected.
+- **Repository conventions →** Put project rules in root-level `AGENTS.md` (or `CLAUDE.md` as a fallback); built-in agents load them every turn, while ACP CLIs use their native discovery without duplicate injection.
 - **[Built-in tools](backend-rs/crates/backend/src/docs/guide/agents.md#built-in-tools) →** Read, Write, Edit, Glob, Grep, guarded Bash, WebSearch, Fetch, image and video generation, AskUser, TodoWrite, and plan approval.
 - **Approval gates →** Destructive Bash pauses the turn for your sign-off — remember a rule for the thread, or enable unattended mode for an agent you trust in a workspace you can afford to lose. A refused class (formatting volumes, host shutdown) never runs.
 - **[External CLI agents](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) →** Drive Codex CLI, Claude Code, Pi, OpenCode, and DeepSeek Harness over ACP, plus any custom ACP server. Every run keeps its command, cwd, status, exit code, and stdout/stderr tails.

@@ -76,13 +76,27 @@ export function GroupChatPage() {
     )
   }
   if (group.isLoading || !group.data) {
-    return <PageState variant="loading" title={t('manage.loading')} />
+    return <div role="status" aria-busy="true" aria-label={t('manage.loading')} className="h-full bg-background" />
   }
   if (groupThreads.error) {
     return <PageState variant="error" title={String(groupThreads.error)} />
   }
   if (groupThreads.isLoading) {
-    return <PageState variant="loading" title={t('tasks.loading')} />
+    return (
+      <div className="flex h-full flex-col">
+        <header className="flex h-14 shrink-0 items-center border-b border-border/60 bg-background px-4 lg:px-5">
+          <h1 className="truncate font-serif text-base font-semibold tracking-tight">
+            {group.data.name}
+          </h1>
+        </header>
+        <div
+          role="status"
+          aria-busy="true"
+          aria-label={t('tasks.loading')}
+          className="min-h-0 flex-1 bg-background"
+        />
+      </div>
+    )
   }
 
   const agents = groupAgents.data ?? []

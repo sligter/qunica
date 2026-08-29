@@ -19,6 +19,7 @@ Element.prototype.setPointerCapture = () => {}
 Element.prototype.releasePointerCapture = () => {}
 Element.prototype.scrollIntoView = () => {}
 
+const prefetchConversation = vi.fn()
 const idle = { mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() }
 
 vi.mock('@/hooks/useGroupThreads', () => ({
@@ -29,6 +30,7 @@ vi.mock('@/hooks/useGroupThreads', () => ({
 }))
 vi.mock('@/hooks/useGroupMessages', () => ({
   useClearGroupThreadMessages: () => idle,
+  useConversationPrefetch: () => prefetchConversation,
 }))
 vi.mock('@/hooks/useWorkspaceGit', () => ({
   useGroupWorkspaceGitBranches: () => ({ data: undefined, isLoading: false, error: null }),
@@ -90,6 +92,7 @@ describe('GroupChatHeaderActions task status', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
     idle.mutateAsync.mockReset().mockResolvedValue({})
+    prefetchConversation.mockReset()
     useConversationActivityStore.setState(initialActivity, true)
   })
 

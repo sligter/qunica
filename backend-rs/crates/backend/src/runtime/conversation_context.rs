@@ -14,6 +14,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
 
+pub(crate) const PROJECT_CONVENTIONS_OPEN: &str = "<qunica-project-conventions>";
+pub(crate) const PROJECT_CONVENTIONS_CLOSE: &str = "</qunica-project-conventions>";
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ConversationAttachment {
     pub id: String,
@@ -599,9 +602,20 @@ fn render_attachment_reference(
 
 pub(crate) fn sanitize_acp_agent_brief(system_prompt: &str) -> String {
     let mut in_system_reminder = false;
+    let mut in_project_conventions = false;
     let mut lines = Vec::new();
     for line in system_prompt.lines() {
         let trimmed = line.trim();
+        if trimmed == PROJECT_CONVENTIONS_OPEN {
+            in_project_conventions = true;
+            continue;
+        }
+        if in_project_conventions {
+            if trimmed == PROJECT_CONVENTIONS_CLOSE {
+                in_project_conventions = false;
+            }
+            continue;
+        }
         if trimmed.contains("<system-reminder") {
             in_system_reminder = !trimmed.contains("</system-reminder>");
             continue;

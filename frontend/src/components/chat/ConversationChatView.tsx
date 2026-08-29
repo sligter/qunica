@@ -10,7 +10,6 @@ import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
 import { WorkspaceEditorStage } from '@/components/chat/WorkspaceEditorStage'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
-import { PageState } from '@/components/ui/page-state'
 import {
   type ConversationScope,
   useEnhanceGroupPrompt,
@@ -333,16 +332,7 @@ export function ConversationChatView({
     }
   }, [capabilities.showWorkspace, conversationId, fileNavRequest, setWorkspaceFilesOpenPersisted])
 
-  if (messagesQuery.error) {
-    return <PageState variant="error" title={String(messagesQuery.error)} />
-  }
-
-  if (messagesQuery.isLoading) {
-    return <PageState variant="loading" title={t('messages.loading')} />
-  }
-
   const hint = !agentIsSystem && agents.length === 0 ? t('composer.noAgents') : undefined
-
   return (
     <div className="flex h-full flex-col">
       <header
@@ -406,10 +396,16 @@ export function ConversationChatView({
         <div className="flex min-w-0 flex-1 flex-col">
           <WorkspaceEditorStage scope={scope} conversationId={conversationId}>
             <div className="flex min-h-0 flex-1 flex-col">
+              {messagesQuery.error ? (
+                <p role="alert" className="shrink-0 px-4 pt-3 text-xs text-destructive">
+                  {String(messagesQuery.error)}
+                </p>
+              ) : null}
               <MessageList
                 groupId={conversationId}
                 stateId={stateId}
                 threadId={threadId}
+                isInitialLoading={messagesQuery.isLoading}
                 hasOlderMessages={messagesQuery.hasNextPage}
                 isLoadingOlderMessages={messagesQuery.isFetchingNextPage}
                 onLoadOlderMessages={() => void messagesQuery.fetchNextPage()}

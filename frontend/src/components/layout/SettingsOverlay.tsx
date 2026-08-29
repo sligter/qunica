@@ -49,9 +49,9 @@ export interface SettingsOverlayProps {
  * forms and master/detail views. Group management opts into the compact drawer
  * variant and adapts its own content to the narrower measure.
  *
- * Clicking the scrim does not close. The scrim is a narrow frame around an
- * almost-full-screen panel, so a click landing there is nearly always a miss —
- * and behind these forms are half-typed API keys and prompts.
+ * Clicking the drawer scrim closes it. The almost-full-screen panel keeps its
+ * scrim inert because a click in that narrow frame is nearly always a miss —
+ * and behind those forms are half-typed API keys and prompts.
  */
 export function SettingsOverlay({
   label,
@@ -138,6 +138,11 @@ export function SettingsOverlay({
           variant === 'drawer' ? 'group-drawer-scrim' : 'bg-scrim',
         )}
         aria-hidden
+        onClick={
+          variant === 'drawer'
+            ? () => requestActionRef.current(closeRef.current)
+            : undefined
+        }
       />
       <div
         ref={panelRef}

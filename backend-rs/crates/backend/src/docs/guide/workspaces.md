@@ -21,6 +21,14 @@ On the desktop app, the folder picker is the native OS dialog and stores a real 
 - `Bash` runs in the primary root only. Its command guard is built around a single root, so named mounts are not reachable from a shell.
 - The built-in terminal is **not** bounded by the workspace. It runs a full host shell with the account's own permissions.
 
+## Project conventions
+
+Before each built-in agent turn, Qunica reads `AGENTS.md` from the primary workspace root, falling back to `CLAUDE.md` when it is absent. Up to 6,000 characters are added to the system prompt immediately after the Workspace section, so edits take effect on the next turn and survive context compaction.
+
+The file is workspace-controlled guidance. It has lower priority than Qunica's operating rules, approval gates, and workspace constraints. Only the primary root is checked: named mounts and nested directories are not scanned.
+
+ACP agents do not receive this host-injected section. External CLI agents such as Codex CLI and Claude Code discover project instructions in their working directory themselves, so injecting it again would duplicate the same rules.
+
 ## Sharing between agents
 
 An agent in a group chooses which roots it can address:

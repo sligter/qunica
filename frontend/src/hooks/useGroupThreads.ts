@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
@@ -7,13 +7,16 @@ import type { GroupThread } from '@/types/api'
 export const groupThreadsKey = (groupId: string | undefined) =>
   ['groups', groupId, 'threads'] as const
 
-export function useGroupThreads(groupId: string | undefined) {
-  const token = useAuthStore((state) => state.token)
-  return useQuery({
+export const groupThreadsQueryOptions = (groupId: string | undefined, token: string | null) =>
+  queryOptions({
     queryKey: groupThreadsKey(groupId),
     queryFn: () => fetchJson<GroupThread[]>(`/groups/${groupId}/threads`, { token }),
     enabled: token !== null && groupId !== undefined,
   })
+
+export function useGroupThreads(groupId: string | undefined) {
+  const token = useAuthStore((state) => state.token)
+  return useQuery(groupThreadsQueryOptions(groupId, token))
 }
 
 export function useCreateGroupThread(groupId: string) {

@@ -17,6 +17,7 @@ interface MessageListProps {
   stateId?: string
   /** Thread the surrounding view's message query is keyed by, if any. */
   threadId?: string
+  isInitialLoading?: boolean
   hasOlderMessages?: boolean
   isLoadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
@@ -134,6 +135,7 @@ export function MessageList({
   groupId,
   stateId = groupId,
   threadId,
+  isInitialLoading = false,
   hasOlderMessages = false,
   isLoadingOlderMessages = false,
   onLoadOlderMessages,
@@ -251,11 +253,12 @@ export function MessageList({
   return (
     <div
       ref={scrollRef}
+      aria-busy={isInitialLoading || undefined}
       className="relative flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto py-4"
       onScroll={updateNearBottom}
     >
       <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
-        {messages.length === 0 && Object.keys(streamRuns).length === 0 && (
+        {!isInitialLoading && messages.length === 0 && Object.keys(streamRuns).length === 0 && (
           agentIsSystem ? (
             <div className="flex flex-1 flex-col items-center justify-center px-5 py-8 text-center">
               <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-xs">

@@ -35,10 +35,14 @@ export function useDirectChats() {
 
 export function useDirectChat(chatId: string | undefined) {
   const token = useAuthStore((state) => state.token)
+  const queryClient = useQueryClient()
   return useQuery({
     queryKey: directChatQueryKey(chatId),
     queryFn: () => fetchJson<DirectChatRead>(`/direct-chats/${chatId}`, { token }),
     enabled: token !== null && chatId !== undefined,
+    placeholderData: () => queryClient
+      .getQueryData<DirectChatRead[]>(directChatsQueryKey)
+      ?.find((chat) => chat.id === chatId),
   })
 }
 

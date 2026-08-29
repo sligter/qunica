@@ -44,12 +44,13 @@ describe('SettingsOverlay unsaved changes guard', () => {
   })
 
   it('renders the group-management variant as a docked drawer', () => {
-    render(
+    const onClose = vi.fn()
+    const { container } = render(
       <UnsavedChangesProvider>
         <SettingsOverlay
           label="Group settings"
           resizeLabel="Resize group settings"
-          onClose={vi.fn()}
+          onClose={onClose}
           variant="drawer"
         >
           <div>Drawer content</div>
@@ -64,6 +65,9 @@ describe('SettingsOverlay unsaved changes guard', () => {
       'aria-valuenow',
       '512',
     )
+
+    fireEvent.click(container.querySelector('.group-drawer-scrim')!)
+    expect(onClose).toHaveBeenCalledOnce()
   })
 
   it('resizes the group drawer from its left edge and restores the saved width', () => {

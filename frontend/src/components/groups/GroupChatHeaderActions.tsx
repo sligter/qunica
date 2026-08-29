@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/select'
 import { useArchiveGroupThread, useCreateGroupThread, useDeleteGroupThread, useRestoreGroupThread } from '@/hooks/useGroupThreads'
 import { useGroupWorkspaceGitBranches } from '@/hooks/useWorkspaceGit'
-import { useClearGroupThreadMessages } from '@/hooks/useGroupMessages'
+import { useClearGroupThreadMessages, useConversationPrefetch } from '@/hooks/useGroupMessages'
 import type { GroupThread } from '@/types/api'
 
 interface GroupChatHeaderActionsProps {
@@ -57,6 +57,7 @@ export function GroupChatHeaderActions({
   const restoreThread = useRestoreGroupThread(groupId)
   const deleteThread = useDeleteGroupThread(groupId)
   const clearThread = useClearGroupThreadMessages(groupId)
+  const prefetchConversation = useConversationPrefetch()
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -109,7 +110,10 @@ export function GroupChatHeaderActions({
       />
       <Select
         value={selectedThread?.id}
-        onValueChange={onSelect}
+        onValueChange={(threadId) => {
+          prefetchConversation('groups', groupId, threadId)
+          onSelect(threadId)
+        }}
         disabled={mutating || threads.length === 0}
       >
         <SelectTrigger
@@ -130,6 +134,8 @@ export function GroupChatHeaderActions({
                   key={thread.id}
                   value={thread.id}
                   textValue={displayLabel(thread)}
+                  onPointerEnter={() => prefetchConversation('groups', groupId, thread.id)}
+                  onFocus={() => prefetchConversation('groups', groupId, thread.id)}
                   className="min-w-0 whitespace-nowrap"
                 >
                   {/* The status travels with the item text, so Radix mirrors
@@ -156,6 +162,8 @@ export function GroupChatHeaderActions({
                   key={thread.id}
                   value={thread.id}
                   textValue={displayLabel(thread, true)}
+                  onPointerEnter={() => prefetchConversation('groups', groupId, thread.id)}
+                  onFocus={() => prefetchConversation('groups', groupId, thread.id)}
                   className="min-w-0 whitespace-nowrap"
                 >
                   <span

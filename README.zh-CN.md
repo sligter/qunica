@@ -79,6 +79,7 @@ Qunica 把项目当成一个 **群（Group）**。Agent 是你可以邀请、配
 *干哪个目录、能用哪些工具，先过你这一关；跑过的每一步，都留下记录。*
 
 - **[工作区](backend-rs/crates/backend/src/docs/guide/workspaces.md) →** 文件和 shell 工具的所有路径都对着根目录解析，越界的请求直接拒绝。
+- **仓库规范 →** 把项目规则写进根目录的 `AGENTS.md`（没有时回落到 `CLAUDE.md`）；内置 Agent 每轮加载，ACP CLI 则走各自的原生发现机制，不重复注入。
 - **[内置工具](backend-rs/crates/backend/src/docs/guide/agents.md#built-in-tools) →** 读、写、精确编辑、Glob、Grep、受守卫的 Bash、WebSearch、Fetch、图片与视频生成、AskUser、TodoWrite、计划审批。
 - **审批门禁 →** 破坏性 Bash 会让本轮暂停等你确认——可以记住规则，也可以给信得过的 Agent 开无人值守模式；高危一类命令（格式化磁盘、关停主机）永不执行。
 - **[外部 CLI Agent](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) →** 通过 ACP 驱动 Codex CLI、Claude Code、Pi、OpenCode、DeepSeek Harness，以及任何自定义 ACP 服务。每次运行都记录命令、工作目录、状态、退出码与 stdout/stderr 尾部。

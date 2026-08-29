@@ -64,6 +64,14 @@ afterEach(async () => {
 })
 
 describe('MessageList scheduler summary integration', () => {
+  it('keeps the initial history fetch quiet', () => {
+    setMessageState(undefined, [])
+    const { container } = render(<MessageList groupId="group-1" isInitialLoading />)
+
+    expect(screen.queryByText('Start the conversation.')).not.toBeInTheDocument()
+    expect(container.firstChild).toHaveAttribute('aria-busy', 'true')
+  })
+
   it('gives the system Assistant useful first prompts instead of an @mention hint', async () => {
     const user = userEvent.setup()
     const onSubmitHumanInput = vi.fn()

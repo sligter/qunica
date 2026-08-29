@@ -1,14 +1,22 @@
-import { useEffect, useMemo } from 'react'
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { InfiniteData } from '@tanstack/react-query'
+import { useCallback, useLayoutEffect, useMemo } from 'react'
+import {
+  infiniteQueryOptions,
+  useInfiniteQuery,
+  useMutation,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api-v2/client'
+import { groupThreadsQueryOptions } from '@/hooks/useGroupThreads'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type {
   ClearGroupMessagesResponse,
   GroupPromptEnhanceRequest,
   GroupPromptEnhanceResponse,
+  GroupThread,
   Message,
   MessageSendResponse,
 } from '@/types/api'
@@ -26,6 +34,8 @@ export const conversationMessagesKey = (
   ? [scope, id, 'messages', threadId] as const
   : [scope, id, 'messages'] as const
 
+type ConversationMessagesKey = ReturnType<typeof conversationMessagesKey>
+
 export const conversationStateKey = (
   conversationId: string | undefined,
   threadId?: string | null,
@@ -33,6 +43,79 @@ export const conversationStateKey = (
 
 export const conversationApiPath = (scope: ConversationScope, id: string | undefined) =>
   `/${scope}/${id}`
+
+export const conversationMessagesQueryOptions = (
+  scope: ConversationScope,
+  conversationId: string | undefined,
+  token: string | null,
+  threadId?: string,
+) => infiniteQueryOptions<
+  Message[],
+  Error,
+  InfiniteData<Message[], string | undefined>,
+  ConversationMessagesKey,
+  string | undefined
+>({
+  queryKey: conversationMessagesKey(scope, conversationId, threadId),
+  queryFn: ({ pageParam }) => {
+    const params = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE) })
+    if (pageParam) params.set('before', pageParam)
+    if (threadId) params.set('thread_id', threadId)
+    return fetchJson<Message[]>(
+      `${conversationApiPath(scope, conversationId)}/messages?${params.toString()}`,
+      { token },
+    )
+  },
+  enabled: token !== null && conversationId !== undefined,
+  initialPageParam: INITIAL_PAGE_PARAM,
+  getNextPageParam: (lastPage) =>
+    lastPage.length === MESSAGE_PAGE_SIZE ? lastPage[0]?.id : undefined,
+})
+
+function preferredGroupThreadId(groupId: string, threads: GroupThread[]): string | undefined {
+  let storedId: string | null = null
+  try {
+    storedId = window.localStorage.getItem(`qunica:groups:selected-thread:${groupId}`)
+  } catch {
+    // Storage availability must not block intent prefetching.
+  }
+  return threads.find((thread) => thread.id === storedId)?.id
+    ?? threads.find((thread) => thread.status !== 'archived')?.id
+    ?? threads[0]?.id
+}
+
+export function prefetchConversation(
+  queryClient: QueryClient,
+  token: string | null,
+  scope: ConversationScope,
+  conversationId: string,
+  threadId?: string,
+): Promise<void> | undefined {
+  if (!token) return
+  if (scope === 'direct-chats' || threadId) {
+    return queryClient.prefetchInfiniteQuery(
+      conversationMessagesQueryOptions(scope, conversationId, token, threadId),
+    )
+  }
+  return queryClient.fetchQuery(groupThreadsQueryOptions(conversationId, token))
+    .then((threads) => queryClient.prefetchInfiniteQuery(
+      conversationMessagesQueryOptions(
+        scope,
+        conversationId,
+        token,
+        preferredGroupThreadId(conversationId, threads),
+      ),
+    ))
+    .catch(() => undefined)
+}
+
+export function useConversationPrefetch() {
+  const token = useAuthStore((state) => state.token)
+  const queryClient = useQueryClient()
+  return useCallback((scope: ConversationScope, conversationId: string, threadId?: string) => {
+    void prefetchConversation(queryClient, token, scope, conversationId, threadId)
+  }, [queryClient, token])
+}
 
 function emptyMessagePages(): InfiniteData<Message[], string | undefined> {
   return {
@@ -211,29 +294,16 @@ export function useConversationMessages(
   const setHistory = useMessageStore((s) => s.setHistory)
   const stateKey = conversationStateKey(groupId, threadId)
 
-  const query = useInfiniteQuery({
-    queryKey: conversationMessagesKey(scope, groupId, threadId),
-    queryFn: ({ pageParam }: { pageParam?: string }) => {
-      const params = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE) })
-      if (pageParam) params.set('before', pageParam)
-      if (threadId) params.set('thread_id', threadId)
-      return fetchJson<Message[]>(
-        `${conversationApiPath(scope, groupId)}/messages?${params.toString()}`,
-        { token },
-      )
-    },
-    enabled: token !== null && groupId !== undefined,
-    initialPageParam: INITIAL_PAGE_PARAM,
-    getNextPageParam: (lastPage) =>
-      lastPage.length === MESSAGE_PAGE_SIZE ? lastPage[0]?.id : undefined,
-  })
+  const query = useInfiniteQuery(
+    conversationMessagesQueryOptions(scope, groupId, token, threadId),
+  )
 
   const messages = useMemo(
     () => [...(query.data?.pages ?? [])].reverse().flat(),
     [query.data?.pages],
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (stateKey && query.data) {
       setHistory(stateKey, messages)
     }
