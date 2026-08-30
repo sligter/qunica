@@ -21,7 +21,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Convert an app-managed std command into a Tokio command, suppressing the
 /// Windows console window that CLI children would otherwise create.
-pub(crate) fn tokio_command_no_window(mut command: StdCommand) -> TokioCommand {
+pub(crate) fn tokio_command_no_window(
+    #[allow(unused_mut)] mut command: StdCommand,
+) -> TokioCommand {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
