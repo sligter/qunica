@@ -52,12 +52,12 @@ export function MessageAttachments({ groupId, attachments, scope = 'groups' }: {
   const { t } = useTranslation('chat')
   const token = useAuthStore((state) => state.token)
   return <div className="mt-2 space-y-2">
-    {attachments.map((attachment) => <div key={attachment.id} className="min-w-0 rounded-md border border-border/70 p-2">
+    {attachments.map((attachment) => <div key={attachment.id} className="message-attachment min-w-0 rounded-md border border-border/70 p-2">
       {attachment.kind === 'image' ? <ImagePreview scope={scope} groupId={groupId} attachment={attachment} /> : null}
       <div className="mt-1 flex min-w-0 items-center gap-2">
         {attachment.kind === 'image' ? <ImageIcon className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
-        <div className="min-w-0 flex-1"><div className="truncate text-xs font-medium">{attachment.name}</div><div className="flex flex-wrap gap-x-1 text-2xs text-muted-foreground"><span>{attachment.mime_type}</span><span aria-hidden="true">·</span><span>{formatSize(attachment.size)}</span></div></div>
-        <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={t('attachments.openNamed', { name: attachment.name, defaultValue: `Open ${attachment.name}` })} title={t('attachments.open', { defaultValue: 'Open attachment' })} onClick={() => void downloadConversationWorkspaceFile(scope, groupId, attachment.path, token)}><Paperclip className="h-3.5 w-3.5" /></Button>
+        <div className="min-w-0 flex-1"><div className="message-attachment-name truncate text-xs font-medium">{attachment.name}</div><div className="message-attachment-meta flex flex-wrap gap-x-1 text-2xs text-muted-foreground"><span>{attachment.mime_type}</span><span aria-hidden="true">·</span><span>{formatSize(attachment.size)}</span></div></div>
+        <Button type="button" variant="ghost" size="icon" className="message-attachment-action h-7 w-7" aria-label={t('attachments.openNamed', { name: attachment.name, defaultValue: `Open ${attachment.name}` })} title={t('attachments.open', { defaultValue: 'Open attachment' })} onClick={() => void downloadConversationWorkspaceFile(scope, groupId, attachment.path, token)}><Paperclip className="h-3.5 w-3.5" /></Button>
       </div>
     </div>)}
   </div>

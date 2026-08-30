@@ -103,6 +103,14 @@ describe('API v2 SSE retry policy', () => {
     expect(init.onerror?.(failure)).toBe(500)
   })
 
+  it('ignores empty keep-alive events', () => {
+    const handlers = open()
+
+    expect(() => init.onmessage?.({ id: '', event: '', retry: undefined, data: '' }))
+      .not.toThrow()
+    expect(handlers.onEvent).not.toHaveBeenCalled()
+  })
+
   it('retries when applying a valid event throws', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.5)
     const handlers = open()

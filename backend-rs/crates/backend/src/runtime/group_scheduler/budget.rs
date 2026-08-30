@@ -45,7 +45,6 @@ impl BudgetLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnBudget {
     limits: BudgetLimits,
-    unbounded_work: bool,
     agent_steps: u32,
     steps_per_agent: HashMap<String, u32>,
     moderator_calls: u32,
@@ -58,7 +57,6 @@ impl TurnBudget {
     pub fn new(limits: BudgetLimits) -> Self {
         Self {
             limits,
-            unbounded_work: false,
             agent_steps: 0,
             steps_per_agent: HashMap::new(),
             moderator_calls: 0,
@@ -68,18 +66,8 @@ impl TurnBudget {
         }
     }
 
-    pub fn new_unbounded(limits: BudgetLimits) -> Self {
-        Self {
-            unbounded_work: true,
-            ..Self::new(limits)
-        }
-    }
-
     pub fn limits(&self) -> BudgetLimits {
         self.limits
-    }
-    pub fn is_unbounded(&self) -> bool {
-        self.unbounded_work
     }
     pub fn agent_steps(&self) -> u32 {
         self.agent_steps
@@ -102,25 +90,23 @@ impl TurnBudget {
     }
 
     pub fn check_dispatch(&self, target_agent_id: &str, hop: u32) -> Result<(), BudgetRejection> {
-        if !self.unbounded_work {
-            if self.agent_steps >= self.limits.max_agent_steps {
-                return Err(BudgetRejection::AgentSteps);
-            }
-            if self
-                .steps_per_agent
-                .get(target_agent_id)
-                .copied()
-                .unwrap_or_default()
-                >= self.limits.max_steps_per_agent
-            {
-                return Err(BudgetRejection::PerAgentSteps);
-            }
-            if hop > self.limits.max_hops {
-                return Err(BudgetRejection::Hops);
-            }
-            if self.total_tokens >= self.limits.max_total_tokens {
-                return Err(BudgetRejection::Tokens);
-            }
+        if self.agent_steps >= self.limits.max_agent_steps {
+            return Err(BudgetRejection::AgentSteps);
+        }
+        if self
+            .steps_per_agent
+            .get(target_agent_id)
+            .copied()
+            .unwrap_or_default()
+            >= self.limits.max_steps_per_agent
+        {
+            return Err(BudgetRejection::PerAgentSteps);
+        }
+        if hop > self.limits.max_hops {
+            return Err(BudgetRejection::Hops);
+        }
+        if self.total_tokens >= self.limits.max_total_tokens {
+            return Err(BudgetRejection::Tokens);
         }
         if self.consecutive_failures >= self.limits.max_consecutive_failures
             || self.total_failures >= self.limits.max_total_failures
@@ -131,13 +117,11 @@ impl TurnBudget {
     }
 
     pub fn check_moderator(&self) -> Result<(), BudgetRejection> {
-        if !self.unbounded_work {
-            if self.moderator_calls >= self.limits.max_moderator_calls {
-                return Err(BudgetRejection::ModeratorCalls);
-            }
-            if self.total_tokens >= self.limits.max_total_tokens {
-                return Err(BudgetRejection::Tokens);
-            }
+        if self.moderator_calls >= self.limits.max_moderator_calls {
+            return Err(BudgetRejection::ModeratorCalls);
+        }
+        if self.total_tokens >= self.limits.max_total_tokens {
+            return Err(BudgetRejection::Tokens);
         }
         if self.consecutive_failures >= self.limits.max_consecutive_failures
             || self.total_failures >= self.limits.max_total_failures
@@ -168,12 +152,12 @@ impl TurnBudget {
         self.total_failures = self.total_failures.saturating_add(1);
     }
     pub fn record_moderator_usage(&mut self, tokens: u64) -> Result<(), BudgetRejection> {
-        if !self.unbounded_work && self.moderator_calls >= self.limits.max_moderator_calls {
+        if self.moderator_calls >= self.limits.max_moderator_calls {
             return Err(BudgetRejection::ModeratorCalls);
         }
         self.moderator_calls = self.moderator_calls.saturating_add(1);
         self.total_tokens = self.total_tokens.saturating_add(tokens);
-        if !self.unbounded_work && self.total_tokens > self.limits.max_total_tokens {
+        if self.total_tokens > self.limits.max_total_tokens {
             return Err(BudgetRejection::Tokens);
         }
         Ok(())
@@ -284,31 +268,5 @@ mod tests {
             failure_limited.check_moderator(),
             Err(BudgetRejection::Failures)
         );
-    }
-
-    #[test]
-    fn unbounded_work_ignores_step_hop_moderator_and_token_limits_but_keeps_failure_fuses() {
-        let mut budget = TurnBudget::new_unbounded(BudgetLimits {
-            max_agent_steps: 1,
-            max_steps_per_agent: 1,
-            max_hops: 0,
-            max_moderator_calls: 1,
-            max_consecutive_failures: 1,
-            max_total_failures: 1,
-            max_total_tokens: 1,
-        });
-
-        for _ in 0..2 {
-            assert!(budget.check_dispatch("a", 99).is_ok());
-            budget.record_dispatch("a");
-            assert!(budget.record_moderator_usage(10).is_ok());
-        }
-        budget.record_failure();
-
-        assert_eq!(
-            budget.check_dispatch("a", 99),
-            Err(BudgetRejection::Failures)
-        );
-        assert_eq!(budget.check_moderator(), Err(BudgetRejection::Failures));
     }
 }

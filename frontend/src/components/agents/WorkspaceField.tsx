@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { EntityPicker } from '@/components/ui/entity-picker'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
@@ -77,7 +78,8 @@ export function WorkspaceField({
   const [localPath, setLocalPath] = useState('')
   const [createError, setCreateError] = useState<LocalizedError | null>(null)
 
-  const selected = (workspaces.data ?? []).find((workspace) => workspace.id === value)
+  const workspaceOptions = workspaces.data ?? []
+  const selected = workspaceOptions.find((workspace) => workspace.id === value)
   const selectedBackendType: WorkspaceBackendType = selected?.backend_type ?? 'local'
   const backendLabel = (backend: WorkspaceBackendType) =>
     backend === 'local' ? t('agents:states.backendLocal') : t('agents:states.backendSandbox')
@@ -221,41 +223,52 @@ export function WorkspaceField({
           className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">{t('agents:workspacePicker.select')}</option>
-          {(workspaces.data ?? []).map((workspace) => (
+          {workspaceOptions.map((workspace) => (
             <option key={workspace.id} value={workspace.id}>
               {workspace.name} — {backendLabel(workspace.backend_type)}
             </option>
           ))}
         </select>
         {onAdditionalChange ? (
-          <fieldset className="space-y-1.5 rounded-md border border-border p-2.5">
-            <legend className="px-1 text-xs font-medium">
+          <fieldset className="space-y-2 rounded-lg border border-border bg-muted/10 p-3">
+            <legend className="px-1.5 text-xs font-medium">
               {t('agents:workspacePicker.additional')}
             </legend>
             <p className="text-2xs text-muted-foreground">
               {t('agents:workspacePicker.additionalDescription')}
             </p>
-            <div className="grid gap-1.5 sm:grid-cols-2">
-              {(workspaces.data ?? [])
+            <EntityPicker
+              label={t('agents:workspacePicker.additional')}
+              searchPlaceholder={t('agents:workspacePicker.searchAdditional')}
+              items={workspaceOptions
                 .filter((workspace) => workspace.id !== value)
-                .map((workspace) => (
-                  <label key={workspace.id} className="flex items-center gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={additionalValues.includes(workspace.id)}
-                      onChange={(event) =>
-                        onAdditionalChange(
-                          event.target.checked
-                            ? [...additionalValues, workspace.id]
-                            : additionalValues.filter((id) => id !== workspace.id),
-                        )
-                      }
-                    />
-                    <span className="sr-only">{t('agents:workspacePicker.additional')}: </span>
-                    <span className="truncate">{workspace.name}</span>
-                  </label>
-                ))}
-            </div>
+                .map((workspace) => {
+                  const location = workspace.local_path ?? workspace.sandbox_ref
+                  return {
+                    id: workspace.id,
+                    label: workspace.name,
+                    meta: `${backendLabel(workspace.backend_type)} · ${location
+                      ? shortLocation(location)
+                      : t('agents:workspacePicker.notConfigured')}`,
+                    keywords: location ?? undefined,
+                  }
+                })}
+              selectedIds={additionalValues.filter((id) => id !== value)}
+              onChange={onAdditionalChange}
+              countLabel={(total, selectedCount) =>
+                t('agents:workspacePicker.additionalCount', {
+                  total,
+                  selected: selectedCount,
+                  count: total,
+                })}
+              empty={(
+                <p className="py-2 text-xs text-muted-foreground">
+                  {workspaces.isLoading
+                    ? t('common:state.loading')
+                    : t('agents:workspacePicker.noAdditional')}
+                </p>
+              )}
+            />
           </fieldset>
         ) : null}
         {error && <p className="text-xs text-destructive">{error}</p>}

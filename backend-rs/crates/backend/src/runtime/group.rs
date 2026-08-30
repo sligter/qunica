@@ -76,8 +76,9 @@ use crate::runtime::group_scheduler::{
     next_decision, select_with_moderator, validate_topology, ActionKind, ActiveTurn,
     ActiveTurnRegistry, DispatchOutput, DispatchStatus, FinishDispatch, ModeratorAttempt,
     ModeratorCandidate, ModeratorConfig, ModeratorDecision, ModeratorFailure, ModeratorMessage,
-    ModeratorRequest, NewDispatch, NewTurn, SchedulerDecision, SchedulerDispatch, SchedulerStore,
-    SelectionReason, TopologySnapshot, TurnCancellation, TurnReason, TurnStatus,
+    ModeratorRequest, ModeratorTurnState, NewDispatch, NewTurn, SchedulerDecision,
+    SchedulerDispatch, SchedulerStore, SelectionReason, TopologySnapshot, TurnCancellation,
+    TurnReason, TurnStatus,
 };
 use crate::runtime::hooks::{HookChain, RequestRecovery, StepContext};
 use crate::runtime::workspace_scope::WorkspaceMode;
@@ -438,6 +439,7 @@ struct ScheduledDispatch {
     store: SchedulerStore,
     id: String,
     action_kind: ActionKind,
+    artifact: Option<Value>,
 }
 
 impl StreamCtx {
@@ -512,7 +514,7 @@ impl StreamCtx {
             .finish_dispatch(FinishDispatch {
                 dispatch_id: dispatch.id,
                 next,
-                artifact: None,
+                artifact: dispatch.artifact,
                 total_tokens: self.scheduled_total_tokens.min(i64::MAX as u64) as i64,
                 failure_code: None,
                 output: Some(DispatchOutput {
@@ -777,25 +779,28 @@ async fn run_scheduled_turn(
             active_agent_count
         };
     let store = SchedulerStore::new(services.pool.clone(), services.write_lock.clone());
+    let max_agent_steps = BudgetLimits::resolve_agent_steps(
+        automatic_step_candidates,
+        group.max_agent_steps,
+        group.max_steps_per_agent,
+        group.max_scheduler_hops,
+    );
     let limits = BudgetLimits {
-        max_agent_steps: BudgetLimits::resolve_agent_steps(
-            automatic_step_candidates,
-            group.max_agent_steps,
-            group.max_steps_per_agent,
-            group.max_scheduler_hops,
-        ),
+        max_agent_steps,
         max_steps_per_agent: group.max_steps_per_agent,
         max_hops: group.max_scheduler_hops,
-        max_moderator_calls: group.max_moderator_calls,
+        // Legacy automatic groups could persist zero while this limit was
+        // ignored. Give those groups one bounded decision per step plus finish.
+        max_moderator_calls: if automatic_scheduler && group.max_moderator_calls == 0 {
+            max_agent_steps.saturating_add(1)
+        } else {
+            group.max_moderator_calls
+        },
         max_consecutive_failures: group.max_consecutive_failures,
         max_total_failures: group.max_total_failures,
         max_total_tokens: group.max_total_tokens,
     };
-    let budget = if automatic_scheduler {
-        TurnBudget::new_unbounded(limits)
-    } else {
-        TurnBudget::new(limits)
-    };
+    let budget = TurnBudget::new(limits);
     let config_snapshot = json!({
         "scheduler_mode": group.scheduler_mode,
         "max_agent_steps": limits.max_agent_steps,
@@ -857,7 +862,7 @@ async fn run_scheduled_turn(
         tracing::error!(turn_id, error = %error, "failed to start scheduled turn");
         return fail_scheduled_persistence(ctx, &store, &turn_id).await;
     }
-    if let Err(error) = emit_turn_started(ctx, &turn_id, &limits, automatic_scheduler).await {
+    if let Err(error) = emit_turn_started(ctx, &turn_id, &limits).await {
         return match error {
             StepErr::Cancelled => cancel_scheduled_turn(ctx, &store, &turn_id).await,
             StepErr::Db(_) | StepErr::SchedulerPersistence => {
@@ -899,9 +904,13 @@ async fn run_scheduled_turn(
         automatic: automatic_scheduler,
         helper_claims: HashMap::new(),
         moderator_summary: None,
+        consecutive_same_speaker: 0,
         recent_visible_messages: vec![ModeratorMessage {
             role: "user".to_owned(),
             content: req.content.clone(),
+            agent_id: None,
+            display_name: None,
+            outcome: None,
         }],
     };
     let mut remaining = selected
@@ -950,6 +959,8 @@ async fn run_scheduled_turn(
         let mut preselected_agent = None;
         // Why the moderator could not pick, when a fallback is reported.
         let mut moderator_failure: Option<&'static str> = None;
+        let mut moderator_remaining_work = None;
+        let mut moderator_artifact = None;
         let requires_moderator_resolution =
             matches!(&decision, SchedulerDecision::RequestModerator)
                 || matches!(
@@ -969,11 +980,7 @@ async fn run_scheduled_turn(
                 0,
                 None,
                 &scheduler_candidates,
-                automatic_scheduler,
             );
-            if moderator_candidates.is_empty() {
-                continue;
-            }
 
             let mut selected_agent_id = None;
             let mut moderator_finished = false;
@@ -1016,6 +1023,12 @@ async fn run_scheduled_turn(
                                 .saturating_sub(scheduler_runtime.budget.agent_steps()),
                             automatic: automatic_scheduler,
                             progress_summary: scheduler_runtime.moderator_summary.clone(),
+                            turn_state: automatic_scheduler.then(|| ModeratorTurnState {
+                                agent_steps: scheduler_runtime.budget.agent_steps(),
+                                moderator_calls: scheduler_runtime.budget.moderator_calls(),
+                                consecutive_same_speaker: scheduler_runtime
+                                    .consecutive_same_speaker,
+                            }),
                         },
                     )
                     .await
@@ -1101,10 +1114,23 @@ async fn run_scheduled_turn(
                         continue;
                     }
                     match attempt.result {
-                        Ok(ModeratorDecision::Dispatch { selection, summary }) => {
+                        Ok(ModeratorDecision::Dispatch {
+                            selection,
+                            summary,
+                            remaining_work,
+                        }) => {
                             selected_agent_id = Some(selection.agent_id);
-                            if summary.is_some() {
-                                scheduler_runtime.moderator_summary = summary;
+                            if let Some(summary) = summary {
+                                scheduler_runtime.moderator_summary = Some(summary);
+                            }
+                            if let Some(remaining_work) = remaining_work {
+                                moderator_artifact = Some(json!({
+                                    "remaining_work": remaining_work,
+                                    "moderator_summary": scheduler_runtime
+                                        .moderator_summary
+                                        .as_deref(),
+                                }));
+                                moderator_remaining_work = Some(remaining_work);
                             }
                         }
                         Ok(ModeratorDecision::Finish { summary }) => {
@@ -1373,6 +1399,7 @@ async fn run_scheduled_turn(
             store: store.clone(),
             id: dispatch_id.clone(),
             action_kind: dispatch.action_kind,
+            artifact: moderator_artifact.clone(),
         });
         let result = match run_agent_turn(
             services,
@@ -1380,7 +1407,7 @@ async fn run_scheduled_turn(
             &agent,
             group,
             dispatch.hop as usize,
-            None,
+            moderator_remaining_work.as_deref(),
             Some(&mut scheduler_runtime),
         )
         .await
@@ -1427,7 +1454,7 @@ async fn run_scheduled_turn(
                         .finish_dispatch(FinishDispatch {
                             dispatch_id,
                             next: DispatchStatus::Failed,
-                            artifact: None,
+                            artifact: moderator_artifact.clone(),
                             total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
                             failure_code: Some("provider_failure".to_owned()),
                             output: None,
@@ -1491,7 +1518,7 @@ async fn run_scheduled_turn(
                         .finish_dispatch(FinishDispatch {
                             dispatch_id,
                             next: DispatchStatus::Failed,
-                            artifact: None,
+                            artifact: moderator_artifact.clone(),
                             total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
                             failure_code: Some("acp_failure".to_owned()),
                             output: None,
@@ -1572,7 +1599,7 @@ async fn run_scheduled_turn(
                 .finish_dispatch(FinishDispatch {
                     dispatch_id,
                     next,
-                    artifact: None,
+                    artifact: moderator_artifact.clone(),
                     total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
                     failure_code: None,
                     output: None,
@@ -1635,14 +1662,61 @@ async fn run_scheduled_turn(
                 agent_id, content, ..
             } => {
                 had_visible = true;
+                scheduler_runtime.consecutive_same_speaker =
+                    if previous_speaker.as_deref() == Some(agent_id.as_str()) {
+                        scheduler_runtime.consecutive_same_speaker.saturating_add(1)
+                    } else {
+                        1
+                    };
                 previous_speaker = Some(agent_id.clone());
-                record_moderator_visible_message(
+                let display_name = remaining
+                    .iter()
+                    .flatten()
+                    .find(|candidate| candidate.agent_id == agent_id)
+                    .map(|candidate| candidate.display_name.as_str())
+                    .unwrap_or(agent.display_name.as_str());
+                record_moderator_message(
                     &mut scheduler_runtime.recent_visible_messages,
                     "assistant",
                     &content,
+                    Some(&agent_id),
+                    Some(display_name),
+                    Some("visible"),
                 );
             }
-            AgentRunResult::NoVisible | AgentRunResult::Private(_) => {
+            AgentRunResult::NoVisible => {
+                scheduler_runtime.consecutive_same_speaker =
+                    if previous_speaker.as_deref() == Some(agent.agent_id.as_str()) {
+                        scheduler_runtime.consecutive_same_speaker.saturating_add(1)
+                    } else {
+                        1
+                    };
+                previous_speaker = Some(agent.agent_id.clone());
+                record_moderator_message(
+                    &mut scheduler_runtime.recent_visible_messages,
+                    "assistant",
+                    "",
+                    Some(&agent.agent_id),
+                    Some(&agent.display_name),
+                    Some("silent"),
+                );
+                if automatic_scheduler && !parent_already_terminal {
+                    if let Some(candidate) = remaining.iter_mut().find(|candidate| {
+                        candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.agent_id == agent.agent_id)
+                    }) {
+                        candidate.take();
+                    }
+                }
+            }
+            AgentRunResult::Private(_) => {
+                scheduler_runtime.consecutive_same_speaker =
+                    if previous_speaker.as_deref() == Some(agent.agent_id.as_str()) {
+                        scheduler_runtime.consecutive_same_speaker.saturating_add(1)
+                    } else {
+                        1
+                    };
                 previous_speaker = Some(agent.agent_id.clone());
             }
             AgentRunResult::BoundedHandoff { .. } => {
@@ -1715,15 +1789,12 @@ fn current_moderator_candidates(
     hop: u32,
     source_agent_id: Option<&str>,
     allowed_candidate_ids: &[String],
-    automatic_scheduler: bool,
 ) -> Vec<ModeratorCandidate> {
     remaining
         .iter()
         .flatten()
         .filter(|candidate| allowed_candidate_ids.contains(&candidate.agent_id))
-        .filter(|candidate| {
-            automatic_scheduler || Some(candidate.agent_id.as_str()) != previous_speaker
-        })
+        .filter(|candidate| Some(candidate.agent_id.as_str()) != previous_speaker)
         .filter(|candidate| {
             scheduler_runtime
                 .budget
@@ -1841,16 +1912,22 @@ async fn is_agent_currently_muted(
     Ok(parse_string_set(muted_agent_ids_json.as_deref()).contains(agent_id))
 }
 
-fn record_moderator_visible_message(
+fn record_moderator_message(
     recent_visible_messages: &mut Vec<ModeratorMessage>,
     role: &str,
     content: &str,
+    agent_id: Option<&str>,
+    display_name: Option<&str>,
+    outcome: Option<&str>,
 ) {
     const MAX_RECENT_VISIBLE_MESSAGES: usize = 4;
 
     recent_visible_messages.push(ModeratorMessage {
         role: role.to_owned(),
         content: content.to_owned(),
+        agent_id: agent_id.map(str::to_owned),
+        display_name: display_name.map(str::to_owned),
+        outcome: outcome.map(str::to_owned),
     });
     let excess = recent_visible_messages
         .len()
@@ -1864,13 +1941,12 @@ async fn emit_turn_started(
     ctx: &mut StreamCtx,
     turn_id: &str,
     limits: &BudgetLimits,
-    unbounded: bool,
 ) -> Result<(), StepErr> {
     ctx.emit_durable_event(
         StreamEventKind::TurnStarted,
         json!({
             "turn_id": turn_id,
-            "budget": budget_limits_payload(limits, unbounded),
+            "budget": budget_limits_payload(limits),
         }),
     )
     .await
@@ -1939,9 +2015,9 @@ async fn emit_turn_terminal(
     .await
 }
 
-fn budget_limits_payload(limits: &BudgetLimits, unbounded: bool) -> Value {
+fn budget_limits_payload(limits: &BudgetLimits) -> Value {
     json!({
-        "unbounded": unbounded,
+        "unbounded": false,
         "max_agent_steps": limits.max_agent_steps,
         "max_steps_per_agent": limits.max_steps_per_agent,
         "max_hops": limits.max_hops,
@@ -1959,7 +2035,7 @@ fn turn_budget_payload(budget: &TurnBudget) -> Value {
         "consecutive_failures": budget.consecutive_failures(),
         "total_failures": budget.total_failures(),
         "total_tokens": budget.total_tokens(),
-        "limits": budget_limits_payload(&budget.limits(), budget.is_unbounded()),
+        "limits": budget_limits_payload(&budget.limits()),
     })
 }
 
@@ -2522,6 +2598,7 @@ struct ScheduledTurnRuntime {
     automatic: bool,
     helper_claims: HashMap<String, String>,
     moderator_summary: Option<String>,
+    consecutive_same_speaker: u32,
     recent_visible_messages: Vec<ModeratorMessage>,
 }
 
@@ -4669,6 +4746,7 @@ async fn handle_scheduled_agent_as_tool(
         store: scheduler.store.clone(),
         id: child_id.clone(),
         action_kind,
+        artifact: None,
     });
     ctx.scheduled_total_tokens = 0;
     ctx.scheduled_accounted_tokens = 0;

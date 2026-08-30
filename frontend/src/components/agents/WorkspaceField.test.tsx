@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
@@ -98,12 +98,48 @@ describe('WorkspaceField', () => {
     )
 
     expect(
-      screen.queryByRole('checkbox', { name: 'Additional workspaces:Project workspace' }),
+      screen.queryByRole('checkbox', { name: /Project workspace/ }),
     ).not.toBeInTheDocument()
     fireEvent.click(
-      screen.getByRole('checkbox', { name: 'Additional workspaces:Reference workspace' }),
+      screen.getByRole('checkbox', { name: /Reference workspace/ }),
     )
     expect(onAdditionalChange).toHaveBeenCalledWith(['workspace-2'])
+  })
+
+  it('keeps a large additional workspace library searchable and height-bounded', () => {
+    const primary = mocks.workspaces[0]
+    mocks.workspaces = [
+      primary,
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...primary,
+        id: `workspace-${index + 2}`,
+        name: `Workspace ${index + 1}`,
+        local_path: `D:/clients/client-${index + 1}`,
+      })),
+    ]
+
+    render(
+      <WorkspaceField
+        value="workspace-1"
+        onChange={vi.fn()}
+        additionalValues={[]}
+        onAdditionalChange={vi.fn()}
+      />,
+    )
+
+    const list = screen.getByRole('listbox', { name: 'Additional workspaces' })
+    expect(list).toHaveStyle({ maxHeight: '256px' })
+    expect(within(list).queryByText('Project workspace')).not.toBeInTheDocument()
+    expect(screen.getByText('12 workspaces · 0 mounted')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Search workspaces'), {
+      target: { value: 'client-11' },
+    })
+
+    expect(within(list).getByText('Workspace 11').closest('[data-picker-row]')).toHaveTextContent(
+      'local · D:/clients/client-11',
+    )
+    expect(within(list).queryByText('Workspace 2')).not.toBeInTheDocument()
   })
 
   it('translates the workspace label, picker action, and selected location', async () => {

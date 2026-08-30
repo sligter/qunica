@@ -43,7 +43,7 @@ Every group and direct chat uses the same persisted scheduler. It records each t
 `scheduler_mode` is independent from the communication mode:
 
 - `bounded` consumes candidates and stops at the configured work limits.
-- `automatic` lets the moderator repeatedly choose a legal speaker or finish the turn. It ignores agent-step, per-agent, hop, moderator-call, and token limits, while retaining failure limits, moderator timeout, cancellation, and supersession.
+- `automatic` lets the moderator repeatedly choose a legal speaker or finish the turn. It uses the same step, per-agent, hop, moderator-call, token, failure, timeout, cancellation, and supersession limits. A legacy automatic group with zero moderator calls receives an effective cap of one decision per agent step plus a final decision.
 
 Older scheduler-off conversations are migrated to a one-pass profile: each selected agent can run once, moderator dispatch is disabled, and selection follows deterministic order. Direct chats use the same profile with one candidate.
 

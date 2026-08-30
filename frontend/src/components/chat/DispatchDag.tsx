@@ -182,6 +182,7 @@ function ArtifactDetails({ artifact, agentName }: { artifact: PublicTurnArtifact
       {artifact.mode ? <><dt className="text-muted-foreground">{t('trace.mode')}</dt><dd>{hasOwnKey(actionKeys, artifact.mode) ? t(actionKeys[artifact.mode]) : artifact.mode}</dd></> : null}
       {artifact.target_agent_id ? <><dt className="text-muted-foreground">{t('trace.target')}</dt><dd className="truncate" title={artifact.target_agent_id}>{agentName(artifact.target_agent_id)}</dd></> : null}
       {artifact.child_dispatch_id ? <><dt className="text-muted-foreground">{t('trace.child')}</dt><dd className="truncate" title={artifact.child_dispatch_id}>{artifact.child_dispatch_id}</dd></> : null}
+      {artifact.remaining_work ? <><dt className="text-muted-foreground">{t('trace.remainingWork')}</dt><dd className="break-words">{artifact.remaining_work}</dd></> : null}
       {artifact.outcome ? <><dt className="text-muted-foreground">{t('trace.outcome')}</dt><dd className="break-words">{artifact.outcome}</dd></> : null}
       {artifact.failure_code ? <><dt className="text-muted-foreground">{t('trace.failure')}</dt><dd className="break-words text-destructive">{artifact.failure_code}</dd></> : null}
     </dl>

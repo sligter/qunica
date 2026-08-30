@@ -72,6 +72,8 @@ export function openApiV2SseStream(opts: {
       opts.handlers.onOpen?.()
     },
     onmessage: (msg) => {
+      if (!msg.data.trim()) return
+
       let parsed: StreamEvent
       try {
         parsed = JSON.parse(msg.data) as StreamEvent

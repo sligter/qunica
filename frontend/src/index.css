@@ -292,6 +292,37 @@
     color: var(--color-primary-foreground);
   }
 
+  :root:not([data-theme="dark"]) .chat-user-bubble {
+    border: 1px solid color-mix(in hsl, var(--color-primary) 24%, var(--color-border));
+    background-color: color-mix(in hsl, var(--color-primary) 9%, var(--color-card));
+    color: color-mix(in hsl, var(--color-foreground) 92%, var(--color-primary));
+    box-shadow: 0 1px 2px hsl(30 20% 20% / 0.05);
+  }
+
+  :root:not([data-theme="dark"]) .chat-user-message {
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+
+  :root:not([data-theme="dark"]) .chat-user-bubble .message-attachment {
+    border-color: color-mix(in hsl, var(--color-primary) 22%, var(--color-border));
+    border-radius: var(--radius-lg);
+    background-color: color-mix(in hsl, var(--color-card) 94%, var(--color-primary));
+    padding: 0.625rem;
+  }
+
+  :root:not([data-theme="dark"]) .chat-user-bubble .message-attachment-name {
+    font-weight: 600;
+  }
+
+  :root:not([data-theme="dark"]) .chat-user-bubble .message-attachment-meta {
+    color: color-mix(in hsl, var(--color-muted-foreground) 82%, var(--color-primary));
+  }
+
+  :root:not([data-theme="dark"]) .chat-user-bubble .message-attachment-action {
+    color: var(--color-primary);
+  }
+
   :root[data-theme="dark"] .chat-user-bubble {
     background-color: color-mix(in hsl, var(--color-primary) 58%, var(--color-background));
     color: var(--color-foreground);

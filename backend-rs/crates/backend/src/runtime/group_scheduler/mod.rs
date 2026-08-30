@@ -14,6 +14,7 @@ pub use model::{
 pub use moderator::{
     select_with_moderator, ModeratorAttempt, ModeratorCandidate, ModeratorConfig,
     ModeratorDecision, ModeratorFailure, ModeratorMessage, ModeratorRequest, ModeratorSelection,
+    ModeratorTurnState,
 };
 pub use state::{
     validate_dispatch_transition, validate_turn_transition, DispatchStatus, SchedulerStateError,
@@ -39,11 +40,6 @@ pub fn next_decision(
     moderator_enabled: bool,
     moderator_may_finish: bool,
 ) -> SchedulerDecision {
-    let previous_speaker = if moderator_may_finish {
-        None
-    } else {
-        previous_speaker
-    };
     if user_mentions.is_empty() && deterministic_candidates.is_empty() {
         return match budget.check_dispatch("terminal", 0) {
             Err(BudgetRejection::Failures) => SchedulerDecision::Finish {
@@ -74,11 +70,15 @@ pub fn next_decision(
         .filter(|agent_id| Some(agent_id.as_str()) != previous_speaker)
         .filter(|agent_id| budget.check_dispatch(agent_id, 0).is_ok())
         .collect();
-    if moderator_enabled
-        && (legal_candidates.len() >= 2 || moderator_may_finish && !legal_candidates.is_empty())
-    {
+    if moderator_enabled && (legal_candidates.len() >= 2 || moderator_may_finish) {
         return match budget.check_moderator() {
             Ok(()) => SchedulerDecision::RequestModerator,
+            Err(BudgetRejection::ModeratorCalls) if moderator_may_finish => {
+                SchedulerDecision::Finish {
+                    status: TurnStatus::BudgetExhausted,
+                    reason: TurnReason::BudgetExhausted,
+                }
+            }
             Err(BudgetRejection::ModeratorCalls) => {
                 SchedulerDecision::Dispatch(SchedulerDispatch {
                     target_agent_id: legal_candidates[0].clone(),
@@ -157,12 +157,33 @@ mod tests {
     }
 
     #[test]
-    fn automatic_moderator_can_redispatch_or_finish_with_one_candidate() {
-        let budget = TurnBudget::new_unbounded(BudgetLimits::with_auto_steps(1, Some(1)));
+    fn automatic_moderator_can_only_finish_when_last_speaker_is_the_only_candidate() {
+        let budget = TurnBudget::new(BudgetLimits::with_auto_steps(1, Some(1)));
 
         assert!(matches!(
             next_decision(&budget, Some("a"), &[], &ids(&["a"]), true, true),
             SchedulerDecision::RequestModerator
+        ));
+    }
+
+    #[test]
+    fn automatic_moderator_budget_exhaustion_does_not_fallback_dispatch() {
+        let budget = TurnBudget::new(BudgetLimits {
+            max_agent_steps: 8,
+            max_steps_per_agent: 3,
+            max_hops: 5,
+            max_moderator_calls: 0,
+            max_consecutive_failures: 3,
+            max_total_failures: 6,
+            max_total_tokens: 120_000,
+        });
+
+        assert!(matches!(
+            next_decision(&budget, None, &[], &ids(&["a", "b"]), true, true),
+            SchedulerDecision::Finish {
+                status: super::TurnStatus::BudgetExhausted,
+                reason: super::TurnReason::BudgetExhausted,
+            }
         ));
     }
 

@@ -186,6 +186,7 @@ fn public_artifact(artifact: Option<&Value>) -> Option<Value> {
         "child_dispatch_id",
         "outcome",
         "failure_code",
+        "remaining_work",
     ] {
         if let Some(value) = artifact.get(key) {
             public.insert(key.to_owned(), value.clone());
@@ -211,6 +212,7 @@ mod tests {
             public_artifact(Some(&json!({
                 "mode": "handoff",
                 "target_agent_id": "agent-1",
+                "remaining_work": "write regression tests",
                 "final_content": "private response",
                 "reasoning": ["hidden"],
                 "tool_io": { "secret": "no" },
@@ -218,6 +220,7 @@ mod tests {
             Some(json!({
                 "mode": "handoff",
                 "target_agent_id": "agent-1",
+                "remaining_work": "write regression tests",
             }))
         );
     }

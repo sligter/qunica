@@ -300,6 +300,7 @@ const publicTurnArtifactSchema = z
     child_dispatch_id: z.string().optional(),
     outcome: z.string().optional(),
     failure_code: z.string().optional(),
+    remaining_work: z.string().optional(),
   })
   .strict()
   .refine((artifact) => Object.keys(artifact).length > 0, 'public artifact must not be empty')

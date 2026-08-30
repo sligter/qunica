@@ -202,7 +202,7 @@ describe('GroupSchedulerSettingsSection', () => {
     })
   })
 
-  it('enables automatic scheduling and disables only ignored work limits', async () => {
+  it('enables automatic scheduling and keeps its safety limits editable', async () => {
     const user = userEvent.setup()
     renderSection({
       ...group,
@@ -215,8 +215,9 @@ describe('GroupSchedulerSettingsSection', () => {
     await user.click(await screen.findByRole('option', { name: 'Moderated discussion' }))
 
     expect(screen.getByRole('switch', { name: 'Enable moderator' })).toBeDisabled()
-    expect(screen.getByLabelText('Steps per agent')).toBeDisabled()
-    expect(screen.getByLabelText('Total tokens')).toBeDisabled()
+    expect(screen.getByLabelText('Steps per agent')).toBeEnabled()
+    expect(screen.getByLabelText('Moderator calls')).toBeEnabled()
+    expect(screen.getByLabelText('Total tokens')).toBeEnabled()
     expect(screen.getByLabelText('Consecutive failures')).toBeEnabled()
     expect(screen.getByLabelText('Moderator timeout')).toBeEnabled()
 

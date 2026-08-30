@@ -205,7 +205,6 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   }, [form, group])
 
   const schedulerControlsDisabled = update.isPending
-  const boundedControlsDisabled = update.isPending || schedulerMode === 'automatic'
   const moderatorControlsDisabled = update.isPending || !moderatorEnabled
 
   const onSubmit = form.handleSubmit(async (values) => {
@@ -321,7 +320,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
                   updateValue('max_agent_steps_mode', value)
                 }
               }}
-              disabled={boundedControlsDisabled}
+              disabled={schedulerControlsDisabled}
             >
               <SelectTrigger className="w-full" aria-label={t('scheduler.maximumStepsMode')}>
                 <SelectValue />
@@ -342,7 +341,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
                 min={1}
                 step={1}
                 className="w-full"
-                disabled={boundedControlsDisabled || maxAgentStepsMode !== 'custom'}
+                disabled={schedulerControlsDisabled || maxAgentStepsMode !== 'custom'}
                 {...form.register('max_agent_steps_custom', numericRegistration())}
               />
               <FieldError message={form.formState.errors.max_agent_steps_custom?.message} />
@@ -362,7 +361,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={1}
               step={1}
               className="w-24"
-              disabled={boundedControlsDisabled}
+              disabled={schedulerControlsDisabled}
               {...form.register('max_steps_per_agent', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_steps_per_agent?.message} />
@@ -377,7 +376,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={0}
               step={1}
               className="w-24"
-              disabled={boundedControlsDisabled}
+              disabled={schedulerControlsDisabled}
               {...form.register('max_scheduler_hops', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_scheduler_hops?.message} />
@@ -392,7 +391,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={0}
               step={1}
               className="w-24"
-              disabled={boundedControlsDisabled}
+              disabled={schedulerControlsDisabled}
               {...form.register('max_moderator_calls', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_moderator_calls?.message} />
@@ -437,7 +436,7 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
               min={1}
               step={1}
               className="w-24"
-              disabled={boundedControlsDisabled}
+              disabled={schedulerControlsDisabled}
               {...form.register('max_total_tokens', numericRegistration())}
             />
             <FieldError message={form.formState.errors.max_total_tokens?.message} />

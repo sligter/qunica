@@ -4747,7 +4747,7 @@ async fn moderator_selection_persists_reason_and_usage() {
 }
 
 #[tokio::test]
-async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finishes() {
+async fn automatic_scheduler_retires_silent_and_excludes_the_last_speaker() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "automatic-scheduler@example.com").await;
     let owner = owner_id(&state, "automatic-scheduler@example.com").await;
@@ -4759,13 +4759,14 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
         &workspace,
         json!({
             "free_speech": true,
-            "communication_mode": "ring",
+            "proactive_mode": true,
+            "communication_mode": "mesh",
             "scheduler_mode": "automatic",
-            "max_agent_steps": 1,
-            "max_steps_per_agent": 1,
+            "max_agent_steps": 3,
+            "max_steps_per_agent": 2,
             "max_scheduler_hops": 0,
-            "max_moderator_calls": 1,
-            "max_total_tokens": 1,
+            "max_moderator_calls": 3,
+            "max_total_tokens": 10,
             "moderator_enabled": true,
             "moderator_provider_id": moderator_provider,
             "moderator_model": "automatic-moderator",
@@ -4786,7 +4787,7 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
     let agent_provider = seed_provider(
         &state,
         &owner,
-        &fake_provider_sequence(vec![text_body("first result"), text_body("second result")]).await,
+        &fake_provider_sequence(vec![text_body("<SILENT>"), text_body("second result")]).await,
     )
     .await;
     let first = seed_agent(
@@ -4811,11 +4812,11 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
     set_agent_topology(&state, &group, &second, None, Some(2)).await;
     let (moderator_url, moderator_requests) = recording_fake_provider_sequence(vec![
         automatic_moderator_body(
-            json!({"action": "dispatch", "agent_id": first, "summary": "first assigned"}),
+            json!({"action": "dispatch", "agent_id": first, "remaining_work": "produce the first result", "summary": "first assigned"}),
             2,
         ),
         automatic_moderator_body(
-            json!({"action": "dispatch", "agent_id": second, "summary": "first done"}),
+            json!({"action": "dispatch", "agent_id": second, "remaining_work": "produce the second result", "summary": "first done"}),
             2,
         ),
         automatic_moderator_body(json!({"action": "finish", "summary": "all done"}), 2),
@@ -4852,7 +4853,7 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
         )
     );
     assert!(events.iter().any(|event| {
-        event["kind"] == "turn_started" && event["payload"]["budget"]["unbounded"] == true
+        event["kind"] == "turn_started" && event["payload"]["budget"]["unbounded"] == false
     }));
     assert_eq!(
         events
@@ -4876,6 +4877,40 @@ async fn automatic_scheduler_redispatches_by_topology_until_the_moderator_finish
     let second_input: Value =
         serde_json::from_str(requests[1]["messages"][1]["content"].as_str().unwrap()).unwrap();
     assert_eq!(second_input["progress_summary"], "first assigned");
+    assert_eq!(second_input["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(second_input["candidates"][0]["agent_id"], second);
+    assert_eq!(second_input["recent_messages"][1]["agent_id"], first);
+    assert_eq!(second_input["recent_messages"][1]["display_name"], "First");
+    assert_eq!(second_input["recent_messages"][1]["outcome"], "silent");
+    assert_eq!(second_input["turn_state"]["agent_steps"], 1);
+    assert_eq!(second_input["turn_state"]["moderator_calls"], 1);
+    assert_eq!(second_input["turn_state"]["consecutive_same_speaker"], 1);
+    let third_input: Value =
+        serde_json::from_str(requests[2]["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(third_input["candidates"], json!([]));
+    assert_eq!(third_input["recent_messages"][2]["agent_id"], second);
+    assert_eq!(third_input["recent_messages"][2]["outcome"], "visible");
+    drop(requests);
+
+    let artifacts: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT target_agent_id, artifact_json FROM agent_dispatches WHERE turn_id = \
+         (SELECT id FROM group_turns WHERE group_id = ?)",
+    )
+    .bind(&group)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            artifacts
+                .iter()
+                .find(|(agent_id, _)| agent_id == &first)
+                .and_then(|(_, artifact)| artifact.as_deref())
+                .unwrap(),
+        )
+        .unwrap()["remaining_work"],
+        "produce the first result"
+    );
 }
 
 #[tokio::test]

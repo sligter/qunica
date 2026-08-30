@@ -172,6 +172,7 @@ export interface PublicTurnArtifact {
   child_dispatch_id?: string
   outcome?: string
   failure_code?: string
+  remaining_work?: string
 }
 
 export interface AgentDispatchTrace {
