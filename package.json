@@ -1,7 +1,7 @@
 {
   "name": "qunica",
   "private": true,
-  "version": "0.1.1-alpha",
+  "version": "0.1.1",
   "description": "Qunica 群式多 Agent 协作工作台",
   "scripts": {
     "dev": "pnpm --filter @qunica/frontend dev",

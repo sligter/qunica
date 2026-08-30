@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.1--alpha-c65d3b?style=flat-square" alt="Version 0.1.1 alpha">
-  <img src="https://img.shields.io/badge/platform-Windows-3f6f91?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/version-0.1.1-c65d3b?style=flat-square" alt="Version 0.1.1">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3f6f91?style=flat-square" alt="Windows | macOS | Linux">
   <img src="https://img.shields.io/badge/data-local--first-4f7651?style=flat-square" alt="Local-first">
 </p>
 
@@ -37,7 +37,7 @@ A group holds the members, conversation history, shared notes, workspace, files,
 Built-in agents can use OpenAI-compatible, Anthropic, or Gemini providers. External CLI agents such as Codex and Claude Code join through the Agent Client Protocol (ACP).
 
 > [!IMPORTANT]
-> Qunica is alpha software and currently targets Windows. Registration creates an account on the backend you run; there is no hosted Qunica account service.
+> Qunica is alpha software and supports desktop builds for Windows, macOS, and Linux. Registration creates an account on the backend you run; there is no hosted Qunica account service.
 
 ## What you can do
 
@@ -75,7 +75,7 @@ Full-auto CLI agents can modify everything their workspace and runtime permissio
 
 ## Run it
 
-Prerequisites: Node.js 20+, pnpm 9, a stable Rust toolchain, and Windows for the desktop build.
+Prerequisites: Node.js 20+, pnpm 9, and a stable Rust toolchain. Desktop builds are supported on Windows, macOS, and Linux.
 
 ```powershell
 pnpm install

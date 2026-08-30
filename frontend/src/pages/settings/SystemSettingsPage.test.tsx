@@ -234,7 +234,7 @@ describe('SystemSettingsPage preferences', () => {
 describe('SystemSettingsPage about and updates', () => {
   const about = {
     name: 'Qunica',
-    version: '0.1.1-alpha',
+    version: '0.1.1',
     identifier: 'qunica.desktop',
     tauri_version: '2.11.2',
     os: 'windows',
@@ -243,7 +243,7 @@ describe('SystemSettingsPage about and updates', () => {
 
   const release = {
     version: '0.2.0',
-    current_version: '0.1.1-alpha',
+    current_version: '0.1.1',
     notes: 'Faster startup.',
     pub_date: '2026-08-20T10:00:00Z',
     target: 'windows-x86_64',
@@ -276,7 +276,7 @@ describe('SystemSettingsPage about and updates', () => {
 
     await renderSettingsPage()
 
-    expect(await screen.findByText('0.1.1-alpha')).toBeVisible()
+    expect(await screen.findByText('0.1.1')).toBeVisible()
     expect(screen.getByText('windows · x86_64')).toBeVisible()
     expect(screen.getByText('qunica.desktop')).toBeVisible()
 

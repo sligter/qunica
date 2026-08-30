@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.1--alpha-c65d3b?style=flat-square" alt="0.1.1 alpha 版本">
-  <img src="https://img.shields.io/badge/platform-Windows-3f6f91?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/version-0.1.1-c65d3b?style=flat-square" alt="0.1.1 版本">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3f6f91?style=flat-square" alt="Windows | macOS | Linux">
   <img src="https://img.shields.io/badge/data-本地优先-4f7651?style=flat-square" alt="本地优先">
 </p>
 
@@ -37,7 +37,7 @@
 内置 Agent 支持 OpenAI 兼容接口、Anthropic 与 Gemini。Codex、Claude Code 等外部 CLI Agent 则通过 Agent Client Protocol（ACP）加入。
 
 > [!IMPORTANT]
-> Qunica 仍处于 alpha 阶段，目前以 Windows 为主要目标。注册创建的是你自己运行的后端账户，Qunica 暂时没有托管账户服务。
+> Qunica 仍处于 alpha 阶段，桌面版支持 Windows、macOS 和 Linux。注册创建的是你自己运行的后端账户，Qunica 暂时没有托管账户服务。
 
 ## 现在能做什么
 
@@ -75,7 +75,7 @@ Full-auto CLI Agent 能修改其工作区与运行权限覆盖的所有内容。
 
 ## 运行项目
 
-环境要求：Node.js 20+、pnpm 9、稳定版 Rust 工具链；桌面构建需要 Windows。
+环境要求：Node.js 20+、pnpm 9、稳定版 Rust 工具链；桌面版支持 Windows、macOS 和 Linux。
 
 ```powershell
 pnpm install
