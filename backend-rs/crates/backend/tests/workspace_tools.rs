@@ -487,6 +487,7 @@ async fn workspace_tools_shell_runs_a_background_job_and_reads_it_incrementally(
     assert_eq!(denied.status, ToolStatus::Failed, "{}", denied.output);
 }
 
+#[cfg(windows)]
 #[tokio::test]
 async fn workspace_tools_shell_closes_the_windows_redirect_bypass() {
     let root = tempdir().unwrap();
