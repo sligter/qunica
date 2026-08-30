@@ -225,6 +225,20 @@ describe('Composer', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it('highlights a selected group member in the input', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<Composer onSend={vi.fn()} groupAgents={groupAgents} />)
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+
+    await user.type(textarea, '@pla')
+    await user.keyboard('{Enter}')
+
+    const highlights = container.querySelector('[data-mention-highlights]')
+    expect(highlights).toHaveTextContent('@Planner')
+    expect(highlights?.querySelector('.chat-mention')).toHaveTextContent('@Planner')
+    expect(textarea).toHaveClass('workspace-code-input')
+  })
+
   it('summarizes large groups and reveals remaining agents on demand', async () => {
     const user = userEvent.setup()
     const agents = ['Planner', 'Researcher', 'Writer', 'Reviewer', 'Operator'].map(

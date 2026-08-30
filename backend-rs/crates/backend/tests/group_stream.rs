@@ -8242,6 +8242,86 @@ async fn group_stream_no_routed_agents_ends_in_silence() {
 }
 
 #[tokio::test]
+async fn default_speaking_order_runs_without_mentions_and_mentions_still_win() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "default-speaking-order@example.com").await;
+    let owner = owner_id(&state, "default-speaking-order@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+
+    let first = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "First",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let second = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Second",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+    let third = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Third",
+        "2024-01-03T00:00:00Z",
+    )
+    .await;
+
+    let (status, updated) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group}"),
+            &token,
+            json!({"default_speaking_order": [&third, &first, &second]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        updated["default_speaking_order"],
+        json!([&third, &first, &second])
+    );
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "No one is mentioned."}),
+    )
+    .await;
+    assert_eq!(kinds(&events).last().unwrap(), "done");
+    assert_eq!(
+        speaker_order(&state, &group).await,
+        ["Third", "First", "Second"]
+    );
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Second only"}),
+    )
+    .await;
+    assert_eq!(kinds(&events).last().unwrap(), "done");
+    assert_eq!(
+        speaker_order(&state, &group).await,
+        ["Third", "First", "Second", "Second", "First", "Third"]
+    );
+}
+
+#[tokio::test]
 async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "workspace-mount@example.com").await;

@@ -8,8 +8,8 @@
 //!
 //! Routing is intentionally simple and explicit:
 //! 1. Explicit `@mentions` matching active group agents win outright.
-//! 2. Otherwise, if the group is in free-speech or proactive mode, every active
-//!    agent responds (joined-at order).
+//! 2. Otherwise, free-speech or proactive mode routes every active agent, using
+//!    the configured default speaking order when present.
 //! 3. Otherwise no agent responds and the turn ends in `silence`.
 //!
 //! In proactive mode an agent may decline its turn by replying with the silent
@@ -756,16 +756,21 @@ async fn run_scheduled_turn(
     group: &GroupRuntimeConfig,
     trigger_message_id: &str,
 ) -> Result<TurnOutcome, Cancelled> {
-    let candidates = match load_candidates(&services.pool, &req.group_id, group).await {
+    let mut candidates = match load_candidates(&services.pool, &req.group_id, group).await {
         Ok(candidates) => candidates,
         Err(error) => return ctx.fail(&error.to_string()).await,
     };
+    let explicit_mentions = scan_mentions(&req.content, &candidates);
+    if explicit_mentions.is_empty() {
+        if let Some(order) = group.default_speaking_order.as_deref() {
+            apply_default_speaking_order(&mut candidates, order);
+        }
+    }
     let ResolvedTopology {
         snapshot: topology_snapshot,
         degraded_reason: topology_degraded_reason,
     } = resolve_topology(group, &candidates);
     let active_agent_count = candidates.len();
-    let explicit_mentions = scan_mentions(&req.content, &candidates);
     let user_mentioned_agent_ids = explicit_mentions
         .iter()
         .map(|index| candidates[*index].agent_id.clone())
@@ -2478,6 +2483,7 @@ struct GroupRuntimeConfig {
     free_speech: bool,
     proactive_mode: bool,
     communication_mode: String,
+    default_speaking_order: Option<Vec<String>>,
     scheduler_mode: String,
     max_agent_steps: Option<u32>,
     max_steps_per_agent: u32,
@@ -5390,6 +5396,7 @@ struct GroupRuntimeRow {
     free_speech: i64,
     proactive_mode: i64,
     communication_mode: String,
+    default_speaking_order_json: Option<String>,
     scheduler_mode: String,
     max_agent_steps: Option<i64>,
     max_steps_per_agent: i64,
@@ -5411,7 +5418,7 @@ async fn load_group_runtime_config(
 ) -> anyhow::Result<GroupRuntimeConfig> {
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, conversation_kind, description, announcement, workspace_id, free_speech, \
-                proactive_mode, communication_mode, scheduler_mode, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
+                proactive_mode, communication_mode, default_speaking_order_json, scheduler_mode, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json \
          FROM groups WHERE id = ? AND status = 'active'",
     )
     .bind(group_id)
@@ -5429,6 +5436,10 @@ async fn load_group_runtime_config(
         free_speech: row.free_speech != 0,
         proactive_mode: row.proactive_mode != 0,
         communication_mode: row.communication_mode,
+        default_speaking_order: row
+            .default_speaking_order_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok()),
         scheduler_mode: row.scheduler_mode,
         max_agent_steps: row.max_agent_steps.map(|value| value as u32),
         max_steps_per_agent: row.max_steps_per_agent as u32,
@@ -5667,6 +5678,20 @@ fn candidate_from_row(row: CandidateRow) -> Candidate {
         topology_role: row.topology_role,
         speaking_order: row.speaking_order,
     }
+}
+
+fn apply_default_speaking_order(candidates: &mut [Candidate], order: &[String]) {
+    let positions: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(position, agent_id)| (agent_id.as_str(), position))
+        .collect();
+    candidates.sort_by_key(|candidate| {
+        positions
+            .get(candidate.agent_id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 }
 
 /// Pick the responders for `text`. In a group-wide response mode, user mentions

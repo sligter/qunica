@@ -53,6 +53,7 @@ const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_wi
        ) AS avatar_members), '[]') AS avatar_members_json, \
      free_speech, proactive_mode, \
      allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
+     default_speaking_order_json, \
      scheduler_mode, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
      max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
      max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
@@ -277,6 +278,8 @@ pub struct UpdateRequest {
     agent_free_mention_max_dispatches: Option<Option<i64>>,
     #[serde(default)]
     communication_mode: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    default_speaking_order: Option<Option<Vec<String>>>,
     #[serde(default)]
     scheduler_mode: Option<String>,
     #[serde(default, deserialize_with = "double_option")]
@@ -527,6 +530,7 @@ pub struct GroupResponse {
     allow_agent_free_mention: bool,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
+    default_speaking_order: Option<Vec<String>>,
     scheduler_mode: String,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
@@ -669,6 +673,7 @@ struct GroupRow {
     allow_agent_free_mention: i64,
     agent_free_mention_max_dispatches: i64,
     communication_mode: String,
+    default_speaking_order_json: Option<String>,
     scheduler_mode: String,
     agent_mention_policy: String,
     max_agent_steps: Option<i64>,
@@ -952,6 +957,7 @@ impl From<GroupRow> for GroupResponse {
             allow_agent_free_mention: row.allow_agent_free_mention != 0,
             agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches,
             communication_mode: row.communication_mode,
+            default_speaking_order: parse_json_list(row.default_speaking_order_json.as_deref()),
             scheduler_mode: row.scheduler_mode,
             agent_mention_policy: row.agent_mention_policy,
             max_agent_steps: row.max_agent_steps,
@@ -1640,6 +1646,13 @@ pub(crate) async fn update_inner(
         Some(raw) => validate_communication_mode(Some(raw))?,
         None => existing.communication_mode.clone(),
     };
+    let default_speaking_order_json = match body.default_speaking_order {
+        Some(Some(ref agent_ids)) => {
+            Some(validate_default_speaking_order(state.db.pool(), &group_id, agent_ids).await?)
+        }
+        Some(None) => None,
+        None => existing.default_speaking_order_json.clone(),
+    };
 
     let now = now_rfc3339();
     let mut tx = state
@@ -1653,7 +1666,7 @@ pub(crate) async fn update_inner(
          name = ?, description = ?, announcement = ?, avatar_url = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
          proactive_mode = ?, \
          allow_agent_free_mention = ?, agent_free_mention_max_dispatches = ?, \
-         communication_mode = ?, scheduler_mode = ?, agent_mention_policy = ?, \
+         communication_mode = ?, default_speaking_order_json = ?, scheduler_mode = ?, agent_mention_policy = ?, \
          max_agent_steps = ?, max_steps_per_agent = ?, max_scheduler_hops = ?, \
          max_moderator_calls = ?, max_consecutive_failures = ?, max_total_failures = ?, \
          max_total_tokens = ?, turn_timeout_seconds = ?, moderator_enabled = ?, \
@@ -1671,6 +1684,7 @@ pub(crate) async fn update_inner(
     .bind(allow_agent_free_mention)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
+    .bind(&default_speaking_order_json)
     .bind(&scheduler.scheduler_mode)
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
@@ -4772,21 +4786,29 @@ async fn remove_agent_from_group_lists(
     agent_id: &str,
     now: &str,
 ) -> Result<(), ApiError> {
-    let (raw_muted, raw_admin): (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT muted_agent_ids_json, admin_agent_ids_json FROM groups WHERE id = ?",
-    )
-    .bind(group_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|_| ApiError::internal("failed to load group agent lists"))?;
+    let (raw_muted, raw_admin, raw_order): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT muted_agent_ids_json, admin_agent_ids_json, default_speaking_order_json \
+         FROM groups WHERE id = ?",
+        )
+        .bind(group_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to load group agent lists"))?;
     let muted_agent_ids_json = remove_from_json_list(raw_muted.as_deref(), agent_id)?;
     let admin_agent_ids_json = remove_from_json_list(raw_admin.as_deref(), agent_id)?;
+    let default_speaking_order_json = raw_order
+        .as_deref()
+        .map(|raw| remove_from_json_list(Some(raw), agent_id))
+        .transpose()?;
     sqlx::query(
-        "UPDATE groups SET muted_agent_ids_json = ?, admin_agent_ids_json = ?, updated_at = ? \
+        "UPDATE groups SET muted_agent_ids_json = ?, admin_agent_ids_json = ?, \
+         default_speaking_order_json = ?, updated_at = ? \
          WHERE id = ?",
     )
     .bind(&muted_agent_ids_json)
     .bind(&admin_agent_ids_json)
+    .bind(&default_speaking_order_json)
     .bind(now)
     .bind(group_id)
     .execute(&mut **tx)
@@ -5127,6 +5149,41 @@ async fn validate_initial_agents(
         }
     }
     Ok(ids)
+}
+
+async fn validate_default_speaking_order(
+    pool: &SqlitePool,
+    group_id: &str,
+    raw_ids: &[String],
+) -> Result<String, ApiError> {
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::with_capacity(raw_ids.len());
+    for raw_id in raw_ids {
+        let id = validate_uuid(raw_id, "default_speaking_order agent id")?;
+        if !seen.insert(id.clone()) {
+            return Err(ApiError::invalid_input(
+                "default_speaking_order must not contain duplicates",
+            ));
+        }
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM group_agents ga \
+             JOIN agents a ON a.id = ga.agent_id \
+             WHERE ga.group_id = ? AND ga.agent_id = ? \
+               AND ga.status = 'active' AND a.status = 'active'",
+        )
+        .bind(group_id)
+        .bind(&id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
+        if exists.is_none() {
+            return Err(ApiError::invalid_input(
+                "default_speaking_order contains an agent that is not active in this group",
+            ));
+        }
+        ids.push(id);
+    }
+    json_list_to_db(ids)
 }
 
 pub(crate) fn validate_note_title(raw: &str) -> Result<String, ApiError> {

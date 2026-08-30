@@ -52,6 +52,7 @@ workspaces/
 uploads/
 data/
 frontend/src-tauri/gen/
+landing/
 
 # Local agent tooling and scratch state
 .tmp-liveagent-git/

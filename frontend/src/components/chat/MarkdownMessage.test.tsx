@@ -16,6 +16,18 @@ afterEach(() => {
 })
 
 describe('MarkdownMessage overflow containment', () => {
+  it('highlights valid group member mentions outside code and links', () => {
+    const { container } = render(
+      <MarkdownMessage
+        mentionNames={['Plan', 'Planner']}
+        content={'Ask @planner, not @PlannerX or `@Planner` or [@Planner](https://example.com).'}
+      />,
+    )
+
+    expect(Array.from(container.querySelectorAll('span.chat-mention')).map((node) => node.textContent))
+      .toEqual(['@planner'])
+  })
+
   it('wraps unbroken text and confines wide markdown elements', () => {
     const longToken = 'unbroken-content-'.repeat(24)
     const { container } = render(

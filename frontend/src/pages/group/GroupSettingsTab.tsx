@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { WorkspaceField } from '@/components/agents/WorkspaceField'
+import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { GroupTemplatesSection } from '@/components/groups/GroupTemplatesSection'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -12,6 +13,7 @@ import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useDeleteGroup } from '@/hooks/useDeleteGroup'
+import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { useUpdateGroup } from '@/hooks/useGroups'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useClearGroupMessages } from '@/hooks/useGroupMessages'
@@ -65,6 +67,7 @@ interface GroupSettingsTabProps {
 export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabProps) {
   const { t } = useTranslation(['groups', 'common'])
   const update = useUpdateGroup(group.id)
+  const groupAgents = useGroupAgents(group.id)
   const del = useDeleteGroup()
   const clearMessages = useClearGroupMessages(group.id)
   const navigate = useNavigate()
@@ -83,6 +86,9 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
   )
   const [communicationMode, setCommunicationMode] = useState<GroupCommunicationMode>(
     group.communication_mode,
+  )
+  const [defaultSpeakingOrder, setDefaultSpeakingOrder] = useState<string[] | null>(
+    group.default_speaking_order ?? null,
   )
   const communicationModeValue = communicationMode as string
 
@@ -117,6 +123,22 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
   useEffect(() => {
     setCommunicationMode(group.communication_mode)
   }, [group.communication_mode])
+  useEffect(() => {
+    setDefaultSpeakingOrder(group.default_speaking_order ?? null)
+  }, [group.default_speaking_order])
+
+  const agentsById = new Map(
+    (groupAgents.data ?? []).map((agent) => [agent.agent_id, agent]),
+  )
+  const configuredAgents = (defaultSpeakingOrder ?? []).flatMap((agentId) => {
+    const agent = agentsById.get(agentId)
+    return agent ? [agent] : []
+  })
+  const configuredIds = new Set(configuredAgents.map((agent) => agent.agent_id))
+  const orderedAgents = [
+    ...configuredAgents,
+    ...(groupAgents.data ?? []).filter((agent) => !configuredIds.has(agent.agent_id)),
+  ]
 
   const errorMessage = (err: unknown): string | null =>
     err instanceof ApiError ? err.message : null
@@ -176,6 +198,29 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
     const previous = communicationMode
     setCommunicationMode(value)
     void saveInstant({ communication_mode: value }, () => setCommunicationMode(previous))
+  }
+
+  const onDefaultSpeakingOrderChange = (enabled: boolean) => {
+    const previous = defaultSpeakingOrder
+    const next = enabled ? orderedAgents.map((agent) => agent.agent_id) : null
+    setDefaultSpeakingOrder(next)
+    void saveInstant({ default_speaking_order: next }, () =>
+      setDefaultSpeakingOrder(previous),
+    )
+  }
+
+  const moveDefaultSpeaker = (index: number, offset: -1 | 1) => {
+    const target = index + offset
+    if (target < 0 || target >= orderedAgents.length) return
+    const previous = defaultSpeakingOrder
+    const next = orderedAgents.map((agent) => agent.agent_id)
+    const current = next[index]
+    next[index] = next[target]
+    next[target] = current
+    setDefaultSpeakingOrder(next)
+    void saveInstant({ default_speaking_order: next }, () =>
+      setDefaultSpeakingOrder(previous),
+    )
   }
 
   const basicsDirty =
@@ -332,6 +377,73 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
             ))}
           </select>
         </SettingsRow>
+
+        <SettingsRow
+          label={t('settings.defaultSpeakingOrder')}
+          description={t('settings.defaultSpeakingOrderDescription')}
+        >
+          <Switch
+            checked={defaultSpeakingOrder !== null}
+            onCheckedChange={onDefaultSpeakingOrderChange}
+            disabled={update.isPending || groupAgents.isLoading}
+            aria-label={t('settings.defaultSpeakingOrder')}
+          />
+        </SettingsRow>
+
+        {defaultSpeakingOrder !== null ? (
+          <div className="py-2.5">
+            {orderedAgents.length > 0 ? (
+              <ol
+                aria-label={t('settings.defaultSpeakingOrder')}
+                className="max-h-64 divide-y divide-border overflow-y-auto rounded-md border border-border"
+              >
+                {orderedAgents.map((agent, index) => (
+                  <li key={agent.agent_id} className="flex items-center gap-3 px-3 py-2">
+                    <span className="w-5 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                      {index + 1}
+                    </span>
+                    <AgentAvatar
+                      name={agent.display_name}
+                      avatarUrl={agent.avatar_url}
+                      size="sm"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      {agent.display_name}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        aria-label={t('settings.moveSpeakerEarlier', { name: agent.display_name })}
+                        disabled={index === 0 || update.isPending}
+                        onClick={() => moveDefaultSpeaker(index, -1)}
+                      >
+                        <ChevronUp aria-hidden className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        aria-label={t('settings.moveSpeakerLater', { name: agent.display_name })}
+                        disabled={index === orderedAgents.length - 1 || update.isPending}
+                        onClick={() => moveDefaultSpeaker(index, 1)}
+                      >
+                        <ChevronDown aria-hidden className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-sm text-muted-foreground">
+                {t('settings.noAgentsForSpeakingOrder')}
+              </p>
+            )}
+          </div>
+        ) : null}
 
         <p className="py-2 text-xs text-muted-foreground">
           {t('delegationDescription')}

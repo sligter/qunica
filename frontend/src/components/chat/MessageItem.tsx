@@ -65,10 +65,15 @@ export function MessageItemView({
   // A locally echoed message the server has not acknowledged yet. It renders
   // like any other message, dimmed, so sending never blocks on the round trip.
   const isPending = useMessageStore((s) => s.pendingMessageIds.has(message.id))
+  const roster = agents ?? groupAgents.data
+  const mentionNames = useMemo(
+    () => scope === 'groups' ? (roster ?? []).map((agent) => agent.display_name) : [],
+    [roster, scope],
+  )
   const groupAgent = useMemo(() => {
     if (message.sender_type !== 'agent') return undefined
-    return (agents ?? groupAgents.data)?.find((g) => g.agent_id === message.sender_id)
-  }, [agents, groupAgents.data, message.sender_id, message.sender_type])
+    return roster?.find((g) => g.agent_id === message.sender_id)
+  }, [message.sender_id, message.sender_type, roster])
 
   const openFile = useFileNavStore((s) => s.openFile)
   // Only a non-default mode is worth badging: it means this agent's files are
@@ -205,7 +210,12 @@ export function MessageItemView({
               isInterrupted && !isResuming && 'border-warning',
             )}
           >
-            <MarkdownMessage content={segment || ' '} isUser={isUser} groupId={groupId} />
+            <MarkdownMessage
+              content={segment || ' '}
+              isUser={isUser}
+              groupId={groupId}
+              mentionNames={mentionNames}
+            />
             {index === contentSegments.length - 1 && message.attachments.length > 0 ? (
               <MessageAttachments groupId={groupId} attachments={message.attachments} scope={scope} />
             ) : null}

@@ -574,6 +574,7 @@ export interface GroupRead extends GroupSchedulerConfig {
   allow_agent_free_mention: boolean
   agent_free_mention_max_dispatches: number
   communication_mode: GroupCommunicationMode
+  default_speaking_order?: string[] | null
   muted_agent_ids: string[] | null
   admin_agent_ids: string[] | null
   muted_member_ids: string[] | null
@@ -653,6 +654,7 @@ export interface GroupUpdate extends Partial<GroupSchedulerConfig> {
   allow_agent_free_mention?: boolean
   agent_free_mention_max_dispatches?: number
   communication_mode?: GroupCommunicationMode
+  default_speaking_order?: string[] | null
 }
 
 export interface GroupMemberRead {

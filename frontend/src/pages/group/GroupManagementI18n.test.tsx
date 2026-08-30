@@ -835,6 +835,39 @@ describe('group management i18n', () => {
     expect(screen.getByText(/@mention is text only/)).toBeVisible()
   })
 
+  it('enables and reorders the default speakers from group settings', async () => {
+    const user = userEvent.setup()
+    mocks.groupAgents = [
+      groupAgent,
+      {
+        ...groupAgent,
+        id: 'group-agent-2',
+        agent_id: 'agent-2',
+        display_name: 'Agent Two',
+      },
+    ]
+    await setLanguage('en-US')
+    render(
+      <MemoryRouter>
+        <GroupSettingsTab group={group} />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('switch', { name: 'Default speaking order' }))
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenLastCalledWith({
+        default_speaking_order: ['agent-1', 'agent-2'],
+      })
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Move Agent Two earlier' }))
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenLastCalledWith({
+        default_speaking_order: ['agent-2', 'agent-1'],
+      })
+    })
+  })
+
   it('retranslates a clear-history ApiError while preserving its raw diagnostic', async () => {
     const user = userEvent.setup()
     mocks.clearMutateAsync.mockRejectedValueOnce(

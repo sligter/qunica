@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowUp, Check, ChevronDown, FileText, Image, Paperclip, RotateCw, Sparkles, Square, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -22,6 +22,7 @@ import {
   hasConversationIdDrag,
 } from '@/lib/conversationDrag'
 import { readComposerDraft, writeComposerDraft } from '@/lib/composerDraft'
+import { MENTION_CLASS_NAME, splitMentions } from '@/lib/mentions'
 import { useAuthStore } from '@/stores/authStore'
 import {
   isWorkspaceRelativePath,
@@ -322,6 +323,7 @@ export function Composer({
   const [enhanceAgentOpen, setEnhanceAgentOpen] = useState(false)
   const [isResizing, setIsResizing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const mentionLayerRef = useRef<HTMLDivElement>(null)
   // null means "grow with the text"; a number is a height the user set by hand
   // and we stop touching until they reset it.
   const manualHeightRef = useRef<number | null>(null)
@@ -951,6 +953,14 @@ export function Composer({
     ?? t('composer.enhanceAgentAuto')
   const visibleAgents = groupAgents.slice(0, 3)
   const hiddenAgentCount = groupAgents.length - visibleAgents.length
+  const mentionParts = useMemo(
+    () => splitMentions(
+      value,
+      allowMentions ? groupAgents.map((agent) => agent.display_name) : [],
+    ),
+    [allowMentions, groupAgents, value],
+  )
+  const hasHighlightedMention = mentionParts.some((part) => part.mentioned)
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-1">
@@ -991,25 +1001,45 @@ export function Composer({
               visible={showMention}
             />
           ) : null}
-          <textarea
-            ref={textareaRef}
-            data-chat-composer={resolvedConversationId}
-            value={value}
-            onChange={handleChange}
-            onKeyDown={onKeyDown}
-            onPaste={handlePaste}
-            placeholder={placeholder ?? t('composer.placeholder')}
-            rows={1}
-            aria-label={t('composer.message')}
-            aria-describedby="composer-drop-status"
-            disabled={isDisabled}
-            className={cn(
-              // Height is driven from JS, so the native handle is off: it drew
-              // itself between the text and the toolbar instead of on an edge.
-              'block max-h-[50vh] min-h-10 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-4',
-              'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
-            )}
-          />
+          <div className="relative">
+            {hasHighlightedMention ? (
+              <div
+                ref={mentionLayerRef}
+                aria-hidden="true"
+                data-mention-highlights
+                className="pointer-events-none absolute inset-0 overflow-y-auto whitespace-pre-wrap break-words px-4 pb-1 pt-4 text-sm leading-5 text-foreground"
+              >
+                {mentionParts.map((part, index) => part.mentioned
+                  ? <span key={index} className={MENTION_CLASS_NAME}>{part.text}</span>
+                  : part.text)}
+              </div>
+            ) : null}
+            <textarea
+              ref={textareaRef}
+              data-chat-composer={resolvedConversationId}
+              value={value}
+              onChange={handleChange}
+              onKeyDown={onKeyDown}
+              onPaste={handlePaste}
+              onScroll={(event) => {
+                if (mentionLayerRef.current) {
+                  mentionLayerRef.current.scrollTop = event.currentTarget.scrollTop
+                }
+              }}
+              placeholder={placeholder ?? t('composer.placeholder')}
+              rows={1}
+              aria-label={t('composer.message')}
+              aria-describedby="composer-drop-status"
+              disabled={isDisabled}
+              className={cn(
+                // Height is driven from JS, so the native handle is off: it drew
+                // itself between the text and the toolbar instead of on an edge.
+                'relative z-10 block max-h-[50vh] min-h-10 w-full resize-none overflow-y-auto rounded-t-2xl border-0 bg-transparent px-4 pb-1 pt-4',
+                'text-sm leading-5 text-foreground placeholder:text-muted-foreground/80 focus:outline-none',
+                hasHighlightedMention && 'workspace-code-input',
+              )}
+            />
+          </div>
           {/* Sits in the text area's top padding so it costs no height, and on
               the card's edge so it never looks like it is floating mid-card.
               Placed after the text area so Tab reaches the message first. */}

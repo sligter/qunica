@@ -71,12 +71,14 @@ function shouldRenderInputRequest(
 function TextPart({
   event,
   groupId,
+  mentionNames,
   onSubmitHumanInput,
   renderedInputRequests,
   streaming = false,
 }: {
   event: StreamResponseDraftEvent | { content: string; display_name: string }
   groupId: string
+  mentionNames: readonly string[]
   onSubmitHumanInput?: (content: string) => void
   renderedInputRequests: Set<string>
   streaming?: boolean
@@ -103,7 +105,7 @@ function TextPart({
         streaming && 'animate-stream-edge',
       )}
     >
-      <MarkdownMessage content={content || ' '} groupId={groupId} />
+      <MarkdownMessage content={content || ' '} groupId={groupId} mentionNames={mentionNames} />
     </div>
   )
 }
@@ -360,6 +362,7 @@ function AgentBlockView({
   block,
   runStatus,
   groupId,
+  mentionNames,
   fallbackUsage,
   avatarUrl,
   agentIsSystem,
@@ -371,6 +374,7 @@ function AgentBlockView({
   block: AgentBlock
   runStatus: StreamRun['status']
   groupId: string
+  mentionNames: readonly string[]
   fallbackUsage: ContextUsage | null
   avatarUrl?: string | null
   agentIsSystem?: boolean
@@ -487,6 +491,7 @@ function AgentBlockView({
           key={event.id}
           event={event}
           groupId={groupId}
+          mentionNames={mentionNames}
           onSubmitHumanInput={onSubmitHumanInput}
           renderedInputRequests={renderedInputRequests}
           streaming={live && event.type === 'response_draft' && event.status === 'streaming'}
@@ -577,19 +582,24 @@ export function StreamTimeline({
 }: StreamTimelineProps) {
   const { t } = useTranslation('chat')
   const groupAgents = useGroupAgents(agents === undefined ? groupId : undefined)
+  const roster = agents ?? groupAgents.data
+  const mentionNames = useMemo(
+    () => scope === 'groups' ? (roster ?? []).map((agent) => agent.display_name) : [],
+    [roster, scope],
+  )
   // Last-known usage per agent in this task. The live `agent_start` events don't carry
   // context_usage (it's computed only after the LLM responds), so without this
   // fallback the avatar ring stays blank for the whole streaming turn.
   const usageByAgentId = useMemo(() => {
     const map = new Map<string, ContextUsage>()
-    for (const agent of agents ?? groupAgents.data ?? []) {
+    for (const agent of roster ?? []) {
       if (agent.context_usage) map.set(agent.agent_id, agent.context_usage)
     }
     return map
-  }, [agents, groupAgents.data])
+  }, [roster])
   const avatarByAgentId = useMemo(
-    () => new Map((agents ?? groupAgents.data ?? []).map((agent) => [agent.agent_id, agent.avatar_url])),
-    [agents, groupAgents.data],
+    () => new Map((roster ?? []).map((agent) => [agent.agent_id, agent.avatar_url])),
+    [roster],
   )
   const blocks = buildBlocks(run.events, t('messages.agent'))
   const renderedInputRequests = new Set<string>()
@@ -658,6 +668,7 @@ export function StreamTimeline({
             block={block}
             runStatus={run.status}
             groupId={groupId}
+            mentionNames={mentionNames}
             fallbackUsage={usageByAgentId.get(block.agentId) ?? null}
             avatarUrl={avatarByAgentId.get(block.agentId)}
             agentIsSystem={agentIsSystem}

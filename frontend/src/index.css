@@ -292,6 +292,14 @@
     color: var(--color-primary-foreground);
   }
 
+  .chat-mention {
+    color: var(--color-primary);
+  }
+
+  :root[data-theme="dark"] .chat-mention {
+    color: color-mix(in hsl, var(--color-primary) 65%, var(--color-foreground));
+  }
+
   :root:not([data-theme="dark"]) .chat-user-bubble {
     border: 1px solid color-mix(in hsl, var(--color-primary) 24%, var(--color-border));
     background-color: color-mix(in hsl, var(--color-primary) 9%, var(--color-card));
@@ -326,6 +334,16 @@
   :root[data-theme="dark"] .chat-user-bubble {
     background-color: color-mix(in hsl, var(--color-primary) 58%, var(--color-background));
     color: var(--color-foreground);
+  }
+
+  :root[data-theme="dark"] .chat-user-bubble .chat-mention {
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    border-radius: 0.3em;
+    background-color: color-mix(in hsl, var(--color-primary) 38%, var(--color-foreground));
+    color: var(--color-primary-foreground);
+    font-weight: 700;
+    padding: 0.06em 0.3em;
   }
 }
 

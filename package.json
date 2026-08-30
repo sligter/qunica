@@ -12,7 +12,8 @@
     "desktop:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-desktop-icons.ps1",
     "desktop:portable": "node scripts/package-desktop-portable.mjs",
     "lint": "pnpm --filter @qunica/frontend lint",
-    "type-check": "pnpm -r type-check"
+    "type-check": "pnpm -r type-check",
+    "landing": "npx --yes serve landing -p 3000"
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {

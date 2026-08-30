@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { useGroupWorkspaceRoot } from '@/hooks/useGroupFiles'
+import { createRemarkMentions } from '@/lib/mentions'
 import { cn } from '@/lib/utils'
 import {
   joinWorkspaceAbsPath,
@@ -19,6 +20,7 @@ import { useFileNavStore } from '@/stores/fileNavStore'
 interface MarkdownMessageProps {
   content: string
   isUser?: boolean
+  mentionNames?: readonly string[]
   /** When set, file paths in the text become links that open the group's workspace panel. */
   groupId?: string
 }
@@ -72,6 +74,7 @@ function CodeBlock({ className, children }: React.HTMLAttributes<HTMLElement>) {
 const REHYPE_PLUGINS = [rehypeKatex]
 const BASE_REMARK_PLUGINS = [remarkGfm, remarkMath]
 const WORKSPACE_REMARK_PLUGINS = [remarkGfm, remarkMath, remarkWorkspaceFiles]
+const EMPTY_MENTION_NAMES: readonly string[] = []
 
 /**
  * Memoized: a conversation re-renders on every streamed token, and without this
@@ -81,12 +84,17 @@ const WORKSPACE_REMARK_PLUGINS = [remarkGfm, remarkMath, remarkWorkspaceFiles]
 export const MarkdownMessage = memo(function MarkdownMessage({
   content,
   isUser = false,
+  mentionNames = EMPTY_MENTION_NAMES,
   groupId,
 }: MarkdownMessageProps) {
   const openFile = useFileNavStore((s) => s.openFile)
   const rootQuery = useGroupWorkspaceRoot(groupId)
   const root = rootQuery.data
-  const remarkPlugins = groupId ? WORKSPACE_REMARK_PLUGINS : BASE_REMARK_PLUGINS
+  const mentionPlugin = useMemo(() => createRemarkMentions(mentionNames), [mentionNames])
+  const remarkPlugins = useMemo(
+    () => [...(groupId ? WORKSPACE_REMARK_PLUGINS : BASE_REMARK_PLUGINS), mentionPlugin],
+    [groupId, mentionPlugin],
+  )
   const components = useMemo(
     () => ({
       p: ({ children }: { children?: React.ReactNode }) => <p className="mb-2 last:mb-0">{children}</p>,
