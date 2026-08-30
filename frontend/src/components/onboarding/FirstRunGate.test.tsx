@@ -146,11 +146,13 @@ describe('FirstRunGate', () => {
     await user.type(root, 'D:/Qunica')
     await user.click(screen.getByRole('button', { name: 'Continue' }))
 
+    expect(await screen.findByRole('heading', { name: 'Choose a provider for the assistant' })).toHaveFocus()
     await user.click(await screen.findByRole('button', { name: /OpenAI/ }))
     expect(await screen.findByRole('radio', { name: /gpt-5-mini/ })).toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Continue' }))
 
     expect(await screen.findByRole('heading', { name: 'Your workbench is ready' })).toBeVisible()
+    expect(screen.getByText('Next: create an agent, then invite it to a group.')).toBeVisible()
     expect(screen.getByText('D:\\Qunica')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Enter Qunica' }))
     expect(await screen.findByText('Qunica workspace')).toBeVisible()
@@ -176,6 +178,6 @@ describe('FirstRunGate', () => {
 
     expect(await screen.findByLabelText('Name')).toBeVisible()
     expect(screen.queryByRole('link')).toBeNull()
-    expect(screen.getByText(/never detours through the resource library/i)).toBeVisible()
+    expect(screen.getByText(/Add the endpoint, model, and API key/i)).toBeVisible()
   })
 })

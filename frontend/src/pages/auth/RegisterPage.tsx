@@ -17,9 +17,9 @@ export function RegisterPage() {
   return (
     <AuthCard title={title} subtitle={t('register.subtitle')}>
       <AuthForm mode="register" onSuccess={() => void navigate('/')} />
-      <p className="text-sm text-muted-foreground">
+      <p className="mt-6 text-center text-sm text-muted-foreground">
         {t('register.switchPrompt')}{' '}
-        <Link to="/login" className="font-medium text-foreground hover:underline">
+        <Link to="/login" className="font-semibold text-primary underline-offset-4 hover:underline">
           {t('register.switchAction')}
         </Link>
       </p>

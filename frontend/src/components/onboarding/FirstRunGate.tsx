@@ -17,6 +17,7 @@ import {
   FolderOpen,
   KeyRound,
   Loader2,
+  MessagesSquare,
   Plus,
   Server,
   Sparkles,
@@ -139,6 +140,9 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
     setError(null)
     setPhase(next)
     contentRef.current?.scrollTo?.({ top: 0 })
+    requestAnimationFrame(() => {
+      contentRef.current?.querySelector<HTMLElement>('[data-onboarding-title]')?.focus()
+    })
   }
 
   const applyPick = (folderName: string, absolutePath?: string) => {
@@ -221,12 +225,18 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
 
   return (
     <main className="relative flex h-full min-h-0 overflow-hidden bg-background">
-      <aside className="relative hidden w-[35%] max-w-[31rem] min-w-[22rem] shrink-0 flex-col overflow-hidden bg-[#1e1b19] p-9 text-[#fdf8ef] lg:flex xl:p-10">
+      <aside className="relative hidden w-[36%] max-w-[32rem] min-w-[23rem] shrink-0 flex-col overflow-hidden bg-[#1a1816] p-9 text-[#fffaf2] lg:flex xl:p-11">
+        <div aria-hidden className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(255,255,255,.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.035)_1px,transparent_1px)] [background-size:44px_44px]" />
         <div className="absolute -left-20 top-[38%] h-72 w-72 rounded-full bg-[#d1502a]/15 blur-3xl" />
         <div className="absolute -right-16 -top-20 h-72 w-72 rounded-full bg-[#efb051]/10 blur-3xl" />
-        <div className="relative flex items-center gap-3">
-          <BrandMark animated className="h-11 w-11" />
-          <span className="font-serif text-2xl font-semibold tracking-tight">Qunica</span>
+        <div className="relative flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <BrandMark animated className="h-11 w-11" />
+            <span className="font-serif text-2xl font-semibold tracking-tight">Qunica</span>
+          </div>
+          <span className="rounded-full border border-white/10 bg-white/[0.045] px-3 py-1.5 text-[11px] font-medium text-[#fffaf2]/55">
+            {t('time')}
+          </span>
         </div>
 
         <div className="relative mt-auto mb-auto max-w-sm py-8">
@@ -236,8 +246,8 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
           <h1 className="mt-4 font-serif text-4xl font-semibold leading-tight tracking-[-0.025em]">
             {t('title')}
           </h1>
-          <p className="mt-5 text-sm leading-7 text-[#fdf8ef]/62">{t('description')}</p>
-          <p className="mt-4 max-w-xs text-xs leading-5 text-[#fdf8ef]/45">{t('localNote')}</p>
+          <p className="mt-5 text-sm leading-7 text-[#fffaf2]/62">{t('description')}</p>
+          <p className="mt-4 max-w-xs text-xs leading-5 text-[#fffaf2]/45">{t('localNote')}</p>
 
           <ol className="mt-6 space-y-2" aria-label={t('progress.label')}>
             {steps.map((step, index) => {
@@ -252,8 +262,8 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
                     'flex items-center gap-4 rounded-xl border px-4 py-3 transition-colors',
                     active
                       ? 'border-[#efb051]/35 bg-white/8'
-                      : 'border-transparent text-[#fdf8ef]/45',
-                    complete && 'text-[#fdf8ef]/75',
+                      : 'border-transparent text-[#fffaf2]/45',
+                    complete && 'text-[#fffaf2]/75',
                   )}
                 >
                   <span className={cn(
@@ -266,7 +276,7 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
                   </span>
                   <span>
                     <span className="block text-sm font-medium">{step.title}</span>
-                    <span className="mt-0.5 block text-xs text-[#fdf8ef]/45">{step.detail}</span>
+                    <span className="mt-0.5 block text-xs text-[#fffaf2]/45">{step.detail}</span>
                   </span>
                 </li>
               )
@@ -276,7 +286,7 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
       </aside>
 
       <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_92%_8%,color-mix(in_srgb,var(--color-primary)_10%,transparent),transparent_30%)]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_92%_8%,color-mix(in_srgb,var(--color-primary)_9%,transparent),transparent_30%)]" />
         <header className="relative flex items-center justify-between border-b border-border/60 px-5 py-4 lg:hidden">
           <div className="flex items-center gap-2.5">
             <BrandMark className="h-8 w-8" />
@@ -489,6 +499,15 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
                     </div>
                   ))}
                 </div>
+                <div className="mt-4 flex items-start gap-3 rounded-2xl border border-primary/20 bg-primary/5 px-4 py-4 sm:px-5">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                    <MessagesSquare className="h-4 w-4" aria-hidden />
+                  </span>
+                  <div>
+                    <p className="text-sm font-semibold">{t('ready.nextTitle')}</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('ready.nextDescription')}</p>
+                  </div>
+                </div>
                 <StepFooter error={error}>
                   <Button variant="ghost" onClick={() => go('model')}>
                     <ArrowLeft className="h-4 w-4" aria-hidden />
@@ -520,7 +539,7 @@ function StepIntro({ icon: Icon, eyebrow, title, description }: {
         <Icon className="h-5 w-5" aria-hidden />
       </span>
       <p className="mt-6 text-xs font-semibold uppercase tracking-[0.2em] text-primary">{eyebrow}</p>
-      <h2 className="mt-2 font-serif text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">{title}</h2>
+      <h2 data-onboarding-title tabIndex={-1} className="mt-2 font-serif text-3xl font-semibold tracking-[-0.02em] outline-none sm:text-4xl">{title}</h2>
       <p className="mt-4 max-w-xl text-sm leading-7 text-muted-foreground">{description}</p>
     </div>
   )

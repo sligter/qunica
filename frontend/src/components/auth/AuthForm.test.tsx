@@ -76,4 +76,16 @@ describe('AuthForm localized server diagnostics', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('该邮箱已注册。')
     expect(screen.getByRole('alert')).not.toHaveTextContent('user already exists')
   })
+
+  it('lets the user reveal and hide the password', async () => {
+    const user = userEvent.setup()
+    await renderChineseAuthForm('login')
+    const password = screen.getByLabelText('密码')
+
+    expect(password).toHaveAttribute('type', 'password')
+    await user.click(screen.getByRole('button', { name: '显示密码' }))
+    expect(password).toHaveAttribute('type', 'text')
+    await user.click(screen.getByRole('button', { name: '隐藏密码' }))
+    expect(password).toHaveAttribute('type', 'password')
+  })
 })

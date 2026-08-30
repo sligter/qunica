@@ -105,22 +105,37 @@ export const zhCN: TranslationShape<typeof enUS> = {
   },
   auth: {
     brand: {
-      tagline: '一个房间，多个 Agent。',
-      intro: '以群组为核心的工作台：你和你的 Agent 共享同一份历史、文件与工作区。',
+      localBadge: '本地优先',
+      eyebrow: '多 Agent 工作台',
+      headline: '让人和 Agent，在同一间房里把事做完。',
+      intro: '把 Codex、Claude、OpenCode、Pi 和你自己配置的 Agent 请进同一个项目群。它们共享对话、文件和工作区，不用你来回搬上下文。',
+      preview: {
+        room: '发布准备群',
+        status: '共享上下文已同步',
+        you: '你',
+        request: '发布前，一起检查 README 和发布工作流。',
+        research: '调研',
+        build: '开发',
+        review: '审查',
+      },
       highlights: {
-        group: {
-          title: '群组，而不是聊天窗口',
-          body: '把不同专长的 Agent 请进同一个项目房间，完整对话都留在这里。',
+        context: {
+          title: '共用一份上下文',
+          body: '人和 Agent 都从同一份历史与项目文件开始工作。',
         },
-        scheduler: {
-          title: '调度模式',
-          body: '有界与自动两种模式编排 Agent 协作，步骤预算、失败熔断与主持模型路由都看得见。',
+        routing: {
+          title: '调度过程看得见',
+          body: '发言规则、预算与路由由你决定，每次执行都有记录。',
         },
-        harness: {
-          title: '第三方 HARNESS 接入',
-          body: '通过 ACP 接入 Codex、Claude、DeepSeek Harness 等外部运行时，让它们和原生 Agent 同处一个房间。',
+        local: {
+          title: '机器和工具都归你',
+          body: '工作区、密钥与历史留在你运行的 Qunica 后端。',
         },
       },
+    },
+    form: {
+      eyebrow: '进入工作台',
+      localAccount: '这个账户只属于你本机运行的 Qunica 后端，不是托管在云端的 Qunica 账户。',
     },
     login: {
       title: '登录',
@@ -137,10 +152,12 @@ export const zhCN: TranslationShape<typeof enUS> = {
       switchAction: '登录',
     },
     fields: { name: '姓名', email: '邮箱', password: '密码' },
+    password: { show: '显示密码', hide: '隐藏密码', hint: '至少使用 8 个字符。' },
     validation: {
       validEmail: '请输入有效的邮箱地址',
       passwordLength: '至少需要 8 个字符',
       required: '必填',
+      nameLength: '最多使用 100 个字符',
     },
     errors: {
       invalidCredentials: '邮箱或密码不正确。',
@@ -152,9 +169,10 @@ export const zhCN: TranslationShape<typeof enUS> = {
   onboarding: {
     documentTitle: '欢迎使用 Qunica',
     eyebrow: '首次设置',
-    title: '先给 Qunica 安个家。',
-    description: '只需完成两件事：确定项目工作的存放位置，再为内置助手接上合适的模型。',
-    localNote: '工作目录路径和提供商凭据只保存在你的 Qunica 后端。',
+    time: '大约 2 分钟',
+    title: '成员进群前，先把房间布置好。',
+    description: '选好 Qunica 创建项目目录的位置，连接一个模型服务，再指定内置助手使用的模型。这三项以后都能改。',
+    localNote: '设置过程不会上传文件；模型密钥只保存在本机 Qunica 后端。',
     loading: '正在准备工作台…',
     loadError: '无法载入首次设置。',
     retry: '重试',
@@ -164,16 +182,16 @@ export const zhCN: TranslationShape<typeof enUS> = {
       label: '设置进度',
       compact: '第 {{current}} / {{total}} 步',
       workspace: '工作目录',
-      workspaceDetail: '确定工作的根目录',
+      workspaceDetail: '设置项目根目录',
       provider: '提供商',
-      providerDetail: '连接模型服务',
+      providerDetail: '添加模型密钥',
       model: '助手模型',
-      modelDetail: '选择助手使用的模型',
+      modelDetail: '选择默认模型',
     },
     workspace: {
       eyebrow: '01 · 工作目录',
-      title: '选择 Qunica 的工作根目录',
-      description: '以后新建的群组工作区都会放在这里。请选择一个稳定、长期使用，并且有足够空间的本地目录。',
+      title: 'Qunica 可以在哪里工作？',
+      description: '以后新建的群组工作区都会放在这个目录下。请选择一个已经存在、可以长期使用的本地目录。',
       directory: '工作根目录',
       hint: '请选择已经存在的本地目录，继续前 Qunica 会进行校验。',
       placeholder: 'D:/Qunica',
@@ -189,7 +207,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
       title: '选择助手使用的提供商',
       description: '可以使用已有连接，也可以不离开引导直接创建新的提供商。',
       createTitle: '连接第一个模型服务',
-      createDescription: '这里直接使用 Qunica 的提供商创建表单，首次设置不再绕去资源库。',
+      createDescription: '填写 Qunica 要使用的接口地址、模型与 API 密钥。密钥由本机后端保存。',
       loading: '正在查找提供商…',
       loadingForm: '正在打开提供商表单…',
       loadError: '无法载入提供商或助手。',
@@ -198,8 +216,8 @@ export const zhCN: TranslationShape<typeof enUS> = {
     },
     model: {
       eyebrow: '03 · 助手模型',
-      title: '选择陪你工作的模型',
-      description: '{{provider}} 已配置以下模型，以后也可以在助手设置中切换。',
+      title: '选择助手的默认模型',
+      description: '{{provider}} 已配置以下模型，以后可以在助手设置中切换。',
       legend: '助手模型',
       default: '提供商默认',
       saveError: '无法保存助手配置。',
@@ -208,7 +226,9 @@ export const zhCN: TranslationShape<typeof enUS> = {
     ready: {
       eyebrow: '设置完成',
       title: '工作台已经准备好了',
-      description: 'Qunica 已经知道在哪里工作，也知道该由哪个模型回应你的助手请求。',
+      description: '项目根目录与内置助手已经配置完成，Qunica 会打开一个干净的工作台。',
+      nextTitle: '下一步：创建 Agent，再把它邀请进群。',
+      nextDescription: '你可以让内置助手继续帮忙，也可以打开资源库直接配置 Agent。',
       workspace: '工作根目录',
       provider: '提供商',
       model: '模型',

@@ -17,9 +17,9 @@ export function LoginPage() {
   return (
     <AuthCard title={title} subtitle={t('login.subtitle')}>
       <AuthForm mode="login" onSuccess={() => void navigate('/')} />
-      <p className="text-sm text-muted-foreground">
+      <p className="mt-6 text-center text-sm text-muted-foreground">
         {t('login.switchPrompt')}{' '}
-        <Link to="/register" className="font-medium text-foreground hover:underline">
+        <Link to="/register" className="font-semibold text-primary underline-offset-4 hover:underline">
           {t('login.switchAction')}
         </Link>
       </p>

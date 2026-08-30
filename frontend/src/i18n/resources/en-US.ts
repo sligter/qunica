@@ -111,23 +111,38 @@ export const enUS = {
   },
   auth: {
     brand: {
-      tagline: 'One room. Many agents.',
+      localBadge: 'Local-first',
+      eyebrow: 'Multi-agent workbench',
+      headline: 'The room where agents work together.',
       intro:
-        'A group-first workbench: you and your agents share the same history, files, and workspace.',
+        'Bring Codex, Claude, OpenCode, Pi, and your own agents into one project room. They share the conversation, files, and workspace, so you do not have to carry context between tabs.',
+      preview: {
+        room: 'release-room',
+        status: 'Shared context live',
+        you: 'You',
+        request: 'Review the README and release workflow together before we ship.',
+        research: 'Research',
+        build: 'Build',
+        review: 'Review',
+      },
       highlights: {
-        group: {
-          title: 'Groups, not chat windows',
-          body: 'Invite specialised agents into a project room and keep the whole thread in one place.',
+        context: {
+          title: 'One shared context',
+          body: 'People and agents work from the same history and project files.',
         },
-        scheduler: {
-          title: 'Scheduler modes',
-          body: 'Bounded and automatic modes orchestrate agents, with step budgets, failure limits, and moderator routing in view.',
+        routing: {
+          title: 'Visible orchestration',
+          body: 'Choose the speaking rules, budgets, and routing. Every turn leaves a trace.',
         },
-        harness: {
-          title: 'Third-party harness integration',
-          body: 'Plug Codex, Claude, DeepSeek Harness, and other external runtimes in over ACP — in the same room as your agents.',
+        local: {
+          title: 'Your machine, your tools',
+          body: 'Workspaces, keys, and history stay with the Qunica backend you run.',
         },
       },
+    },
+    form: {
+      eyebrow: 'Your workspace',
+      localAccount: 'This account belongs to the Qunica backend running on your machine. It is not a hosted Qunica cloud account.',
     },
     login: {
       title: 'Sign in',
@@ -144,10 +159,12 @@ export const enUS = {
       switchAction: 'Sign in',
     },
     fields: { name: 'Name', email: 'Email', password: 'Password' },
+    password: { show: 'Show password', hide: 'Hide password', hint: 'Use at least 8 characters.' },
     validation: {
       validEmail: 'Enter a valid email',
       passwordLength: 'At least 8 characters',
       required: 'Required',
+      nameLength: 'Use 100 characters or fewer',
     },
     errors: {
       invalidCredentials: 'Email or password is incorrect.',
@@ -159,10 +176,11 @@ export const enUS = {
   onboarding: {
     documentTitle: 'Welcome to Qunica',
     eyebrow: 'First-run setup',
-    title: 'Give Qunica a place to think.',
+    time: 'About 2 minutes',
+    title: 'Set up the room before the team arrives.',
     description:
-      'Two essentials, set once: where project work lives, and which model powers your built-in assistant.',
-    localNote: 'Your workspace path and provider credentials stay with your Qunica backend.',
+      'Choose where Qunica may create project folders, connect a model provider, and pick the model used by the built-in assistant. You can change all three later.',
+    localNote: 'Setup does not upload your files. Provider keys stay in the local Qunica backend.',
     loading: 'Preparing your workspace…',
     loadError: 'The setup could not be loaded.',
     retry: 'Try again',
@@ -172,17 +190,17 @@ export const enUS = {
       label: 'Setup progress',
       compact: 'Step {{current}} of {{total}}',
       workspace: 'Workspace',
-      workspaceDetail: 'Choose the working root',
+      workspaceDetail: 'Set the project root',
       provider: 'Provider',
-      providerDetail: 'Connect a model service',
+      providerDetail: 'Add your model key',
       model: 'Assistant model',
-      modelDetail: 'Choose the voice behind it',
+      modelDetail: 'Pick a default model',
     },
     workspace: {
       eyebrow: '01 · Workspace',
-      title: 'Choose Qunica’s working root',
+      title: 'Where may Qunica work?',
       description:
-        'New group workspaces will be created beneath this folder. Pick a calm, permanent place with enough room for projects to grow.',
+        'Qunica creates new group workspaces beneath this folder. Choose an existing local directory you can keep using.',
       directory: 'Working root',
       hint: 'Use an existing local directory. Qunica verifies it before continuing.',
       placeholder: 'D:/Qunica',
@@ -199,7 +217,7 @@ export const enUS = {
       description: 'Use an existing connection, or create another without leaving setup.',
       createTitle: 'Connect your first model service',
       createDescription:
-        'This is the same provider form used by Qunica, placed here so your first setup never detours through the resource library.',
+        'Add the endpoint, model, and API key Qunica should use. The key is stored by your local backend.',
       loading: 'Looking for providers…',
       loadingForm: 'Opening the provider form…',
       loadError: 'Providers or the assistant could not be loaded.',
@@ -208,8 +226,8 @@ export const enUS = {
     },
     model: {
       eyebrow: '03 · Assistant model',
-      title: 'Pick the model you want beside you',
-      description: '{{provider}} offers these configured models. You can switch later from Assistant settings.',
+      title: 'Choose the assistant’s default model',
+      description: 'These models are configured for {{provider}}. You can switch later in Assistant settings.',
       legend: 'Assistant model',
       default: 'Provider default',
       saveError: 'The assistant configuration could not be saved.',
@@ -218,7 +236,9 @@ export const enUS = {
     ready: {
       eyebrow: 'Setup complete',
       title: 'Your workbench is ready',
-      description: 'Qunica now knows where to work and which model should answer from the assistant dock.',
+      description: 'Your project root and built-in assistant are configured. Qunica will open to a clean workspace.',
+      nextTitle: 'Next: create an agent, then invite it to a group.',
+      nextDescription: 'The assistant can help with setup, or you can open the resource library and configure agents directly.',
       workspace: 'Working root',
       provider: 'Provider',
       model: 'Model',

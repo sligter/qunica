@@ -31,28 +31,30 @@ describe('AuthCard', () => {
   it('introduces the product beside the sign-in form', async () => {
     await renderAuthPage('login', 'en-US')
 
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Qunica')
-    expect(screen.getByText('One room. Many agents.')).toBeInTheDocument()
-    expect(screen.getByText(/group-first workbench/)).toBeInTheDocument()
-    expect(screen.getByText('Groups, not chat windows')).toBeInTheDocument()
-    expect(screen.getByText('Scheduler modes')).toBeInTheDocument()
-    expect(screen.getByText('Third-party harness integration')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('The room where agents work together.')
+    expect(screen.getAllByText('Qunica')).not.toHaveLength(0)
+    expect(screen.getByText(/Bring Codex, Claude, OpenCode, Pi/)).toBeInTheDocument()
+    expect(screen.getByText('One shared context')).toBeInTheDocument()
+    expect(screen.getByText('Visible orchestration')).toBeInTheDocument()
+    expect(screen.getByText('Your machine, your tools')).toBeInTheDocument()
+    expect(screen.getByText('release-room')).toBeInTheDocument()
     expect(screen.getByText('Pick your project rooms back up.')).toBeInTheDocument()
+    expect(screen.getByText(/not a hosted Qunica cloud account/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
   })
 
   it('localizes the pitch, so the two locales stay in step', async () => {
     await renderAuthPage('login', 'zh-CN')
 
-    expect(screen.getByText('一个房间，多个 Agent。')).toBeInTheDocument()
-    expect(screen.getByText('群组，而不是聊天窗口')).toBeInTheDocument()
+    expect(screen.getByText('让人和 Agent，在同一间房里把事做完。')).toBeInTheDocument()
+    expect(screen.getByText('共用一份上下文')).toBeInTheDocument()
     expect(screen.getByText('回到你的项目房间继续。')).toBeInTheDocument()
   })
 
   it('gives register the same surface with its own subtitle', async () => {
     await renderAuthPage('register', 'en-US')
 
-    expect(screen.getByText('One room. Many agents.')).toBeInTheDocument()
+    expect(screen.getByText('The room where agents work together.')).toBeInTheDocument()
     expect(
       screen.getByText('Set up an account and open your first project room.'),
     ).toBeInTheDocument()
