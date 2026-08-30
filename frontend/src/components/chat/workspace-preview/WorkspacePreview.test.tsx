@@ -396,6 +396,17 @@ describe('WorkspaceTextEditor', () => {
     )
   })
 
+  it('shows line numbers and keeps the gutter aligned while scrolling', () => {
+    const { container } = renderEditor(textResponse({ content: 'first\nsecond\nthird' }))
+    const editor = screen.getByRole('textbox', { name: 'Edit note.txt' }) as HTMLTextAreaElement
+    const gutter = container.querySelector('pre[data-line-numbers]') as HTMLPreElement
+
+    expect(gutter.textContent).toBe('1\n2\n3')
+    editor.scrollTop = 22
+    fireEvent.scroll(editor)
+    expect(gutter.scrollTop).toBe(22)
+  })
+
   it('accepts IME input and leaves native editing shortcuts untouched', () => {
     renderEditor(textResponse())
     const editor = screen.getByRole('textbox', { name: 'Edit note.txt' }) as HTMLTextAreaElement

@@ -354,7 +354,7 @@ export function AgentDetailPage() {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid max-h-64 grid-cols-1 gap-2.5 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
                 {mountedSkills.map((s) => (
                   <Link
                     key={s.id}

@@ -146,6 +146,7 @@ export function WorkspaceTextEditor({
   const draftRevision = useRef(0)
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLPreElement>(null)
+  const lineNumbersRef = useRef<HTMLPreElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const editorId = useId()
   currentPath.current = file.path
@@ -156,6 +157,14 @@ export function WorkspaceTextEditor({
     () => language ? hljs.highlight(draft, { language, ignoreIllegals: true }).value : null,
     [draft, language],
   )
+  const lineNumbers = useMemo(() => {
+    let count = 1
+    let text = '1'
+    for (let index = 0; index < draft.length; index += 1) {
+      if (draft.charCodeAt(index) === 10) text += `\n${++count}`
+    }
+    return { text, width: `${Math.max(3, String(count).length + 2)}ch` }
+  }, [draft])
 
   useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange])
 
@@ -502,41 +511,32 @@ export function WorkspaceTextEditor({
       <label htmlFor={editorId} className="sr-only">
         {t('workspace.previewPanel.editorLabel', { name: file.name })}
       </label>
-      {language && highlighted !== null ? (
-        <div
-          className={cn(
-            'workspace-code-editor relative mt-3 flex-1 overflow-hidden rounded-md border border-input bg-background shadow-sm',
-            presentation === 'editor' ? 'min-h-[24rem]' : 'min-h-[20rem]',
-          )}
+      <div
+        className={cn(
+          'workspace-code-editor relative mt-3 flex-1 overflow-hidden rounded-md border border-input bg-background shadow-sm focus-within:ring-1 focus-within:ring-ring',
+          presentation === 'editor' ? 'min-h-[24rem]' : 'min-h-[20rem] resize-y',
+        )}
+      >
+        <pre
+          ref={lineNumbersRef}
+          aria-hidden="true"
+          data-line-numbers
+          style={{ width: lineNumbers.width }}
+          className="pointer-events-none absolute inset-y-0 left-0 z-20 m-0 select-none overflow-hidden border-r border-border bg-muted/35 py-2.5 pr-2 text-right font-mono text-editor leading-editor text-muted-foreground"
         >
+          {lineNumbers.text}
+        </pre>
+        {language && highlighted !== null ? (
           <pre
             ref={highlightRef}
             aria-hidden="true"
             data-language={language}
-            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre px-3.5 py-2.5 font-mono text-editor leading-editor"
+            style={{ paddingLeft: `calc(${lineNumbers.width} + 0.875rem)` }}
+            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre py-2.5 pr-3.5 font-mono text-editor leading-editor"
           >
             <code dangerouslySetInnerHTML={{ __html: highlighted }} />
           </pre>
-          <Textarea
-            ref={editorRef}
-            id={editorId}
-            value={draft}
-            readOnly={snapshot.truncated || save.isPending || refreshing}
-            aria-readonly={snapshot.truncated || save.isPending || refreshing}
-            aria-busy={save.isPending || refreshing}
-            onChange={(event) => updateDraft(event.target.value)}
-            onKeyDown={handleEditorKeyDown}
-            onScroll={(event) => {
-              if (!highlightRef.current) return
-              highlightRef.current.scrollTop = event.currentTarget.scrollTop
-              highlightRef.current.scrollLeft = event.currentTarget.scrollLeft
-            }}
-            spellCheck={false}
-            wrap="off"
-            className="workspace-code-input absolute inset-0 z-10 resize-none whitespace-pre border-0 bg-transparent px-3.5 py-2.5 font-mono text-editor leading-editor shadow-none focus-visible:ring-0"
-          />
-        </div>
-      ) : (
+        ) : null}
         <Textarea
           ref={editorRef}
           id={editorId}
@@ -546,13 +546,24 @@ export function WorkspaceTextEditor({
           aria-busy={save.isPending || refreshing}
           onChange={(event) => updateDraft(event.target.value)}
           onKeyDown={handleEditorKeyDown}
+          onScroll={(event) => {
+            if (lineNumbersRef.current) {
+              lineNumbersRef.current.scrollTop = event.currentTarget.scrollTop
+            }
+            if (highlightRef.current) {
+              highlightRef.current.scrollTop = event.currentTarget.scrollTop
+              highlightRef.current.scrollLeft = event.currentTarget.scrollLeft
+            }
+          }}
           spellCheck={false}
+          wrap="off"
+          style={{ paddingLeft: `calc(${lineNumbers.width} + 0.875rem)` }}
           className={cn(
-            'mt-3 flex-1 whitespace-pre px-3.5 py-2.5 font-mono text-editor leading-editor',
-            presentation === 'editor' ? 'min-h-[24rem] resize-none' : 'min-h-[20rem] resize-y',
+            'absolute inset-0 z-10 h-full resize-none whitespace-pre border-0 bg-transparent py-2.5 pr-3.5 font-mono text-editor leading-editor shadow-none focus-visible:ring-0',
+            language && highlighted !== null && 'workspace-code-input',
           )}
         />
-      )}
+      </div>
 
       <ConfirmDialog
         open={confirmRefreshOpen}
