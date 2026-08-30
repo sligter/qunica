@@ -56,14 +56,14 @@ impl MediaKind {
         }
     }
 
-    fn configured_model<'a>(self, config: &'a MediaGenerationConfig) -> Option<&'a str> {
+    fn configured_model(self, config: &MediaGenerationConfig) -> Option<&str> {
         match self {
             Self::Image => config.image_model.as_deref(),
             Self::Video => config.video_model.as_deref(),
         }
     }
 
-    fn endpoint<'a>(self, config: &'a MediaGenerationConfig) -> &'a str {
+    fn endpoint(self, config: &MediaGenerationConfig) -> &str {
         match self {
             Self::Image => &config.image_endpoint,
             Self::Video => &config.video_endpoint,

@@ -508,6 +508,7 @@ mod tests {
             .await
             .unwrap();
 
+        #[allow(clippy::type_complexity)]
         let legacy: (
             i64,
             String,

@@ -36,8 +36,8 @@ use std::{
     time::Duration,
 };
 
-use qunica_domain::events::{StreamEvent, StreamEventKind};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use qunica_domain::events::{StreamEvent, StreamEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -5701,10 +5701,11 @@ fn select_agents(
     text: &str,
     group: &GroupRuntimeConfig,
 ) -> Vec<Candidate> {
-    let mentioned = text
-        .contains('@')
-        .then(|| scan_mentions(text, &candidates))
-        .unwrap_or_default();
+    let mentioned = if text.contains('@') {
+        scan_mentions(text, &candidates)
+    } else {
+        Default::default()
+    };
     if group.free_speech || group.proactive_mode {
         return candidates
             .into_iter()
@@ -6364,9 +6365,8 @@ fn render_workspace_section(
     };
     let Some(primary) = executor.workspace_root() else {
         return format!(
-            "Workspace:\n- mode: {}\n- source: none\n- location: not configured\n\
-             No workspace is configured, so file and shell tools are unavailable this turn.",
-            mode_name
+            "Workspace:\n- mode: {mode_name}\n- source: none\n- location: not configured\n\
+             No workspace is configured, so file and shell tools are unavailable this turn."
         );
     };
     let source = if mode.uses_group_workspace() {

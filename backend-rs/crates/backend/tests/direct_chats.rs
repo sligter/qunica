@@ -1,9 +1,9 @@
-use qunica_backend::api::{router_with_state_for_tests, AppState};
 use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode},
     Router,
 };
+use qunica_backend::api::{router_with_state_for_tests, AppState};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tower::ServiceExt;
@@ -1479,7 +1479,7 @@ async fn create_provider_backed_chat(
     .await;
     assert_eq!(status, StatusCode::CREATED, "body: {agent:?}");
     let agent_id = agent["id"].as_str().unwrap();
-    let chat = create_chat(app, &token, &agent_id).await;
+    let chat = create_chat(app, &token, agent_id).await;
     (root, token, chat["id"].as_str().unwrap().to_owned(), calls)
 }
 

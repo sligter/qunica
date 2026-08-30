@@ -1,14 +1,14 @@
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+    Router,
+};
 use qunica_backend::{
     api::router_with_state_for_tests,
     runtime::{
         sequence::{NewMessage, SequenceAllocator},
         StreamEvent, StreamEventKind,
     },
-};
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-    Router,
 };
 use serde_json::{json, Value};
 use std::{path::Path, process::Command};

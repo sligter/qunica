@@ -4158,6 +4158,7 @@ async fn group_prompt_context(
     )];
 
     let muted_agents = parse_json_list(group.muted_agent_ids_json.as_deref()).unwrap_or_default();
+    #[allow(clippy::type_complexity)]
     let agents: Vec<(
         String,
         String,

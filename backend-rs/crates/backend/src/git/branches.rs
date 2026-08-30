@@ -198,9 +198,11 @@ async fn ensure_task_worktree_ignored(root: &Path) -> Result<(), GitOperationErr
         .open(exclude)
         .await
         .map_err(|_| GitOperationError::new("failed to open git exclude file"))?;
-    let separator = (!current.is_empty() && !current.ends_with('\n'))
-        .then_some("\n")
-        .unwrap_or("");
+    let separator = if !current.is_empty() && !current.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
     file.write_all(format!("{separator}{pattern}\n").as_bytes())
         .await
         .map_err(|_| GitOperationError::new("failed to update git exclude file"))

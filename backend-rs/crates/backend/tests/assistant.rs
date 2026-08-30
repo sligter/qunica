@@ -7,12 +7,12 @@
 //! than anything of the user's, and it is invisible to — and unwritable
 //! through — the generic agent and direct-chat routes.
 
-use qunica_backend::api::{router_for_tests, router_with_state_for_tests};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     Router,
 };
+use qunica_backend::api::{router_for_tests, router_with_state_for_tests};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 

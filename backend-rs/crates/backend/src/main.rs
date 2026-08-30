@@ -1,5 +1,5 @@
-use qunica_backend::{config::AppConfig, server, telemetry};
 use anyhow::Context;
+use qunica_backend::{config::AppConfig, server, telemetry};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

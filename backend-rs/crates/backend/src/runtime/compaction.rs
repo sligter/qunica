@@ -998,9 +998,7 @@ mod tests {
         let plain = ChatMessage::text("user", text.clone());
         let as_part = ChatMessage::with_parts(
             "user",
-            vec![qunica_domain::runtime::ChatContentPart::text(
-                text.clone(),
-            )],
+            vec![qunica_domain::runtime::ChatContentPart::text(text.clone())],
         );
         // `with_parts` derives `content` from the text parts, so the two
         // messages carry the same text and must cost the same.
@@ -1369,9 +1367,10 @@ mod tests {
     #[test]
     fn snip_collapses_a_run_of_identical_log_lines() {
         let mut lines = vec!["building", "packages"];
-        for _ in 0..500 {
-            lines.push("error: conflicting type in crate `foo`");
-        }
+        lines.extend(std::iter::repeat_n(
+            "error: conflicting type in crate `foo`",
+            500,
+        ));
         lines.push("done");
         let mut messages = vec![ChatMessage::tool_result("call-1", "Bash", lines.join("\n"))];
 
