@@ -360,12 +360,13 @@ fn is_wsl_launcher(host: &dyn ShellHost, path: &Path) -> bool {
     let Some(system_root) = host.var("SystemRoot") else {
         return false;
     };
-    let system32 = Path::new(system_root.trim())
-        .join("System32")
-        .to_string_lossy()
-        .to_ascii_lowercase();
-    path.parent()
-        .map(|parent| parent.to_string_lossy().to_ascii_lowercase())
+    let system32 = format!(
+        "{}/system32",
+        normalize_windows_path(Path::new(system_root.trim())).trim_end_matches('/')
+    );
+    normalize_windows_path(path)
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
         .is_some_and(|parent| parent == system32)
 }
 
@@ -374,8 +375,16 @@ fn probe(host: &dyn ShellHost, root_var: &str, suffix: &str) -> Option<PathBuf> 
     if root.trim().is_empty() {
         return None;
     }
-    let path = Path::new(root.trim()).join(suffix);
+    let root = root.trim().trim_end_matches(['\\', '/']);
+    let suffix = suffix.trim_start_matches(['\\', '/']);
+    let path = PathBuf::from(format!(r"{root}\{suffix}"));
     host.is_file(&path).then_some(path)
+}
+
+fn normalize_windows_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
 }
 
 /// Pair a resolved program with the dialect its file name implies.
@@ -385,7 +394,9 @@ fn shell_at(program: PathBuf) -> ResolvedShell {
 }
 
 fn dialect_for(program: &Path) -> ShellDialect {
-    let stem = program
+    let program = program.to_string_lossy();
+    let file_name = program.rsplit(['/', '\\']).next().unwrap_or_default();
+    let stem = Path::new(file_name)
         .file_stem()
         .and_then(OsStr::to_str)
         .unwrap_or_default()
@@ -542,6 +553,19 @@ mod tests {
             self.vars.insert(key.to_string(), value.to_string());
             self
         }
+
+        fn matching_file(&self, path: &Path) -> Option<PathBuf> {
+            self.files
+                .iter()
+                .find(|file| {
+                    if self.windows {
+                        normalize_windows_path(file) == normalize_windows_path(path)
+                    } else {
+                        file.as_path() == path
+                    }
+                })
+                .cloned()
+        }
     }
 
     impl ShellHost for FakeHost {
@@ -554,7 +578,7 @@ mod tests {
         }
 
         fn is_file(&self, path: &Path) -> bool {
-            self.files.contains(path)
+            self.matching_file(path).is_some()
         }
 
         fn lookup_path(&self, program: &str) -> Option<PathBuf> {
@@ -562,7 +586,7 @@ mod tests {
             self.path_entries.iter().find_map(|entry| {
                 suffixes.iter().find_map(|suffix| {
                     let candidate = entry.join(format!("{program}{suffix}"));
-                    self.files.contains(&candidate).then_some(candidate)
+                    self.matching_file(&candidate)
                 })
             })
         }
