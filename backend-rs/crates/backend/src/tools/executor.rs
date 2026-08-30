@@ -427,15 +427,6 @@ impl ToolExecutor {
                     skill_name,
                 ))
             }
-            "RunSubAgent" => {
-                let task = arg_str(&args, "task")?;
-                Ok(ToolResult {
-                    status: ToolStatus::SetupRequired,
-                    output: format!(
-                        "RunSubAgent setup required: no sub-agent executor is configured for task '{task}'."
-                    ),
-                })
-            }
             "TodoWrite" => Ok(controlled::todo_write(super::todo::parse_todos(&args))),
             "ExitPlanMode" => Ok(controlled::exit_plan_mode(arg_str(&args, "plan")?)),
             name if is_mcp_tool_name(name) => Ok(self.run_mcp_tool(name, args).await),

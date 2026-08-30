@@ -58,7 +58,8 @@ use crate::llm::{
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
     dispatchable_assistants, resolve_dispatch, AgentAsToolCall, AgentAsToolFailure,
-    AgentAsToolMode, AssistantMember, CallerAgent, AGENT_AS_TOOL_NAME,
+    AgentAsToolMode, AgentAsToolTarget, AssistantMember, CallerAgent, AGENT_AS_TOOL_NAME,
+    MAX_FAN_OUT_TARGETS,
 };
 use crate::runtime::approval;
 use crate::runtime::compaction::{estimate_text_tokens, estimate_tool_schema_tokens};
@@ -2439,27 +2440,31 @@ enum DelegationAvailability {
     /// `AgentAsTool` is not in this dispatch's tool list.
     Unavailable,
     /// Automatic turns keep public dispatch under the moderator.
-    CallOnly,
-    CallOrHandoff,
+    CallOnly {
+        fan_out: bool,
+    },
+    CallOrHandoff {
+        fan_out: bool,
+    },
 }
 
 impl DelegationAvailability {
-    fn prompt_rule(self) -> &'static str {
-        match self {
+    fn prompt_rule(self) -> String {
+        let base = match self {
             Self::Unavailable => {
                 "You have no delegation tool in this dispatch: every agent you could delegate to \
                  already ran in this turn, was already delegated to, or is unreachable. Do \
                  the part you can do yourself and return control to the scheduler; never describe \
                  work as delegated, assigned, or handed off."
             }
-            Self::CallOnly => {
+            Self::CallOnly { .. } => {
                 "Only the group scheduler or the AgentAsTool tool can run a peer. Every \
                  AgentAsTool call must name a mode, and this dispatch permits call only: the \
                  helper runs privately, its result returns to you, and public dispatch stays with \
                  the moderator. Each helper can run at most once in this turn. Calling a pending \
                  public responder claims its scheduled slot, so it will not run again later."
             }
-            Self::CallOrHandoff => {
+            Self::CallOrHandoff { .. } => {
                 "Only the group scheduler or the AgentAsTool tool can run a peer. Every \
                  AgentAsTool call must name a mode: call runs the helper privately and returns \
                  its result to you, so the public response stays yours; handoff transfers the \
@@ -2467,7 +2472,18 @@ impl DelegationAvailability {
                  once in this turn. Delegating to a pending public responder claims its scheduled \
                  slot, so it will not run again later."
             }
-        }
+        };
+        // Only said where the tool actually offers the mode, so the prompt never
+        // describes delegation the schema will reject.
+        let fan_out = match self {
+            Self::CallOnly { fan_out: true } | Self::CallOrHandoff { fan_out: true } => {
+                " To use two or more helpers, prefer one fan_out call listing each of them in \
+                 dispatches with its own task over one call per helper: they still run one after \
+                 another, but you spend a single round trip and read every result together."
+            }
+            _ => "",
+        };
+        format!("{base}{fan_out}")
     }
 }
 
@@ -4308,59 +4324,236 @@ async fn handle_agent_as_tool(
         tool_config_json: agent.tool_config_json.clone(),
     };
 
-    let dispatch = match resolve_dispatch(
-        &services.pool,
-        &ctx.group_id,
-        &caller,
-        &parsed,
-        &group.muted_agent_ids,
-    )
-    .await
-    {
-        Ok(dispatch) => dispatch,
-        Err(failure) => {
-            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
-        }
-    };
-    let helper_candidate = match load_candidate_by_id(
-        &services.pool,
-        &ctx.group_id,
-        &dispatch.helper.agent_id,
-        group,
-    )
-    .await
-    {
-        Ok(candidate) => candidate,
-        Err(error) => {
-            let failure = match error {
-                CandidateLoadError::Ineligible(message) => AgentAsToolFailure::unavailable(message),
-                CandidateLoadError::Persistence(_error) => {
-                    AgentAsToolFailure::failed("helper lookup failed")
-                }
-            };
-            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
-        }
-    };
-
+    // Every mode below dispatches, and a resume has no scheduler to dispatch
+    // through. Checked after parsing so a malformed call still learns what is
+    // wrong with it rather than only that the runtime is busy.
     let Some(scheduler) = scheduler else {
         let failure = AgentAsToolFailure::unavailable(
             "AgentAsTool dispatch is unavailable while resuming an interrupted message",
         );
         return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
     };
-    handle_scheduled_agent_as_tool(
+
+    if parsed.mode == AgentAsToolMode::FanOut {
+        return handle_fan_out(
+            services,
+            ctx,
+            agent,
+            group,
+            handoff_depth,
+            &parsed,
+            &caller,
+            turn,
+            scheduler,
+        )
+        .await;
+    }
+
+    // `call` and `handoff` always parse to exactly one target.
+    let target = &parsed.targets[0];
+    let (dispatch, helper_candidate) = match prepare_helper(services, ctx, group, &caller, target)
+        .await
+    {
+        Ok(prepared) => prepared,
+        Err(failure) => {
+            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+        }
+    };
+
+    let outcome = handle_scheduled_agent_as_tool(
         services,
         ctx,
         agent,
         group,
         handoff_depth,
-        parsed,
+        &parsed,
         dispatch,
         helper_candidate,
         turn,
         scheduler,
     )
+    .await?;
+    match outcome {
+        HelperOutcome::Completed(content) => {
+            let result = bounded_helper_result(&content, HELPER_RESULT_LIMIT);
+            turn.record_tool_result(
+                Some(parsed.tool_call_id.clone()),
+                Some(AGENT_AS_TOOL_NAME.to_string()),
+                Some("completed".to_string()),
+                Some(summarize_text(&result)),
+            );
+            turn.record_tool_output(&parsed.tool_call_id, result.clone());
+            emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &result).await?;
+            Ok(AgentAsToolOutcome::Continue(result))
+        }
+        HelperOutcome::Failed(failure) => {
+            agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await
+        }
+        HelperOutcome::Terminal(result) => Ok(AgentAsToolOutcome::Terminal(result)),
+    }
+}
+
+/// Resolve one target to a helper the scheduler can actually run.
+///
+/// Split out because `fan_out` repeats it per target: a name that does not
+/// resolve is one line in the aggregate rather than the end of the call.
+async fn prepare_helper(
+    services: &RuntimeServices,
+    ctx: &StreamCtx,
+    group: &GroupRuntimeConfig,
+    caller: &CallerAgent,
+    target: &AgentAsToolTarget,
+) -> Result<
+    (
+        crate::runtime::agent_as_tool::AgentAsToolDispatch,
+        Candidate,
+    ),
+    AgentAsToolFailure,
+> {
+    let dispatch = resolve_dispatch(
+        &services.pool,
+        &ctx.group_id,
+        caller,
+        target,
+        &group.muted_agent_ids,
+    )
+    .await?;
+    let helper = load_candidate_by_id(
+        &services.pool,
+        &ctx.group_id,
+        &dispatch.helper.agent_id,
+        group,
+    )
     .await
+    .map_err(|error| match error {
+        CandidateLoadError::Ineligible(message) => AgentAsToolFailure::unavailable(message),
+        CandidateLoadError::Persistence(_error) => {
+            AgentAsToolFailure::failed("helper lookup failed")
+        }
+    })?;
+    Ok((dispatch, helper))
+}
+
+/// Run every target of a `fan_out` and return one tool result for all of them.
+///
+/// Targets run in order, not concurrently: the group runtime dispatches agents
+/// sequentially and the caller's `ctx` and the scheduler's budget are threaded
+/// through each child. What fan-out saves is the caller's round trips, not wall
+/// clock — three helpers cost one provider request instead of three, each of
+/// which would have carried the caller's whole context.
+///
+/// A target that cannot run is reported in its own section and the rest still
+/// go. Aborting the batch on the first bad name would strand the helpers that
+/// already ran: each of them is spent for the turn and cannot be dispatched
+/// again, so there would be nothing for the caller to retry.
+#[allow(clippy::too_many_arguments)]
+async fn handle_fan_out(
+    services: &RuntimeServices,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    group: &GroupRuntimeConfig,
+    handoff_depth: usize,
+    parsed: &AgentAsToolCall,
+    caller: &CallerAgent,
+    turn: &mut TurnData,
+    scheduler: &mut ScheduledTurnRuntime,
+) -> Result<AgentAsToolOutcome, StepErr> {
+    // Each helper's share of the caller's context, so a fan-out of six cannot
+    // bury the caller in six full-length reports.
+    let share = (HELPER_RESULT_LIMIT / parsed.targets.len()).max(FAN_OUT_MIN_SHARE);
+    let mut sections = Vec::with_capacity(parsed.targets.len());
+    let mut completed = 0usize;
+
+    for target in &parsed.targets {
+        let (dispatch, helper_candidate) =
+            match prepare_helper(services, ctx, group, caller, target).await {
+                Ok(prepared) => prepared,
+                Err(failure) => {
+                    sections.push(fan_out_section(
+                        &target.requested_agent,
+                        failure.status,
+                        &failure.message,
+                    ));
+                    continue;
+                }
+            };
+        let helper_display = dispatch.helper.display_name.clone();
+
+        match handle_scheduled_agent_as_tool(
+            services,
+            ctx,
+            agent,
+            group,
+            handoff_depth,
+            parsed,
+            dispatch,
+            helper_candidate,
+            turn,
+            scheduler,
+        )
+        .await?
+        {
+            HelperOutcome::Completed(content) => {
+                completed += 1;
+                sections.push(fan_out_section(
+                    &helper_display,
+                    "completed",
+                    &bounded_helper_result(&content, share),
+                ));
+            }
+            HelperOutcome::Failed(failure) => {
+                sections.push(fan_out_section(
+                    &helper_display,
+                    failure.status,
+                    &failure.message,
+                ));
+            }
+            // `handle_scheduled_agent_as_tool` only ends the caller's turn for a
+            // handoff, and a fan-out is never one.
+            HelperOutcome::Terminal(_) => {
+                return Err(StepErr::Db(anyhow::anyhow!(
+                    "fan_out helper returned a terminal handoff result"
+                )));
+            }
+        }
+    }
+
+    let total = parsed.targets.len();
+    let result = format!(
+        "fan_out dispatched {total} assistants, {completed} completed.\n\n{}",
+        sections.join("\n\n")
+    );
+    let status = if completed > 0 { "completed" } else { "failed" };
+    turn.record_tool_result(
+        Some(parsed.tool_call_id.clone()),
+        Some(AGENT_AS_TOOL_NAME.to_string()),
+        Some(status.to_string()),
+        Some(summarize_text(&result)),
+    );
+    turn.record_tool_output(&parsed.tool_call_id, result.clone());
+    emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &result).await?;
+    Ok(AgentAsToolOutcome::Continue(result))
+}
+
+/// One helper's part of a fan-out result, labelled so the caller can tell whose
+/// answer it is reading and which targets never ran.
+fn fan_out_section(helper: &str, status: &str, body: &str) -> String {
+    format!("## @{helper} — {status}\n{body}")
+}
+
+/// What one dispatched helper produced, before it becomes a tool result.
+///
+/// `call` and `fan_out` differ only in how they report, so the dispatch itself
+/// returns the raw outcome and each caller renders it: one bounded result for a
+/// `call`, one labelled section of many for a `fan_out`.
+enum HelperOutcome {
+    /// The helper finished privately. The content is unbounded; the caller
+    /// decides how much of the context to spend on it.
+    Completed(String),
+    /// A rejection or failure to report back so the caller can carry on.
+    Failed(AgentAsToolFailure),
+    /// The caller's turn is over. Only a `handoff` produces this.
+    Terminal(AgentRunResult),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4370,42 +4563,42 @@ async fn handle_scheduled_agent_as_tool(
     agent: &Candidate,
     group: &GroupRuntimeConfig,
     hop: usize,
-    parsed: AgentAsToolCall,
+    parsed: &AgentAsToolCall,
     dispatch: crate::runtime::agent_as_tool::AgentAsToolDispatch,
     helper: Candidate,
     turn: &mut TurnData,
     scheduler: &mut ScheduledTurnRuntime,
-) -> Result<AgentAsToolOutcome, StepErr> {
+) -> Result<HelperOutcome, StepErr> {
     let child_hop = hop.saturating_add(1) as u32;
     if scheduler.automatic && parsed.mode == AgentAsToolMode::Handoff {
-        let failure = AgentAsToolFailure::unavailable(
+        return Ok(HelperOutcome::Failed(AgentAsToolFailure::unavailable(
             "handoff is unavailable in automatic mode because the moderator owns public dispatch; use call",
-        );
-        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+        )));
     }
     if scheduler.budget.has_dispatched(&helper.agent_id) {
-        let failure = AgentAsToolFailure::already_scheduled(
-            "assistant has already been dispatched in this turn",
-        );
-        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+        return Ok(HelperOutcome::Failed(
+            AgentAsToolFailure::already_scheduled(
+                "assistant has already been dispatched in this turn",
+            ),
+        ));
     }
     if let Some(existing_dispatch_id) = scheduler.helper_claims.get(&helper.agent_id) {
-        let failure = AgentAsToolFailure::already_scheduled(format!(
-            "assistant was already delegated to in dispatch {existing_dispatch_id}"
+        return Ok(HelperOutcome::Failed(
+            AgentAsToolFailure::already_scheduled(format!(
+                "assistant was already delegated to in dispatch {existing_dispatch_id}"
+            )),
         ));
-        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
     }
     if !allows_agent_edge(&scheduler.topology, &agent.agent_id, &helper.agent_id) {
-        let failure =
-            AgentAsToolFailure::unavailable("group topology does not allow this agent dispatch");
-        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+        return Ok(HelperOutcome::Failed(AgentAsToolFailure::unavailable(
+            "group topology does not allow this agent dispatch",
+        )));
     }
     account_scheduled_tokens(ctx, &mut scheduler.budget);
     if let Err(error) = scheduler.budget.check_dispatch(&helper.agent_id, child_hop) {
-        let failure = AgentAsToolFailure::unavailable(format!(
-            "scheduler dispatch budget rejected the helper: {error}"
-        ));
-        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+        return Ok(HelperOutcome::Failed(AgentAsToolFailure::unavailable(
+            format!("scheduler dispatch budget rejected the helper: {error}"),
+        )));
     }
     let parent = ctx.scheduled_dispatch.clone().ok_or_else(|| {
         StepErr::Db(anyhow::anyhow!(
@@ -4413,8 +4606,13 @@ async fn handle_scheduled_agent_as_tool(
         ))
     })?;
     let child_id = Uuid::new_v4().to_string();
+    // A fan-out target is a private call that happens to have siblings, so it
+    // is recorded as one: the trace shows several `call` dispatches under the
+    // caller rather than an action kind nothing else understands.
     let (selection_reason, action_kind) = match parsed.mode {
-        AgentAsToolMode::Call => (SelectionReason::AgentCall, ActionKind::Call),
+        AgentAsToolMode::Call | AgentAsToolMode::FanOut => {
+            (SelectionReason::AgentCall, ActionKind::Call)
+        }
         AgentAsToolMode::Handoff => (SelectionReason::AgentHandoff, ActionKind::Handoff),
     };
     scheduler
@@ -4474,7 +4672,9 @@ async fn handle_scheduled_agent_as_tool(
     });
     ctx.scheduled_total_tokens = 0;
     ctx.scheduled_accounted_tokens = 0;
-    ctx.private_execution = caller_private || parsed.mode == AgentAsToolMode::Call;
+    // Both private modes keep the helper off the transcript; only a handoff
+    // means it to speak.
+    ctx.private_execution = caller_private || parsed.mode != AgentAsToolMode::Handoff;
     let helper_result = Box::pin(run_agent_turn(
         services,
         ctx,
@@ -4499,7 +4699,7 @@ async fn handle_scheduled_agent_as_tool(
                 .budget
                 .record_tokens(helper_tokens.saturating_sub(helper_accounted_tokens));
             if dispatch_is_running(&services.pool, &child_id).await? {
-                let (next, artifact, failure_code) = if parsed.mode == AgentAsToolMode::Call {
+                let (next, artifact, failure_code) = if parsed.mode != AgentAsToolMode::Handoff {
                     (
                         DispatchStatus::Completed,
                         Some(json!({
@@ -4568,7 +4768,7 @@ async fn handle_scheduled_agent_as_tool(
                 } else {
                     AgentRunResult::NoVisible
                 };
-                return Ok(AgentAsToolOutcome::Terminal(if defer_private_call_parent {
+                return Ok(HelperOutcome::Terminal(if defer_private_call_parent {
                     failure_result
                 } else {
                     AgentRunResult::BoundedHandoff {
@@ -4576,7 +4776,7 @@ async fn handle_scheduled_agent_as_tool(
                     }
                 }));
             }
-            return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+            return Ok(HelperOutcome::Failed(failure));
         }
         Err(StepErr::SchedulerPersistence) => return Err(StepErr::SchedulerPersistence),
     };
@@ -4597,13 +4797,12 @@ async fn handle_scheduled_agent_as_tool(
     }
 
     match parsed.mode {
-        AgentAsToolMode::Call => {
+        AgentAsToolMode::Call | AgentAsToolMode::FanOut => {
             let AgentRunResult::Private(execution) = helper_result else {
                 return Err(StepErr::Db(anyhow::anyhow!(
                     "private helper returned a visible execution result"
                 )));
             };
-            let result = bounded_helper_result(&execution.final_content);
             let failed = execution.outcome == AgentExecutionOutcome::Failed;
             let waiting = execution.outcome == AgentExecutionOutcome::WaitingForUser;
             if !helper_already_terminal {
@@ -4635,44 +4834,16 @@ async fn handle_scheduled_agent_as_tool(
                     .map_err(|_| StepErr::SchedulerPersistence)?;
             }
             if failed {
-                let failure = AgentAsToolFailure::unavailable("helper execution failed");
-                turn.record_tool_result(
-                    Some(parsed.tool_call_id.clone()),
-                    Some(AGENT_AS_TOOL_NAME.to_string()),
-                    Some(failure.status.to_string()),
-                    Some(failure.message.clone()),
-                );
-                emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
-                return Ok(AgentAsToolOutcome::Continue(format!(
-                    "status: {}\n{}",
-                    failure.status, failure.message
+                return Ok(HelperOutcome::Failed(AgentAsToolFailure::unavailable(
+                    "helper execution failed",
                 )));
             }
             if waiting {
-                let failure = AgentAsToolFailure::unavailable(
+                return Ok(HelperOutcome::Failed(AgentAsToolFailure::unavailable(
                     "helper requested additional input and could not complete privately",
-                );
-                turn.record_tool_result(
-                    Some(parsed.tool_call_id.clone()),
-                    Some(AGENT_AS_TOOL_NAME.to_string()),
-                    Some(failure.status.to_string()),
-                    Some(failure.message.clone()),
-                );
-                emit_tool_call_failure(ctx, agent, &parsed.tool_call_id, &failure).await?;
-                return Ok(AgentAsToolOutcome::Continue(format!(
-                    "status: {}\n{}",
-                    failure.status, failure.message
                 )));
             }
-            turn.record_tool_result(
-                Some(parsed.tool_call_id.clone()),
-                Some(AGENT_AS_TOOL_NAME.to_string()),
-                Some("completed".to_string()),
-                Some(summarize_text(&result)),
-            );
-            turn.record_tool_output(&parsed.tool_call_id, result.clone());
-            emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &result).await?;
-            Ok(AgentAsToolOutcome::Continue(result))
+            Ok(HelperOutcome::Completed(execution.final_content))
         }
         AgentAsToolMode::Handoff => {
             if let AgentRunResult::Private(execution) = helper_result {
@@ -4694,7 +4865,7 @@ async fn handle_scheduled_agent_as_tool(
                         .await
                         .map_err(|_| StepErr::SchedulerPersistence)?;
                 }
-                return Ok(AgentAsToolOutcome::Terminal(if defer_private_call_parent {
+                return Ok(HelperOutcome::Terminal(if defer_private_call_parent {
                     AgentRunResult::Private(execution)
                 } else {
                     AgentRunResult::BoundedHandoff {
@@ -4727,11 +4898,9 @@ async fn handle_scheduled_agent_as_tool(
                 Some(summary.clone()),
             );
             emit_agent_as_tool_result(ctx, agent, &parsed.tool_call_id, &summary).await?;
-            Ok(AgentAsToolOutcome::Terminal(
-                AgentRunResult::BoundedHandoff {
-                    helper_result: Box::new(helper_result),
-                },
-            ))
+            Ok(HelperOutcome::Terminal(AgentRunResult::BoundedHandoff {
+                helper_result: Box::new(helper_result),
+            }))
         }
     }
 }
@@ -4788,10 +4957,23 @@ async fn emit_agent_as_tool_result(
     .await
 }
 
-fn bounded_helper_result(content: &str) -> String {
-    const LIMIT: usize = 8_000;
+/// How much of the caller's context one `AgentAsTool` result may spend.
+const HELPER_RESULT_LIMIT: usize = 8_000;
+
+/// The floor on any one fan-out target's share of [`HELPER_RESULT_LIMIT`].
+///
+/// A wide fan-out would otherwise cut each helper down to a sentence, which is
+/// worse than letting the total run slightly over.
+const FAN_OUT_MIN_SHARE: usize = 1_000;
+
+/// Trim a helper's answer to what the caller can afford to read.
+///
+/// A `call` gets the whole budget. A `fan_out` splits it, so no single target
+/// can crowd out the others and the aggregate stays roughly the size of one
+/// call's result.
+fn bounded_helper_result(content: &str, limit: usize) -> String {
     let mut chars = content.chars();
-    let result = chars.by_ref().take(LIMIT).collect::<String>();
+    let result = chars.by_ref().take(limit).collect::<String>();
     if chars.next().is_some() {
         format!("{result}\n\n[helper result truncated]")
     } else {
@@ -5641,10 +5823,11 @@ async fn build_invocation_context(
             }
         } else {
             let allow_handoff = scheduler.is_some_and(|scheduler| !scheduler.automatic);
+            let fan_out = fan_out_is_available(&roster.dispatchable);
             delegation = if allow_handoff {
-                DelegationAvailability::CallOrHandoff
+                DelegationAvailability::CallOrHandoff { fan_out }
             } else {
-                DelegationAvailability::CallOnly
+                DelegationAvailability::CallOnly { fan_out }
             };
             tools.push(agent_as_tool_definition(
                 &roster.dispatchable,
@@ -6543,7 +6726,10 @@ fn builtin_tool_name(id: &str) -> Option<&'static str> {
         "ask_user" => Some("AskUser"),
         "web_search" => Some("WebSearch"),
         "fetch" => Some("Fetch"),
-        // Saved-only placeholders must not be advertised to the model.
+        // Retired id. Delegation is `AgentAsTool`, which dispatches to a real
+        // group member rather than an anonymous worker, so this never became a
+        // tool. Kept as a `None` so an agent whose saved `tool_config_json`
+        // still enables it loads instead of failing.
         "run_sub_agent" => None,
         "generate_image" => Some("GenerateImage"),
         "generate_video" => Some("GenerateVideo"),
@@ -6759,10 +6945,6 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
                 &["url"],
             ),
         ),
-        "RunSubAgent" => (
-            "Request a bounded sub-agent delegation if infrastructure is configured.",
-            object_schema(&[("task", "string")], &["task"]),
-        ),
         "GenerateImage" => (
             "Generate an image through the configured OpenAI-compatible media provider and save it under generations/ in the workspace.",
             object_schema(
@@ -6944,6 +7126,22 @@ fn object_schema(fields: &[(&str, &str)], required: &[&str]) -> Value {
     })
 }
 
+/// Whether `fan_out` can be offered to a caller with this dispatchable roster.
+///
+/// Fan-out needs somewhere to fan out to, and the schema's target enum is
+/// deduplicated by display name, so two members sharing one name are one
+/// choice. The system prompt and the tool definition both read this, so the
+/// prompt can never describe a mode the schema withholds.
+fn fan_out_is_available(assistants: &[AssistantMember]) -> bool {
+    let mut names: Vec<&str> = assistants
+        .iter()
+        .map(|assistant| assistant.display_name.as_str())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.len() >= 2
+}
+
 /// Describe `AgentAsTool` in terms of the assistants this caller can reach.
 ///
 /// The generic definition this replaced named no one: `assistant` was an
@@ -6977,17 +7175,93 @@ fn agent_as_tool_definition(assistants: &[AssistantMember], allow_handoff: bool)
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let (mode_choices, mode_description) = if allow_handoff {
-        (
-            json!(["call", "handoff"]),
-            "call: run the assistant privately and receive its result, then answer yourself. handoff: transfer the public turn to the assistant and stop. Choose explicitly.",
-        )
+    let allow_fan_out = fan_out_is_available(assistants);
+
+    let mut mode_choices = vec!["call"];
+    let mut mode_description = String::from(
+        "call: run one assistant privately and receive its result, then answer yourself.",
+    );
+    if allow_fan_out {
+        mode_choices.push("fan_out");
+        mode_description.push_str(
+            " fan_out: run several assistants privately in one call, each on its own task from \
+             dispatches, and receive all their results together; they run one after another, not \
+             in the background.",
+        );
+    }
+    if allow_handoff {
+        mode_choices.push("handoff");
+        mode_description.push_str(" handoff: transfer the public turn to one assistant and stop.");
     } else {
-        (
-            json!(["call"]),
-            "Automatic mode permits call only: run the assistant privately and receive its result, then return control to the moderator.",
-        )
+        mode_description
+            .push_str(" Automatic mode has no handoff: public dispatch stays with the moderator.");
+    }
+    mode_description.push_str(" Choose explicitly.");
+
+    let single_target_suffix = if allow_fan_out {
+        " (call and handoff only)"
+    } else {
+        ""
     };
+    let mut properties = json!({
+        "assistant": {
+            "type": "string",
+            "enum": choices,
+            "description": format!("Which assistant to dispatch to, by the name listed above{single_target_suffix}")
+        },
+        "task": {
+            "type": "string",
+            "description": format!("The work to delegate, written so the assistant can act on it without further context{single_target_suffix}")
+        },
+        "instructions": {
+            "type": "string",
+            "description": format!("Optional constraints on how to do it — format, depth, what to leave alone{single_target_suffix}")
+        },
+        "mode": {
+            "type": "string",
+            "enum": mode_choices,
+            "description": mode_description
+        }
+    });
+    if allow_fan_out {
+        properties["dispatches"] = json!({
+            "type": "array",
+            "minItems": 2,
+            "maxItems": choices.len().min(MAX_FAN_OUT_TARGETS),
+            "description": "Required by fan_out and ignored by every other mode: one entry per assistant, each naming a different assistant and the task meant for it.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "assistant": {
+                        "type": "string",
+                        "enum": choices,
+                        "description": "Which assistant this entry dispatches to"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "The work for this assistant, written so it can act without further context"
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "Optional constraints on how this assistant should do it"
+                    }
+                },
+                "required": ["assistant", "task"],
+                "additionalProperties": false
+            }
+        });
+    }
+    // `assistant` and `task` describe one target, and a fan_out carries its
+    // targets in `dispatches` instead, so they can only stay required where
+    // fan_out is not on offer. Where it is, the mode description names the
+    // fields each mode needs, and a missing one comes back to the model as a
+    // tool result rather than a lost turn.
+    let required = if allow_fan_out {
+        json!(["mode"])
+    } else {
+        json!(["assistant", "task", "mode"])
+    };
+
     ToolDefinition {
         name: AGENT_AS_TOOL_NAME.to_string(),
         description: format!(
@@ -6997,27 +7271,8 @@ fn agent_as_tool_definition(assistants: &[AssistantMember], allow_handoff: bool)
         ),
         input_schema: json!({
             "type": "object",
-            "properties": {
-                "assistant": {
-                    "type": "string",
-                    "enum": choices,
-                    "description": "Which assistant to dispatch to, by the name listed above"
-                },
-                "task": {
-                    "type": "string",
-                    "description": "The work to delegate, written so the assistant can act on it without further context"
-                },
-                "instructions": {
-                    "type": "string",
-                    "description": "Optional constraints on how to do it — format, depth, what to leave alone"
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": mode_choices,
-                    "description": mode_description
-                }
-            },
-            "required": ["assistant", "task", "mode"],
+            "properties": properties,
+            "required": required,
             "additionalProperties": false
         }),
     }
@@ -7548,6 +7803,123 @@ mod tests {
             .any(|field| field == "mode"));
     }
 
+    fn assistant(name: &str) -> AssistantMember {
+        AssistantMember {
+            agent_id: name.to_lowercase(),
+            name: name.to_lowercase(),
+            display_name: name.to_owned(),
+        }
+    }
+
+    /// Fan-out is offered only where it could succeed. One reachable assistant
+    /// — or two that print under one name, since the target enum is by display
+    /// name — leaves nothing to fan out to, and a mode that can only be
+    /// rejected is worse than one that was never advertised.
+    #[test]
+    fn fan_out_is_offered_only_when_two_assistants_can_be_told_apart() {
+        let one = agent_as_tool_definition(&[assistant("Helper")], true);
+        assert_eq!(
+            one.input_schema["properties"]["mode"]["enum"],
+            json!(["call", "handoff"])
+        );
+        assert!(one.input_schema["properties"]["dispatches"].is_null());
+        // Nothing loosens where fan-out is absent: one target still means the
+        // schema itself can insist on naming it.
+        assert_eq!(
+            one.input_schema["required"],
+            json!(["assistant", "task", "mode"])
+        );
+
+        let shared_name =
+            agent_as_tool_definition(&[assistant("Helper"), assistant("Helper")], true);
+        assert_eq!(
+            shared_name.input_schema["properties"]["mode"]["enum"],
+            json!(["call", "handoff"])
+        );
+
+        let two = agent_as_tool_definition(&[assistant("Alice"), assistant("Bob")], true);
+        assert_eq!(
+            two.input_schema["properties"]["mode"]["enum"],
+            json!(["call", "fan_out", "handoff"])
+        );
+        let dispatches = &two.input_schema["properties"]["dispatches"];
+        assert_eq!(dispatches["minItems"], json!(2));
+        assert_eq!(dispatches["maxItems"], json!(2));
+        assert_eq!(
+            dispatches["items"]["properties"]["assistant"]["enum"],
+            json!(["Alice", "Bob"])
+        );
+        assert_eq!(
+            dispatches["items"]["required"],
+            json!(["assistant", "task"])
+        );
+        // A fan_out carries its targets in `dispatches`, so the single-target
+        // fields cannot stay required; `mode` still is, and the parser reports
+        // whichever field the chosen mode is missing.
+        assert_eq!(two.input_schema["required"], json!(["mode"]));
+
+        // Automatic turns lose handoff and keep fan_out: both are private.
+        let automatic = agent_as_tool_definition(&[assistant("Alice"), assistant("Bob")], false);
+        assert_eq!(
+            automatic.input_schema["properties"]["mode"]["enum"],
+            json!(["call", "fan_out"])
+        );
+    }
+
+    /// The prompt is rendered from the same roster the schema is, so it can
+    /// never tell an agent to fan out through a tool that has no such mode.
+    #[test]
+    fn the_prompt_mentions_fan_out_exactly_where_the_schema_offers_it() {
+        assert!(DelegationAvailability::CallOnly { fan_out: true }
+            .prompt_rule()
+            .contains("fan_out"));
+        assert!(!DelegationAvailability::CallOnly { fan_out: false }
+            .prompt_rule()
+            .contains("fan_out"));
+        assert!(DelegationAvailability::CallOrHandoff { fan_out: true }
+            .prompt_rule()
+            .contains("fan_out"));
+        assert!(!DelegationAvailability::Unavailable
+            .prompt_rule()
+            .contains("fan_out"));
+
+        assert!(fan_out_is_available(&[
+            assistant("Alice"),
+            assistant("Bob")
+        ]));
+        assert!(!fan_out_is_available(&[
+            assistant("Helper"),
+            assistant("Helper")
+        ]));
+        assert!(!fan_out_is_available(&[assistant("Alice")]));
+    }
+
+    /// A wide fan-out must not hand the caller six full-length reports, and it
+    /// must not cut each one to a sentence either.
+    #[test]
+    fn fan_out_shares_the_result_budget_without_starving_any_target() {
+        let long = "x".repeat(HELPER_RESULT_LIMIT * 2);
+
+        let whole = bounded_helper_result(&long, HELPER_RESULT_LIMIT);
+        assert!(whole.ends_with("[helper result truncated]"));
+        assert_eq!(
+            whole.chars().count() - "\n\n[helper result truncated]".chars().count(),
+            HELPER_RESULT_LIMIT
+        );
+
+        let share = (HELPER_RESULT_LIMIT / 2).max(FAN_OUT_MIN_SHARE);
+        assert_eq!(share, HELPER_RESULT_LIMIT / 2);
+        // Past the point where an even split would shrink below the floor, the
+        // floor wins: eight targets keep 1,000 characters each.
+        assert_eq!(
+            (HELPER_RESULT_LIMIT / MAX_FAN_OUT_TARGETS).max(FAN_OUT_MIN_SHARE),
+            FAN_OUT_MIN_SHARE
+        );
+
+        // Short answers are passed through whole at any share.
+        assert_eq!(bounded_helper_result("brief", share), "brief");
+    }
+
     #[test]
     fn automatic_mesh_keeps_the_previous_speaker_in_the_moderator_frontier() {
         let topology = TopologySnapshot::Mesh {
@@ -7892,8 +8264,12 @@ mod tests {
         assert_eq!(enabled_tool_names(Some(raw)), vec!["Read".to_string()]);
     }
 
+    /// `run_sub_agent` was never built — delegation is `AgentAsTool` — but an
+    /// agent configured while it was still on the picker has it saved. Loading
+    /// that agent must drop the id, not fail and not advertise a tool the
+    /// runtime has no handler for.
     #[test]
-    fn only_planned_builtin_tools_are_hidden_from_the_runtime() {
+    fn a_retired_builtin_tool_id_loads_without_reaching_the_runtime() {
         let raw = r#"{"tools":{"read":{"enabled":true},"run_sub_agent":{"enabled":true},"generate_image":{"enabled":true},"generate_video":{"enabled":true}}}"#;
 
         assert_eq!(

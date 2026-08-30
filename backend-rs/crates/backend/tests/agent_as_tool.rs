@@ -615,6 +615,204 @@ async fn agent_as_tool_runs_each_helper_at_most_once_per_turn() {
     assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
 }
 
+/// One `fan_out` reaches every assistant it names and answers once. The point
+/// is the round trip: three helpers used to cost the caller three provider
+/// requests, each carrying its whole context, and now cost one.
+#[tokio::test]
+#[allow(clippy::type_complexity)]
+async fn agent_as_tool_fan_out_runs_every_assistant_and_returns_one_result() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-fan-out@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_fan_out",
+            "AgentAsTool",
+            json!({
+                "mode": "fan_out",
+                "dispatches": [
+                    {"assistant": "Alice", "task": "review module a"},
+                    {"assistant": "Bob", "task": "review module b"},
+                ],
+            }),
+        )]),
+        text_body("alice findings"),
+        text_body("bob findings"),
+        text_body("caller final answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "alice-agent",
+        "Alice",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "bob-agent",
+        "Bob",
+        "2024-01-03T00:00:00Z",
+        None,
+    )
+    .await;
+    let caller = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [
+            {"agent_id": alice, "enabled": true},
+            {"agent_id": bob, "enabled": true},
+        ]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller investigate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    // One call in, one result out, holding both helpers' work.
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "completed");
+    let summary = results[0]["result_summary"].as_str().unwrap();
+    assert!(summary.contains("2 assistants, 2 completed"), "{summary}");
+
+    // Both helpers ran privately: the transcript holds the user's message and
+    // the caller's answer, and nothing either helper said.
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].1.as_deref(), Some(caller.as_str()));
+    assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
+
+    // Fan-out targets are private calls with siblings, so the trace shows two
+    // `call` dispatches under the caller rather than a shape nothing else reads.
+    let dispatches: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT action_kind, status, target_agent_id, artifact_json FROM agent_dispatches \
+         WHERE action_kind = 'call' ORDER BY created_at",
+    )
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(dispatches.len(), 2);
+    assert!(dispatches.iter().all(|row| row.1 == "completed"));
+    assert_eq!(dispatches[0].2.as_deref(), Some(alice.as_str()));
+    assert_eq!(dispatches[1].2.as_deref(), Some(bob.as_str()));
+    assert!(dispatches[0]
+        .3
+        .as_deref()
+        .unwrap()
+        .contains("alice findings"));
+    assert!(dispatches[1].3.as_deref().unwrap().contains("bob findings"));
+}
+
+/// A target that cannot run is one labelled section, not the end of the call.
+/// Aborting the batch would strand the helpers that already ran: each is spent
+/// for the turn, so there would be nothing left for the caller to retry.
+#[tokio::test]
+async fn agent_as_tool_fan_out_reports_a_dead_target_and_keeps_the_rest() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "aat-fan-out-partial@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace).await;
+    let provider_url = fake_provider_sequence(vec![
+        tool_body(vec![(
+            "call_fan_out",
+            "AgentAsTool",
+            json!({
+                "mode": "fan_out",
+                "dispatches": [
+                    {"assistant": "Ghost", "task": "review module a"},
+                    {"assistant": "Bob", "task": "review module b"},
+                ],
+            }),
+        )]),
+        text_body("bob findings"),
+        text_body("caller final answer"),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    let alice = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "alice-agent",
+        "Alice",
+        "2024-01-02T00:00:00Z",
+        None,
+    )
+    .await;
+    let bob = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "bob-agent",
+        "Bob",
+        "2024-01-03T00:00:00Z",
+        None,
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "caller-agent",
+        "Caller",
+        "2024-01-01T00:00:00Z",
+        Some(json!({"assistant_agents": [
+            {"agent_id": alice, "enabled": true},
+            {"agent_id": bob, "enabled": true},
+        ]})),
+    )
+    .await;
+
+    let (outcome, events) = run_turn(&state, &group, &owner, "@Caller investigate").await;
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 1);
+    // Something ran, so the call completed; the aggregate carries the reason
+    // the other target did not, under the name the model used for it.
+    assert_eq!(results[0]["status"], "completed");
+    let summary = results[0]["result_summary"].as_str().unwrap();
+    assert!(summary.contains("2 assistants, 1 completed"), "{summary}");
+    assert!(summary.contains("@Ghost"), "{summary}");
+
+    let dispatch_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches WHERE action_kind = 'call'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        dispatch_count, 1,
+        "only the resolvable target was dispatched"
+    );
+
+    let rows = message_rows(&state).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].2.as_deref(), Some("caller final answer"));
+}
+
 #[tokio::test]
 #[allow(clippy::type_complexity)]
 async fn agent_as_tool_omitted_mode_is_rejected_and_caller_can_recover() {
@@ -1350,7 +1548,7 @@ async fn agent_as_tool_handoff_rejection_returns_a_tool_result_instead_of_ending
 }
 
 /// A `mode` the enum does not contain is a malformed call, not a reason to lose
-/// the turn: the model is told what the two values are and gets to try again.
+/// the turn: the model is told what the valid values are and gets to try again.
 #[tokio::test]
 async fn agent_as_tool_unparseable_mode_is_reported_and_recoverable() {
     let (app, state) = router_with_state_for_tests().await;
@@ -1402,7 +1600,7 @@ async fn agent_as_tool_unparseable_mode_is_reported_and_recoverable() {
     assert!(results[0]["result_summary"]
         .as_str()
         .unwrap()
-        .contains("call or handoff"));
+        .contains("call, handoff, or fan_out"));
 
     let rows = message_rows(&state).await;
     assert_eq!(rows.len(), 2);

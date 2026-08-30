@@ -46,9 +46,17 @@ For `llm_chat`, Qunica loads repository conventions from `AGENTS.md` in the prim
 
 An agent with no tools configured gets `Read`, `Glob`, and `Grep`. Shared-note tools are mounted automatically for members of a group that has a local workspace.
 
-`AgentAsTool` is the host-level group delegation mechanism. Its target list is computed for each turn: it contains only bound, active, unselected group helpers allowed by the topology. Every call must explicitly choose `call` or `handoff`; automatic scheduler turns expose `call` only.
+`AgentAsTool` is the host-level group delegation mechanism. Its target list is computed for each turn: it contains only bound, active, unselected group helpers allowed by the topology. Every call must explicitly choose a mode.
 
-Codex CLI and Claude Code may create their own native subagents inside an ACP run. Those subagents stay private to the external runtime: they are not group members, do not enter the group topology, and return their output only to the owning ACP Agent. The host does not expose a separate `RunSubAgent` tool.
+| Mode | Does | Available |
+| --- | --- | --- |
+| `call` | Runs one helper privately and returns its result to the caller | always |
+| `fan_out` | Runs several helpers privately in one call, each on its own task from `dispatches`, and returns all their results together | when two or more helpers with distinct display names are reachable |
+| `handoff` | Transfers the public turn to one helper and ends the caller's turn | interactive turns only; automatic scheduler turns keep public dispatch with the moderator |
+
+`fan_out` is a batching mode, not a concurrency one: its targets run one after another, like any other group dispatch. What it saves is round trips — delegating to three helpers costs one provider request instead of three, each of which would have carried the caller's whole context. Each target spends one scheduler agent step and each helper still runs at most once per turn, so a target that names an already-dispatched helper is reported and the rest of the batch continues. A `fan_out` that names one assistant, or the same one twice, is rejected before anything runs.
+
+Codex CLI and Claude Code may create their own native subagents inside an ACP run. Those subagents stay private to the external runtime: they are not group members, do not enter the group topology, and return their output only to the owning ACP Agent. The host has no anonymous sub-agent tool of its own — delegation always goes to a real group member through `AgentAsTool`.
 
 ## Approvals and unattended mode
 
