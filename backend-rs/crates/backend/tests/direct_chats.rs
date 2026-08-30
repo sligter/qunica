@@ -511,10 +511,11 @@ async fn direct_workspace_root(app: &Router, token: &str, chat_id: &str) -> Path
 async fn direct_workspace_files_and_attachments_reject_unsafe_paths_and_symlink_escapes() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "direct-workspace-path-safety@example.com").await;
-    let (root, workspace_id) = create_local_workspace(&app, &token, "Direct Path Safety").await;
+    let (_root, workspace_id) = create_local_workspace(&app, &token, "Direct Path Safety").await;
     let agent_id = create_agent(&app, &token, &workspace_id, "Path Agent").await;
     let chat = create_chat(&app, &token, &agent_id).await;
     let chat_id = chat["id"].as_str().unwrap();
+    let chat_root = direct_workspace_root(&app, &token, chat_id).await;
 
     for path in [
         "../secret.txt",
@@ -575,7 +576,7 @@ async fn direct_workspace_files_and_attachments_reject_unsafe_paths_and_symlink_
     let outside = tempfile::tempdir().unwrap();
     let outside_file = outside.path().join("secret.txt");
     std::fs::write(&outside_file, "secret").unwrap();
-    if create_dir_symlink(outside.path(), &root.path().join("link")).is_ok() {
+    if create_dir_symlink(outside.path(), &chat_root.join("link")).is_ok() {
         for request in [
             authed(
                 "GET",
@@ -604,8 +605,9 @@ async fn direct_workspace_files_and_attachments_reject_unsafe_paths_and_symlink_
                 json!({"content": "blocked", "version": "0".repeat(64)}),
             ),
         ] {
+            let route = request.uri().to_string();
             let (status, body) = send(&app, request).await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route}: {body:?}");
             assert_eq!(body["error"]["code"], "invalid_input");
         }
         let (status, body) = send(
