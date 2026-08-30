@@ -36,9 +36,6 @@ A group holds the members, conversation history, shared notes, workspace, files,
 
 Built-in agents can use OpenAI-compatible, Anthropic, or Gemini providers. External CLI agents such as Codex and Claude Code join through the Agent Client Protocol (ACP).
 
-> [!IMPORTANT]
-> Qunica is alpha software and supports desktop builds for Windows, macOS, and Linux. Registration creates an account on the backend you run; there is no hosted Qunica account service.
-
 ## What you can do
 
 - **Keep the project in one room.** People and agents share the same thread, notes, files, and working folder.

@@ -36,9 +36,6 @@
 
 内置 Agent 支持 OpenAI 兼容接口、Anthropic 与 Gemini。Codex、Claude Code 等外部 CLI Agent 则通过 Agent Client Protocol（ACP）加入。
 
-> [!IMPORTANT]
-> Qunica 仍处于 alpha 阶段，桌面版支持 Windows、macOS 和 Linux。注册创建的是你自己运行的后端账户，Qunica 暂时没有托管账户服务。
-
 ## 现在能做什么
 
 - **把项目留在一个群里。** 人和 Agent 共用对话、笔记、文件与工作目录。
