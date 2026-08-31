@@ -802,12 +802,12 @@ export function Composer({
   }
 
   const handleMentionSelect = useCallback(
-    (agent: GroupAgentRead) => {
+    (name: string) => {
       const draft = valueRef.current
       const before = draft.slice(0, mentionStart)
       const cursorPos = textareaRef.current?.selectionStart ?? draft.length
       const after = draft.slice(cursorPos)
-      const inserted = `@${agent.display_name} `
+      const inserted = `@${name} `
       const newValue = before + inserted + after
       updateValue(newValue)
       setShowMention(false)

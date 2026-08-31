@@ -33,6 +33,7 @@ describe('MentionPopover i18n', () => {
   it('uses an English accessible picker label and preserves the agent name', () => {
     render(<MentionPopover agents={[agent]} query="" visible onSelect={vi.fn()} onClose={vi.fn()} />)
     expect(screen.getByRole('listbox', { name: 'Mention an agent' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Everyone' })).toBeVisible()
     expect(screen.getByRole('option', { name: 'Agent_RAW_原文' })).toBeVisible()
   })
 
@@ -40,6 +41,7 @@ describe('MentionPopover i18n', () => {
     await i18n.changeLanguage('zh-CN')
     render(<MentionPopover agents={[agent]} query="" visible onSelect={vi.fn()} onClose={vi.fn()} />)
     expect(screen.getByRole('listbox', { name: '提及 Agent' })).toBeVisible()
+    expect(screen.getByRole('option', { name: '所有人' })).toBeVisible()
     expect(screen.getByRole('option', { name: 'Agent_RAW_原文' })).toBeVisible()
   })
   it('does not capture IME keys from another editor', () => {

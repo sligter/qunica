@@ -339,4 +339,90 @@ describe('MessageList scheduler summary integration', () => {
     expect(screen.getByTestId('message-completed-1')).toHaveTextContent('Earlier reply')
     expect(screen.queryByTestId('stream-timeline')).not.toBeInTheDocument()
   })
+
+  it('hands an approval turn between its live timeline and persisted message without two bubbles', () => {
+    const run: StreamRun = {
+      id: 'stream-approval',
+      group_id: 'group-1',
+      user_message_id: userMessage.id,
+      status: 'active',
+      turn_id: 'turn-approval',
+      scheduler_status: 'waiting_for_user',
+      moderator_active: false,
+      terminal_reason: 'waiting_for_user',
+      criticalSummaries: [],
+      created_at: '2026-07-15T10:00:00Z',
+      updated_at: '2026-07-15T10:00:02Z',
+      events: [
+        {
+          id: 'approval-1',
+          type: 'approval_required',
+          stream_id: 'stream-approval',
+          agent_id: 'agent-1',
+          display_name: 'Agent One',
+          message: 'Approval required',
+          approval_request: {
+            tool_call_id: 'call-rm',
+            rule: 'delete-files',
+            capability: 'delete files',
+            reason: 'it deletes files',
+            tool_name: 'Pwsh',
+            subject: 'Remove-Item cache.txt',
+          },
+          created_at: '2026-07-15T10:00:02Z',
+        },
+      ],
+    }
+    const checkpoint: Message = {
+      ...userMessage,
+      id: 'checkpoint-approval',
+      sender_type: 'agent',
+      sender_id: 'agent-1',
+      content: 'Preparing the requested cleanup.',
+      status: 'interrupted',
+      tool_calls: [
+        {
+          tool_call_id: 'call-rm',
+          tool_name: 'Pwsh',
+          status: 'approval_required',
+          args_summary: 'Remove-Item cache.txt',
+          result_summary: null,
+          approval_request: {
+            rule: 'delete-files',
+            capability: 'delete files',
+            reason: 'it deletes files',
+            tool_name: 'Pwsh',
+            subject: 'Remove-Item cache.txt',
+          },
+        },
+      ],
+      reply_to_message_id: userMessage.id,
+      turn_summary: null,
+    }
+    setMessageState(run, [userMessage, checkpoint])
+
+    render(<MessageList groupId="group-1" />)
+
+    expect(screen.getByTestId('stream-timeline')).toBeInTheDocument()
+    expect(screen.queryByTestId('message-checkpoint-approval')).not.toBeInTheDocument()
+
+    act(() => {
+      setMessageState(run, [
+        userMessage,
+        {
+          ...checkpoint,
+          content: 'Cleanup complete.',
+          status: 'visible',
+          tool_calls: checkpoint.tool_calls?.map((call) => ({
+            ...call,
+            status: 'completed',
+            result_summary: 'ok',
+          })),
+        },
+      ])
+    })
+
+    expect(screen.getByTestId('message-checkpoint-approval')).toHaveTextContent('Cleanup complete.')
+    expect(screen.queryByTestId('stream-timeline')).not.toBeInTheDocument()
+  })
 })

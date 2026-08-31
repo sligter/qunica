@@ -116,6 +116,51 @@ describe('StreamTimeline activity rendering', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
+  it('stops the waiting timer as soon as an approval is answered', () => {
+    const approval = event({
+      id: 'approval-1',
+      stream_id: 'stream-1',
+      type: 'approval_required' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      message: 'Approval required',
+      created_at: '2026-07-16T10:00:03Z',
+    })
+    const events = [
+      event({
+        id: 'agent-start:stream-1:agent-1',
+        stream_id: 'stream-1',
+        type: 'agent_start' as const,
+        agent_id: 'agent-1',
+        display_name: 'Researcher',
+        created_at: '2026-07-16T10:00:01Z',
+      }),
+      event({
+        id: 'tool-1',
+        stream_id: 'stream-1',
+        type: 'tool' as const,
+        agent_id: 'agent-1',
+        display_name: 'Researcher',
+        tool_call_id: 'call-1',
+        tool_name: 'Pwsh',
+        status: 'approval_required' as const,
+        created_at: '2026-07-16T10:00:02Z',
+      }),
+      approval,
+    ]
+
+    const { rerender } = render(<StreamTimeline run={run(events, 'active')} />)
+    expect(screen.getByText('Waiting for you')).toBeVisible()
+
+    rerender(
+      <StreamTimeline
+        run={run([...events.slice(0, -1), { ...approval, approval_resolved: 'approved' }], 'active')}
+      />,
+    )
+    expect(screen.queryByText('Waiting for you')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
   it('shows only the newest checklist an agent wrote', () => {
     const first = event({
       id: 'todo:stream-1:agent-1',

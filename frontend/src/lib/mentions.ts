@@ -16,7 +16,10 @@ interface MdastNode {
 }
 
 function mentionPattern(names: readonly string[]): RegExp | null {
-  const alternatives = [...new Set(names.filter(Boolean))]
+  const memberNames = names.filter(Boolean)
+  const alternatives = [...new Set(
+    memberNames.length > 0 ? ['Everyone', '所有人', ...memberNames] : [],
+  )]
     .sort((a, b) => b.length - a.length)
     .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   return alternatives.length > 0

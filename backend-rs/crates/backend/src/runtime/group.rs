@@ -5797,6 +5797,7 @@ fn scan_mentions(text: &str, candidates: &[Candidate]) -> Vec<usize> {
 
     let chars: Vec<char> = text.chars().collect();
     let lower: Vec<char> = text.to_lowercase().chars().collect();
+    let everyone_names = ["everyone", "所有人"].map(|name| name.chars().collect::<Vec<_>>());
     let len = chars.len();
 
     let mut out = Vec::new();
@@ -5808,6 +5809,26 @@ fn scan_mentions(text: &str, candidates: &[Candidate]) -> Vec<usize> {
             continue;
         }
         let mut matched = false;
+        for name in &everyone_names {
+            let end = i + 1 + name.len();
+            if end > lower.len()
+                || &lower[i + 1..end] != name.as_slice()
+                || end != len && is_name_char(chars[end])
+            {
+                continue;
+            }
+            for index in 0..candidates.len() {
+                if seen.insert(index) {
+                    out.push(index);
+                }
+            }
+            i = end;
+            matched = true;
+            break;
+        }
+        if matched {
+            continue;
+        }
         for (index, name) in &names {
             let end = i + 1 + name.len();
             if end > lower.len() || &lower[i + 1..end] != name.as_slice() {
@@ -7952,6 +7973,40 @@ mod tests {
     use crate::runtime::conversation_context::{
         ConversationActor, ConversationAttachment, ConversationMessage,
     };
+
+    #[test]
+    fn everyone_mentions_expand_to_the_active_roster() {
+        let first = Candidate {
+            agent_id: "planner".to_owned(),
+            owner_id: "owner".to_owned(),
+            display_name: "Planner".to_owned(),
+            system_prompt: String::new(),
+            runtime_kind: "llm".to_owned(),
+            provider_id: None,
+            model_config_json: None,
+            tool_config_json: None,
+            external_runtime_json: None,
+            skill_ids_json: None,
+            workspace_id: None,
+            workspace_mode: WorkspaceMode::SelfOnly,
+            is_system: false,
+            response_mode: "default".to_owned(),
+            topology_role: None,
+            speaking_order: None,
+        };
+        let candidates = vec![
+            first.clone(),
+            Candidate {
+                agent_id: "writer".to_owned(),
+                display_name: "Writer".to_owned(),
+                ..first
+            },
+        ];
+
+        assert_eq!(scan_mentions("@Writer @Everyone", &candidates), vec![1, 0]);
+        assert_eq!(scan_mentions("@所有人", &candidates), vec![0, 1]);
+        assert!(scan_mentions("@everyone_else", &candidates).is_empty());
+    }
 
     #[test]
     fn automatic_agent_as_tool_schema_allows_call_only_and_requires_mode() {

@@ -225,6 +225,19 @@ describe('Composer', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it('inserts and highlights the everyone mention', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<Composer onSend={vi.fn()} groupAgents={groupAgents} />)
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+
+    await user.type(textarea, '@')
+    expect(screen.getByRole('option', { name: 'Everyone' })).toBeVisible()
+    await user.keyboard('{Enter}')
+
+    expect(textarea).toHaveValue('@Everyone ')
+    expect(container.querySelector('.chat-mention')).toHaveTextContent('@Everyone')
+  })
+
   it('highlights a selected group member in the input', async () => {
     const user = userEvent.setup()
     const { container } = render(<Composer onSend={vi.fn()} groupAgents={groupAgents} />)

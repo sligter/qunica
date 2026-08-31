@@ -324,7 +324,10 @@ function blockStatus(block: AgentBlock): StreamStatus | null {
     if (event.type === 'external_run' && externalRunIsLive(event)) {
       return { phase: 'tool', detail: event.adapter, since }
     }
-    if (event.type === 'waiting_for_user' || event.type === 'approval_required') {
+    if (
+      event.type === 'waiting_for_user' ||
+      (event.type === 'approval_required' && !event.approval_resolved)
+    ) {
       return { phase: 'waiting', since }
     }
   }

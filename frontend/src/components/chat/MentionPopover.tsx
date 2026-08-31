@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import { Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import type { GroupAgentRead } from '@/types/api'
 
+type MentionOption = { key: string; label: string; agent: GroupAgentRead | null }
+
 interface MentionPopoverProps {
   agents: GroupAgentRead[]
   query: string
-  onSelect: (agent: GroupAgentRead) => void
+  onSelect: (name: string) => void
   onClose: () => void
   visible: boolean
 }
@@ -22,10 +25,15 @@ export function MentionPopover({
   const { t } = useTranslation('chat')
   const [activeIndex, setActiveIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
+  const everyoneLabel = t('composer.mentionEveryone')
 
-  const filtered = agents.filter((a) =>
-    a.display_name.toLowerCase().includes(query.toLowerCase()),
-  )
+  const needle = query.toLowerCase()
+  const options: MentionOption[] = agents
+    .filter((agent) => agent.display_name.toLowerCase().includes(needle))
+    .map((agent) => ({ key: agent.id, label: agent.display_name, agent }))
+  if (agents.length > 0 && everyoneLabel.toLowerCase().includes(needle)) {
+    options.unshift({ key: 'everyone', label: everyoneLabel, agent: null })
+  }
 
   useEffect(() => {
     setActiveIndex(0)
@@ -38,17 +46,17 @@ export function MentionPopover({
       if (!(e.target instanceof Node) || !listRef.current?.parentElement?.contains(e.target)) return
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setActiveIndex((i) => (i + 1) % Math.max(filtered.length, 1))
+        setActiveIndex((i) => (i + 1) % Math.max(options.length, 1))
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
-        setActiveIndex((i) => (i - 1 + filtered.length) % Math.max(filtered.length, 1))
+        setActiveIndex((i) => (i - 1 + options.length) % Math.max(options.length, 1))
       } else if (
         (e.key === 'Enter' || e.key === 'Tab' || e.key === ' ') &&
-        filtered[activeIndex]
+        options[activeIndex]
       ) {
         e.preventDefault()
         e.stopPropagation()
-        onSelect(filtered[activeIndex])
+        onSelect(options[activeIndex].label)
       } else if (e.key === 'Escape') {
         e.preventDefault()
         onClose()
@@ -57,14 +65,14 @@ export function MentionPopover({
 
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [visible, filtered, activeIndex, onSelect, onClose])
+  }, [visible, options, activeIndex, onSelect, onClose])
 
   useEffect(() => {
     const el = listRef.current?.children[activeIndex] as HTMLElement | undefined
     el?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex])
 
-  if (!visible || filtered.length === 0) return null
+  if (!visible || options.length === 0) return null
 
   return (
     <div
@@ -73,9 +81,9 @@ export function MentionPopover({
       role="listbox"
       aria-label={t('workspace.mentionPicker')}
     >
-      {filtered.map((agent, idx) => (
+      {options.map((option, idx) => (
         <button
-          key={agent.id}
+          key={option.key}
           type="button"
           role="option"
           aria-selected={idx === activeIndex}
@@ -85,15 +93,25 @@ export function MentionPopover({
           onMouseEnter={() => setActiveIndex(idx)}
           onMouseDown={(e) => {
             e.preventDefault()
-            onSelect(agent)
+            onSelect(option.label)
           }}
         >
           {/* Decorative: the row already names the agent, and the avatar's own
               label would otherwise announce it a second time. */}
           <span aria-hidden="true">
-            <AgentAvatar name={agent.display_name} avatarUrl={agent.avatar_url} size="sm" />
+            {option.agent ? (
+              <AgentAvatar
+                name={option.agent.display_name}
+                avatarUrl={option.agent.avatar_url}
+                size="sm"
+              />
+            ) : (
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <Users className="h-3.5 w-3.5" />
+              </span>
+            )}
           </span>
-          <span className="truncate font-medium">{agent.display_name}</span>
+          <span className="truncate font-medium">{option.label}</span>
         </button>
       ))}
     </div>

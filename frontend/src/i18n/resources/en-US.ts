@@ -356,7 +356,7 @@ export const enUS = {
       cleanupError: 'Terminal cleanup failed: {{message}}',
     },
     composer: {
-      placeholder: 'Message your agents…', assistantPlaceholder: 'Tell the assistant what you want to get done…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', uploadUnsupportedTitle: 'External file uploads are not supported in direct chats', enhance: 'Enhance with group context', enhancing: 'Enhancing prompt…', enhanceFailed: 'Prompt enhancement failed: {{message}}', enhanceAgent: 'Enhancement member', enhanceAgentAuto: 'Auto-select member', enhanceWith: 'Enhance with {{name}}', closeEnhanceAgents: 'Close enhancement member list', dropZone: 'Message composer file drop area', resize: 'Resize the message box', resizeTitle: 'Drag to resize · double-click to fit the text', showMore: 'Show {{count}} more agents', mentionTitle: 'Insert @{{name}} into the composer', membersList: 'Group members', closeAgents: 'Close agent list',
+      placeholder: 'Message your agents…', assistantPlaceholder: 'Tell the assistant what you want to get done…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', uploadUnsupportedTitle: 'External file uploads are not supported in direct chats', enhance: 'Enhance with group context', enhancing: 'Enhancing prompt…', enhanceFailed: 'Prompt enhancement failed: {{message}}', enhanceAgent: 'Enhancement member', enhanceAgentAuto: 'Auto-select member', enhanceWith: 'Enhance with {{name}}', closeEnhanceAgents: 'Close enhancement member list', dropZone: 'Message composer file drop area', resize: 'Resize the message box', resizeTitle: 'Drag to resize · double-click to fit the text', showMore: 'Show {{count}} more agents', mentionTitle: 'Insert @{{name}} into the composer', mentionEveryone: 'Everyone', membersList: 'Group members', closeAgents: 'Close agent list',
       effort: { label: 'Thinking effort', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
       drop: { ready: 'Drop workspace files to attach them or folders to insert their paths.', conversationReady: 'Drop to insert this conversation ID.', conversationInserted: 'Conversation ID inserted.', fileAdded_one: 'Workspace file added.', fileAdded_other: '{{count}} workspace files added.', directoryInserted_one: 'Folder path inserted.', directoryInserted_other: '{{count}} folder paths inserted.', unsupported: 'This dropped item is not supported.', uploadUnsupported: 'External file uploads are not supported in direct chats.', noWorkspace: 'This conversation has no local workspace.', unreadable: 'Unable to read that workspace item.', limitReached: 'You can attach up to {{count}} files.' }, queued_one: '{{count}} message queued — it sends when the current reply finishes', queued_other: '{{count}} messages queued — they send when the current reply finishes', clearQueued: 'Clear queue',
     },
@@ -373,7 +373,7 @@ export const enUS = {
       decline: 'Decline',
       noteLabel: 'Note for the agent',
       notePlaceholder: 'Optional: say why, so the agent can try something else…',
-      answeredApproved: 'You allowed this command; it was run.',
+      answeredApproved: 'You allowed this command.',
       answeredDeclined: 'You declined this command; it was not run.',
     },
     todos: {

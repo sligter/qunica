@@ -78,6 +78,7 @@ function scrollToLatest(node: HTMLDivElement): number {
 }
 
 function timelineMessageIds(
+  messages: readonly Message[],
   runs: Record<string, StreamRun>,
   runIdsByUserMessageId: Record<string, string>,
   skippedRunIds: Set<string>,
@@ -95,8 +96,25 @@ function timelineMessageIds(
         ids.add(event.message_id)
       }
     }
+    for (const message of messages) {
+      if (message.status === 'interrupted' && messageMatchesRunApproval(message, run)) {
+        ids.add(message.id)
+      }
+    }
   }
   return ids
+}
+
+function messageMatchesRunApproval(message: Message, run: StreamRun): boolean {
+  if (message.sender_type !== 'agent' || !message.tool_calls) return false
+  return message.tool_calls.some((call) =>
+    call.tool_call_id && run.events.some(
+      (event) =>
+        event.type === 'approval_required' &&
+        (!event.agent_id || event.agent_id === message.sender_id) &&
+        event.approval_request?.tool_call_id === call.tool_call_id,
+    ),
+  )
 }
 
 function checkpointedRunIds(
@@ -131,6 +149,11 @@ function checkpointedRunIds(
       latestUserMessageId ? runIdsByUserMessageId[latestUserMessageId] : undefined
     )
     if (!runId) continue
+    const run = runs[runId]
+    if (run && message.status === 'visible' && messageMatchesRunApproval(message, run)) {
+      checkpointed.add(runId)
+      continue
+    }
     const draft = drafts.get(`${runId}:${message.sender_id}`)
     if (draft && (message.content ?? '').startsWith(draft)) checkpointed.add(runId)
   }
@@ -173,8 +196,13 @@ export function MessageList({
     [messages, streamRuns, streamRunIdsByUserMessageId],
   )
   const hiddenMessageIds = useMemo(
-    () => timelineMessageIds(streamRuns, streamRunIdsByUserMessageId, checkpointedRuns),
-    [checkpointedRuns, streamRuns, streamRunIdsByUserMessageId],
+    () => timelineMessageIds(
+      messages,
+      streamRuns,
+      streamRunIdsByUserMessageId,
+      checkpointedRuns,
+    ),
+    [checkpointedRuns, messages, streamRuns, streamRunIdsByUserMessageId],
   )
   const latestWarning = warnings[warnings.length - 1]
   const warningInputRequest = humanInputRequestFromText(latestWarning)
