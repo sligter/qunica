@@ -464,7 +464,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     empty: '暂无服务商。点击 + 添加。',
     list: { selectTitle: 'LLM 服务商', selectDescription: '注册模型端点，管理模型与密钥。' },
     detail: { editTitle: '编辑 {{name}}', loading: '正在加载…', loadError: '加载失败：{{error}}', notFound: '未找到服务商。', description: '描述', deleteTitle: '删除服务商“{{name}}”？', deleteDescription: '使用它的 Agent 将回退到默认设置。' },
-    form: { createTitle: '新建 LLM 服务商', createSubtitle: '注册聊天补全端点。API 密钥会安全存储并以掩码显示。', namePlaceholder: '例如 MiMo 生产环境', keyMaskedPlaceholder: '留空以保留 {{masked}}', keyMaskedHint: '仅在轮换凭据时输入新密钥。', headerValuePlaceholder: '请求头值', addHeader: '添加请求头', headersHint: '每次请求都会携带，保存后仅返回掩码值。', headersMaskedHint: '值留空会保留原值，删除整行会移除该请求头。', autoFromModel: '从模型自动获取', add: '添加服务商', saveChanges: '保存更改' },
+    form: { createTitle: '新建 LLM 服务商', createSubtitle: '注册聊天补全端点。API 密钥会安全存储并以掩码显示。', namePlaceholder: '例如 OpenAI', keyMaskedPlaceholder: '留空以保留 {{masked}}', keyMaskedHint: '仅在轮换凭据时输入新密钥。', headerValuePlaceholder: '请求头值', addHeader: '添加请求头', headersHint: '每次请求都会携带，保存后仅返回掩码值。', headersMaskedHint: '值留空会保留原值，删除整行会移除该请求头。', autoFromModel: '从模型自动获取', add: '添加服务商', saveChanges: '保存更改' },
     fields: { name: '名称', kind: '类型', baseUrlOptional: 'Base URL（可选）', baseUrl: 'Base URL', apiKey: 'API 密钥', userAgent: 'User-Agent（可选）', headers: '自定义请求头', defaultModel: '默认模型', contextWindowTokens: '上下文窗口 token 数', contextWindow: '上下文窗口', outputReserve: '输出预留比例', outputReservePercent: '输出预留比例 %', descriptionOptional: '描述（可选）', status: '状态', reasoningPassback: '推理回传' },
     models: { title: '模型', description: '每个模型单独配置上下文窗口、输出预留与响应测试。', none: '尚未添加模型。仅使用上方默认模型。', add: '添加模型', fetch: '获取模型', loading: '正在从服务商获取模型…', found_one: '已从服务商获取 {{count}} 个模型。', found_other: '已从服务商获取 {{count}} 个模型。', fetchError: '无法获取模型列表，仍可手动输入模型 ID。', default: '默认', modelId: '模型 ID', modelPlaceholder: '选择已获取模型或输入 ID', remove: '删除模型 {{model}}', required: '请为每个模型填写模型 ID。', duplicate: '模型 ID 不能重复。', test: '测试', testing: '测试中…', testNamed: '测试模型 {{model}}', testSucceeded: '模型响应成功（{{latency}} ms）。', testFailed: '模型测试失败。', testKeyRequired: '请先填写 API 密钥再测试模型。', reasoningFor: '模型 {{model}} 的推理回传' },
     actions: { saving: '正在保存...' }, states: { auto: '自动' }, validation: { required: '必填' }, errors: { network: '网络错误' },
@@ -546,7 +546,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     empty: '暂无技能。点击 + 导入。',
     list: { selectTitle: '技能', selectDescription: '导入技能包，挂载到 Agent 作为系统提示词片段。' },
     detail: { editTitle: '编辑 {{name}}', loading: '正在加载技能…', loadError: '无法加载技能：{{error}}', notFound: '未找到技能。', sourceShort: '来源', body: '正文（Markdown）', bodyDescription: '挂载到 Agent 后，正文将作为系统提示词片段追加。支持 GFM 表格与代码块。', deleteTitle: '删除技能“{{name}}”？', deleteDescription: '已挂载该技能的 Agent 将失去此系统提示词片段。' },
-    form: { createTitle: '导入技能', createSubtitle: '从 zip 技能包、GitHub 仓库或 Anthropic 风格的 SKILL.md 导入技能。挂载到 Agent 后，正文会在每次调用时追加到该 Agent 的系统提示词中。', packageTab: '技能包（.zip）', githubTab: 'GitHub', markdownTab: '粘贴 SKILL.md', dropPackage: '将 .zip 技能包拖放到此处', browse: '或点击浏览', packageHint: 'zip 中必须包含带 YAML frontmatter 的 SKILL.md。支持技能位于压缩包内的多层目录中。可选目录：scripts/、references/、assets/。', importPackage: '导入技能包', chooseFile: '选择 .zip 文件', replaceFile: '重新选择', repository: 'GitHub 仓库', repositoryPlaceholder: 'https://github.com/user/repo 或 user/repo', branch: '分支', skillPath: '技能路径', repositoryHint: '仓库或所选目录中必须包含 SKILL.md。', fetchInstall: '获取并安装', paste: '粘贴 SKILL.md', markdownHint: '文件必须以 YAML frontmatter（---）开头，其中包含 name 和可选的 description。', importing: '正在导入…', installing: '正在安装...', importSkill: '导入技能', rawPlaceholder: '---\nname: my-skill\ndescription: 用一句话概括此技能的作用。\n---\n\n# 我的技能\n\n正文采用 Markdown 格式。技能挂载到 Agent 后，正文将原样追加到\n该 Agent 的系统提示词中。\n', name: '名称', description: '描述', descriptionPlaceholder: '用一句话概括此技能的作用。', saveChanges: '保存更改' },
+    form: { createTitle: '导入技能', createSubtitle: '从 zip 技能包、GitHub 仓库或 Anthropic 风格的 SKILL.md 导入技能。', packageTab: '技能包（.zip）', githubTab: 'GitHub', markdownTab: '粘贴 SKILL.md', dropPackage: '将 .zip 技能包拖放到此处', browse: '或点击浏览', packageHint: 'zip 中必须包含带 YAML frontmatter 的 SKILL.md。支持技能位于压缩包内的多层目录中。可选目录：scripts/、references/、assets/。', importPackage: '导入技能包', chooseFile: '选择 .zip 文件', replaceFile: '重新选择', repository: 'GitHub 仓库', repositoryPlaceholder: 'https://github.com/user/repo 或 user/repo', branch: '分支', skillPath: '技能路径', repositoryHint: '仓库或所选目录中必须包含 SKILL.md。', fetchInstall: '获取并安装', paste: '粘贴 SKILL.md', markdownHint: '文件必须以 YAML frontmatter（---）开头，其中包含 name 和可选的 description。', importing: '正在导入…', installing: '正在安装...', importSkill: '导入技能', rawPlaceholder: '---\nname: my-skill\ndescription: 用一句话概括此技能的作用。\n---\n\n# 我的技能\n\n正文采用 Markdown 格式。技能挂载到 Agent 后，正文将原样追加到\n该 Agent 的系统提示词中。\n', name: '名称', description: '描述', descriptionPlaceholder: '用一句话概括此技能的作用。', saveChanges: '保存更改' },
     actions: {}, states: {}, validation: {}, errors: { network: '网络错误', markdownRequired: '提交前请先粘贴 SKILL.md。', packageRequired: '请先选择 .zip 文件。', githubRequired: '请先输入 GitHub 仓库 URL。', zipOnly: '仅接受 .zip 文件。', update: '更新技能失败' },
     resources: { title: '技能包资源', empty: '此技能没有导入的技能包资源。', file_one: '{{count}} 个文件', file_other: '{{count}} 个文件', search: '搜索文件…', noMatches: '没有匹配的文件。', metadataError: '无法加载资源可编辑性信息，仅显示技能包元数据。', text: '文本', select: '请选择资源文件。', editable: '可编辑文本', notEditable: '不可编辑', loading: '正在加载文件…', loadError: '无法加载文件。', loadErrorDetail: '无法加载文件：{{message}}', saveError: '保存文件失败', saveErrorDetail: '保存文件失败：{{message}}', saving: '正在保存…', save: '保存文件', binaryHint: '无法预览此文件；它可能是二进制文件，或已从技能包存储中丢失。' },
   },
@@ -753,12 +753,10 @@ export const zhCN: TranslationShape<typeof enUS> = {
       title: 'Shell',
       integratedShell: '集成终端 Shell',
       description:
-        "Agent 的 Shell 工具与新建终端标签页都使用此解释器，从此后启动的 Shell 生效。自动选择在 Windows 上优先 PowerShell，找不到时回退 cmd.exe。",
+        '新建终端标签页默认使用 macOS 的 zsh；Agent 的 Shell 工具使用兼容的 POSIX Shell。',
       options: {
-        auto: '自动选择',
-        powershell: 'PowerShell',
-        bash: 'Git Bash',
-        cmd: 'CMD',
+        auto: 'zsh（macOS 默认）',
+        bash: 'Bash',
       },
     },
     workspaceRoot: {

@@ -784,16 +784,25 @@ async fn run_scheduled_turn(
             active_agent_count
         };
     let store = SchedulerStore::new(services.pool.clone(), services.write_lock.clone());
-    let max_agent_steps = BudgetLimits::resolve_agent_steps(
-        automatic_step_candidates,
-        group.max_agent_steps,
-        group.max_steps_per_agent,
-        group.max_scheduler_hops,
-    );
+    let direct_chat = group.conversation_kind == "direct";
+    let max_agent_steps = if direct_chat {
+        1 + MAX_FAN_OUT_TARGETS as u32
+    } else {
+        BudgetLimits::resolve_agent_steps(
+            automatic_step_candidates,
+            group.max_agent_steps,
+            group.max_steps_per_agent,
+            group.max_scheduler_hops,
+        )
+    };
     let limits = BudgetLimits {
         max_agent_steps,
         max_steps_per_agent: group.max_steps_per_agent,
-        max_hops: group.max_scheduler_hops,
+        max_hops: if direct_chat {
+            1
+        } else {
+            group.max_scheduler_hops
+        },
         // Legacy automatic groups could persist zero while this limit was
         // ignored. Give those groups one bounded decision per step plus finish.
         max_moderator_calls: if automatic_scheduler && group.max_moderator_calls == 0 {
@@ -4416,6 +4425,12 @@ async fn handle_agent_as_tool(
         );
         return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
     };
+    if group.conversation_kind == "direct" && parsed.mode == AgentAsToolMode::Handoff {
+        let failure = AgentAsToolFailure::unavailable(
+            "handoff is unavailable in a private chat; use call or fan_out",
+        );
+        return agent_as_tool_failure(ctx, agent, &parsed.tool_call_id, turn, failure).await;
+    }
 
     if parsed.mode == AgentAsToolMode::FanOut {
         return handle_fan_out(
@@ -4493,21 +4508,27 @@ async fn prepare_helper(
     ),
     AgentAsToolFailure,
 > {
+    let direct_chat = group.conversation_kind == "direct";
     let dispatch = resolve_dispatch(
         &services.pool,
-        &ctx.group_id,
+        (!direct_chat).then_some(ctx.group_id.as_str()),
         caller,
         target,
         &group.muted_agent_ids,
     )
     .await?;
-    let helper = load_candidate_by_id(
-        &services.pool,
-        &ctx.group_id,
-        &dispatch.helper.agent_id,
-        group,
-    )
-    .await
+    let helper = if direct_chat {
+        load_direct_candidate_by_id(&services.pool, &dispatch.helper.agent_id, &group.owner_id)
+            .await
+    } else {
+        load_candidate_by_id(
+            &services.pool,
+            &ctx.group_id,
+            &dispatch.helper.agent_id,
+            group,
+        )
+        .await
+    }
     .map_err(|error| match error {
         CandidateLoadError::Ineligible(message) => AgentAsToolFailure::unavailable(message),
         CandidateLoadError::Persistence(_error) => {
@@ -4672,7 +4693,9 @@ async fn handle_scheduled_agent_as_tool(
             )),
         ));
     }
-    if !allows_agent_edge(&scheduler.topology, &agent.agent_id, &helper.agent_id) {
+    if group.conversation_kind != "direct"
+        && !allows_agent_edge(&scheduler.topology, &agent.agent_id, &helper.agent_id)
+    {
         return Ok(HelperOutcome::Failed(AgentAsToolFailure::unavailable(
             "group topology does not allow this agent dispatch",
         )));
@@ -5653,6 +5676,32 @@ async fn load_candidate_by_id(
         ))
 }
 
+async fn load_direct_candidate_by_id(
+    pool: &SqlitePool,
+    agent_id: &str,
+    owner_id: &str,
+) -> Result<Candidate, CandidateLoadError> {
+    let row: Option<CandidateRow> = sqlx::query_as(
+        "SELECT id, owner_id, NULL AS display_name, name, system_prompt, runtime_kind, \
+                provider_id, model_config_json, tool_config_json, external_runtime_json, \
+                skill_ids_json, workspace_id, is_system, NULL AS context_scope_json, \
+                'default' AS response_mode, NULL AS topology_role, NULL AS speaking_order \
+         FROM agents WHERE id = ? AND owner_id = ? AND status = 'active'",
+    )
+    .bind(agent_id)
+    .bind(owner_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(CandidateLoadError::Persistence)?;
+    let mut candidate = row
+        .map(candidate_from_row)
+        .ok_or(CandidateLoadError::Ineligible(
+            "assistant agent is no longer active",
+        ))?;
+    candidate.workspace_mode = WorkspaceMode::Group;
+    Ok(candidate)
+}
+
 enum CandidateLoadError {
     Ineligible(&'static str),
     Persistence(sqlx::Error),
@@ -5885,27 +5934,37 @@ async fn build_invocation_context(
         .filter(|name| name.as_str() != AGENT_AS_TOOL_NAME)
         .flat_map(|name| tool_definitions_for(name, executor.shell().dialect))
         .collect::<Vec<_>>();
-    // `AgentAsTool` is the one tool whose schema depends on the rest of the
-    // group, so it is built here rather than from the static table: it has to
-    // name the assistants this caller can actually reach, and there is no such
-    // list until the group and the caller's bindings are both known.
+    // `AgentAsTool` is the one tool whose schema depends on the conversation,
+    // so it is built here rather than from the static table: it has to name the
+    // assistants this caller can actually reach.
     let mut warnings = Vec::new();
     let mut delegation = DelegationAvailability::Unavailable;
     if enabled_tools.iter().any(|name| name == AGENT_AS_TOOL_NAME) {
+        let direct_chat = group.conversation_kind == "direct";
         let caller = CallerAgent {
             agent_id: agent.agent_id.clone(),
             owner_id: agent.owner_id.clone(),
             display_name: agent.display_name.clone(),
             tool_config_json: agent.tool_config_json.clone(),
         };
-        let mut roster =
-            dispatchable_assistants(pool, &ctx.group_id, &caller, &group.muted_agent_ids).await;
-        let had_group_helpers = !roster.dispatchable.is_empty();
+        let mut roster = dispatchable_assistants(
+            pool,
+            (!direct_chat).then_some(ctx.group_id.as_str()),
+            &caller,
+            &group.muted_agent_ids,
+        )
+        .await;
+        let had_reachable_helpers = !roster.dispatchable.is_empty();
         if let Some(scheduler) = scheduler {
             roster.dispatchable.retain(|helper| {
                 !scheduler.budget.has_dispatched(&helper.agent_id)
                     && !scheduler.helper_claims.contains_key(&helper.agent_id)
-                    && allows_agent_edge(&scheduler.topology, &agent.agent_id, &helper.agent_id)
+                    && (direct_chat
+                        || allows_agent_edge(
+                            &scheduler.topology,
+                            &agent.agent_id,
+                            &helper.agent_id,
+                        ))
             });
         } else {
             roster.dispatchable.clear();
@@ -5918,15 +5977,24 @@ async fn build_invocation_context(
             //
             // Helpers that already ran are normal turn progress, so do not
             // repeat a warning on every later dispatch.
-            if roster.bound > 0 && !had_group_helpers {
-                warnings.push(format!(
-                    "@{} has assistant agents bound for delegation, but none of them are active \
-                     members of this group, so AgentAsTool is unavailable this turn.",
-                    agent.display_name
-                ));
+            if roster.bound > 0 && !had_reachable_helpers {
+                warnings.push(if direct_chat {
+                    format!(
+                        "@{} has assistant agents bound for delegation, but none of them are \
+                         active, so AgentAsTool is unavailable this turn.",
+                        agent.display_name
+                    )
+                } else {
+                    format!(
+                        "@{} has assistant agents bound for delegation, but none of them are active \
+                         members of this group, so AgentAsTool is unavailable this turn.",
+                        agent.display_name
+                    )
+                });
             }
         } else {
-            let allow_handoff = scheduler.is_some_and(|scheduler| !scheduler.automatic);
+            let allow_handoff =
+                !direct_chat && scheduler.is_some_and(|scheduler| !scheduler.automatic);
             let fan_out = fan_out_is_available(&roster.dispatchable);
             delegation = if allow_handoff {
                 DelegationAvailability::CallOrHandoff { fan_out }
@@ -7296,8 +7364,9 @@ fn agent_as_tool_definition(assistants: &[AssistantMember], allow_handoff: bool)
         mode_choices.push("handoff");
         mode_description.push_str(" handoff: transfer the public turn to one assistant and stop.");
     } else {
-        mode_description
-            .push_str(" Automatic mode has no handoff: public dispatch stays with the moderator.");
+        mode_description.push_str(
+            " handoff is unavailable in this dispatch; use call (or fan_out when offered) so the result returns to you.",
+        );
     }
     mode_description.push_str(" Choose explicitly.");
 
@@ -7368,9 +7437,9 @@ fn agent_as_tool_definition(assistants: &[AssistantMember], allow_handoff: bool)
     ToolDefinition {
         name: AGENT_AS_TOOL_NAME.to_string(),
         description: format!(
-            "Delegate a task to one of the assistant agents bound to you. Available in this \
-             group right now: {roster}. The assistant does not see your reasoning, so state the \
-             task on its own terms."
+            "Delegate a task to one of the assistant agents bound to you. Available right now: \
+             {roster}. The assistant does not see your reasoning, so state the task on its own \
+             terms."
         ),
         input_schema: json!({
             "type": "object",

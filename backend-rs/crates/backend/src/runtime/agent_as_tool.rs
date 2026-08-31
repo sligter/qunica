@@ -1,9 +1,9 @@
-//! Agent-as-tool resolution for group runtime handoffs.
+//! Agent-as-tool resolution for conversation runtime handoffs.
 //!
 //! The provider-facing tool accepts an assistant selector plus a task. The
 //! resolver below keeps the execution boundary narrow: only assistants
-//! explicitly enabled on the caller and active in the same group can be
-//! dispatched.
+//! explicitly enabled on the caller can be dispatched. Group conversations
+//! additionally require the assistant to be an active member of that group.
 //!
 //! `fan_out` names several assistants in one call, each with its own task. It
 //! is the same private dispatch `call` performs, repeated: the targets run one
@@ -239,7 +239,7 @@ fn enabled_default() -> bool {
 
 pub(crate) async fn resolve_dispatch(
     pool: &SqlitePool,
-    group_id: &str,
+    group_id: Option<&str>,
     caller: &CallerAgent,
     target: &AgentAsToolTarget,
     muted_agent_ids: &HashSet<String>,
@@ -255,7 +255,7 @@ pub(crate) async fn resolve_dispatch(
     let requested_folded = requested.to_lowercase();
     let mut matched_bound_outside_group: Option<String> = None;
 
-    let rows = load_bound_group_members(
+    let rows = load_bound_assistants(
         pool,
         group_id,
         &caller.owner_id,
@@ -285,23 +285,25 @@ pub(crate) async fn resolve_dispatch(
         }
     }
 
-    for bound_id in &bound_ids {
-        if bound_id.eq_ignore_ascii_case(requested) {
-            matched_bound_outside_group = Some(bound_id.clone());
-            break;
+    if group_id.is_some() {
+        for bound_id in &bound_ids {
+            if bound_id.eq_ignore_ascii_case(requested) {
+                matched_bound_outside_group = Some(bound_id.clone());
+                break;
+            }
         }
-    }
-    if matched_bound_outside_group.is_none() {
-        matched_bound_outside_group =
-            load_bound_agent_name_match(pool, &caller.owner_id, &bound_ids, &requested_folded)
-                .await
-                .map_err(|_| AgentAsToolFailure::failed("failed to resolve assistant agent"))?;
-    }
+        if matched_bound_outside_group.is_none() {
+            matched_bound_outside_group =
+                load_bound_agent_name_match(pool, &caller.owner_id, &bound_ids, &requested_folded)
+                    .await
+                    .map_err(|_| AgentAsToolFailure::failed("failed to resolve assistant agent"))?;
+        }
 
-    if matched_bound_outside_group.is_some() {
-        return Err(AgentAsToolFailure::unavailable(
-            "assistant agent must be added to this group before AgentAsTool can dispatch to it",
-        ));
+        if matched_bound_outside_group.is_some() {
+            return Err(AgentAsToolFailure::unavailable(
+                "assistant agent must be added to this group before AgentAsTool can dispatch to it",
+            ));
+        }
     }
 
     Err(AgentAsToolFailure::unavailable(
@@ -313,10 +315,8 @@ pub(crate) async fn resolve_dispatch(
 ///
 /// `bound` counts what the owner selected on the agent; `dispatchable` holds
 /// only the ones that survive every gate the resolver applies later — same
-/// owner, active, an active member of *this* group, not muted, not the caller.
-/// The two are reported separately because the gap between them is the whole
-/// diagnosis when delegation quietly does nothing: assistants were bound, but
-/// none of them are in the room.
+/// owner, active, not muted, not the caller, and (for group conversations) an
+/// active member of that group.
 pub(crate) struct AssistantRoster {
     pub bound: usize,
     pub dispatchable: Vec<AssistantMember>,
@@ -330,12 +330,12 @@ pub(crate) struct AssistantRoster {
 /// the authority on any individual call.
 pub(crate) async fn dispatchable_assistants(
     pool: &SqlitePool,
-    group_id: &str,
+    group_id: Option<&str>,
     caller: &CallerAgent,
     muted_agent_ids: &HashSet<String>,
 ) -> AssistantRoster {
     let bound_ids = enabled_assistant_ids(caller).unwrap_or_default();
-    let mut dispatchable = load_bound_group_members(
+    let mut dispatchable = load_bound_assistants(
         pool,
         group_id,
         &caller.owner_id,
@@ -398,9 +398,9 @@ fn build_dispatch_content(
     Ok(content)
 }
 
-async fn load_bound_group_members(
+async fn load_bound_assistants(
     pool: &SqlitePool,
-    group_id: &str,
+    group_id: Option<&str>,
     owner_id: &str,
     bound_ids: &[String],
     muted_agent_ids: &HashSet<String>,
@@ -410,18 +410,29 @@ async fn load_bound_group_members(
         if muted_agent_ids.contains(bound_id) {
             continue;
         }
-        let row = sqlx::query_as::<_, AssistantRow>(
-            "SELECT a.id, a.name, ga.display_name \
-             FROM group_agents ga \
-             JOIN agents a ON a.id = ga.agent_id \
-             WHERE ga.group_id = ? AND ga.agent_id = ? AND ga.status = 'active' \
-               AND a.status = 'active' AND a.owner_id = ?",
-        )
-        .bind(group_id)
-        .bind(bound_id)
-        .bind(owner_id)
-        .fetch_optional(pool)
-        .await?;
+        let row = if let Some(group_id) = group_id {
+            sqlx::query_as::<_, AssistantRow>(
+                "SELECT a.id, a.name, ga.display_name \
+                 FROM group_agents ga \
+                 JOIN agents a ON a.id = ga.agent_id \
+                 WHERE ga.group_id = ? AND ga.agent_id = ? AND ga.status = 'active' \
+                   AND a.status = 'active' AND a.owner_id = ?",
+            )
+            .bind(group_id)
+            .bind(bound_id)
+            .bind(owner_id)
+            .fetch_optional(pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, AssistantRow>(
+                "SELECT id, name, NULL AS display_name \
+                 FROM agents WHERE id = ? AND owner_id = ? AND status = 'active'",
+            )
+            .bind(bound_id)
+            .bind(owner_id)
+            .fetch_optional(pool)
+            .await?
+        };
         if let Some(row) = row {
             helpers.push(row.into());
         }

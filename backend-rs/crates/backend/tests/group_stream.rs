@@ -1272,31 +1272,58 @@ async fn compacted_context_is_reused_on_the_next_turn() {
 }
 
 #[tokio::test]
-async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
+async fn direct_chat_can_delegate_an_image_to_a_bound_vision_assistant() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "direct-prompt@example.com").await;
     let owner = owner_id(&state, "direct-prompt@example.com").await;
-    let (_workspace_root, workspace) = create_local_workspace(&app, &token).await;
+    let (workspace_root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::create_dir(workspace_root.path().join("uploads")).unwrap();
+    std::fs::write(
+        workspace_root.path().join("uploads/diagram.png"),
+        [1_u8, 2, 3, 4],
+    )
+    .unwrap();
     let conversation = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let helper_group = create_group(&app, &token, &workspace, json!({})).await;
     let (provider_url, requests) = recording_fake_provider_sequence(vec![
-        // The opening message makes the runtime ask the agent for a chat title
-        // first; an empty stream yields no usable title and the flow moves on.
-        "data: [DONE]\n".to_owned(),
-        text_body("Hello privately"),
+        tool_body(vec![(
+            "vision_call",
+            "AgentAsTool",
+            json!({
+                "assistant": "Helper",
+                "task": "Inspect the image attached to the latest user message",
+                "mode": "call"
+            }),
+        )]),
+        text_body("The image contains a cat."),
+        text_body("The vision assistant found a cat."),
     ])
     .await;
     let provider = seed_provider(&state, &owner, &provider_url).await;
-    let agent = seed_agent(
+    let helper = seed_agent(
+        &state,
+        &owner,
+        &helper_group,
+        &provider,
+        "Helper",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(&state, &helper, json!({"vision": true})).await;
+    let agent = seed_agent_with_tool_config(
         &state,
         &owner,
         &conversation,
         &provider,
         "Solo",
         "2024-01-01T00:00:00Z",
+        json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]}),
     )
     .await;
+    set_agent_model_config(&state, &agent, json!({"vision": false})).await;
     sqlx::query(
-        "UPDATE groups SET conversation_kind = 'direct', direct_agent_id = ?, name = 'Private chat' \
+        "UPDATE groups SET conversation_kind = 'direct', direct_agent_id = ?, name = 'Private chat', \
+         max_agent_steps = 1, max_steps_per_agent = 1, max_scheduler_hops = 0 \
          WHERE id = ?",
     )
     .bind(&agent)
@@ -1309,23 +1336,56 @@ async fn direct_chat_prompt_identifies_a_private_conversation_not_a_group() {
         &app,
         &format!("/api/v2/direct-chats/{conversation}/messages/stream"),
         &token,
-        json!({"content": "Hello"}),
+        json!({
+            "content": "What is in this image?",
+            "attachments": [{
+                "id": "attachment-1",
+                "path": "uploads/diagram.png",
+                "name": "diagram.png",
+                "mime_type": "image/png",
+                "size": 4,
+                "kind": "image"
+            }]
+        }),
     )
     .await;
     assert_eq!(events.last().unwrap()["kind"], "done");
+    assert!(
+        !events.iter().any(|event| event["kind"] == "warning"
+            && event["payload"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("AgentAsTool"))),
+        "private chats must not emit group delegation warnings: {events:?}"
+    );
 
     let requests = requests.lock().await;
-    // The last request is the agent's own turn; earlier ones are the
-    // best-effort chat-title call.
-    let system_prompt = requests[requests.len() - 1]["messages"][0]["content"]
-        .as_str()
-        .unwrap();
+    assert_eq!(requests.len(), 3);
+    let main_request = &requests[0];
+    let helper_request = &requests[1];
+    let final_request = &requests[2];
+    let system_prompt = main_request["messages"][0]["content"].as_str().unwrap();
     assert!(system_prompt.contains("Private chat context:"));
     assert!(system_prompt
         .contains("This is a private one-to-one conversation with the user, not a group."));
     assert!(system_prompt.contains("- source: conversation"));
     assert!(system_prompt.contains("- mode: conversation"));
     assert!(!system_prompt.contains("Group context:"));
+    assert!(main_request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| {
+            tool["function"]["name"] == "AgentAsTool"
+                && tool["function"]["parameters"]["properties"]["assistant"]["enum"]
+                    == json!(["Helper"])
+        }));
+    assert!(!main_request.to_string().contains("image_url"));
+    assert!(helper_request
+        .to_string()
+        .contains("data:image/png;base64,AQIDBA=="));
+    assert!(final_request
+        .to_string()
+        .contains("The image contains a cat."));
 }
 
 #[tokio::test]

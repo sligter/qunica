@@ -307,6 +307,18 @@ struct NativePtyHandle {
     pid: u32,
 }
 
+fn build_shell_command(shell: &ShellSpec, windows: bool) -> CommandBuilder {
+    if windows {
+        return CommandBuilder::new(shell.program.as_os_str());
+    }
+
+    let mut command = CommandBuilder::new_default_prog();
+    command.env("SHELL", shell.program.as_os_str());
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    command
+}
+
 impl NativePtySpawner {
     fn spawn_handle(
         &self,
@@ -331,7 +343,7 @@ impl NativePtySpawner {
                 TerminalCommandError::new("terminal.pty_open_failed", "Failed to open terminal PTY")
             })?;
 
-        let mut command = CommandBuilder::new(shell.program.as_os_str());
+        let mut command = build_shell_command(shell, cfg!(windows));
         command.cwd(&request.cwd);
         let mut child = pair.slave.spawn_command(command).map_err(|_| {
             TerminalCommandError::new(
@@ -749,11 +761,12 @@ mod tests {
     use std::sync::{Arc, Condvar, Mutex};
 
     use super::{
-        forward_output, output_event, EventDispatcher, InputQueue, StartupGate, INPUT_CHUNK_SIZE,
-        INPUT_QUEUE_CAPACITY, OUTPUT_CHUNK_SIZE,
+        build_shell_command, forward_output, output_event, EventDispatcher, InputQueue,
+        StartupGate, INPUT_CHUNK_SIZE, INPUT_QUEUE_CAPACITY, OUTPUT_CHUNK_SIZE,
     };
     use crate::terminal::manager::EventSink;
     use crate::terminal::protocol::{TerminalCommandError, TerminalEvent};
+    use crate::terminal::shell::ShellSpec;
     use base64::Engine;
 
     #[derive(Default)]
@@ -863,6 +876,30 @@ mod tests {
                 .unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn unix_shell_uses_login_mode_and_xterm_capabilities() {
+        let shell = ShellSpec {
+            program: "/bin/zsh".into(),
+            display_name: "zsh".to_string(),
+        };
+        let command = build_shell_command(&shell, false);
+
+        assert!(command.is_default_prog());
+        assert_eq!(
+            command.get_env("SHELL"),
+            Some(std::ffi::OsStr::new("/bin/zsh"))
+        );
+        assert_eq!(
+            command.get_env("TERM"),
+            Some(std::ffi::OsStr::new("xterm-256color"))
+        );
+        assert_eq!(
+            command.get_env("COLORTERM"),
+            Some(std::ffi::OsStr::new("truecolor"))
+        );
+        assert!(!build_shell_command(&shell, true).is_default_prog());
     }
 
     #[test]

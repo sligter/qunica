@@ -217,6 +217,9 @@ describe('SystemSettingsPage preferences', () => {
     const select = await screen.findByLabelText('Integrated terminal shell')
     await waitFor(() => expect(select).toBeEnabled())
     expect(select).toHaveValue('auto')
+    expect(screen.getByRole('option', { name: 'zsh (macOS default)' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: 'PowerShell' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'CMD' })).not.toBeInTheDocument()
     await user.selectOptions(select, 'bash')
 
     const [, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit]

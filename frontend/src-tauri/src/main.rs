@@ -962,7 +962,86 @@ fn start_in_process_backend(
     Ok(shutdown_tx)
 }
 
+fn shell_path_from_output(output: &[u8]) -> Option<String> {
+    std::str::from_utf8(output)
+        .ok()?
+        .lines()
+        .rev()
+        .find_map(|line| {
+            line.strip_prefix("PATH=")
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+        })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn command_on_path(command: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|directory| {
+        directory
+            .join(command)
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn login_shell_path(shell: &std::ffi::OsStr) -> Option<String> {
+    let output = ProcessCommand::new(shell)
+        .args(["-ilc", "exec env"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| shell_path_from_output(&output.stdout))?
+}
+
+/// Desktop launchers do not inherit shell startup files, so Node installed by
+/// nvm/fnm/Volta is otherwise invisible to ACP installation and discovery.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn restore_desktop_shell_path() {
+    if command_on_path("npm") && command_on_path("node") {
+        return;
+    }
+
+    let default_shell = if cfg!(target_os = "macos") {
+        "/bin/zsh"
+    } else {
+        "/bin/bash"
+    };
+    let shell_path = std::env::var_os("SHELL")
+        .as_deref()
+        .and_then(login_shell_path)
+        .or_else(|| login_shell_path(std::ffi::OsStr::new(default_shell)))
+        .or_else(|| login_shell_path(std::ffi::OsStr::new("/bin/sh")));
+    let Some(shell_path) = shell_path else {
+        return;
+    };
+
+    let mut paths = std::env::split_paths(std::ffi::OsStr::new(&shell_path)).collect::<Vec<_>>();
+    if let Some(current_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current_path));
+    }
+    if let Ok(path) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", path);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn restore_desktop_shell_path() {}
+
 fn main() {
+    // Keep this before Tauri starts worker threads: process environment changes
+    // are global, and the in-process backend inherits this PATH.
+    restore_desktop_shell_path();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -1058,7 +1137,8 @@ mod tests {
 
     use super::{
         bottom_right_window_position, is_library_route, is_settings_route, open_library_window,
-        open_settings_window, pids_listening_on_port, taskkill_args, toggle_assistant_window,
+        open_settings_window, pids_listening_on_port, shell_path_from_output, taskkill_args,
+        toggle_assistant_window,
     };
     use tauri::{PhysicalPosition, PhysicalSize};
 
@@ -1084,6 +1164,17 @@ mod tests {
         assert_route_window_command_is_async(open_library_window);
         assert_route_window_command_is_async(open_settings_window);
         assert_window_command_is_async(toggle_assistant_window);
+    }
+
+    #[test]
+    fn extracts_path_from_noisy_login_shell_output() {
+        assert_eq!(
+            shell_path_from_output(
+                b"startup warning\nHOME=/Users/ada\nPATH=/opt/node/bin:/usr/bin\n"
+            ),
+            Some("/opt/node/bin:/usr/bin".to_string())
+        );
+        assert_eq!(shell_path_from_output(b"PATH=\n"), None);
     }
 
     #[test]

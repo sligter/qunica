@@ -49,7 +49,7 @@ import {
 const PICKER_SCOPE = 'group-workspace-root'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
 const LANGUAGE_OPTIONS: Language[] = ['zh-CN', 'en-US']
-const SHELL_OPTIONS: ShellPreference[] = ['auto', 'powershell', 'bash', 'cmd']
+const SHELL_OPTIONS: ShellPreference[] = ['auto', 'bash']
 const REPLY_INSERT_MODES: ReplyInsertMode[] = ['instant', 'queue']
 
 export function SystemSettingsPage() {
