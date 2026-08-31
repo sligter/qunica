@@ -230,6 +230,7 @@ struct AcpRuntimeVersionResponse {
     /// an older, incompatible release.
     default_package_spec: String,
     installed: bool,
+    externally_managed: bool,
     local_version: Option<String>,
     latest_version: Option<String>,
     status: &'static str,
@@ -463,6 +464,21 @@ pub async fn install_acp_runtime_version(
     let preset = acp_runtime_version_preset(&preset_id)
         .ok_or_else(|| ApiError::not_found("ACP runtime preset not found"))?;
     let package_spec = resolve_install_package_spec(preset, body.package_spec.as_deref())?;
+
+    let npm_installed = local_npm_package_version(preset.package_name)
+        .await
+        .is_some();
+    if let Some(command) = externally_managed_command(preset, npm_installed) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "acp_runtime_managed_externally",
+            format!(
+                "{} is already available at {} and is managed outside npm. Qunica will use the existing command; update it with its original installer.",
+                preset.id,
+                command.display()
+            ),
+        ));
+    }
 
     let npm = npm_command().ok_or_else(|| {
         ApiError::new(
@@ -1601,6 +1617,8 @@ fn fallback_acp_presets() -> Vec<AcpRuntimePresetResponse> {
 struct AcpRuntimeVersionPreset {
     id: &'static str,
     package_name: &'static str,
+    /// A command that may already be owned by Homebrew or another installer.
+    external_command: Option<&'static str>,
     /// The npm dist-tag carrying the version this runtime should track.
     ///
     /// Almost always `latest`. deepseek-harness is the exception: its `latest`
@@ -1616,30 +1634,35 @@ const ACP_RUNTIME_VERSION_PRESETS: [AcpRuntimeVersionPreset; 5] = [
     AcpRuntimeVersionPreset {
         id: "codex",
         package_name: "@agentclientprotocol/codex-acp",
+        external_command: None,
         dist_tag: "latest",
         install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "claude",
         package_name: "@agentclientprotocol/claude-agent-acp",
+        external_command: None,
         dist_tag: "latest",
         install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "pi",
         package_name: "pi-acp",
+        external_command: None,
         dist_tag: "latest",
         install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "opencode",
         package_name: "opencode-ai",
+        external_command: Some("opencode"),
         dist_tag: "latest",
         install_specs: &[],
     },
     AcpRuntimeVersionPreset {
         id: "dsh",
         package_name: dsh::DSH_ACP_PACKAGE,
+        external_command: None,
         dist_tag: dsh::DSH_DIST_TAG,
         install_specs: dsh::DSH_INSTALL_SPECS,
     },
@@ -1675,6 +1698,7 @@ fn package_name_of_spec(spec: &'static str) -> &'static str {
 async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVersionResponse {
     let local_version = local_npm_package_version(preset.package_name).await;
     let latest_version = npm_latest_package_version(preset.package_name, preset.dist_tag).await;
+    let externally_managed = externally_managed_command(preset, local_version.is_some()).is_some();
 
     // A multi-package runtime is only usable once every package is present:
     // dsh boots into a config that names its plugins by package, and a missing
@@ -1693,15 +1717,21 @@ async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVe
         }
     }
 
-    let installed = local_version.is_some() && missing_companion.is_none();
-    let status = match (&local_version, missing_companion, &latest_version) {
-        (None, _, _) | (_, Some(_), _) => "not_installed",
-        (Some(local), None, Some(latest)) if local == latest => "current",
-        (Some(_), None, Some(_)) => "update_available",
-        (Some(_), None, None) => "local_only",
+    let installed = externally_managed || local_version.is_some() && missing_companion.is_none();
+    let status = if externally_managed {
+        "local_only"
+    } else {
+        match (&local_version, missing_companion, &latest_version) {
+            (None, _, _) | (_, Some(_), _) => "not_installed",
+            (Some(local), None, Some(latest)) if local == latest => "current",
+            (Some(_), None, Some(_)) => "update_available",
+            (Some(_), None, None) => "local_only",
+        }
     };
     let message = if let Some(name) = missing_companion {
         Some(format!("Incomplete install: {name} is missing."))
+    } else if externally_managed {
+        None
     } else if !installed {
         Some("Not installed locally.".to_string())
     } else if latest_version.is_none() {
@@ -1715,6 +1745,7 @@ async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVe
         package_name: preset.package_name,
         default_package_spec: default_install_spec(preset),
         installed,
+        externally_managed,
         local_version,
         latest_version,
         status,
@@ -1863,6 +1894,30 @@ async fn run_command(
 
 fn npm_command() -> Option<String> {
     find_command_on_path("npm").map(|path| path.to_string_lossy().into_owned())
+}
+
+fn externally_managed_command(
+    preset: AcpRuntimeVersionPreset,
+    npm_installed: bool,
+) -> Option<PathBuf> {
+    externally_managed_command_with_env(
+        preset,
+        npm_installed,
+        env::var_os("PATH"),
+        env::var_os("PATHEXT"),
+    )
+}
+
+fn externally_managed_command_with_env(
+    preset: AcpRuntimeVersionPreset,
+    npm_installed: bool,
+    path_env: Option<OsString>,
+    pathext_env: Option<OsString>,
+) -> Option<PathBuf> {
+    if npm_installed {
+        return None;
+    }
+    find_command_on_path_with_env(preset.external_command?, path_env, pathext_env)
 }
 
 fn windows_batch_command<'a>(command: &'a str, args: &'a [&'a str]) -> (PathBuf, Vec<&'a str>) {
@@ -2102,6 +2157,36 @@ mod tests {
             resolve_install_package_spec(codex, Some("@agentclientprotocol/codex-acp @next"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn opencode_owned_by_another_installer_is_not_reinstalled_with_npm() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = command_candidates("opencode", Some(OsString::from(".CMD")))
+            .into_iter()
+            .next()
+            .unwrap();
+        let command = dir.path().join(executable);
+        File::create(&command).unwrap();
+        let path_env = env::join_paths([dir.path()]).unwrap();
+        let preset = acp_runtime_version_preset("opencode").unwrap();
+
+        assert_eq!(
+            externally_managed_command_with_env(
+                preset,
+                false,
+                Some(path_env.clone()),
+                Some(OsString::from(".CMD")),
+            ),
+            Some(command)
+        );
+        assert!(externally_managed_command_with_env(
+            preset,
+            true,
+            Some(path_env),
+            Some(OsString::from(".CMD")),
+        )
+        .is_none());
     }
 
     #[test]

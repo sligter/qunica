@@ -228,7 +228,7 @@ export function ExternalRuntimeFields({
             <span>{t('agents:runtime.versionStatus')}</span>
             {runtimeVersions.isFetching ? (
               <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" />
-            ) : versionStatus?.status === 'current' ? (
+            ) : versionStatus?.status === 'current' || versionStatus?.externally_managed ? (
               <CircleCheck className="h-4 w-4 text-success" />
             ) : (
               <TriangleAlert className="h-4 w-4 text-warning-foreground" />
@@ -239,7 +239,12 @@ export function ExternalRuntimeFields({
               <p className="text-xs text-warning-foreground">{t('agents:runtime.versionError')}</p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                {t('agents:runtime.localVersion', { version: versionStatus?.local_version ?? t('agents:runtime.notInstalled') })}
+                {t('agents:runtime.localVersion', {
+                  version: versionStatus?.local_version ??
+                    (versionStatus?.externally_managed
+                      ? t('agents:runtime.localDetected')
+                      : t('agents:runtime.notInstalled')),
+                })}
                 {' · '}
                 {t('agents:runtime.remoteVersion', { version: versionStatus?.latest_version ?? t('agents:runtime.unavailable') })}
               </p>
@@ -247,54 +252,60 @@ export function ExternalRuntimeFields({
             {versionStatus?.message && (
               <p className="text-xs text-warning-foreground">{versionStatus.message}</p>
             )}
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void install()}
-                disabled={installRuntime.isPending}
-              >
-                {installRuntime.isPending ? (
-                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Download className="h-3.5 w-3.5" />
+            {versionStatus?.externally_managed ? (
+              <p className="text-xs text-muted-foreground">{t('agents:runtime.externallyManaged')}</p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void install()}
+                    disabled={installRuntime.isPending}
+                  >
+                    {installRuntime.isPending ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    {installRuntime.isPending
+                      ? installPendingLabel
+                      : versionStatus?.installed
+                        ? t('common:actions.update')
+                        : t('common:actions.install')}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">{versionStatus?.package_name}</span>
+                </div>
+                {installRuntime.isPending && (
+                  <progress
+                    aria-label={installPendingLabel}
+                    className="h-1.5 w-full accent-primary"
+                  />
                 )}
-                {installRuntime.isPending
-                  ? installPendingLabel
-                  : versionStatus?.installed
-                    ? t('common:actions.update')
-                    : t('common:actions.install')}
-              </Button>
-              <span className="text-xs text-muted-foreground">{versionStatus?.package_name}</span>
-            </div>
-            {installRuntime.isPending && (
-              <progress
-                aria-label={installPendingLabel}
-                className="h-1.5 w-full accent-primary"
-              />
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    aria-label={t('agents:runtime.customPackageVersion')}
+                    value={packageSpec}
+                    onChange={(event) => setPackageSpec(event.target.value)}
+                    placeholder={
+                      versionStatus?.default_package_spec ??
+                      `${versionStatus?.package_name ?? selectedPreset.name}@latest`
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => void install(true)}
+                    disabled={installRuntime.isPending || packageSpec.trim() === ''}
+                  >
+                    <PackagePlus className="h-3.5 w-3.5" />
+                    {t('agents:runtime.customInstall')}
+                  </Button>
+                </div>
+              </>
             )}
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input
-                aria-label={t('agents:runtime.customPackageVersion')}
-                value={packageSpec}
-                onChange={(event) => setPackageSpec(event.target.value)}
-                placeholder={
-                  versionStatus?.default_package_spec ??
-                  `${versionStatus?.package_name ?? selectedPreset.name}@latest`
-                }
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => void install(true)}
-                disabled={installRuntime.isPending || packageSpec.trim() === ''}
-              >
-                <PackagePlus className="h-3.5 w-3.5" />
-                {t('agents:runtime.customInstall')}
-              </Button>
-            </div>
             {localizedErrorText(installError, t) && <p className="text-xs text-destructive">{localizedErrorText(installError, t)}</p>}
           </div>
         </details>

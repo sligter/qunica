@@ -254,7 +254,7 @@ export function MessageList({
     <div
       ref={scrollRef}
       aria-busy={isInitialLoading || undefined}
-      className="relative flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto py-4"
+      className="chat-message-scrollbar relative flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto py-4"
       onScroll={updateNearBottom}
     >
       <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
