@@ -1219,6 +1219,47 @@ async fn direct_workspace_supports_file_mutations_and_git_through_shared_routes(
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
     assert!(chat_root.join("empty").is_dir());
 
+    let (status, body) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/create"),
+            Some(&foreign_token),
+            json!({"path": "stolen", "kind": "directory"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body:?}");
+    assert!(!chat_root.join("stolen").exists());
+
+    let (status, created) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/create"),
+            Some(&token),
+            json!({"path": "drafts", "kind": "directory"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created:?}");
+    assert_eq!(created["path"], "drafts");
+    assert!(chat_root.join("drafts").is_dir());
+
+    let (status, created) = send(
+        &app,
+        request(
+            "POST",
+            &format!("/api/v2/direct-chats/{chat_id}/workspace-files/create"),
+            Some(&token),
+            json!({"path": "drafts/notes.md", "kind": "file"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created:?}");
+    assert_eq!(created["path"], "drafts/notes.md");
+    assert!(chat_root.join("drafts").join("notes.md").is_file());
+
     let (status, renamed) = send(
         &app,
         request(

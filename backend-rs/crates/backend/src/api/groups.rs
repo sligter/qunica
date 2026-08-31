@@ -411,6 +411,21 @@ pub struct GroupWorkspaceFileRenameRequest {
     new_path: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupWorkspaceEntryKind {
+    #[default]
+    File,
+    Directory,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupWorkspaceEntryCreateRequest {
+    path: String,
+    #[serde(default)]
+    kind: GroupWorkspaceEntryKind,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupWorkspaceFileAction {
@@ -2071,6 +2086,57 @@ pub async fn rename_group_workspace_file(
     let destination = fs::canonicalize(&destination)
         .map_err(|_| ApiError::internal("failed to resolve renamed workspace file"))?;
     Ok(Json(workspace_file_response(&destination, &root)?))
+}
+
+/// Create an empty file or a folder at a workspace-relative path.  The parent
+/// directory must already exist, so one request cannot materialise a whole
+/// tree, and an existing name — including a dangling symlink — is a conflict
+/// rather than a silent overwrite.
+pub async fn create_group_workspace_entry(
+    state: AppState,
+    headers: HeaderMap,
+    scope: ConversationScope,
+    conversation_id: String,
+    query: workspace_files::WorkspaceFilePathQuery,
+    body: GroupWorkspaceEntryCreateRequest,
+) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let conversation_id = validate_uuid(&conversation_id, "conversation id")?;
+
+    let root = conversation_files_root(
+        state.db.pool(),
+        workspace_files::ConversationRoot::from_query(
+            scope,
+            &conversation_id,
+            &owner_id,
+            query.agent_id(),
+        ),
+    )
+    .await?;
+    let relative = validate_workspace_file_new_path(&body.path)?;
+    let target = resolve_group_workspace_entry_path(&root, &relative)?;
+    if path_exists_or_symlink(&target)? {
+        return Err(ApiError::conflict("destination already exists"));
+    }
+
+    match body.kind {
+        GroupWorkspaceEntryKind::Directory => fs::create_dir(&target)
+            .map_err(|_| ApiError::internal("failed to create workspace folder"))?,
+        GroupWorkspaceEntryKind::File => {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map_err(|_| ApiError::internal("failed to create workspace file"))?;
+        }
+    }
+
+    let target = fs::canonicalize(&target)
+        .map_err(|_| ApiError::internal("failed to resolve created workspace entry"))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(workspace_file_response(&target, &root)?),
+    ))
 }
 
 pub async fn delete_group_workspace_file(
@@ -3900,6 +3966,24 @@ pub async fn rename_workspace_file_route(
     Json(body): Json<GroupWorkspaceFileRenameRequest>,
 ) -> Result<Json<GroupWorkspaceFileResponse>, ApiError> {
     rename_group_workspace_file(
+        state,
+        headers,
+        ConversationScope::Groups,
+        group_id,
+        query,
+        body,
+    )
+    .await
+}
+
+pub async fn create_workspace_entry_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<String>,
+    Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
+    Json(body): Json<GroupWorkspaceEntryCreateRequest>,
+) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
+    create_group_workspace_entry(
         state,
         headers,
         ConversationScope::Groups,

@@ -59,6 +59,13 @@ function agentQuery(agentId: WorkspaceAgentScope) {
 
 export type WorkspaceFileAction = 'copy' | 'move' | 'delete' | 'clear'
 
+export type WorkspaceEntryKind = 'file' | 'directory'
+
+export interface WorkspaceEntryCreateVariables {
+  path: string
+  kind: WorkspaceEntryKind
+}
+
 export interface WorkspaceFileActionVariables {
   action: WorkspaceFileAction
   paths?: string[]
@@ -212,6 +219,31 @@ export async function downloadGroupWorkspaceFile(
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
+}
+
+/** Create an empty file or a folder; the parent folder must already exist. */
+export function useCreateGroupWorkspaceEntry(
+  conversationId: string | undefined,
+  scope: ConversationScope = 'groups',
+  agentId: WorkspaceAgentScope = null,
+) {
+  const token = useAuthStore((s) => s.token)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: WorkspaceEntryCreateVariables) => {
+      if (!conversationId) throw new Error('Conversation is required to create workspace entries')
+      return fetchJson<GroupWorkspaceFileRead>(
+        `${conversationWorkspaceFilesApiPath(scope, conversationId)}/create${agentQuery(agentId)}`,
+        { token, method: 'POST', body },
+      )
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: conversationWorkspaceFilesQueryKey(scope, conversationId),
+      })
+      void qc.invalidateQueries({ queryKey: workspaceGitQueryKey(conversationId) })
+    },
+  })
 }
 
 export function useRenameGroupWorkspaceFile(

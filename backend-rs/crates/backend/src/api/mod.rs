@@ -279,6 +279,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(groups::save_group_workspace_file_text),
         )
         .route(
+            "/api/v2/groups/:group_id/workspace-files/create",
+            axum::routing::post(groups::create_workspace_entry_route),
+        )
+        .route(
             "/api/v2/groups/:group_id/workspace-files/rename",
             axum::routing::patch(groups::rename_workspace_file_route),
         )
@@ -479,6 +483,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/direct-chats/:chat_id/workspace-files/upload",
             axum::routing::post(direct_chats::upload_workspace_file)
                 .layer(DefaultBodyLimit::max(26 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v2/direct-chats/:chat_id/workspace-files/create",
+            axum::routing::post(direct_chats::create_workspace_entry),
         )
         .route(
             "/api/v2/direct-chats/:chat_id/workspace-files/rename",

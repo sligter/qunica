@@ -515,6 +515,30 @@ pub async fn rename_workspace_file(
     .await
 }
 
+pub async fn create_workspace_entry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(chat_id): Path<String>,
+    Query(query): Query<WorkspaceFilePathQuery>,
+    Json(body): Json<crate::api::groups::GroupWorkspaceEntryCreateRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::api::groups::GroupWorkspaceFileResponse>,
+    ),
+    ApiError,
+> {
+    crate::api::groups::create_group_workspace_entry(
+        state,
+        headers,
+        ConversationScope::DirectChats,
+        chat_id,
+        query,
+        body,
+    )
+    .await
+}
+
 pub async fn delete_workspace_file(
     State(state): State<AppState>,
     headers: HeaderMap,

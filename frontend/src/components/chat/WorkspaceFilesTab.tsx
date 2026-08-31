@@ -10,9 +10,11 @@ import {
   Eye,
   EyeOff,
   File,
+  FilePlus,
   Folder,
   FolderInput,
   FolderOpen,
+  FolderPlus,
   Pencil,
   PanelsTopLeft,
   RefreshCw,
@@ -42,9 +44,11 @@ import {
   useUploadConversationWorkspaceFile,
 } from '@/hooks/useConversationWorkspaceFiles'
 import {
+  useCreateGroupWorkspaceEntry,
   useDeleteGroupWorkspaceFile,
   useRenameGroupWorkspaceFile,
   useWorkspaceFileActions,
+  type WorkspaceEntryKind,
 } from '@/hooks/useGroupFiles'
 import { normalizeLanguage } from '@/i18n'
 import {
@@ -154,6 +158,10 @@ export function WorkspaceFilesTab({
   const [fileListFirstRow, setFileListFirstRow] = useState(0)
   const [fileListHeight, setFileListHeight] = useState(FILE_LIST_FALLBACK_HEIGHT)
   const [renaming, setRenaming] = useState<ConversationWorkspaceFileRead | null>(null)
+  const [creating, setCreating] = useState<{ kind: WorkspaceEntryKind; parent: string } | null>(
+    null,
+  )
+  const [createName, setCreateName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<ConversationWorkspaceFileRead[] | null>(null)
   const [pendingClear, setPendingClear] = useState(false)
   const [movePaths, setMovePaths] = useState<string[] | null>(null)
@@ -203,6 +211,7 @@ export function WorkspaceFilesTab({
   const upload = useUploadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
   const download = useDownloadConversationWorkspaceFile(scope, activeConversationId, activeAgentId)
   const rename = useRenameGroupWorkspaceFile(activeConversationId, scope, activeAgentId)
+  const create = useCreateGroupWorkspaceEntry(activeConversationId, scope, activeAgentId)
   const del = useDeleteGroupWorkspaceFile(activeConversationId, scope, activeAgentId)
   const actions = useWorkspaceFileActions(activeConversationId, scope, activeAgentId)
   const navRequest = useFileNavStore((state) => state.request)
@@ -415,6 +424,8 @@ export function WorkspaceFilesTab({
     setPreviewFile(null)
     setIsPreviewOpen(false)
     setRenaming(null)
+    setCreating(null)
+    setCreateName('')
     setPendingDelete(null)
     setPendingClear(false)
     setMovePaths(null)
@@ -532,6 +543,34 @@ export function WorkspaceFilesTab({
           ? (activeIndex <= 0 ? items.length - 1 : activeIndex - 1)
           : (activeIndex + 1) % items.length
     items[nextIndex]?.focus()
+  }
+
+  const startCreate = (kind: WorkspaceEntryKind, parent: string) => {
+    if (!canMutate) return
+    setCreating({ kind, parent })
+    setCreateName('')
+    setOperationError(null)
+    create.reset()
+  }
+
+  const submitCreate = async () => {
+    if (!creating) return
+    const name = createName.trim()
+    if (!name) return
+    const path = creating.parent ? `${creating.parent}/${name}` : name
+    try {
+      await create.mutateAsync({ path, kind: creating.kind })
+    } catch {
+      // The dialog renders create.error; keep it open so the name can be fixed.
+      return
+    }
+    setCreating(null)
+    setCreateName('')
+    // Show the folder the entry landed in, which is where the refetched
+    // listing will surface it.
+    setSearchInput('')
+    setSearch('')
+    setCurrentPath(creating.parent)
   }
 
   const startRename = (file: ConversationWorkspaceFileRead) => {
@@ -1194,6 +1233,73 @@ export function WorkspaceFilesTab({
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={creating !== null}
+        onOpenChange={(open) => {
+          if (!open && !create.isPending) {
+            setCreating(null)
+            setCreateName('')
+          }
+        }}
+      >
+        <DialogContent closeLabel={t('common:actions.close')} className="sm:max-w-md">
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void submitCreate()
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>
+                {creating?.kind === 'directory'
+                  ? t('chat:workspace.fileActions.newFolderTitle')
+                  : t('chat:workspace.fileActions.newFileTitle')}
+              </DialogTitle>
+              <DialogDescription>
+                {creating?.parent
+                  ? t('chat:workspace.fileActions.createInFolder', { path: creating.parent })
+                  : t('chat:workspace.fileActions.createInRoot')}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="workspace-create-name">
+                {t('chat:workspace.fileActions.createName')}
+              </label>
+              <Input
+                id="workspace-create-name"
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                placeholder={creating?.kind === 'directory'
+                  ? t('chat:workspace.fileActions.newFolderPlaceholder')
+                  : t('chat:workspace.fileActions.newFilePlaceholder')}
+                autoFocus
+              />
+              {create.error ? (
+                <p className="text-xs text-destructive" role="alert">
+                  {t('chat:workspace.filePanel.operationError', {
+                    message: t(`chat:${workspaceErrorMessageKey(create.error)}`),
+                  })}
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreating(null)}
+                disabled={create.isPending}
+              >
+                {t('common:actions.cancel')}
+              </Button>
+              <Button type="submit" disabled={create.isPending || !createName.trim()}>
+                {t('chat:workspace.fileActions.createConfirm')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={isPreviewOpen && previewFile !== null} onOpenChange={setIsPreviewOpen}>
         <DialogContent
           closeLabel={t('common:actions.close')}
@@ -1344,6 +1450,34 @@ export function WorkspaceFilesTab({
           ) : null}
           {canMutate && menuFile ? (
             <>
+              {isSingleMenuAction && menuFile.is_dir ? (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                    onClick={() => {
+                      startCreate('file', menuFile.path)
+                      setMenu(null)
+                    }}
+                  >
+                    <FilePlus className="h-3.5 w-3.5" />
+                    {t('chat:workspace.fileActions.newFile')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                    onClick={() => {
+                      startCreate('directory', menuFile.path)
+                      setMenu(null)
+                    }}
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                    {t('chat:workspace.fileActions.newFolder')}
+                  </button>
+                </>
+              ) : null}
               {isSingleMenuAction ? (
                 <button
                   type="button"
@@ -1430,9 +1564,39 @@ export function WorkspaceFilesTab({
           ) : null}
           {!menuFile ? (
             <>
+              {canMutate ? (
+                <>
+                  <button
+                    ref={menuFirstItemRef}
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                    onClick={() => {
+                      startCreate('file', currentPath)
+                      setMenu(null)
+                    }}
+                  >
+                    <FilePlus className="h-3.5 w-3.5" />
+                    {t('chat:workspace.fileActions.newFile')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
+                    onClick={() => {
+                      startCreate('directory', currentPath)
+                      setMenu(null)
+                    }}
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                    {t('chat:workspace.fileActions.newFolder')}
+                  </button>
+                  <div className="my-1 border-t border-border" role="separator" />
+                </>
+              ) : null}
               {canUpload ? (
                 <button
-                  ref={menuFirstItemRef}
+                  ref={canMutate ? undefined : menuFirstItemRef}
                   type="button"
                   role="menuitem"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"
@@ -1447,7 +1611,7 @@ export function WorkspaceFilesTab({
               ) : null}
               {clipboard ? (
                 <button
-                  ref={canUpload ? undefined : menuFirstItemRef}
+                  ref={canMutate || canUpload ? undefined : menuFirstItemRef}
                   type="button"
                   role="menuitem"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted disabled:opacity-50"
@@ -1462,7 +1626,7 @@ export function WorkspaceFilesTab({
                 </button>
               ) : null}
               <button
-                ref={!canUpload && !clipboard ? menuFirstItemRef : undefined}
+                ref={!canMutate && !canUpload && !clipboard ? menuFirstItemRef : undefined}
                 type="button"
                 role="menuitem"
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted"

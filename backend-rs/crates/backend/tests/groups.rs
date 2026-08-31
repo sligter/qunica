@@ -462,6 +462,12 @@ fn workspace_file_route_requests(group_id: &str, token: &str) -> Vec<Request<Bod
             b"blocked",
         ),
         authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group_id}/workspace-files/create"),
+            token,
+            json!({"path": "blocked.txt", "kind": "file"}),
+        ),
+        authed_json(
             "PATCH",
             &format!("/api/v2/groups/{group_id}/workspace-files/rename?path=missing.txt"),
             token,
@@ -3188,6 +3194,98 @@ async fn workspace_files_rename_moves_files_and_rejects_invalid_destinations() {
         assert_eq!(body["error"]["code"], "invalid_input");
         assert!(!outside.path().join("out.txt").exists());
         assert!(root.path().join("collision-source.txt").exists());
+    }
+}
+
+#[tokio::test]
+async fn workspace_files_create_makes_entries_and_rejects_unsafe_or_taken_paths() {
+    let app = app().await;
+    let token = register_and_login(&app, "workspace-files-create@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Workspace Files").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+    let create_url = format!("/api/v2/groups/{group_id}/workspace-files/create");
+
+    let (status, folder) = send(
+        &app,
+        authed_json(
+            "POST",
+            &create_url,
+            &token,
+            json!({"path": " notes ", "kind": "directory"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(folder["path"], "notes");
+    assert_eq!(folder["is_dir"], true);
+    assert!(root.path().join("notes").is_dir());
+
+    // A nested path is allowed once its parent exists, and defaults to a file.
+    let (status, file) = send(
+        &app,
+        authed_json(
+            "POST",
+            &create_url,
+            &token,
+            json!({"path": "notes/draft.md"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(file["path"], "notes/draft.md");
+    assert_eq!(file["is_dir"], false);
+    assert_eq!(file["size"], 0);
+    assert_eq!(
+        std::fs::read(root.path().join("notes/draft.md")).unwrap(),
+        b""
+    );
+
+    // Re-creating an existing name must not truncate what is already there.
+    std::fs::write(root.path().join("notes/draft.md"), b"kept").unwrap();
+    let (status, body) = send(
+        &app,
+        authed_json(
+            "POST",
+            &create_url,
+            &token,
+            json!({"path": "notes/draft.md", "kind": "file"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "conflict");
+    assert_eq!(
+        std::fs::read(root.path().join("notes/draft.md")).unwrap(),
+        b"kept"
+    );
+
+    for path in ["", "   ", "../escape.txt", "missing-parent/child.txt"] {
+        let (status, body) = send(
+            &app,
+            authed_json("POST", &create_url, &token, json!({"path": path})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "path {path:?}");
+        assert_eq!(body["error"]["code"], "invalid_input", "path {path:?}");
+    }
+    assert!(!root.path().parent().unwrap().join("escape.txt").exists());
+
+    let outside = tempfile::tempdir().unwrap();
+    if create_dir_symlink(outside.path(), &root.path().join("link")).is_ok() {
+        let (status, body) = send(
+            &app,
+            authed_json(
+                "POST",
+                &create_url,
+                &token,
+                json!({"path": "link/out.txt", "kind": "file"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_input");
+        assert!(!outside.path().join("out.txt").exists());
     }
 }
 

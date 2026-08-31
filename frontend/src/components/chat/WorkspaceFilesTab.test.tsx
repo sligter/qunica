@@ -478,8 +478,85 @@ describe('WorkspaceFilesTab', () => {
   it('opens workspace actions from blank-space right-click', () => {
     renderTab({ files: [] })
     fireEvent.contextMenu(screen.getByText('This folder is empty.'))
+    expect(screen.getByRole('menuitem', { name: 'New text file' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'New folder' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Upload file' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Refresh' })).toBeVisible()
+  })
+
+  it('creates folders in the current folder and files inside the folder right-clicked', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? new Response(
+            JSON.stringify({
+              path: 'drafts',
+              name: 'drafts',
+              is_dir: true,
+              size: null,
+              modified_at: null,
+            }),
+            { status: 201, headers: { 'content-type': 'application/json' } },
+          )
+        : new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab({ files: [rawFolder] })
+
+    fireEvent.contextMenu(screen.getByRole('region', { name: 'Files' }))
+    await user.click(screen.getByRole('menuitem', { name: 'New folder' }))
+    expect(screen.getByRole('heading', { name: 'New folder' })).toBeVisible()
+    expect(screen.getByText('The new item is created in the workspace root.')).toBeVisible()
+    await user.type(screen.getByLabelText('Name'), 'drafts')
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/create'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ path: 'drafts', kind: 'directory' }),
+      }),
+    ))
+    await waitFor(() => expect(screen.queryByLabelText('Name')).toBeNull())
+
+    fetchMock.mockClear()
+    fireEvent.contextMenu(screen.getByText('docs').closest('li')!)
+    await user.click(screen.getByRole('menuitem', { name: 'New text file' }))
+    expect(screen.getByText('The new item is created in raw dir/docs.')).toBeVisible()
+    await user.type(screen.getByLabelText('Name'), 'notes.md')
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/groups/group-1/workspace-files/create'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ path: 'raw dir/docs/notes.md', kind: 'file' }),
+      }),
+    ))
+  })
+
+  it('keeps the create dialog open so a rejected name can be corrected', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? new Response(
+            JSON.stringify({ error: { code: 'conflict', message: 'destination already exists' } }),
+            { status: 409, headers: { 'content-type': 'application/json' } },
+          )
+        : new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab({ files: [rawFolder] })
+
+    fireEvent.contextMenu(screen.getByRole('region', { name: 'Files' }))
+    await user.click(screen.getByRole('menuitem', { name: 'New text file' }))
+    await user.type(screen.getByLabelText('Name'), 'docs')
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Workspace operation failed: The file changed before the operation completed.',
+    )
+    expect(screen.getByLabelText('Name')).toHaveValue('docs')
   })
 
   it('does not offer workspace actions without a bound workspace', () => {

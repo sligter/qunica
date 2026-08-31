@@ -188,7 +188,7 @@ describe('MessageList scheduler summary integration', () => {
     expect(messageColumn).toHaveClass('min-w-0', 'w-full', 'max-w-6xl')
   })
 
-  it('shows a jump-to-latest button whenever the user scrolls away from the bottom', async () => {
+  it('keeps jump-to-latest scrolling inside the message pane', async () => {
     const user = userEvent.setup()
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
     setMessageState()
@@ -205,7 +205,8 @@ describe('MessageList scheduler summary integration', () => {
     const button = screen.getByRole('button', { name: 'Jump to latest' })
     await user.click(button)
 
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' })
+    expect(scrollRoot.scrollTop).toBe(500)
+    expect(scrollIntoView).not.toHaveBeenCalled()
     expect(button).not.toBeInTheDocument()
     scrollIntoView.mockRestore()
   })

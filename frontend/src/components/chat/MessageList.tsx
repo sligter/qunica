@@ -71,6 +71,12 @@ function maxScrollTop(node: HTMLDivElement): number {
   return Math.max(0, node.scrollHeight - node.clientHeight)
 }
 
+function scrollToLatest(node: HTMLDivElement): number {
+  const top = maxScrollTop(node)
+  node.scrollTop = top
+  return top
+}
+
 function timelineMessageIds(
   runs: Record<string, StreamRun>,
   runIdsByUserMessageId: Record<string, string>,
@@ -158,7 +164,6 @@ export function MessageList({
     (s) => s.streamRunIdByUserMessageIdByGroup[stateId] ?? EMPTY_STREAM_RUN_IDS,
   )
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const endRef = useRef<HTMLDivElement | null>(null)
   const isNearBottomRef = useRef(true)
   const restoredScrollRef = useRef(false)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
@@ -176,11 +181,6 @@ export function MessageList({
   const warningLabel = latestWarning && isKnownWarning(latestWarning)
     ? t(warningKeys[latestWarning])
     : latestWarning
-  const hasActiveStreamRun = useMemo(
-    () => Object.values(streamRuns).some((run) => run.status === 'active'),
-    [streamRuns],
-  )
-
   const getScrollState = useCallback(() => {
     const node = scrollRef.current
     if (!node) return { canScroll: false, isNearBottom: true }
@@ -201,9 +201,8 @@ export function MessageList({
   }, [getScrollState, stateId])
 
   const jumpToLatest = () => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
     const node = scrollRef.current
-    if (node) storeScrollTop(stateId, maxScrollTop(node))
+    if (node) storeScrollTop(stateId, scrollToLatest(node))
     isNearBottomRef.current = true
     setShowJumpToLatest(false)
   }
@@ -229,26 +228,22 @@ export function MessageList({
     isNearBottomRef.current = isNearBottom
     setShowJumpToLatest(canScroll && !isNearBottom)
     restoredScrollRef.current = true
-  }, [getScrollState, hasActiveStreamRun, messages.length, stateId, streamRuns])
+  }, [getScrollState, messages.length, stateId, streamRuns])
 
   useEffect(() => {
     if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
     const { canScroll, isNearBottom } = getScrollState()
     const shouldStickToBottom = isNearBottomRef.current || isNearBottom
     if (shouldStickToBottom) {
-      endRef.current?.scrollIntoView({
-        behavior: hasActiveStreamRun ? 'auto' : 'smooth',
-        block: 'end',
-      })
       const node = scrollRef.current
-      if (node) storeScrollTop(stateId, maxScrollTop(node))
+      if (node) storeScrollTop(stateId, scrollToLatest(node))
       isNearBottomRef.current = true
       setShowJumpToLatest(false)
       return
     }
     isNearBottomRef.current = false
     setShowJumpToLatest(canScroll)
-  }, [messages, streamRuns, warnings, stateId, hasActiveStreamRun, getScrollState])
+  }, [messages, streamRuns, warnings, stateId, getScrollState])
 
   return (
     <div
@@ -379,7 +374,6 @@ export function MessageList({
           </button>
         </div>
       )}
-      <div ref={endRef} />
     </div>
   )
 }
