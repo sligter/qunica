@@ -79,6 +79,9 @@ const WORKSPACE_SHOW_HIDDEN_KEY_PREFIX = 'qunica:conversations:workspace-show-hi
 const FILE_ROW_HEIGHT = 32
 const FILE_LIST_OVERSCAN = 8
 const FILE_LIST_FALLBACK_HEIGHT = 320
+// How far a pointer may travel between press and release and still count as a
+// click on the row. Anything further was an attempt to drag it.
+const FILE_ROW_CLICK_SLOP = 4
 
 function previewModeStorageKey(scope: ConversationScope, conversationId: string): string {
   return `${WORKSPACE_PREVIEW_MODE_KEY_PREFIX}${scope}:${conversationId}`
@@ -129,6 +132,17 @@ function dragItem(file: ConversationWorkspaceFileRead): WorkspaceDragItemInput {
     path: file.path,
     name: file.name,
     kind: file.is_dir ? 'directory' : 'file',
+  }
+}
+
+function encodeDragPayload(files: ConversationWorkspaceFileRead[]): string | null {
+  try {
+    return encodeWorkspaceDragItems(files.map(dragItem))
+  } catch {
+    // The encoder rejects the whole batch over one unrepresentable path, and
+    // throwing out of `dragstart` would leave the drag with no payload at all.
+    // The `text/plain` path list still drops as a usable fallback.
+    return null
   }
 }
 
@@ -184,6 +198,8 @@ export function WorkspaceFilesTab({
   const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const menuFirstItemRef = useRef<HTMLButtonElement | null>(null)
   const selectionAnchorRef = useRef<string | null>(null)
+  const didDragRef = useRef(false)
+  const pointerOriginRef = useRef<{ x: number; y: number } | null>(null)
   const dragDescriptionId = useId()
   const contextMenuId = useId()
   const activeConversationId = workspaceId ? conversationId : undefined
@@ -340,6 +356,21 @@ export function WorkspaceFilesTab({
     event: React.MouseEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    const origin = pointerOriginRef.current
+    const draggedGesture = didDragRef.current
+    didDragRef.current = false
+    pointerOriginRef.current = null
+    // A pointer that travelled before releasing meant to drag the row, not open
+    // it. Deciding on distance rather than on `dragstart` matters because the
+    // webview often never starts a native drag for a short or hurried gesture --
+    // it delivers a plain click instead, and opening the preview there is what
+    // makes dragging feel like it needs a second try. `detail === 0` marks a
+    // keyboard-activated click, which has no meaningful coordinates.
+    const travelled = event.detail > 0
+      && origin !== null
+      && (Math.abs(event.clientX - origin.x) > FILE_ROW_CLICK_SLOP
+        || Math.abs(event.clientY - origin.y) > FILE_ROW_CLICK_SLOP)
+    if (draggedGesture || travelled) return
     if (event.shiftKey) {
       selectPathRange(file.path, event.ctrlKey || event.metaKey)
       return
@@ -368,6 +399,8 @@ export function WorkspaceFilesTab({
     event: React.KeyboardEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    didDragRef.current = false
+    pointerOriginRef.current = null
     if (event.key === 'Enter') {
       event.preventDefault()
       openEntry(file)
@@ -383,15 +416,17 @@ export function WorkspaceFilesTab({
     event: React.DragEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    didDragRef.current = true
     const draggedFiles = selectedDragFiles(file)
+    // Fill the payload before touching state. Selecting the row and marking it
+    // grabbed both re-render the element the webview is dragging, and doing
+    // that while `dragstart` is still running can cancel the gesture outright.
+    event.dataTransfer.effectAllowed = 'copy'
+    const structured = encodeDragPayload(draggedFiles)
+    if (structured) event.dataTransfer.setData(WORKSPACE_ITEM_MIME, structured)
+    event.dataTransfer.setData('text/plain', draggedFiles.map((item) => item.path).join('\n'))
     if (!selectedWorkspacePaths.has(file.path)) selectOnlyPath(file.path)
     setDraggingPath(file.path)
-    event.dataTransfer.effectAllowed = 'copy'
-    event.dataTransfer.setData(
-      WORKSPACE_ITEM_MIME,
-      encodeWorkspaceDragItems(draggedFiles.map(dragItem)),
-    )
-    event.dataTransfer.setData('text/plain', draggedFiles.map((item) => item.path).join('\n'))
   }
 
   useEffect(() => {
@@ -1095,11 +1130,15 @@ export function WorkspaceFilesTab({
                     draggable
                     data-git-ignored={file.ignored || undefined}
                     className={cn(
-                      'flex h-8 w-full min-w-0 items-center gap-1.5 rounded-sm px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      'flex h-8 w-full min-w-0 cursor-grab select-none items-center gap-1.5 rounded-sm px-1.5 text-left active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       file.ignored
                         && !isSelected
                         && 'opacity-60 hover:opacity-80 focus-visible:opacity-100',
                     )}
+                    onPointerDown={(event) => {
+                      didDragRef.current = false
+                      pointerOriginRef.current = { x: event.clientX, y: event.clientY }
+                    }}
                     onClick={(event) => handleFileClick(event, file)}
                     onKeyDown={(event) => handleFileKeyDown(event, file)}
                     onDragStart={(event) => handleFileDragStart(event, file)}

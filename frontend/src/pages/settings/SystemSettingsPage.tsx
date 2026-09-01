@@ -49,8 +49,17 @@ import {
 const PICKER_SCOPE = 'group-workspace-root'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
 const LANGUAGE_OPTIONS: Language[] = ['zh-CN', 'en-US']
-const SHELL_OPTIONS: ShellPreference[] = ['auto', 'bash']
+const WINDOWS_SHELL_OPTIONS: ShellPreference[] = ['auto', 'powershell', 'cmd', 'bash']
+const POSIX_SHELL_OPTIONS: ShellPreference[] = ['auto', 'bash']
 const REPLY_INSERT_MODES: ReplyInsertMode[] = ['instant', 'queue']
+
+function shellPlatform(nativeOs?: string): 'windows' | 'macos' | 'linux' {
+  const platform = nativeOs
+    ?? (typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent)
+  if (/^(win|windows)/i.test(platform)) return 'windows'
+  if (/mac|darwin/i.test(platform)) return 'macos'
+  return 'linux'
+}
 
 export function SystemSettingsPage() {
   const { t, i18n } = useTranslation('settings')
@@ -92,6 +101,14 @@ export function SystemSettingsPage() {
   const [downloadProgress, setDownloadProgress] = useState<UpdateProgress | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const desktop = isDesktopRuntime()
+  const platform = shellPlatform(about?.os)
+  const shellOptions = platform === 'windows' ? WINDOWS_SHELL_OPTIONS : POSIX_SHELL_OPTIONS
+  const shellOptionLabels: Record<ShellPreference, string> = {
+    auto: t(platform === 'macos' ? 'shell.options.zshDefault' : 'shell.options.auto'),
+    powershell: t('shell.options.powershell'),
+    bash: t(platform === 'windows' ? 'shell.options.gitBash' : 'shell.options.bash'),
+    cmd: t('shell.options.cmd'),
+  }
 
   // Sync each field from its own server value so saving one section does not
   // wipe unsaved edits in another (instant appearance saves refresh settings.data).
@@ -271,7 +288,7 @@ export function SystemSettingsPage() {
   }
 
   const onShellPreferenceChange = async (value: string) => {
-    const next = SHELL_OPTIONS.find((option) => option === value)
+    const next = shellOptions.find((option) => option === value)
     if (next === undefined || next === shellPreference || update.isPending) return
     const previous = shellPreference
     setShellPreference(next)
@@ -682,7 +699,9 @@ export function SystemSettingsPage() {
         <SettingsSection title={t('shell.title')}>
           <SettingsRow
             label={t('shell.integratedShell')}
-            description={t('shell.description')}
+            description={t(
+              platform === 'windows' ? 'shell.description.windows' : 'shell.description.posix',
+            )}
             htmlFor="ss-shell-preference"
           >
             <select
@@ -692,9 +711,9 @@ export function SystemSettingsPage() {
               disabled={settings.isLoading || update.isPending}
               onChange={(event) => void onShellPreferenceChange(event.target.value)}
             >
-              {SHELL_OPTIONS.map((option) => (
+              {shellOptions.map((option) => (
                 <option key={option} value={option}>
-                  {t(`shell.options.${option}`)}
+                  {shellOptionLabels[option]}
                 </option>
               ))}
             </select>

@@ -762,11 +762,17 @@ export const zhCN: TranslationShape<typeof enUS> = {
     shell: {
       title: 'Shell',
       integratedShell: '集成终端 Shell',
-      description:
-        '新建终端标签页默认使用 macOS 的 zsh；Agent 的 Shell 工具使用兼容的 POSIX Shell。',
+      description: {
+        windows: 'Agent 与新建终端标签页使用此 Shell。自动选择会优先使用 PowerShell，找不到时回退到 CMD。',
+        posix: '新建终端标签页使用系统默认 Shell；Agent 使用兼容的 POSIX Shell。选择 Bash 可将两者固定为 Bash。',
+      },
       options: {
-        auto: 'zsh（macOS 默认）',
+        auto: '系统默认',
+        zshDefault: 'zsh（系统默认）',
+        powershell: 'PowerShell (pwsh)',
         bash: 'Bash',
+        gitBash: 'Git Bash',
+        cmd: 'CMD',
       },
     },
     workspaceRoot: {

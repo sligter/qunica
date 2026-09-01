@@ -859,11 +859,19 @@ export const enUS = {
     shell: {
       title: 'Shell',
       integratedShell: 'Integrated terminal shell',
-      description:
-        "New terminal tabs use macOS's default zsh; agents use a compatible POSIX shell.",
+      description: {
+        windows:
+          'Agents and new terminal tabs use this shell. Auto prefers PowerShell and falls back to CMD.',
+        posix:
+          'New terminal tabs use the system default shell; agents use a compatible POSIX shell. Choose Bash to pin both to Bash.',
+      },
       options: {
-        auto: 'zsh (macOS default)',
+        auto: 'System default',
+        zshDefault: 'zsh (system default)',
+        powershell: 'PowerShell (pwsh)',
         bash: 'Bash',
+        gitBash: 'Git Bash',
+        cmd: 'CMD',
       },
     },
     workspaceRoot: {

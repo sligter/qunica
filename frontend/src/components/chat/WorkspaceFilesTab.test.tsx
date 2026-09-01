@@ -724,6 +724,34 @@ describe('WorkspaceFilesTab', () => {
     fireEvent.dragEnd(fileButton)
     expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
 
+    // WebViews may emit a click after dragend; that click belongs to the drag
+    // gesture and must not open the file. A fresh pointer gesture still opens it.
+    fireEvent.click(fileButton)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.pointerDown(fileButton)
+    fireEvent.click(fileButton)
+    expect(screen.getByRole('dialog')).toBeVisible()
+
+  })
+
+  it('does not open a file when the pointer travelled without starting a drag', async () => {
+    const user = userEvent.setup()
+    renderTab()
+    const fileButton = screen.getByText('README_RAW_原文.md').closest('button')!
+
+    // The webview often declines to start a native drag for a hurried gesture
+    // and delivers a plain click instead. Distance, not `dragstart`, has to be
+    // what keeps that click from opening the preview the user was dragging.
+    fireEvent.pointerDown(fileButton, { clientX: 40, clientY: 120 })
+    fireEvent.click(fileButton, { clientX: 190, clientY: 128, detail: 1 })
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    // A press and release in place is still an ordinary click.
+    fireEvent.pointerDown(fileButton, { clientX: 40, clientY: 120 })
+    fireEvent.click(fileButton, { clientX: 41, clientY: 121, detail: 1 })
+    expect(screen.getByRole('dialog')).toBeVisible()
+
+    await user.keyboard('{Escape}')
   })
 
   it('preserves keyboard opening and provides keyboard context-menu navigation', async () => {

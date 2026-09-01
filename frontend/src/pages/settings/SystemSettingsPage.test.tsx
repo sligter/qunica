@@ -81,6 +81,7 @@ describe('SystemSettingsPage preferences', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
     useAuthStore.setState({ token: null, user: null, hydrated: false })
     localStorage.clear()
   })
@@ -200,6 +201,7 @@ describe('SystemSettingsPage preferences', () => {
   })
 
   it('saves the integrated terminal shell and rolls back after a failed save', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel')
     useAuthStore.setState({ token: 'token' })
     let rejectPatch!: (reason?: unknown) => void
     const patchResponse = new Promise<Response>((_resolve, reject) => {
@@ -217,8 +219,8 @@ describe('SystemSettingsPage preferences', () => {
     const select = await screen.findByLabelText('Integrated terminal shell')
     await waitFor(() => expect(select).toBeEnabled())
     expect(select).toHaveValue('auto')
-    expect(screen.getByRole('option', { name: 'zsh (macOS default)' })).toBeVisible()
-    expect(screen.queryByRole('option', { name: 'PowerShell' })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'zsh (system default)' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: 'PowerShell (pwsh)' })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'CMD' })).not.toBeInTheDocument()
     await user.selectOptions(select, 'bash')
 
@@ -231,6 +233,23 @@ describe('SystemSettingsPage preferences', () => {
     rejectPatch(new Error('offline'))
     await waitFor(() => expect(select).toHaveValue('auto'))
     expect(screen.getByRole('alert')).toBeVisible()
+  })
+
+  it('offers Windows shells on Windows', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    useAuthStore.setState({ token: 'token' })
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(settings)))
+
+    await renderSettingsPage()
+
+    const select = await screen.findByLabelText('Integrated terminal shell')
+    await waitFor(() => expect(select).toBeEnabled())
+    expect(Array.from((select as HTMLSelectElement).options, (option) => option.textContent)).toEqual([
+      'System default',
+      'PowerShell (pwsh)',
+      'CMD',
+      'Git Bash',
+    ])
   })
 })
 

@@ -19,9 +19,6 @@ importers:
       '@microsoft/fetch-event-source':
         specifier: ^2.0.1
         version: 2.0.1
-      '@qunica/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@radix-ui/react-alert-dialog':
         specifier: ^1.1.23
         version: 1.1.23(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -194,12 +191,6 @@ importers:
       vitest:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@22.19.17)(jsdom@29.1.1)(vite@6.4.2(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0))
-
-  shared:
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
 
 packages:
 
