@@ -153,10 +153,15 @@ export function WorkspaceTextEditor({
   const dirty = draft !== snapshot.content
   const matches = matchPositions(draft, searchValue)
   const language = sourceLanguage(snapshot.path)
-  const highlighted = useMemo(
-    () => language ? hljs.highlight(draft, { language, ignoreIllegals: true }).value : null,
-    [draft, language],
-  )
+  const highlighted = useMemo(() => {
+    if (!language) return null
+    const value = hljs.highlight(draft, { language, ignoreIllegals: true }).value
+    // A <pre> drops the line box a trailing newline would open; a <textarea>
+    // keeps that empty last line. Without the padding space the highlight layer
+    // is one line shorter than the text it sits under, so scrolling to the
+    // bottom clamps its scrollTop and the two layers drift a full line apart.
+    return draft.endsWith('\n') ? `${value} ` : value
+  }, [draft, language])
   const lineNumbers = useMemo(() => {
     let count = 1
     let text = '1'
@@ -517,12 +522,17 @@ export function WorkspaceTextEditor({
           presentation === 'editor' ? 'min-h-[24rem]' : 'min-h-[20rem] resize-y',
         )}
       >
+        {/* The textarea's 6px scrollbars eat into its client box, so it scrolls
+            6px further than these overlays in both axes. Their trailing padding
+            covers the difference: pb-4/pr-5 is the textarea's 10px/14px plus one
+            scrollbar. Overshoot is free — the scroll offsets are assigned
+            outright — but coming up short clamps and drifts. */}
         <pre
           ref={lineNumbersRef}
           aria-hidden="true"
           data-line-numbers
           style={{ width: lineNumbers.width }}
-          className="pointer-events-none absolute inset-y-0 left-0 z-20 m-0 select-none overflow-hidden border-r border-border bg-muted/35 py-2.5 pr-2 text-right font-mono text-editor leading-editor text-muted-foreground"
+          className="pointer-events-none absolute inset-y-0 left-0 z-20 m-0 select-none overflow-hidden border-r border-border bg-muted/35 pt-2.5 pr-2 pb-4 text-right font-mono text-editor leading-editor text-muted-foreground"
         >
           {lineNumbers.text}
         </pre>
@@ -532,7 +542,7 @@ export function WorkspaceTextEditor({
             aria-hidden="true"
             data-language={language}
             style={{ paddingLeft: `calc(${lineNumbers.width} + 0.875rem)` }}
-            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre py-2.5 pr-3.5 font-mono text-editor leading-editor"
+            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre pt-2.5 pr-5 pb-4 font-mono text-editor leading-editor"
           >
             <code dangerouslySetInnerHTML={{ __html: highlighted }} />
           </pre>

@@ -153,6 +153,7 @@ describe('WorkspaceFilesTab', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     useAuthStore.setState({ token: null })
     useFileNavStore.setState({ request: null, editorStages: {} })
@@ -687,6 +688,7 @@ describe('WorkspaceFilesTab', () => {
   })
 
   it('emits structured drag items with accessible file and directory state', () => {
+    vi.useFakeTimers()
     renderTab({ files: [rawFolder, rawFile] })
     const fileButton = screen.getByText('README_RAW_原文.md').closest('button')!
     const fileRow = fileButton.closest('li')
@@ -701,8 +703,21 @@ describe('WorkspaceFilesTab', () => {
       'Drag this folder to the composer to insert its relative path.',
     )
     expect(fileButton).toHaveAttribute('draggable', 'true')
+    expect(fileButton).toHaveClass('cursor-default')
+    expect(fileButton).not.toHaveClass('cursor-grab', 'cursor-grabbing')
     expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
     expect(folderButton).toHaveAttribute('aria-grabbed', 'false')
+
+    fireEvent.pointerDown(fileButton, { button: 0, clientX: 40, clientY: 120 })
+    act(() => vi.advanceTimersByTime(350))
+    expect(fileButton).toHaveClass('cursor-grabbing')
+    expect(fileButton).toHaveAttribute('aria-grabbed', 'true')
+    fireEvent.pointerUp(fileButton)
+    fireEvent.click(fileButton, { detail: 1, clientX: 40, clientY: 120 })
+    expect(fileButton).toHaveClass('cursor-default')
+    expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    vi.useRealTimers()
 
     const setData = vi.fn()
     fireEvent.dragStart(fileButton, {
@@ -721,6 +736,8 @@ describe('WorkspaceFilesTab', () => {
     ])
     expect(setData).toHaveBeenCalledWith('text/plain', rawFile.path)
     expect(fileButton).toHaveAttribute('aria-grabbed', 'true')
+    expect(fileButton).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText('1 selected')).toBeNull()
     fireEvent.dragEnd(fileButton)
     expect(fileButton).toHaveAttribute('aria-grabbed', 'false')
 

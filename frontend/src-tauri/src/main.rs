@@ -962,6 +962,7 @@ fn start_in_process_backend(
     Ok(shutdown_tx)
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn shell_path_from_output(output: &[u8]) -> Option<String> {
     std::str::from_utf8(output)
         .ok()?

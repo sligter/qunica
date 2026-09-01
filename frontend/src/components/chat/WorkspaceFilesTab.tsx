@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   AppWindow,
   ChevronLeft,
@@ -79,6 +79,7 @@ const WORKSPACE_SHOW_HIDDEN_KEY_PREFIX = 'qunica:conversations:workspace-show-hi
 const FILE_ROW_HEIGHT = 32
 const FILE_LIST_OVERSCAN = 8
 const FILE_LIST_FALLBACK_HEIGHT = 320
+const FILE_ROW_LONG_PRESS_MS = 350
 // How far a pointer may travel between press and release and still count as a
 // click on the row. Anything further was an attempt to drag it.
 const FILE_ROW_CLICK_SLOP = 4
@@ -199,7 +200,9 @@ export function WorkspaceFilesTab({
   const menuFirstItemRef = useRef<HTMLButtonElement | null>(null)
   const selectionAnchorRef = useRef<string | null>(null)
   const didDragRef = useRef(false)
+  const didLongPressRef = useRef(false)
   const pointerOriginRef = useRef<{ x: number; y: number } | null>(null)
+  const longPressTimerRef = useRef<number | null>(null)
   const dragDescriptionId = useId()
   const contextMenuId = useId()
   const activeConversationId = workspaceId ? conversationId : undefined
@@ -256,6 +259,12 @@ export function WorkspaceFilesTab({
   const visibleFiles = isSearchPending ? [] : sortedFiles.slice(visibleStart, visibleEnd)
   const selectedCount = selectedWorkspacePaths.size
   const selectedFiles = sortedFiles.filter((file) => selectedWorkspacePaths.has(file.path))
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current === null) return
+    window.clearTimeout(longPressTimerRef.current)
+    longPressTimerRef.current = null
+  }, [])
 
   const changePreviewMode = (mode: WorkspacePreviewMode) => {
     setPreviewMode(mode)
@@ -356,9 +365,12 @@ export function WorkspaceFilesTab({
     event: React.MouseEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    clearLongPressTimer()
     const origin = pointerOriginRef.current
     const draggedGesture = didDragRef.current
+    const longPressedGesture = didLongPressRef.current
     didDragRef.current = false
+    didLongPressRef.current = false
     pointerOriginRef.current = null
     // A pointer that travelled before releasing meant to drag the row, not open
     // it. Deciding on distance rather than on `dragstart` matters because the
@@ -370,7 +382,7 @@ export function WorkspaceFilesTab({
       && origin !== null
       && (Math.abs(event.clientX - origin.x) > FILE_ROW_CLICK_SLOP
         || Math.abs(event.clientY - origin.y) > FILE_ROW_CLICK_SLOP)
-    if (draggedGesture || travelled) return
+    if (draggedGesture || longPressedGesture || travelled) return
     if (event.shiftKey) {
       selectPathRange(file.path, event.ctrlKey || event.metaKey)
       return
@@ -399,7 +411,9 @@ export function WorkspaceFilesTab({
     event: React.KeyboardEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    clearLongPressTimer()
     didDragRef.current = false
+    didLongPressRef.current = false
     pointerOriginRef.current = null
     if (event.key === 'Enter') {
       event.preventDefault()
@@ -416,6 +430,7 @@ export function WorkspaceFilesTab({
     event: React.DragEvent<HTMLButtonElement>,
     file: ConversationWorkspaceFileRead,
   ) => {
+    clearLongPressTimer()
     didDragRef.current = true
     const draggedFiles = selectedDragFiles(file)
     // Fill the payload before touching state. Selecting the row and marking it
@@ -425,7 +440,6 @@ export function WorkspaceFilesTab({
     const structured = encodeDragPayload(draggedFiles)
     if (structured) event.dataTransfer.setData(WORKSPACE_ITEM_MIME, structured)
     event.dataTransfer.setData('text/plain', draggedFiles.map((item) => item.path).join('\n'))
-    if (!selectedWorkspacePaths.has(file.path)) selectOnlyPath(file.path)
     setDraggingPath(file.path)
   }
 
@@ -436,6 +450,8 @@ export function WorkspaceFilesTab({
     }, 300)
     return () => window.clearTimeout(timer)
   }, [searchInput])
+
+  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer])
 
   useEffect(() => {
     const node = fileListRef.current
@@ -1130,14 +1146,41 @@ export function WorkspaceFilesTab({
                     draggable
                     data-git-ignored={file.ignored || undefined}
                     className={cn(
-                      'flex h-8 w-full min-w-0 cursor-grab select-none items-center gap-1.5 rounded-sm px-1.5 text-left active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      'flex h-8 w-full min-w-0 cursor-default select-none items-center gap-1.5 rounded-sm px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      draggingPath === file.path && 'cursor-grabbing',
                       file.ignored
                         && !isSelected
                         && 'opacity-60 hover:opacity-80 focus-visible:opacity-100',
                     )}
                     onPointerDown={(event) => {
+                      if (event.button !== 0) return
+                      clearLongPressTimer()
                       didDragRef.current = false
-                      pointerOriginRef.current = { x: event.clientX, y: event.clientY }
+                      didLongPressRef.current = false
+                      pointerOriginRef.current = {
+                        x: event.clientX,
+                        y: event.clientY,
+                      }
+                      longPressTimerRef.current = window.setTimeout(() => {
+                        longPressTimerRef.current = null
+                        didLongPressRef.current = true
+                        setDraggingPath(file.path)
+                      }, FILE_ROW_LONG_PRESS_MS)
+                    }}
+                    onPointerUp={() => {
+                      clearLongPressTimer()
+                      setDraggingPath(null)
+                    }}
+                    onPointerCancel={() => {
+                      clearLongPressTimer()
+                      didLongPressRef.current = false
+                      pointerOriginRef.current = null
+                      setDraggingPath(null)
+                    }}
+                    onPointerLeave={() => {
+                      if (didDragRef.current) return
+                      clearLongPressTimer()
+                      setDraggingPath(null)
                     }}
                     onClick={(event) => handleFileClick(event, file)}
                     onKeyDown={(event) => handleFileKeyDown(event, file)}

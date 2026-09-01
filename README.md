@@ -105,5 +105,7 @@ pnpm lint
 pnpm --filter @qunica/frontend test
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
+- [Linux Do](https://linux.do/) — A community for developers, by developers.
 
-<p align="center"><sub>Qunica · local-first multi-agent collaboration</sub></p>
+<p align="center"><sub>Qunica · local-first multi-agent collaboration</sub></p
+>
