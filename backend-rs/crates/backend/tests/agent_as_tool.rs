@@ -1366,10 +1366,9 @@ async fn agent_as_tool_schema_names_the_assistants_the_caller_can_reach() {
 }
 
 /// An assistant bound but absent from the group makes the tool unusable, so it
-/// is withheld and the misconfiguration is said out loud instead of leaving the
-/// owner to infer it from an agent that never delegates.
+/// is withheld without interrupting an otherwise valid response with a warning.
 #[tokio::test]
-async fn agent_as_tool_is_withheld_and_warned_when_no_assistant_is_in_the_group() {
+async fn agent_as_tool_is_withheld_when_no_assistant_is_in_the_group() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "aat-withheld@example.com";
     let token = register_and_login(&app, email).await;
@@ -1401,13 +1400,7 @@ async fn agent_as_tool_is_withheld_and_warned_when_no_assistant_is_in_the_group(
         agent_as_tool_schema(&requests[0]).is_none(),
         "a tool that cannot name a single reachable assistant must not be advertised"
     );
-    let warnings = payloads_of_kind(&events, StreamEventKind::Warning);
-    assert!(
-        warnings.iter().any(|payload| payload["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("AgentAsTool is unavailable"))),
-        "the owner must be told why delegation is not available: {warnings:?}"
-    );
+    assert!(payloads_of_kind(&events, StreamEventKind::Warning).is_empty());
 }
 
 /// The whole point of the fix: a rejected dispatch comes back as a tool result,

@@ -2513,10 +2513,6 @@ struct InvocationContext {
     tools: Vec<ToolDefinition>,
     executor: ToolExecutor,
     workspace_root: Option<PathBuf>,
-    /// Configuration problems worth telling the user about, surfaced once when
-    /// the turn starts rather than left for them to infer from what the agent
-    /// did not do.
-    warnings: Vec<String>,
 }
 
 /// What `AgentAsTool` can actually do for this dispatch.
@@ -3025,10 +3021,6 @@ async fn run_agent_turn(
     .await
     .map_err(StepErr::Db)?;
     for warning in image_warnings {
-        ctx.emit(StreamEventKind::Warning, json!({ "message": warning }))
-            .await?;
-    }
-    for warning in &invocation.warnings {
         ctx.emit(StreamEventKind::Warning, json!({ "message": warning }))
             .await?;
     }
@@ -5958,7 +5950,6 @@ async fn build_invocation_context(
     // `AgentAsTool` is the one tool whose schema depends on the conversation,
     // so it is built here rather than from the static table: it has to name the
     // assistants this caller can actually reach.
-    let mut warnings = Vec::new();
     let mut delegation = DelegationAvailability::Unavailable;
     if enabled_tools.iter().any(|name| name == AGENT_AS_TOOL_NAME) {
         let direct_chat = group.conversation_kind == "direct";
@@ -5975,7 +5966,6 @@ async fn build_invocation_context(
             &group.muted_agent_ids,
         )
         .await;
-        let had_reachable_helpers = !roster.dispatchable.is_empty();
         if let Some(scheduler) = scheduler {
             roster.dispatchable.retain(|helper| {
                 !scheduler.budget.has_dispatched(&helper.agent_id)
@@ -5990,30 +5980,7 @@ async fn build_invocation_context(
         } else {
             roster.dispatchable.clear();
         }
-        if roster.dispatchable.is_empty() {
-            // Bound but unreachable is a configuration mistake that used to be
-            // invisible: the tool was advertised, every call failed, and the
-            // owner saw an agent that simply never delegated. Say it once, in
-            // the transcript, instead of offering a tool that cannot succeed.
-            //
-            // Helpers that already ran are normal turn progress, so do not
-            // repeat a warning on every later dispatch.
-            if roster.bound > 0 && !had_reachable_helpers {
-                warnings.push(if direct_chat {
-                    format!(
-                        "@{} has assistant agents bound for delegation, but none of them are \
-                         active, so AgentAsTool is unavailable this turn.",
-                        agent.display_name
-                    )
-                } else {
-                    format!(
-                        "@{} has assistant agents bound for delegation, but none of them are active \
-                         members of this group, so AgentAsTool is unavailable this turn.",
-                        agent.display_name
-                    )
-                });
-            }
-        } else {
+        if !roster.dispatchable.is_empty() {
             let allow_handoff =
                 !direct_chat && scheduler.is_some_and(|scheduler| !scheduler.automatic);
             let fan_out = fan_out_is_available(&roster.dispatchable);
@@ -6065,7 +6032,6 @@ async fn build_invocation_context(
         tools,
         executor,
         workspace_root: workspaces.primary,
-        warnings,
     })
 }
 

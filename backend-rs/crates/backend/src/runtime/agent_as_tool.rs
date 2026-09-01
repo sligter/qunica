@@ -313,12 +313,7 @@ pub(crate) async fn resolve_dispatch(
 
 /// The assistants a caller could actually dispatch to on this turn.
 ///
-/// `bound` counts what the owner selected on the agent; `dispatchable` holds
-/// only the ones that survive every gate the resolver applies later — same
-/// owner, active, not muted, not the caller, and (for group conversations) an
-/// active member of that group.
 pub(crate) struct AssistantRoster {
-    pub bound: usize,
     pub dispatchable: Vec<AssistantMember>,
 }
 
@@ -345,10 +340,7 @@ pub(crate) async fn dispatchable_assistants(
     .await
     .unwrap_or_default();
     dispatchable.retain(|helper| helper.agent_id != caller.agent_id);
-    AssistantRoster {
-        bound: bound_ids.len(),
-        dispatchable,
-    }
+    AssistantRoster { dispatchable }
 }
 
 fn first_string<'a>(args: &'a Value, names: &[&str]) -> Option<&'a str> {
