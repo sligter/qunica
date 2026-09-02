@@ -77,6 +77,24 @@ describe('AuthForm localized server diagnostics', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent('user already exists')
   })
 
+  it('localizes a disabled-registration response in Chinese', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        errorResponse(403, 'registration_disabled', 'registration is disabled'),
+      ),
+    )
+    const user = userEvent.setup()
+    await renderChineseAuthForm('register')
+
+    await user.type(screen.getByLabelText('姓名'), 'Blocked User')
+    await user.type(screen.getByLabelText('邮箱'), 'blocked@example.com')
+    await user.type(screen.getByLabelText('密码'), 'password123')
+    await user.click(screen.getByRole('button', { name: '注册' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('此服务器已关闭注册。')
+  })
+
   it('lets the user reveal and hide the password', async () => {
     const user = userEvent.setup()
     await renderChineseAuthForm('login')

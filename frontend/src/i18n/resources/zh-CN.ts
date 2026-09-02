@@ -162,6 +162,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     errors: {
       invalidCredentials: '邮箱或密码不正确。',
       userExists: '该邮箱已注册。',
+      registrationDisabled: '此服务器已关闭注册。',
       generic: '无法完成请求。',
       network: '无法连接服务器。',
     },

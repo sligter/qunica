@@ -169,6 +169,7 @@ export const enUS = {
     errors: {
       invalidCredentials: 'Email or password is incorrect.',
       userExists: 'An account with this email already exists.',
+      registrationDisabled: 'Registration is disabled on this server.',
       generic: 'Unable to complete the request.',
       network: 'Unable to reach the server.',
     },

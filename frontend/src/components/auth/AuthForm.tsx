@@ -61,6 +61,8 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
           setSubmitError(t('errors.invalidCredentials'))
         } else if (!isLogin && err.status === 409) {
           setSubmitError(t('errors.userExists'))
+        } else if (!isLogin && err.code === 'registration_disabled') {
+          setSubmitError(t('errors.registrationDisabled'))
         } else {
           setSubmitError(t('errors.generic'))
         }

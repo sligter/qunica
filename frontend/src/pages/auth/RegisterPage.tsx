@@ -1,18 +1,24 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 
 import { AuthCard } from '@/components/auth/AuthCard'
 import { AuthForm } from '@/components/auth/AuthForm'
+import { useAuthConfig } from '@/hooks/useAuthConfig'
 
 export function RegisterPage() {
   const { t } = useTranslation('auth')
   const navigate = useNavigate()
+  const authConfig = useAuthConfig()
   const title = t('register.title')
 
   useEffect(() => {
     document.title = title
   }, [title])
+
+  if (authConfig.data?.registration_enabled === false) {
+    return <Navigate to="/login" replace />
+  }
 
   return (
     <AuthCard title={title} subtitle={t('register.subtitle')}>

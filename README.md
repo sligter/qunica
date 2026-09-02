@@ -19,6 +19,7 @@
   <a href="#first-run">First run</a> ·
   <a href="#external-runtimes">Runtimes</a> ·
   <a href="#run-it">Run it</a> ·
+  <a href="#run-it-in-docker">Docker</a> ·
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
@@ -86,6 +87,16 @@ pnpm desktop:build
 ```
 
 Artifacts are written under `frontend/src-tauri/target/release/bundle/`. For the browser UI against a local backend, use `pnpm dev`.
+
+## Run it in Docker
+
+One container serves the API and the web UI on the same port.
+
+```bash
+docker compose up -d --build
+```
+
+Open <http://127.0.0.1:18765> and point the workspace root at `/workspaces` during onboarding. The host port avoids 8765, which the desktop build's own backend uses. Data lives in the `/data` and `/workspaces` volumes. Agents run shell commands inside the container, so keep the port off public interfaces. For a public VPS, disable registration and bootstrap the initial account as described in [DOCKER.md](DOCKER.md#public-vps-first-boot).
 
 ## Documentation
 

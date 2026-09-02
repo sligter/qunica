@@ -58,6 +58,7 @@ pub struct AppState {
 pub struct AuthSettings {
     pub secret_key: String,
     pub access_token_expire_minutes: i64,
+    pub registration_enabled: bool,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -82,6 +83,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/health", get(health::health))
         .route("/api/v2/health", get(health::health))
+        .route("/api/v2/auth/config", get(auth::public_config))
         .route("/api/v2/auth/register", axum::routing::post(auth::register))
         .route("/api/v2/auth/login", axum::routing::post(auth::login))
         .route("/api/v2/auth/me", get(auth::me).patch(auth::update_me))
@@ -613,6 +615,7 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         auth: AuthSettings {
             secret_key: "test-secret".to_string(),
             access_token_expire_minutes: 10080,
+            registration_enabled: true,
         },
         write_lock: Arc::new(Mutex::new(())),
         active_turns: ActiveTurnRegistry::new(),

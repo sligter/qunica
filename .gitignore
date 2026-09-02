@@ -39,9 +39,8 @@ ENV/
 *.swp
 
 # Env
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
 
 # OS
 .DS_Store

@@ -1,2 +1,5 @@
 # SQLx hashes migration source bytes. Keep published migrations LF-only on every platform.
 backend-rs/crates/backend/src/db/migrations/*.sql text eol=lf
+
+# Scripts copied into the Linux container: CRLF would break the shebang.
+docker/*.sh text eol=lf

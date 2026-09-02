@@ -19,6 +19,7 @@
   <a href="#首次使用">首次使用</a> ·
   <a href="#外部-runtime">Runtime</a> ·
   <a href="#运行项目">运行</a> ·
+  <a href="#用-docker-运行">Docker</a> ·
   <a href="README.md">English</a>
 </p>
 
@@ -86,6 +87,16 @@ pnpm desktop:build
 ```
 
 产物位于 `frontend/src-tauri/target/release/bundle/`。若只在浏览器中连接本地后端，运行 `pnpm dev`。
+
+## 用 Docker 运行
+
+一个容器在同一个端口上同时提供 API 和网页界面。
+
+```bash
+docker compose up -d --build
+```
+
+打开 <http://127.0.0.1:18765>，在引导流程里把工作区根目录设为 `/workspaces`。宿主机端口避开 8765，那是桌面版自带后端占用的端口。数据保存在 `/data` 与 `/workspaces` 两个卷里。Agent 会在容器内执行 shell 命令，所以不要把端口直接暴露到公网。公网 VPS 部署时，请按 [DOCKER.md](DOCKER.md#public-vps-first-boot) 关闭注册并创建初始账户。
 
 ## 文档
 

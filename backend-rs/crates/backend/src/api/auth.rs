@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -14,6 +15,7 @@ use crate::api::{
     error::ApiError,
     AppState,
 };
+use crate::config::InitialUserConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
@@ -51,6 +53,11 @@ pub struct TokenResponse {
     pub token_type: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct PublicAuthConfig {
+    pub registration_enabled: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     sub: String,
@@ -79,10 +86,75 @@ impl From<UserRow> for UserResponse {
     }
 }
 
+pub async fn initialize_auth(
+    pool: &SqlitePool,
+    registration_enabled: bool,
+    initial_user: Option<&InitialUserConfig>,
+) -> anyhow::Result<()> {
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
+        .await
+        .context("failed to count users")?;
+    if user_count > 0 {
+        return Ok(());
+    }
+
+    let Some(initial_user) = initial_user else {
+        if registration_enabled {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "registration is disabled and the database has no users; configure QUNICA_INITIAL_USER_EMAIL and QUNICA_INITIAL_USER_PASSWORD"
+        );
+    };
+
+    let email = normalize_email(&initial_user.email);
+    let name = normalize_name(&initial_user.name)
+        .map_err(|error| anyhow!("invalid initial user: {}", error.message_text()))?;
+    validate_register(&email, &initial_user.password)
+        .map_err(|error| anyhow!("invalid initial user: {}", error.message_text()))?;
+    let password_hash = bcrypt::hash(&initial_user.password, bcrypt::DEFAULT_COST)
+        .context("failed to hash initial user password")?;
+    let id = Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+
+    let result = sqlx::query(
+        "INSERT INTO users (id, email, password_hash, name, avatar_url, created_at, updated_at) \
+         SELECT ?, ?, ?, ?, NULL, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
+    )
+    .bind(&id)
+    .bind(&email)
+    .bind(&password_hash)
+    .bind(&name)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .context("failed to create initial user")?;
+
+    if result.rows_affected() == 1 {
+        tracing::info!("created initial user account");
+    }
+    Ok(())
+}
+
+pub async fn public_config(State(state): State<AppState>) -> Json<PublicAuthConfig> {
+    Json(PublicAuthConfig {
+        registration_enabled: state.auth.registration_enabled,
+    })
+}
+
 pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
+    if !state.auth.registration_enabled {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "registration_disabled",
+            "registration is disabled",
+        ));
+    }
     let email = normalize_email(&body.email);
     let name = normalize_name(&body.name)?;
     validate_register(&email, &body.password)?;

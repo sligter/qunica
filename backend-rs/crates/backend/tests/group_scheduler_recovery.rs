@@ -155,7 +155,10 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
         database_url,
         secret_key: "test-secret".to_owned(),
         access_token_expire_minutes: 60,
+        registration_enabled: true,
+        initial_user: None,
         app_data_dir: Some(directory.path().join("app-data")),
+        web_dir: None,
     })
     .await
     .unwrap();

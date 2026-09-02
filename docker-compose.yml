@@ -1,0 +1,45 @@
+services:
+  qunica:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qunica:local
+    container_name: qunica
+    restart: unless-stopped
+    ports:
+      # Bound to loopback by default. Publish on 0.0.0.0 only behind a reverse
+      # proxy that terminates TLS and authenticates callers: agents in this app
+      # run shell commands and edit files inside the container.
+      #
+      # The host port differs from the container port on purpose: the desktop
+      # build runs its own backend on 127.0.0.1:8765, and the two would collide.
+      - "127.0.0.1:18765:8765"
+    environment:
+      # Generated into /data/desktop-secret.key on first boot when unset. Set it
+      # explicitly to keep sessions valid across a volume reset.
+      # SECRET_KEY: "change-me"
+      QUNICA_LOG_LEVEL: info
+      QUNICA_REGISTRATION_ENABLED: "${QUNICA_REGISTRATION_ENABLED:-true}"
+      QUNICA_INITIAL_USER_EMAIL: "${QUNICA_INITIAL_USER_EMAIL:-}"
+      QUNICA_INITIAL_USER_PASSWORD: "${QUNICA_INITIAL_USER_PASSWORD:-}"
+      QUNICA_INITIAL_USER_NAME: "${QUNICA_INITIAL_USER_NAME:-}"
+      # Commit identity for the workspace Git panel.
+      GIT_AUTHOR_NAME: Qunica
+      GIT_AUTHOR_EMAIL: qunica@localhost
+      GIT_COMMITTER_NAME: Qunica
+      GIT_COMMITTER_EMAIL: qunica@localhost
+    volumes:
+      - qunica-data:/data
+      - qunica-workspaces:/workspaces
+      # Keeps npm-installed ACP runtimes and their sign-in state across
+      # rebuilds. Mount a host directory here instead to reuse an existing
+      # Codex or Claude Code login.
+      - qunica-home:/home/qunica
+    # Agents spawn shells and external CLI runtimes; without a raised limit a
+    # busy group can exhaust the default process budget.
+    pids_limit: 4096
+
+volumes:
+  qunica-data:
+  qunica-workspaces:
+  qunica-home:

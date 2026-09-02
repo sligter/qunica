@@ -1,0 +1,48 @@
+# Everything the image builds from source, or must never bake in.
+.git/
+.github/
+.claude/
+.qunica/
+.ag-swarmer/
+.workbuddy/
+.tmp/
+.tmp-liveagent-git/
+.worktrees/
+Notes/
+assets/
+landing/
+docs/
+
+# Build outputs and dependency trees — rebuilt inside the image.
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/src-tauri/gen/
+frontend/src-tauri/target/
+backend-rs/target/
+backend-rs/target-verify/
+backend-rs/dist/
+dist/
+
+# Desktop-only shell: the container never builds Tauri.
+frontend/src-tauri/
+
+# Local runtime state and secrets.
+data/
+uploads/
+workspaces/
+*.log
+.env*
+!.env.example
+.build-desktop.*.pid
+
+# Python/IDE/OS scratch.
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
