@@ -48,6 +48,8 @@ pub struct AppState {
     pub active_turns: ActiveTurnRegistry,
     /// Root directory for extracted skill package resources.
     pub skill_storage_root: PathBuf,
+    /// Deployment-provided root applied only while first-run setup is incomplete.
+    pub default_group_workspace_root: Option<PathBuf>,
     /// Pooled MCP connections, shared with the group runtime so editing a
     /// server's row can evict the connection the runtime would otherwise reuse.
     pub mcp: Arc<McpManager>,
@@ -621,6 +623,7 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: std::env::temp_dir()
             .join(format!("qunica-test-skills-{}", uuid::Uuid::new_v4())),
+        default_group_workspace_root: None,
         // A private pool per test router: the shared one would carry live
         // connections between tests that each build their own database.
         mcp: Arc::new(McpManager::new()),

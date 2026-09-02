@@ -36,6 +36,10 @@ pub struct AppConfig {
     /// means API only, which is what the desktop shell wants.
     #[arg(long, env = "QUNICA_WEB_DIR")]
     pub web_dir: Option<PathBuf>,
+    /// Existing directory suggested as the group workspace root during first
+    /// run. The Docker image creates and configures `/workspaces` here.
+    #[arg(long, env = "QUNICA_WORKSPACES_DIR")]
+    pub workspaces_dir: Option<PathBuf>,
     #[arg(long, env = "QUNICA_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
     #[arg(
@@ -114,6 +118,7 @@ impl AppConfig {
             app_data_dir: Some(app_data_dir),
             // The desktop shell serves the UI from its own webview bundle.
             web_dir: None,
+            workspaces_dir: None,
             log_level,
             database_url: std::env::var("QUNICA_DATABASE_URL")
                 .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string()),

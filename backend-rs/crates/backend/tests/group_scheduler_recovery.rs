@@ -159,6 +159,7 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
         initial_user: None,
         app_data_dir: Some(directory.path().join("app-data")),
         web_dir: None,
+        workspaces_dir: None,
     })
     .await
     .unwrap();

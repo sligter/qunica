@@ -1416,6 +1416,45 @@ async fn providers_settings_system_settings_defaults_and_patch_hide_key() {
 }
 
 #[tokio::test]
+async fn providers_settings_configured_workspace_root_repairs_incomplete_onboarding() {
+    let (_, mut state) = qunica_backend::api::router_with_state_for_tests().await;
+    let app = qunica_backend::api::router(state.clone());
+    let token = register_and_login(&app, "settings-workspace-default@example.com").await;
+
+    let (status, settings) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["group_workspace_root"], Value::Null);
+
+    let root = tempfile::tempdir().unwrap();
+    let expected = std::fs::canonicalize(root.path()).unwrap();
+    state.default_group_workspace_root = Some(expected.clone());
+    let app = qunica_backend::api::router(state);
+
+    let (status, settings) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        settings["group_workspace_root"],
+        expected.to_string_lossy().as_ref()
+    );
+
+    let (status, settings) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"onboarding_completed": true, "group_workspace_root": null}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["group_workspace_root"], Value::Null);
+
+    let (_, settings) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(settings["group_workspace_root"], Value::Null);
+}
+
+#[tokio::test]
 async fn providers_settings_system_settings_language_is_owner_scoped_and_validated() {
     let app = app().await;
     let token = register_and_login(&app, "settings-language@example.com").await;

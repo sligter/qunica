@@ -120,9 +120,16 @@ pub(crate) async fn create_inner(
                 "auto_create requires a local backend without local_path",
             ));
         }
-        Some(create_local_workspace_dir(state.db.pool(), &owner_id, &id).await?)
+        Some(create_local_workspace_dir(state, &owner_id, &id, None).await?)
     } else {
-        resolve_local_path(&backend_type, body.local_path.as_deref())?
+        resolve_local_path(
+            state,
+            &owner_id,
+            &id,
+            &backend_type,
+            body.local_path.as_deref(),
+        )
+        .await?
     };
     let config_json = to_config_json(body.config.as_ref());
 
@@ -152,19 +159,31 @@ pub(crate) async fn create_inner(
 }
 
 async fn create_local_workspace_dir(
-    pool: &SqlitePool,
+    state: &AppState,
     owner_id: &str,
     workspace_id: &str,
+    directory_name: Option<&str>,
 ) -> Result<String, ApiError> {
+    let short_id: String = workspace_id
+        .chars()
+        .filter(|ch| *ch != '-')
+        .take(8)
+        .collect();
+    let directory_name = match directory_name {
+        Some(name) => validate_directory_name(name)?,
+        None => format!("workspace-{short_id}"),
+    };
     let root = sqlx::query_as::<_, (Option<String>,)>(
         "SELECT group_workspace_root FROM system_settings WHERE owner_id = ?",
     )
     .bind(owner_id)
-    .fetch_optional(pool)
+    .fetch_optional(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("database error"))?
     .and_then(|(root,)| root)
     .filter(|root| !root.trim().is_empty())
+    .map(PathBuf::from)
+    .or_else(|| state.default_group_workspace_root.clone())
     .ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -172,18 +191,32 @@ async fn create_local_workspace_dir(
             "group_workspace_root is required",
         )
     })?;
+    let root = std::fs::canonicalize(root).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "workspace_root_required",
+            "group_workspace_root must be an existing directory",
+        )
+    })?;
+    if !root.is_dir() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "workspace_root_required",
+            "group_workspace_root must be an existing directory",
+        ));
+    }
 
-    let short_id: String = workspace_id
-        .chars()
-        .filter(|ch| *ch != '-')
-        .take(8)
-        .collect();
-    let path = PathBuf::from(root).join(format!("workspace-{short_id}"));
+    let path = root.join(directory_name);
     std::fs::create_dir_all(&path)
-        .map_err(|_| ApiError::internal("failed to create workspace directory"))?;
-    std::fs::canonicalize(path)
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(|_| ApiError::internal("failed to resolve workspace directory"))
+        .map_err(|_| ApiError::invalid_input("failed to create workspace directory"))?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|_| ApiError::internal("failed to resolve workspace directory"))?;
+    if !path.starts_with(&root) {
+        return Err(ApiError::invalid_input(
+            "workspace directory must stay inside group_workspace_root",
+        ));
+    }
+    Ok(path.to_string_lossy().into_owned())
 }
 
 pub async fn list(
@@ -256,7 +289,16 @@ pub(crate) async fn update_inner(
     // Only revalidate/canonicalize the path when the client explicitly sends
     // one; otherwise the stored binding is preserved untouched.
     let local_path = match body.local_path {
-        Some(ref provided) => resolve_local_path(&backend_type, provided.as_deref())?,
+        Some(ref provided) => {
+            resolve_local_path(
+                state,
+                &owner_id,
+                &workspace_id,
+                &backend_type,
+                provided.as_deref(),
+            )
+            .await?
+        }
         None => {
             if backend_type == BACKEND_LOCAL && existing.local_path.is_none() {
                 return Err(ApiError::invalid_input(
@@ -411,14 +453,25 @@ fn normalize_backend_type(raw: Option<&str>) -> Result<String, ApiError> {
 
 /// Resolve the stored `local_path` for a given backend.
 ///
-/// `local` backends require an existing directory and store its canonical
-/// absolute path. `cloud_sandbox` stores any non-empty value as-is and treats
-/// empty/missing input as `NULL`.
-fn resolve_local_path(backend_type: &str, raw: Option<&str>) -> Result<Option<String>, ApiError> {
+/// `local` backends accept either an existing absolute directory or one safe
+/// directory name to create below `group_workspace_root`; both store the
+/// canonical absolute path. `cloud_sandbox` stores any non-empty value as-is.
+async fn resolve_local_path(
+    state: &AppState,
+    owner_id: &str,
+    workspace_id: &str,
+    backend_type: &str,
+    raw: Option<&str>,
+) -> Result<Option<String>, ApiError> {
     let trimmed = raw.map(str::trim).filter(|p| !p.is_empty());
     if backend_type == BACKEND_LOCAL {
         let path = trimmed
             .ok_or_else(|| ApiError::invalid_input("local_path is required for local backend"))?;
+        if !std::path::Path::new(path).is_absolute() {
+            return create_local_workspace_dir(state, owner_id, workspace_id, Some(path))
+                .await
+                .map(Some);
+        }
         let canonical = std::fs::canonicalize(path)
             .map_err(|_| ApiError::invalid_input("local_path must be an existing directory"))?;
         if !canonical.is_dir() {
@@ -430,6 +483,23 @@ fn resolve_local_path(backend_type: &str, raw: Option<&str>) -> Result<Option<St
     } else {
         Ok(trimmed.map(|p| p.to_string()))
     }
+}
+
+fn validate_directory_name(raw: &str) -> Result<String, ApiError> {
+    let name = raw.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().count() > 100
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+    {
+        return Err(ApiError::invalid_input(
+            "relative local_path must be a single directory name",
+        ));
+    }
+    Ok(name.to_string())
 }
 
 fn to_config_json(config: Option<&Value>) -> Option<String> {

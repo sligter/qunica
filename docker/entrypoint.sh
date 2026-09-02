@@ -6,8 +6,8 @@
 set -euo pipefail
 
 APP_DATA="${QUNICA_APP_DATA:-/data}"
-# Container-level only: the group workspace root is a per-account setting chosen
-# during onboarding. This just guarantees the directory exists and is writable.
+# The backend applies this existing, writable directory as the per-account
+# workspace root while first-run onboarding is incomplete.
 WORKSPACES="${QUNICA_WORKSPACES_DIR:-/workspaces}"
 
 if [ "$(id -u)" = "0" ]; then

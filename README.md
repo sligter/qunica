@@ -96,7 +96,7 @@ One container serves the API and the web UI on the same port.
 docker compose up -d --build
 ```
 
-Open <http://127.0.0.1:18765> and point the workspace root at `/workspaces` during onboarding. The host port avoids 8765, which the desktop build's own backend uses. Data lives in the `/data` and `/workspaces` volumes. Agents run shell commands inside the container, so keep the port off public interfaces. For a public VPS, disable registration and bootstrap the initial account as described in [DOCKER.md](DOCKER.md#public-vps-first-boot).
+Open <http://127.0.0.1:18765>; the container automatically uses its persistent `/workspaces` volume as the first-run workspace root. The host port avoids 8765, which the desktop build's own backend uses. Data lives in the `/data` and `/workspaces` volumes. Agents run shell commands inside the container, so keep the port off public interfaces. For a public VPS, disable registration and bootstrap the initial account as described in [DOCKER.md](DOCKER.md#public-vps-first-boot).
 
 ## Documentation
 

@@ -82,6 +82,28 @@ describe('WorkspaceField', () => {
     })
   })
 
+  it('creates a workspace from a directory name for remote backends', async () => {
+    mocks.createWorkspace.mutateAsync.mockResolvedValueOnce({ id: 'workspace-2' })
+    const onChange = vi.fn()
+    render(<WorkspaceField value="" onChange={onChange} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'New local workspace' }))
+    fireEvent.change(screen.getByLabelText('Workspace name'), {
+      target: { value: 'DSV4 Flash' },
+    })
+    fireEvent.change(screen.getByLabelText('Backend path or directory name'), {
+      target: { value: 'dsv4-flash' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create workspace' }))
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('workspace-2'))
+    expect(mocks.createWorkspace.mutateAsync).toHaveBeenCalledWith({
+      name: 'DSV4 Flash',
+      backend_type: 'local',
+      local_path: 'dsv4-flash',
+    })
+  })
+
   it('selects additional workspaces without duplicating the primary', () => {
     mocks.workspaces = [
       mocks.workspaces[0],

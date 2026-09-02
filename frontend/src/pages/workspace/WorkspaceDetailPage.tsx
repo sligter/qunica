@@ -26,10 +26,7 @@ import {
 } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import {
-  composePickedPath,
-  looksAbsolute,
   pickFolder,
-  readRememberedPrefix,
   saveRememberedPrefix,
 } from '@/lib/folderPicker'
 import type { GroupRead, WorkspaceRead, WorkspaceUpdate } from '@/types/api'
@@ -102,10 +99,6 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
   const trimmedName = name.trim()
   const trimmedLocalPath = localPath.trim()
   const trimmedSandboxRef = sandboxRef.trim()
-  const localPathInvalid =
-    workspace.backend_type === 'local' &&
-    trimmedLocalPath.length > 0 &&
-    !looksAbsolute(trimmedLocalPath)
   const dirty =
     trimmedName !== workspace.name ||
     trimmedLocalPath !== (workspace.local_path ?? '') ||
@@ -113,7 +106,6 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
   const canSave =
     dirty &&
     trimmedName.length > 0 &&
-    !localPathInvalid &&
     !updateWorkspace.isPending &&
     !deleteWorkspace.isPending
 
@@ -126,9 +118,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     setError(null)
     const result = await pickFolder()
     if (result.kind === 'native') {
-      const nextPath =
-        result.path ??
-        composePickedPath(localPath, result.name, readRememberedPrefix(PICKER_SCOPE))
+      const nextPath = result.path ?? result.name
       setLocalPath(nextPath)
       saveRememberedPrefix(PICKER_SCOPE, nextPath)
       return
@@ -264,7 +254,6 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
                   id="workspace-edit-path"
                   value={localPath}
                   onChange={(event) => onPathChange(event.target.value)}
-                  className={localPathInvalid ? 'border-destructive' : undefined}
                 />
                 <Button
                   type="button"
@@ -274,11 +263,6 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
                   {t('workspaces:actions.pickFolder')}
                 </Button>
               </div>
-              {localPathInvalid ? (
-                <p className="text-xs text-destructive">
-                  {t('workspaces:validation.absolutePath')}
-                </p>
-              ) : null}
             </SettingsRow>
           ) : (
             <SettingsRow label={t('workspaces:fields.sandboxRef')} htmlFor="workspace-edit-sandbox" stacked>

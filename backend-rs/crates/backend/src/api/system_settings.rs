@@ -250,7 +250,25 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Json<SettingsResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let row = get_or_create(state.db.pool(), &owner_id).await?;
+    let mut row = get_or_create(state.db.pool(), &owner_id).await?;
+    if row.onboarding_completed == 0 && row.group_workspace_root.is_none() {
+        if let Some(root) = state.default_group_workspace_root.as_deref() {
+            let now = now_rfc3339();
+            sqlx::query(
+                "UPDATE system_settings SET group_workspace_root = ?, updated_at = ? \
+                 WHERE owner_id = ? AND onboarding_completed = 0 AND group_workspace_root IS NULL",
+            )
+            .bind(root.to_string_lossy().as_ref())
+            .bind(&now)
+            .bind(&owner_id)
+            .execute(state.db.pool())
+            .await
+            .map_err(|_| ApiError::internal("failed to apply default workspace root"))?;
+            row = fetch_by_owner(state.db.pool(), &owner_id)
+                .await?
+                .ok_or_else(|| ApiError::internal("system settings vanished after update"))?;
+        }
+    }
     Ok(Json(row.into()))
 }
 

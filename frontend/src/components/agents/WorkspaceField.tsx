@@ -10,13 +10,10 @@ import { Label } from '@/components/ui/label'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import {
-  composePickedPath,
   pickFolder,
-  readRememberedPrefix,
   saveRememberedPrefix,
   type FolderPickResult,
 } from '@/lib/folderPicker'
-import { cn } from '@/lib/utils'
 import type { WorkspaceBackendType } from '@/types/api'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 
@@ -54,11 +51,6 @@ function shortLocation(location: string) {
   return `…/${parts.slice(-2).join('/')}`
 }
 
-function localPathLooksAbsolute(path: string) {
-  const trimmed = path.trim()
-  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
-}
-
 export function WorkspaceField({
   value,
   onChange,
@@ -94,8 +86,7 @@ export function WorkspaceField({
 
   const applyPick = (folderName: string, absolutePath?: string) => {
     if (!folderName) return
-    const remembered = readRememberedPrefix(PICKER_SCOPE)
-    const composed = absolutePath ?? composePickedPath(localPath, folderName, remembered)
+    const composed = absolutePath ?? folderName
     setLocalPath(composed)
     saveRememberedPrefix(PICKER_SCOPE, composed)
     if (!workspaceName) {
@@ -136,10 +127,6 @@ export function WorkspaceField({
   }
 
   const onCreate = async () => {
-    if (!localPathLooksAbsolute(localPath)) {
-      setCreateError(translatedError('agents:workspacePicker.absolutePath'))
-      return
-    }
     setCreateError(null)
     try {
       const created = await createWorkspace.mutateAsync({
@@ -321,7 +308,6 @@ export function WorkspaceField({
                 value={localPath}
                 onChange={(event) => onManualPathChange(event.target.value)}
                 placeholder={t('agents:workspacePicker.pathPlaceholder')}
-                className={cn(localPath && !localPathLooksAbsolute(localPath) && 'border-destructive')}
               />
               <Button
                 type="button"
@@ -332,6 +318,9 @@ export function WorkspaceField({
                 {t('agents:workspacePicker.pickFolder')}
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              {t('agents:workspacePicker.pathHelp')}
+            </p>
             <input
               ref={fallbackInputRef}
               type="file"

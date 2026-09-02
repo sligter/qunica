@@ -4,16 +4,17 @@ A workspace is the directory an agent's file and shell tools operate in. It is t
 
 ## Backend types
 
-- **local** — a real directory on this machine. `local_path` must be an existing directory; the canonical absolute path is stored. This is the only kind whose files agents can actually read and write.
+- **local** — a real directory on the backend machine. `local_path` can be an existing absolute directory or one directory name to create below the configured workspace root; the canonical absolute path is stored. This is the only kind whose files agents can actually read and write.
 - **cloud_sandbox** — a placeholder for a remote sandbox. File and shell tools are not available against it; agents bound to one report that no workspace is configured.
 
 ## Creating one
 
 The easiest way is `auto_create`: set `backend_type` to `local`, set `auto_create` to true, and leave `local_path` empty. Qunica creates the folder under the workspace root from Settings, so nobody has to find or type a path. It requires that root to be configured, and refuses if `local_path` is also given.
 
-Otherwise provide `local_path` pointing at an existing folder.
+Otherwise provide an existing absolute `local_path`, or a single directory name such as `my-project`. A relative name is created below the configured workspace root. Separators, drive prefixes, and `..` are rejected, so it cannot escape that root.
 
 On the desktop app, the folder picker is the native OS dialog and stores a real filesystem path.
+In a browser, a folder picker cannot expose or mount the client filesystem. Qunica uses only the selected directory name and creates it on the backend; it never uploads the selected files.
 
 ## What a workspace bounds
 

@@ -484,7 +484,7 @@ export const enUS = {
     },
     workspacePicker: {
       new: 'New workspace', newLocal: 'New local workspace', quickCreate: 'Create workspace instantly', quickCreateHint: 'Creates a folder under the configured workspace root and binds it now.', rootRequired: 'Configure the group workspace root in system settings first.', select: 'Select workspace', additional: 'Additional workspaces', additionalDescription: 'Mounted only when the conversation allows the agent\'s own folders.', searchAdditional: 'Search workspaces', additionalCount_one: '{{total}} workspace · {{selected}} mounted', additionalCount_other: '{{total}} workspaces · {{selected}} mounted', noAdditional: 'No other workspaces are available.', createFirst: 'Create a local workspace first.', location: 'Location: {{location}}', bound: 'Bound to {{backend}}: {{location}}', notConfigured: 'not configured',
-      name: 'Workspace name', namePlaceholder: 'Current project', localPath: 'Backend local path', pathPlaceholder: 'D:/absolute/path/to/project or /absolute/path/to/project', pickFolder: 'Pick folder', creating: 'Creating…', create: 'Create workspace', absolutePath: 'Enter an absolute path that exists on the backend host.',
+      name: 'Workspace name', namePlaceholder: 'Current project', localPath: 'Backend path or directory name', pathPlaceholder: 'project-name or /absolute/backend/path', pathHelp: 'A directory name is created under the configured workspace root. An absolute path binds an existing backend folder. Browser picks use the name only; files are not uploaded.', pickFolder: 'Pick folder', creating: 'Creating…', create: 'Create workspace',
     },
     tools: {
       notice: 'These tools really run, with bounded safeguards. A tool returns setup-required until its provider is configured.',
@@ -665,10 +665,10 @@ export const enUS = {
     noSandboxReference: 'No sandbox reference',
     list: { selectTitle: 'Workspaces', selectDescription: 'Local folders and sandboxes where groups and agents read and write files.' },
     detail: { loading: 'Loading workspace…', loadError: 'Failed to load workspaces: {{error}}', notFound: 'Workspace not found.', title: 'Workspace', usedBy: 'Used by', unbind: 'Unbind', rebind: 'Rebind', usedByDescription: 'Bindings are configured on each group or agent, not here.', loadingUsage: 'Loading usage…', unused: 'No groups or agents use this workspace.', group: 'group', agent: 'agent', deleteTitle: 'Delete workspace "{{name}}"?', deleteDescription: 'This hides it from the workspace list and clears it from active groups and agents that currently use it.' },
-    form: { createTitle: 'New local workspace', createSubtitle: 'A workspace points at an absolute folder on the backend host. Groups and agents bound to it read and write files there.', namePlaceholder: 'Current project' },
-    fields: { name: 'Name', backendLocalPath: 'Backend local path', backendLocalPathDescription: 'Absolute folder on the backend host.', sandboxRef: 'Sandbox ref' },
+    form: { createTitle: 'New local workspace', createSubtitle: 'Create a folder under the configured workspace root, or bind an existing absolute folder on the backend host.', namePlaceholder: 'Current project' },
+    fields: { name: 'Name', backendLocalPath: 'Backend path or directory name', backendLocalPathDescription: 'A directory name is created under the configured workspace root. An absolute path binds an existing backend folder; browser files are not uploaded.', sandboxRef: 'Sandbox ref' },
     actions: { pickFolder: 'Pick folder', create: 'Create workspace', creating: 'Creating…' }, states: {},
-    validation: { absolutePath: 'Local workspace paths must be absolute.', enterAbsolutePath: 'Enter an absolute backend path.', pickerUnavailable: 'Folder picker is unavailable here. Enter an absolute backend path.', pathPlaceholder: 'D:/absolute/path/to/project' },
+    validation: { pickerUnavailable: 'The browser cannot pick a backend folder. Enter a directory name or an absolute backend path.', pathPlaceholder: 'project-name or /absolute/backend/path' },
     errors: { create: 'Failed to create workspace', update: 'Failed to update workspace', unbind: 'Failed to unbind the group' },
   },
   assistant: {

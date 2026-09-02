@@ -15,12 +15,12 @@ app the desktop build shows, minus the desktop-only terminal and native dialogs.
 docker compose up -d --build
 ```
 
-Open <http://127.0.0.1:18765>, create the local account, then finish onboarding:
+Open <http://127.0.0.1:18765>, create the local account, then finish onboarding.
+The image automatically sets the workspace root to its persistent `/workspaces`
+volume, so setup continues with:
 
-1. **Workspace root** — set it to `/workspaces`. This is the container path the
-   compose file keeps on a volume; anything else is lost on the next `up`.
-2. **Model provider** — endpoint, model, API key.
-3. **Default model** for the built-in assistant.
+1. **Model provider** — endpoint, model, API key.
+2. **Default model** for the built-in assistant.
 
 Without compose:
 
@@ -74,6 +74,12 @@ not, so the entrypoint chowns `/data` and `/workspaces` to the container's
 `qunica` user (uid 10001) when it starts as root. If you run the container with
 `user:` set to something else, chown the host directories yourself first.
 
+To keep workspaces in a normal host directory, replace the compose volume with
+`./workspaces:/workspaces` (or `/srv/qunica/workspaces:/workspaces` on a VPS).
+Directory names entered in either Agent creation or Workspace management are
+created inside that mount. A browser folder picker does not upload or mount the
+visitor's files.
+
 ## Environment
 
 Everything has a working default; nothing is required.
@@ -92,7 +98,7 @@ Everything has a working default; nothing is required.
 | `QUNICA_INITIAL_USER_EMAIL` | unset | one-time account email; requires the password below |
 | `QUNICA_INITIAL_USER_PASSWORD` | unset | one-time account password, 8–128 characters |
 | `QUNICA_INITIAL_USER_NAME` | `Admin` | display name used when the initial account is created |
-| `QUNICA_WORKSPACES_DIR` | `/workspaces` | entrypoint only — it creates and chowns this path. The workspace root the app uses is the one you pick in onboarding. |
+| `QUNICA_WORKSPACES_DIR` | `/workspaces` | created by the entrypoint and applied as the workspace root while onboarding is incomplete |
 
 ## Git
 

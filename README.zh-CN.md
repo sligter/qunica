@@ -96,7 +96,7 @@ pnpm desktop:build
 docker compose up -d --build
 ```
 
-打开 <http://127.0.0.1:18765>，在引导流程里把工作区根目录设为 `/workspaces`。宿主机端口避开 8765，那是桌面版自带后端占用的端口。数据保存在 `/data` 与 `/workspaces` 两个卷里。Agent 会在容器内执行 shell 命令，所以不要把端口直接暴露到公网。公网 VPS 部署时，请按 [DOCKER.md](DOCKER.md#public-vps-first-boot) 关闭注册并创建初始账户。
+打开 <http://127.0.0.1:18765>；容器会自动把持久化的 `/workspaces` 卷设为首次运行的工作区根目录。宿主机端口避开 8765，那是桌面版自带后端占用的端口。数据保存在 `/data` 与 `/workspaces` 两个卷里。Agent 会在容器内执行 shell 命令，所以不要把端口直接暴露到公网。公网 VPS 部署时，请按 [DOCKER.md](DOCKER.md#public-vps-first-boot) 关闭注册并创建初始账户。
 
 ## 文档
 

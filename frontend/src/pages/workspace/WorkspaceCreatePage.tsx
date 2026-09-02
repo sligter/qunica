@@ -10,10 +10,7 @@ import { useCreateWorkspace } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import {
   basename,
-  composePickedPath,
-  looksAbsolute,
   pickFolder,
-  readRememberedPrefix,
   saveRememberedPrefix,
 } from '@/lib/folderPicker'
 import {
@@ -38,7 +35,6 @@ export function WorkspaceCreatePage() {
   const canCreate =
     trimmedName.length > 0 &&
     trimmedPath.length > 0 &&
-    looksAbsolute(trimmedPath) &&
     !createWorkspace.isPending
 
   const onPathChange = (nextPath: string) => {
@@ -53,9 +49,7 @@ export function WorkspaceCreatePage() {
     setError(null)
     const result = await pickFolder()
     if (result.kind === 'native') {
-      const nextPath =
-        result.path ??
-        composePickedPath(localPath, result.name, readRememberedPrefix(PICKER_SCOPE))
+      const nextPath = result.path ?? result.name
       setLocalPath(nextPath)
       saveRememberedPrefix(PICKER_SCOPE, nextPath)
       if (!name.trim()) {
@@ -73,10 +67,6 @@ export function WorkspaceCreatePage() {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!looksAbsolute(trimmedPath)) {
-      setError(translatedError('validation.enterAbsolutePath'))
-      return
-    }
     setError(null)
     createWorkspace.mutate(
       {
@@ -129,25 +119,14 @@ export function WorkspaceCreatePage() {
                 value={localPath}
                 onChange={(event) => onPathChange(event.target.value)}
                 placeholder={t('validation.pathPlaceholder')}
-                className={
-                  trimmedPath && !looksAbsolute(trimmedPath)
-                    ? 'border-destructive'
-                    : undefined
-                }
               />
               <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
                 {t('actions.pickFolder')}
               </Button>
             </div>
-            {trimmedPath && !looksAbsolute(trimmedPath) ? (
-              <p className="text-xs text-destructive">
-                {t('validation.absolutePath')}
-              </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                {t('fields.backendLocalPathDescription')}
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              {t('fields.backendLocalPathDescription')}
+            </p>
           </div>
 
           {localizedErrorText(error, t) ? (

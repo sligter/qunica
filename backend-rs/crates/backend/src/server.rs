@@ -31,6 +31,8 @@ pub struct ServerConfig {
     /// Built frontend assets to serve on the same origin as the API. `None`
     /// serves the API alone.
     pub web_dir: Option<PathBuf>,
+    /// Existing directory used as the first-run group workspace root.
+    pub workspaces_dir: Option<PathBuf>,
 }
 
 impl From<AppConfig> for ServerConfig {
@@ -45,6 +47,7 @@ impl From<AppConfig> for ServerConfig {
             initial_user: config.initial_user,
             app_data_dir: config.app_data_dir,
             web_dir: config.web_dir,
+            workspaces_dir: config.workspaces_dir,
         }
     }
 }
@@ -59,6 +62,23 @@ impl ServerConfig {
 }
 
 pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
+    let default_group_workspace_root = match config.workspaces_dir.as_deref() {
+        Some(path) => {
+            let canonical = std::fs::canonicalize(path).with_context(|| {
+                format!(
+                    "QUNICA_WORKSPACES_DIR must be an existing directory: {}",
+                    path.display()
+                )
+            })?;
+            anyhow::ensure!(
+                canonical.is_dir(),
+                "QUNICA_WORKSPACES_DIR must be an existing directory: {}",
+                path.display()
+            );
+            Some(canonical)
+        }
+        None => None,
+    };
     let db = Db::connect(&config.database_url)
         .await
         .with_context(|| format!("failed to connect database {}", config.database_url))?;
@@ -86,6 +106,7 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         write_lock,
         active_turns: ActiveTurnRegistry::new(),
         skill_storage_root: config.skill_storage_root(),
+        default_group_workspace_root,
         // The same pool the group runtime uses, so a settings edit evicts the
         // connection a turn would otherwise reuse.
         mcp: McpManager::shared(),
