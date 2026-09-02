@@ -12,12 +12,20 @@ import { zhCN } from '@/i18n/resources/zh-CN'
 import { useAuthStore } from '@/stores/authStore'
 
 const fetchJson = vi.hoisted(() => vi.fn())
+const desktop = vi.hoisted(() => ({
+  enabled: false,
+  openLibraryWindow: vi.fn(() => Promise.resolve()),
+}))
 vi.mock('@/lib/api-v2/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-v2/client')>(
     '@/lib/api-v2/client',
   )
   return { ...actual, fetchJson }
 })
+vi.mock('@/lib/desktop', () => ({
+  isDesktopRuntime: () => desktop.enabled,
+  openLibraryWindow: desktop.openLibraryWindow,
+}))
 
 const PROVIDERS = [
   {
@@ -85,6 +93,8 @@ describe('AssistantSettings', () => {
   beforeEach(() => {
     useAuthStore.setState({ token: 'test-token' })
     fetchJson.mockReset()
+    desktop.enabled = false
+    desktop.openLibraryWindow.mockReset()
   })
 
   afterEach(cleanup)
@@ -93,6 +103,16 @@ describe('AssistantSettings', () => {
     await renderSettings()
     const select = (await screen.findByLabelText(/provider/i)) as HTMLSelectElement
     expect(select.value).toBe('provider-1')
+  })
+
+  it('opens provider creation in the desktop library window', async () => {
+    desktop.enabled = true
+    const user = userEvent.setup()
+    await renderSettings()
+
+    await user.click(await screen.findByRole('button', { name: /add another provider/i }))
+
+    expect(desktop.openLibraryWindow).toHaveBeenCalledWith('/providers/new')
   })
 
   it('changes the provider', async () => {

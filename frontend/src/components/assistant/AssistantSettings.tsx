@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { ExternalLink, Settings2, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -18,6 +18,7 @@ import { useAssistant, useUpdateAssistant } from '@/hooks/useAssistant'
 import { useProviders } from '@/hooks/useProviders'
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
+import { isDesktopRuntime, openLibraryWindow } from '@/lib/desktop'
 
 interface AssistantSettingsProps {
   onClose: () => void
@@ -28,6 +29,7 @@ const SELECT_CLASS =
 
 export function AssistantSettings({ onClose }: AssistantSettingsProps) {
   const { t } = useTranslation('assistant')
+  const navigate = useNavigate()
   const assistant = useAssistant()
   const providers = useProviders()
   const update = useUpdateAssistant()
@@ -88,6 +90,14 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
     }
   }
 
+  const addProvider = () => {
+    if (isDesktopRuntime()) {
+      void openLibraryWindow('/providers/new').catch(() => undefined)
+    } else {
+      navigate('/providers/new')
+    }
+  }
+
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
       <div className="flex items-start gap-3">
@@ -144,11 +154,9 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
           </select>
         </div>
 
-        <Button asChild size="sm" variant="ghost" className="h-auto px-0 py-0 text-muted-foreground hover:bg-transparent hover:text-primary">
-          <Link to="/providers/new">
-            {t('setup.addProvider')}
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-          </Link>
+        <Button type="button" size="sm" variant="ghost" className="h-auto px-0 py-0 text-muted-foreground hover:bg-transparent hover:text-primary" onClick={addProvider}>
+          {t('setup.addProvider')}
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden />
         </Button>
       </div>
 
