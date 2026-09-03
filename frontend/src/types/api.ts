@@ -331,6 +331,8 @@ export interface ContextUsage {
   output_reserve_tokens: number | null
   ratio: number | null
   source: string | null
+  provider_name?: string | null
+  model?: string | null
   updated_at?: string | null
 }
 

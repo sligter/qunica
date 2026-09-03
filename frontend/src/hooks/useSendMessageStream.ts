@@ -76,6 +76,8 @@ const contextUsageSchema = z.object({
   output_reserve_tokens: z.number().nullable().optional(),
   ratio: z.number().nullable().optional(),
   source: z.string().nullable().optional(),
+  provider_name: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
   updated_at: z.string().nullable().optional(),
 })
 
@@ -176,6 +178,8 @@ function normalizeContextUsage(input: ContextUsageInput | null | undefined): Con
     output_reserve_tokens: input.output_reserve_tokens ?? null,
     ratio: input.ratio ?? null,
     source: input.source ?? null,
+    provider_name: input.provider_name ?? null,
+    model: input.model ?? null,
     updated_at: input.updated_at ?? null,
   }
 }
@@ -196,6 +200,8 @@ function contextUsageFromPayload(payload: ContextUsagePayload): ContextUsage | n
     output_reserve_tokens: null,
     ratio: null,
     source: null,
+    provider_name: null,
+    model: null,
     updated_at: null,
   }
 }

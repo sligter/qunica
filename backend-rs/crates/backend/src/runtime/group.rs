@@ -2880,7 +2880,11 @@ impl TurnData {
 
 /// Serialize a domain [`ContextUsage`] to the JSON shape the frontend
 /// `contextUsageSchema` expects (snake_case field names, nulls preserved).
-fn context_usage_to_json(usage: &qunica_domain::runtime::ContextUsage) -> Value {
+fn context_usage_to_json(
+    usage: &qunica_domain::runtime::ContextUsage,
+    provider_name: &str,
+    model: &str,
+) -> Value {
     json!({
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
@@ -2889,6 +2893,8 @@ fn context_usage_to_json(usage: &qunica_domain::runtime::ContextUsage) -> Value 
         "output_reserve_tokens": usage.output_reserve_tokens,
         "ratio": usage.ratio,
         "source": usage.source,
+        "provider_name": provider_name,
+        "model": model,
     })
 }
 
@@ -3320,7 +3326,11 @@ async fn run_agent_turn(
                     )
                     .await
                     .map_err(StepErr::Db)?;
-                    let usage_json = context_usage_to_json(&usage);
+                    let usage_json = context_usage_to_json(
+                        &usage,
+                        usage_dimensions.provider_name,
+                        usage_dimensions.model,
+                    );
                     turn.set_context_usage(usage_json.clone());
                     ctx.record_scheduled_usage(&usage_json);
                     let payload = json!({
@@ -3911,7 +3921,11 @@ async fn run_acp_agent_turn(
                 // The meter the user watches is the gauge itself, not the
                 // running total: it answers "how full is the window", which the
                 // sum would overstate the moment a second request lands.
-                let usage_json = context_usage_to_json(&usage);
+                let usage_json = context_usage_to_json(
+                    &usage,
+                    usage_dimensions.provider_name,
+                    usage_dimensions.model,
+                );
                 turn.set_context_usage(usage_json.clone());
                 ctx.record_scheduled_usage(&usage_json);
                 let payload = json!({
@@ -3952,7 +3966,11 @@ async fn run_acp_agent_turn(
         persist_token_usage(&services.pool, &usage_record_id, &usage_dimensions, &usage)
             .await
             .map_err(StepErr::Db)?;
-        let usage_json = context_usage_to_json(&usage);
+        let usage_json = context_usage_to_json(
+            &usage,
+            usage_dimensions.provider_name,
+            usage_dimensions.model,
+        );
         turn.set_context_usage(usage_json.clone());
         ctx.record_scheduled_usage(&usage_json);
         ctx.emit(

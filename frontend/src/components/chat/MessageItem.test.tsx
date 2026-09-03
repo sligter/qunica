@@ -209,6 +209,26 @@ describe('MessageItem', () => {
     expect(screen.getByText('photo.png')).toBeVisible()
   })
 
+  it('names the uploaded files in the source text for the copy menu', () => {
+    render(
+      <MessageItem
+        groupId="group-1"
+        message={message({
+          sender_type: 'user',
+          content: 'Have a look',
+          attachments: [{ id: 'attachment-1', path: 'uploads/photo.png', name: 'photo.png', mime_type: 'image/png', size: 1280, kind: 'image' }],
+        })}
+      />,
+    )
+
+    // Right-clicking a message and pressing its copy button are the same
+    // affordance, so both yield the files the message was sent with.
+    expect(document.getElementById('message-message-1')).toHaveAttribute(
+      'data-copy-text',
+      'Have a look\n\nAttachments:\n- photo.png (uploads/photo.png)',
+    )
+  })
+
   it('keeps the resume stream owner mounted until the resumed message finishes', () => {
     const interrupted = message({ status: 'interrupted', reasoning: ['Checked the workspace'] })
     const { rerender } = render(

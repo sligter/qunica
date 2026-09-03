@@ -13,6 +13,7 @@ import { StreamStatusPill } from '@/components/chat/StreamStatus'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { formatTime } from '@/lib/format'
+import { messageCopyText } from '@/lib/messageCopy'
 import { normalizeLanguage } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -111,6 +112,9 @@ export function MessageItemView({
   const time = formatTime(message.created_at, language)
   const persistedSegments = message.response_segments?.filter((segment) => segment.length > 0) ?? []
   const content = message.content ?? ''
+  // The shared copy-menu source, so right-clicking a message with uploads
+  // yields the same text the copy button writes.
+  const copyText = messageCopyText(content, message.attachments, t('messages.copyAttachments'))
   const contentSegments = !isUser && persistedSegments.length > 0 && persistedSegments.join('') === content
     ? persistedSegments
     : [content]
@@ -118,7 +122,7 @@ export function MessageItemView({
   return (
     <div
       id={`message-${message.id}`}
-      data-copy-text={content}
+      data-copy-text={copyText}
       className={cn(
         'group/message flex min-w-0 w-full gap-2 px-3 py-2 transition-opacity',
         isUser ? 'flex-row-reverse' : 'flex-row',
@@ -144,7 +148,13 @@ export function MessageItemView({
           isUser ? 'ml-auto max-w-[72%] items-end' : 'max-w-full items-start',
         )}
       >
-        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        {/*
+          `min-h-7` reserves the hover actions' height. They are the tallest
+          thing in this row and they are absent while the row streams, is
+          pending, or has no content yet — without the reservation the row
+          grows once they appear and nudges the list under it.
+        */}
+        <div className="flex min-h-7 min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0 font-medium text-foreground">{senderName}</span>
           {workspaceModeKey ? (
             <button
@@ -181,6 +191,7 @@ export function MessageItemView({
               groupId={groupId}
               threadId={threadId}
               scope={scope}
+              attachments={message.attachments}
             />
           )}
         </div>

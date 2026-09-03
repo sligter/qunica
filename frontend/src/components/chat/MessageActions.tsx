@@ -12,12 +12,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  fetchConversationWorkspaceFileBlob,
+  uploadConversationWorkspaceFile,
+} from '@/hooks/useConversationWorkspaceFiles'
 import { useGroups } from '@/hooks/useGroups'
 import {
   type ConversationScope,
   useDeleteConversationMessage,
   useSendGroupMessage,
 } from '@/hooks/useGroupMessages'
+import { messageCopyText } from '@/lib/messageCopy'
+import { useAuthStore } from '@/stores/authStore'
+import type { MessageAttachment } from '@/types/api'
+
+const NO_ATTACHMENTS: readonly MessageAttachment[] = []
 
 interface MessageActionsProps {
   messageId: string
@@ -27,6 +36,8 @@ interface MessageActionsProps {
   groupId: string
   threadId?: string | null
   scope?: ConversationScope
+  /** Files the message was sent with; they travel with copy and share. */
+  attachments?: readonly MessageAttachment[]
 }
 
 function shareText(senderName: string, timeLabel: string, content: string): string {
@@ -37,31 +48,130 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Put the message on the clipboard, with its first image alongside the text.
+ *
+ * A clipboard holds one payload per flavour, so several images cannot all ride
+ * along — the first one does, and the rest stay named in the text. Falls back to
+ * text alone whenever the image flavour is unavailable or rejected: webviews
+ * differ on which image types they accept, and losing the image is better than
+ * losing the copy.
+ */
+async function copyMessage(
+  text: string,
+  image: MessageAttachment | undefined,
+  loadImage: (attachment: MessageAttachment) => Promise<Blob>,
+): Promise<void> {
+  if (image && typeof ClipboardItem === 'function' && navigator.clipboard?.write) {
+    const blob = loadImage(image)
+    // `write` can reject before it ever consumes this promise, which would
+    // leave the fetch failure unhandled.
+    void blob.catch(() => null)
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          [image.mime_type]: blob,
+        }),
+      ])
+      return
+    } catch {
+      // Fall through to text.
+    }
+  }
+  await navigator.clipboard.writeText(text)
+}
+
+/**
+ * Re-attach this message's files to another group.
+ *
+ * The paths a message carries are relative to its own conversation workspace,
+ * which the receiving group cannot read, so each file is fetched and uploaded
+ * there under a free name. Sequential: two uploads racing for the same name
+ * would have the server hand out the same free one twice.
+ */
+async function copyAttachmentsToGroup(
+  attachments: readonly MessageAttachment[],
+  scope: ConversationScope,
+  sourceConversationId: string,
+  targetGroupId: string,
+  token: string | null,
+): Promise<Array<Pick<MessageAttachment, 'path'>>> {
+  const copied: Array<Pick<MessageAttachment, 'path'>> = []
+  for (const attachment of attachments) {
+    const blob = await fetchConversationWorkspaceFileBlob(
+      scope,
+      sourceConversationId,
+      attachment.path,
+      token,
+    )
+    const uploaded = await uploadConversationWorkspaceFile(
+      'groups',
+      targetGroupId,
+      new File([blob], attachment.name, { type: attachment.mime_type || blob.type }),
+      token,
+      null,
+      { uniqueName: true },
+    )
+    copied.push({ path: uploaded.path })
+  }
+  return copied
+}
+
 interface ShareMessageDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   content: string
   groupId: string
+  attachments: readonly MessageAttachment[]
+  scope: ConversationScope
 }
 
 /**
  * Share picker body. Mounted only while open so the `groups` query and its cache
  * subscription cost one instance per open dialog, not one per rendered message.
  */
-function ShareMessageDialog({ open, onOpenChange, content, groupId }: ShareMessageDialogProps) {
+function ShareMessageDialog({
+  open,
+  onOpenChange,
+  content,
+  groupId,
+  attachments,
+  scope,
+}: ShareMessageDialogProps) {
   const { t } = useTranslation(['chat', 'common'])
   const groups = useGroups()
+  const token = useAuthStore((state) => state.token)
   const sendGroupMessage = useSendGroupMessage()
   const [shareError, setShareError] = useState<string | null>(null)
+  // Copying attachments happens outside the mutation, so `isPending` alone
+  // would leave the buttons live through the uploads.
+  const [sharingGroupId, setSharingGroupId] = useState<string | null>(null)
   const targetGroups = groups.data?.filter((group) => group.id !== groupId) ?? []
+  const sharing = sharingGroupId !== null || sendGroupMessage.isPending
 
   const shareToGroup = async (targetGroupId: string) => {
+    if (sharing) return
     setShareError(null)
+    setSharingGroupId(targetGroupId)
     try {
-      await sendGroupMessage.mutateAsync({ groupId: targetGroupId, content })
+      const copied = await copyAttachmentsToGroup(
+        attachments,
+        scope,
+        groupId,
+        targetGroupId,
+        token,
+      )
+      await sendGroupMessage.mutateAsync({
+        groupId: targetGroupId,
+        content,
+        attachments: copied,
+      })
       onOpenChange(false)
     } catch (error) {
       setShareError(errorDetail(error))
+    } finally {
+      setSharingGroupId(null)
     }
   }
 
@@ -86,7 +196,7 @@ function ShareMessageDialog({ open, onOpenChange, content, groupId }: ShareMessa
               type="button"
               variant="outline"
               className="h-auto w-full justify-start px-3 py-2 text-left"
-              disabled={sendGroupMessage.isPending}
+              disabled={sharing}
               onClick={() => void shareToGroup(group.id)}
             >
               <span className="min-w-0">
@@ -98,6 +208,12 @@ function ShareMessageDialog({ open, onOpenChange, content, groupId }: ShareMessa
             </Button>
           ))}
         </div>
+
+        {attachments.length > 0 && sharingGroupId !== null ? (
+          <p className="text-sm text-muted-foreground">
+            {t('messages.shareCopyingAttachments', { ns: 'chat', count: attachments.length })}
+          </p>
+        ) : null}
 
         {shareError ? (
           <p className="text-sm text-destructive">
@@ -172,14 +288,21 @@ export function MessageActions({
   groupId,
   threadId,
   scope = 'groups',
+  attachments = NO_ATTACHMENTS,
 }: MessageActionsProps) {
   const { t } = useTranslation(['chat', 'common'])
+  const token = useAuthStore((state) => state.token)
   const [copied, setCopied] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const copy = async () => {
-    await navigator.clipboard.writeText(content)
+    await copyMessage(
+      messageCopyText(content, attachments, t('messages.copyAttachments', { ns: 'chat' })),
+      attachments.find((attachment) => attachment.kind === 'image'),
+      (attachment) =>
+        fetchConversationWorkspaceFileBlob(scope, groupId, attachment.path, token),
+    )
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1200)
   }
@@ -225,6 +348,8 @@ export function MessageActions({
           onOpenChange={setShareOpen}
           content={shareText(senderName, timeLabel, content)}
           groupId={groupId}
+          attachments={attachments}
+          scope={scope}
         />
       ) : null}
 

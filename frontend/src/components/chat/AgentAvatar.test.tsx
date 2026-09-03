@@ -59,6 +59,8 @@ describe('AgentAvatar', () => {
             output_reserve_tokens: null,
             ratio: 0.1,
             source: 'future_context_source',
+            provider_name: 'A provider name that is deliberately longer than the card',
+            model: 'vendor/model-name-that-is-deliberately-long',
           }}
         />
       </TooltipProvider>,
@@ -66,6 +68,10 @@ describe('AgentAvatar', () => {
 
     await user.hover(screen.getByText('R'))
     expect((await screen.findAllByText('Source: future_context_source'))[0]).toBeVisible()
+    const provider = (await screen.findAllByText('A provider name that is deliberately longer than the card'))[0]
+    expect(provider).toHaveClass('truncate')
+    expect(provider).toHaveAttribute('title', provider.textContent)
+    expect((await screen.findAllByText('vendor/model-name-that-is-deliberately-long'))[0]).toBeVisible()
 
     await i18n.changeLanguage('zh-CN')
     expect((await screen.findAllByText('来源：future_context_source'))[0]).toBeVisible()

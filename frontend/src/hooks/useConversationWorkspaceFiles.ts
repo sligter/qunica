@@ -493,6 +493,38 @@ export interface UploadConversationWorkspaceFileOptions {
   uniqueName?: boolean
 }
 
+/**
+ * Upload one file into a conversation's workspace.
+ *
+ * Plain function rather than only a hook: sharing a message copies its files
+ * into a conversation the user picks at click time, which no hook bound to a
+ * conversation id at render time can address.
+ */
+export function uploadConversationWorkspaceFile(
+  scope: ConversationScope,
+  conversationId: string,
+  file: File,
+  token: string | null,
+  agentId: WorkspaceAgentScope = null,
+  { uniqueName = false }: UploadConversationWorkspaceFileOptions = {},
+): Promise<ConversationWorkspaceFileRead> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return fetchFormData<ConversationWorkspaceFileRead>(
+    conversationWorkspaceFileEndpoint(
+      scope,
+      requireConversationId(conversationId),
+      'upload',
+      undefined,
+      agentId,
+      undefined,
+      uniqueName,
+    ),
+    formData,
+    { token },
+  )
+}
+
 export function useUploadConversationWorkspaceFile(
   scope: ConversationScope,
   conversationId: string | undefined,
@@ -502,23 +534,15 @@ export function useUploadConversationWorkspaceFile(
   const token = useAuthStore((state) => state.token)
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (file: File) => {
-      const formData = new FormData()
-      formData.append('file', file)
-      return fetchFormData<ConversationWorkspaceFileRead>(
-        conversationWorkspaceFileEndpoint(
-          scope,
-          requireConversationId(conversationId),
-          'upload',
-          undefined,
-          agentId,
-          undefined,
-          uniqueName,
-        ),
-        formData,
-        { token },
-      )
-    },
+    mutationFn: (file: File) =>
+      uploadConversationWorkspaceFile(
+        scope,
+        requireConversationId(conversationId),
+        file,
+        token,
+        agentId,
+        { uniqueName },
+      ),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: conversationWorkspaceFilesQueryKey(scope, conversationId),

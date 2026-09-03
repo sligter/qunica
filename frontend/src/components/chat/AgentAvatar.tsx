@@ -82,9 +82,11 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
   const sourceLabel = usage.source
     ? (sourceLabels[usage.source] ?? t('messages.context.sourceUnknownDetail', { value: usage.source }))
     : t('messages.context.sourceUnknown')
+  const providerName = usage.provider_name?.trim() || t('messages.context.notRecorded')
+  const model = usage.model?.trim() || t('messages.context.notRecorded')
 
   return (
-    <div className="flex min-w-[11rem] flex-col gap-1.5">
+    <div className="flex w-[15rem] max-w-[calc(100vw-3rem)] flex-col gap-1.5">
       <div className="flex items-center gap-1.5 font-semibold text-foreground">
         <span
           aria-hidden="true"
@@ -112,6 +114,16 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
           </>
         )}
       </div>
+      <dl className="mt-0.5 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-border pt-1.5 text-2xs">
+        <dt className="text-muted-foreground">{t('messages.context.providerBinding')}</dt>
+        <dd className="truncate text-right font-medium text-foreground" title={providerName}>
+          {providerName}
+        </dd>
+        <dt className="text-muted-foreground">{t('messages.context.modelBinding')}</dt>
+        <dd className="truncate text-right font-mono text-foreground" title={model}>
+          {model}
+        </dd>
+      </dl>
     </div>
   )
 }

@@ -116,6 +116,46 @@ describe('StreamTimeline activity rendering', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
+  it('reserves the status pill height across a mid-turn phase change', () => {
+    const agentStart = event({
+      id: 'agent-start:stream-1:agent-1',
+      stream_id: 'stream-1',
+      type: 'agent_start' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      created_at: '2026-07-16T10:00:01Z',
+    })
+    const thinking = event({
+      id: 'reasoning-1',
+      stream_id: 'stream-1',
+      type: 'reasoning' as const,
+      agent_id: 'agent-1',
+      display_name: 'Researcher',
+      content: 'Working through it.',
+      status: 'streaming' as const,
+      created_at: '2026-07-16T10:00:02Z',
+    })
+    const header = () => screen.getByText('Researcher').parentElement
+
+    const { rerender } = render(
+      <StreamTimeline run={run([agentStart, thinking], 'active')} />,
+    )
+    expect(screen.getByRole('status')).toBeVisible()
+    expect(header()).toHaveClass('min-h-5')
+
+    // Between two steps of a live turn nothing is in flight, so the header
+    // falls back to a timestamp. That element is shorter than the pill, and
+    // without the reserved height the swap resizes the block — which a list
+    // pinned to the bottom answers by scrolling the whole backlog.
+    rerender(
+      <StreamTimeline
+        run={run([agentStart, { ...thinking, status: 'done' as const }], 'active')}
+      />,
+    )
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(header()).toHaveClass('min-h-5')
+  })
+
   it('stops the waiting timer as soon as an approval is answered', () => {
     const approval = event({
       id: 'approval-1',

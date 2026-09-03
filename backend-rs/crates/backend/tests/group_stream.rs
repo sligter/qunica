@@ -4017,6 +4017,8 @@ async fn group_stream_bills_every_acp_usage_update_once() {
     let last = &usage[1]["context_usage"];
     assert_eq!(last["total_tokens"], 90_000);
     assert_eq!(last["context_window_tokens"], 200_000);
+    assert_eq!(last["provider_name"], "ACP");
+    assert_eq!(last["model"], "ACP runtime");
 
     // The ledger is one row per turn holding what the turn cost.
     let rows: Vec<(i64, i64)> = sqlx::query_as(
@@ -5793,13 +5795,16 @@ async fn scheduler_token_budget_stops_before_the_next_dispatch() {
     )
     .await;
 
-    let _ = stream_events(
+    let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
         &token,
         json!({"content": "hello"}),
     )
     .await;
+    let usage = payloads_of_kind(&events, StreamEventKind::ContextUsage);
+    assert_eq!(usage[0]["context_usage"]["provider_name"], "Fake");
+    assert_eq!(usage[0]["context_usage"]["model"], "test-model");
 
     let turn: (String, String, i64) = sqlx::query_as(
         "SELECT status, termination_reason, total_tokens FROM group_turns WHERE group_id = ?",

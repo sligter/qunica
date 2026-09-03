@@ -76,8 +76,11 @@ interface StreamStatusPillProps {
 }
 
 /**
- * The status chip that sits where a timestamp would once the reply lands, so
- * the header never reflows between "working" and "done".
+ * The status chip that sits where a timestamp would once the reply lands.
+ *
+ * Fixed `h-5` rather than sized by its padding: it is taller than the timestamp
+ * it replaces and a header flips between the two several times a turn, so the
+ * header reserves this exact height (`min-h-5`) instead of resizing each time.
  */
 export function StreamStatusPill({ status, label, className }: StreamStatusPillProps) {
   const { t } = useTranslation('chat')
@@ -96,8 +99,8 @@ export function StreamStatusPill({ status, label, className }: StreamStatusPillP
     <span
       role="status"
       className={cn(
-        'relative inline-flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-full border',
-        'px-2 py-[3px] text-[11px] font-medium leading-none',
+        'relative inline-flex h-5 min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-full border',
+        'px-2 text-[11px] font-medium leading-none',
         waiting
           ? 'border-warning-foreground/25 bg-warning text-warning-foreground'
           : 'border-primary/25 bg-primary/10 text-primary',

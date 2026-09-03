@@ -531,7 +531,15 @@ function AgentBlockView({
         contextUsage={block.contextUsage ?? fallbackUsage}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        {/*
+          `min-h-5` reserves the status pill's `h-5`. The pill and the timestamp
+          it replaces are not the same height, and a block flips between them
+          several times a turn — every step that ends leaves the block with
+          nothing in flight until the next one starts. Without the reservation
+          each flip resizes the block, and a list pinned to the bottom answers
+          that by scrolling the whole backlog a few pixels.
+        */}
+        <div className="flex min-h-5 min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0 font-medium text-foreground">{block.displayName}</span>
           {status ? (
             <StreamStatusPill status={status} className="min-w-0" />

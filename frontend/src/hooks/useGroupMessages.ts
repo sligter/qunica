@@ -18,6 +18,7 @@ import type {
   GroupPromptEnhanceResponse,
   GroupThread,
   Message,
+  MessageAttachment,
   MessageSendResponse,
 } from '@/types/api'
 
@@ -245,15 +246,26 @@ export function useDeleteConversationMessage(
   })
 }
 
+export interface SendGroupMessageVariables {
+  groupId: string
+  content: string
+  /**
+   * Workspace paths in the *target* group. A file from another conversation has
+   * to be copied there first: the send endpoint validates every path against
+   * the receiving group's workspace.
+   */
+  attachments?: Array<Pick<MessageAttachment, 'path'>>
+}
+
 export function useSendGroupMessage() {
   const token = useAuthStore((s) => s.token)
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ groupId, content }: { groupId: string; content: string }) =>
+    mutationFn: ({ groupId, content, attachments = [] }: SendGroupMessageVariables) =>
       fetchJson<MessageSendResponse>(`/groups/${groupId}/messages`, {
         method: 'POST',
         token,
-        body: { content },
+        body: { content, attachments },
       }),
     onSuccess: (_, variables) => {
       void qc.invalidateQueries({ queryKey: ['groups', variables.groupId, 'messages'] })
