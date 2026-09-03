@@ -173,38 +173,7 @@ async fn create_local_workspace_dir(
         Some(name) => validate_directory_name(name)?,
         None => format!("workspace-{short_id}"),
     };
-    let root = sqlx::query_as::<_, (Option<String>,)>(
-        "SELECT group_workspace_root FROM system_settings WHERE owner_id = ?",
-    )
-    .bind(owner_id)
-    .fetch_optional(state.db.pool())
-    .await
-    .map_err(|_| ApiError::internal("database error"))?
-    .and_then(|(root,)| root)
-    .filter(|root| !root.trim().is_empty())
-    .map(PathBuf::from)
-    .or_else(|| state.default_group_workspace_root.clone())
-    .ok_or_else(|| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "workspace_root_required",
-            "group_workspace_root is required",
-        )
-    })?;
-    let root = std::fs::canonicalize(root).map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "workspace_root_required",
-            "group_workspace_root must be an existing directory",
-        )
-    })?;
-    if !root.is_dir() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "workspace_root_required",
-            "group_workspace_root must be an existing directory",
-        ));
-    }
+    let root = resolve_workspace_root(state, owner_id).await?;
 
     let path = root.join(directory_name);
     std::fs::create_dir_all(&path)
@@ -217,6 +186,165 @@ async fn create_local_workspace_dir(
         ));
     }
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// The account's configured workspace root, canonicalized.
+///
+/// Falls back to the root the deployment declared (`QUNICA_WORKSPACES_DIR` in
+/// the container) so a fresh account has somewhere to put directories before it
+/// has finished onboarding.
+pub(crate) async fn resolve_workspace_root(
+    state: &AppState,
+    owner_id: &str,
+) -> Result<PathBuf, ApiError> {
+    let root = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT group_workspace_root FROM system_settings WHERE owner_id = ?",
+    )
+    .bind(owner_id)
+    .fetch_optional(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?
+    .and_then(|(root,)| root)
+    .filter(|root| !root.trim().is_empty())
+    .map(PathBuf::from)
+    .or_else(|| state.default_group_workspace_root.clone())
+    .ok_or_else(|| workspace_root_error("group_workspace_root is required"))?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|_| workspace_root_error("group_workspace_root must be an existing directory"))?;
+    if !root.is_dir() {
+        return Err(workspace_root_error(
+            "group_workspace_root must be an existing directory",
+        ));
+    }
+    Ok(root)
+}
+
+fn workspace_root_error(message: &'static str) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "workspace_root_required", message)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowseQuery {
+    /// Directory to list, relative to the workspace root. Absolute paths are
+    /// accepted too, but must still resolve inside the root.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DirectoryEntry {
+    name: String,
+    /// Path relative to the workspace root, usable as the next `path` query.
+    relative_path: String,
+    absolute_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BrowseResponse {
+    root: String,
+    absolute_path: String,
+    relative_path: String,
+    /// `None` when the listed directory is the root itself.
+    parent_relative_path: Option<String>,
+    entries: Vec<DirectoryEntry>,
+    /// True when `entries` was cut off; the UI says so rather than implying the
+    /// directory is smaller than it is.
+    truncated: bool,
+}
+
+/// A directory listing is capped: a workspace root holding a `node_modules`
+/// would otherwise stream tens of thousands of names into a picker nobody can
+/// scroll.
+const MAX_BROWSE_ENTRIES: usize = 500;
+
+/// List directories under the account's workspace root.
+///
+/// The browser cannot show a server's filesystem through the OS picker — that
+/// dialog only ever sees the machine running the browser — so a remote
+/// deployment needs the server to enumerate its own directories. Everything is
+/// resolved through `canonicalize` and re-checked against the root, so a
+/// symlink or `..` cannot walk out of it.
+pub async fn browse_directories(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BrowseQuery>,
+) -> Result<Json<BrowseResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let root = resolve_workspace_root(&state, &owner_id).await?;
+
+    let requested = query.path.as_deref().map(str::trim).unwrap_or_default();
+    let candidate = if requested.is_empty() {
+        root.clone()
+    } else if std::path::Path::new(requested).is_absolute() {
+        PathBuf::from(requested)
+    } else {
+        root.join(requested)
+    };
+    let target = std::fs::canonicalize(&candidate)
+        .map_err(|_| ApiError::not_found("directory not found"))?;
+    if !target.starts_with(&root) {
+        return Err(ApiError::permission_denied(
+            "path is outside the workspace root",
+        ));
+    }
+    if !target.is_dir() {
+        return Err(ApiError::invalid_input("path is not a directory"));
+    }
+
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    let listing =
+        std::fs::read_dir(&target).map_err(|_| ApiError::internal("failed to read directory"))?;
+    for entry in listing.flatten() {
+        // `metadata` follows symlinks: a symlinked project directory is still a
+        // directory as far as the picker is concerned.
+        if !entry.metadata().is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if entries.len() >= MAX_BROWSE_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let absolute = entry.path();
+        entries.push(DirectoryEntry {
+            relative_path: relative_to_root(&root, &absolute).unwrap_or_else(|| name.clone()),
+            absolute_path: absolute.to_string_lossy().into_owned(),
+            name,
+        });
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let relative_path = relative_to_root(&root, &target).unwrap_or_default();
+    Ok(Json(BrowseResponse {
+        root: root.to_string_lossy().into_owned(),
+        absolute_path: target.to_string_lossy().into_owned(),
+        parent_relative_path: (!relative_path.is_empty()).then(|| {
+            target
+                .parent()
+                .and_then(|parent| relative_to_root(&root, parent))
+                .unwrap_or_default()
+        }),
+        relative_path,
+        entries,
+        truncated,
+    }))
+}
+
+/// `path` expressed relative to `root`, with forward slashes so the value round
+/// trips through a URL query on either platform. `None` when `path` is not
+/// inside `root`; an empty string when it *is* the root.
+fn relative_to_root(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    Some(
+        relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 pub async fn list(

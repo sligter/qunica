@@ -2,12 +2,13 @@
 
 The image runs the Qunica server: one process that serves both the REST API and
 the built web UI on a single port. Point a browser at it and you get the same
-app the desktop build shows, minus the desktop-only terminal and native dialogs.
+app the desktop build shows. Folder buttons browse the server's workspace root,
+and the integrated terminal runs a shell inside the container.
 
-> **Agents in this app run shell commands and edit files inside the container.**
-> Treat the container as a machine you have handed to the agents. Do not publish
-> the port on a public interface without a reverse proxy that terminates TLS and
-> authenticates callers.
+> **Agents and signed-in terminal users can run shell commands and edit files
+> inside the container.** Treat the container as a machine you have handed to
+> them. Do not publish the port on a public interface without a reverse proxy
+> that terminates TLS and authenticates callers.
 
 ## Quick start
 
@@ -77,8 +78,10 @@ not, so the entrypoint chowns `/data` and `/workspaces` to the container's
 To keep workspaces in a normal host directory, replace the compose volume with
 `./workspaces:/workspaces` (or `/srv/qunica/workspaces:/workspaces` on a VPS).
 Directory names entered in either Agent creation or Workspace management are
-created inside that mount. A browser folder picker does not upload or mount the
-visitor's files.
+created inside that mount. In the browser, **Choose folder** lists directories
+under `/workspaces` on the server; it never opens the visitor's OS picker and
+does not upload or mount visitor files. Mount any host directory you want Qunica
+to see at `/workspaces` (or below it) before selecting it.
 
 ## Environment
 

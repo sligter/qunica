@@ -1,34 +1,22 @@
 /**
- * Browser folder picker shim.
+ * Folder picker shim.
  *
- * Browsers cannot expose absolute filesystem paths for privacy reasons. We
- * therefore use the picker only to capture the picked folder's *name*, and
- * combine it with a remembered "absolute prefix" the user typed previously
- * (kept in localStorage) to compose a likely full path. The user can always
- * edit the result.
- *
- * Modern browsers expose `window.showDirectoryPicker()` (Chromium-based);
- * non-supported browsers must use the legacy `<input type="file"
- * webkitdirectory>` element themselves and forward the picked file's
- * `webkitRelativePath` here.
- *
- * No file content is uploaded or read. Only the picked folder name is
- * surfaced.
+ * Only the desktop shell can open a native dialog, because only there is the
+ * filesystem the user is browsing the same one the backend will open. In a
+ * browser the OS picker shows the *client's* folders — on a Docker or VPS
+ * deployment those directories do not exist on the server at all, and the
+ * browser will not reveal their absolute paths anyway. So the browser build
+ * asks the server what it has instead; see `ServerFolderPicker`.
  */
 
-interface FileSystemDirectoryHandleLike {
-  readonly name: string
-}
-
-interface ShowDirectoryPickerWindow extends Window {
-  showDirectoryPicker?: () => Promise<FileSystemDirectoryHandleLike>
-}
+import { isDesktopRuntime } from '@/lib/runtime'
 
 export type FolderPickResult =
   | { kind: 'native'; name: string; path?: string }
   | { kind: 'cancelled' }
   | { kind: 'error'; message: string }
-  | { kind: 'fallback' }
+  /** Not a desktop runtime: the caller should open the server browser. */
+  | { kind: 'serverBrowse' }
 
 const SEPARATOR_RE = /[\\/]/
 const ABSOLUTE_PREFIX_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/
@@ -46,6 +34,9 @@ export function normalizeWindowsPath(path: string): string {
 }
 
 export async function pickFolder(): Promise<FolderPickResult> {
+  if (!isDesktopRuntime()) {
+    return { kind: 'serverBrowse' }
+  }
   const tauriPath = await pickTauriFolder()
   if (tauriPath === null) {
     return { kind: 'cancelled' }
@@ -53,25 +44,9 @@ export async function pickFolder(): Promise<FolderPickResult> {
   if (tauriPath) {
     return { kind: 'native', name: basename(tauriPath), path: tauriPath }
   }
-  if (isTauriRuntime()) {
-    return {
-      kind: 'error',
-      message: 'Desktop folder picker did not return a local filesystem path.',
-    }
-  }
-  const showDirectoryPicker = (window as ShowDirectoryPickerWindow)
-    .showDirectoryPicker
-  if (typeof showDirectoryPicker !== 'function') {
-    return { kind: 'fallback' }
-  }
-  try {
-    const handle = await showDirectoryPicker()
-    return { kind: 'native', name: handle.name }
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      return { kind: 'cancelled' }
-    }
-    return { kind: 'fallback' }
+  return {
+    kind: 'error',
+    message: 'Desktop folder picker did not return a local filesystem path.',
   }
 }
 
@@ -88,15 +63,7 @@ async function pickTauriFolder(): Promise<string | null | undefined> {
   }
 }
 
-function isTauriRuntime(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    ('__TAURI_INTERNALS__' in window || window.location.hostname === 'tauri.localhost')
-  )
-}
-
 async function pickTauriFolderCommand(): Promise<string | null | undefined> {
-  if (!isTauriRuntime()) return undefined
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     const selected = await invoke<unknown>('pick_workspace_folder')

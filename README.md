@@ -43,7 +43,7 @@ Built-in agents can use OpenAI-compatible, Anthropic, or Gemini providers. Exter
 - **Control the conversation.** Choose `mesh`, `star`, `hierarchical`, or `ring` routing; run a bounded pass or let a moderator continue the discussion.
 - **Delegate real work.** Agents can read and edit files, use guarded shell tools, call MCP servers, load skills, search the web, and hand work to another group member.
 - **See every turn.** Streaming output, approvals, errors, token use, and dispatch traces stay attached to the conversation.
-- **Work with the repository in place.** Browse and edit workspace files, inspect Git state and diffs, stage changes, commit, sync, or open the desktop terminal.
+- **Work with the repository in place.** Browse and edit workspace files, inspect Git state and diffs, stage changes, commit, sync, or open the integrated terminal.
 - **Keep control of the machine.** SQLite data, credentials, and workspaces remain with your local backend. Destructive shell actions require approval; blocked high-risk commands never run.
 
 ## First run

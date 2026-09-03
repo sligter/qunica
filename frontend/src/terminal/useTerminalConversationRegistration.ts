@@ -2,7 +2,6 @@ import { useEffect, useMemo } from 'react'
 
 import { useWorkspaces } from '@/hooks/useWorkspaces'
 import { looksAbsolute } from '@/lib/folderPicker'
-import { isDesktopRuntime } from '@/lib/runtime'
 import {
   useOptionalTerminalRuntime,
   useTerminalRuntime,
@@ -15,16 +14,21 @@ interface WorkspaceQueryState {
   isLoading: boolean
 }
 
+/**
+ * Where, if anywhere, this conversation can open a terminal.
+ *
+ * Deliberately runtime-agnostic: the desktop shell runs the PTY natively and
+ * the web build runs it on the server it is already signed in to, so the only
+ * thing that decides availability is the workspace binding. `local_path` is a
+ * path on whichever machine owns the PTY, and the server rejects one it cannot
+ * enter.
+ */
 export function resolveTerminalConversationTarget(
   conversationId: string,
   workspaceId: string | null,
   workspaces: WorkspaceQueryState,
-  desktop = isDesktopRuntime(),
   cwdOverride?: string | null,
 ): TerminalConversationTarget {
-  if (!desktop) {
-    return { conversationId, availability: 'desktopRequired' }
-  }
   if (workspaceId === null) {
     return { conversationId, availability: 'workspaceRequired' }
   }
@@ -63,7 +67,6 @@ export function useTerminalConversationRegistration(
       conversationId,
       workspaceId,
       { data: workspaces.data, isLoading: workspaces.isLoading },
-      undefined,
       cwdOverride,
     ),
     [conversationId, cwdOverride, workspaceId, workspaces.data, workspaces.isLoading],
@@ -95,7 +98,6 @@ export function useOptionalTerminalConversationRegistration(
           conversationId,
           workspaceId,
           { data: workspaces.data, isLoading: workspaces.isLoading },
-          undefined,
           cwdOverride,
         )
       : null,

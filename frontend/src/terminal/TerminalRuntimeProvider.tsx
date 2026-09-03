@@ -18,9 +18,9 @@ import {
   type TerminalMetadataStore,
   type TerminalTabMetadata,
 } from '@/terminal/metadataStore'
+import { createHttpTerminalTransport } from '@/terminal/httpTransport'
 import { createTauriTerminalTransport } from '@/terminal/tauriTransport'
 import {
-  createUnavailableTerminalTransport,
   normalizeTerminalTransportError,
   TerminalTransportError,
   type TerminalTransport,
@@ -201,10 +201,12 @@ export function TerminalRuntimeProvider({
 }: TerminalRuntimeProviderProps) {
   const transportRef = useRef<TerminalTransport | null>(null)
   if (transportRef.current === null) {
+    // The desktop shell drives a native PTY; the web build gets the same
+    // capability from the server it is already talking to.
     transportRef.current = injectedTransport ?? (
       isDesktopRuntime()
         ? createTauriTerminalTransport()
-        : createUnavailableTerminalTransport()
+        : createHttpTerminalTransport()
     )
   }
   const transport = transportRef.current

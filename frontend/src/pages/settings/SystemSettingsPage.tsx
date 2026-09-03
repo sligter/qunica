@@ -45,6 +45,7 @@ import {
   saveRememberedPrefix,
   type FolderPickResult,
 } from '@/lib/folderPicker'
+import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 
 const PICKER_SCOPE = 'group-workspace-root'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
@@ -67,8 +68,8 @@ export function SystemSettingsPage() {
   const updateCurrentUser = useUpdateCurrentUser()
   const settings = useSystemSettings()
   const update = useUpdateSystemSettings()
-  const fallbackInputRef = useRef<HTMLInputElement | null>(null)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
+  const [browsing, setBrowsing] = useState(false)
   const [appearance, setAppearance] = useState<Appearance>('system')
   const [language, setLanguage] = useState<Language>('en-US')
   const [assistantEnabled, setAssistantEnabled] = useState(true)
@@ -326,19 +327,7 @@ export function SystemSettingsPage() {
       setRootError(result.message)
       return
     }
-    fallbackInputRef.current?.click()
-  }
-
-  const onFallbackChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    const relative = file?.webkitRelativePath
-    if (relative) {
-      const folderName = relative.split('/')[0] ?? ''
-      applyPick(folderName)
-    }
-    if (fallbackInputRef.current) {
-      fallbackInputRef.current.value = ''
-    }
+    setBrowsing(true)
   }
 
   const rootDirty = root.trim() !== serverRoot
@@ -768,17 +757,13 @@ export function SystemSettingsPage() {
                 {t('common:actions.clear')}
               </Button>
             </div>
-            <input
-              ref={fallbackInputRef}
-              type="file"
-              className="hidden"
-              multiple
-              {...({
-                webkitdirectory: '',
-                directory: '',
-              } as Record<string, string>)}
-              onChange={onFallbackChange}
-            />
+            {browsing ? (
+              <ServerFolderPicker
+                open
+                onOpenChange={setBrowsing}
+                onSelect={(absolutePath) => applyPick(absolutePath, absolutePath)}
+              />
+            ) : null}
             {rootError ? (
               <p className="text-sm text-destructive" role="alert">
                 {rootError}

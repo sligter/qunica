@@ -14,6 +14,7 @@ pub mod messages;
 pub mod skills;
 mod sse_replay;
 pub mod system_settings;
+pub mod terminal;
 pub mod threads;
 pub mod token_usage;
 pub mod workspace_files;
@@ -33,7 +34,10 @@ use axum::{
 use tokio::sync::Mutex;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{db::Db, mcp::McpManager, runtime::group_scheduler::ActiveTurnRegistry};
+use crate::{
+    db::Db, mcp::McpManager, runtime::group_scheduler::ActiveTurnRegistry,
+    terminal::TerminalManager,
+};
 
 /// Shared application state injected into every API v2 handler.
 #[derive(Clone)]
@@ -53,6 +57,9 @@ pub struct AppState {
     /// Pooled MCP connections, shared with the group runtime so editing a
     /// server's row can evict the connection the runtime would otherwise reuse.
     pub mcp: Arc<McpManager>,
+    /// Live PTYs for the web build's terminal. The desktop shell keeps its own
+    /// native sessions and never touches these.
+    pub terminals: Arc<TerminalManager>,
 }
 
 /// Auth configuration needed to mint and verify access tokens.
@@ -93,6 +100,32 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/workspaces",
             axum::routing::post(workspaces::create).get(workspaces::list),
+        )
+        // Registered before the `:workspace_id` route it shares a prefix with:
+        // the static segment has to win, or the picker id-parses as a uuid.
+        .route(
+            "/api/v2/workspaces/directories",
+            get(workspaces::browse_directories),
+        )
+        .route(
+            "/api/v2/terminal/sessions",
+            axum::routing::post(terminal::create).delete(terminal::close_all),
+        )
+        .route(
+            "/api/v2/terminal/sessions/:session_id",
+            axum::routing::delete(terminal::close),
+        )
+        .route(
+            "/api/v2/terminal/sessions/:session_id/events",
+            get(terminal::events),
+        )
+        .route(
+            "/api/v2/terminal/sessions/:session_id/input",
+            axum::routing::post(terminal::input),
+        )
+        .route(
+            "/api/v2/terminal/sessions/:session_id/resize",
+            axum::routing::post(terminal::resize),
         )
         .route(
             "/api/v2/workspaces/:workspace_id",
@@ -627,6 +660,7 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         // A private pool per test router: the shared one would carry live
         // connections between tests that each build their own database.
         mcp: Arc::new(McpManager::new()),
+        terminals: TerminalManager::shared(),
     };
     (router(state.clone()), state)
 }

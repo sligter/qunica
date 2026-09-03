@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type ReactNode,
 } from 'react'
 import {
@@ -28,6 +27,7 @@ import { Outlet } from 'react-router-dom'
 import { BrandMark } from '@/components/brand/BrandMark'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 import { useAssistant, useUpdateAssistant } from '@/hooks/useAssistant'
 import { useProviders } from '@/hooks/useProviders'
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/useSystemSettings'
@@ -99,7 +99,7 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
   const assistant = useAssistant()
   const updateAssistant = useUpdateAssistant()
   const updateSettings = useUpdateSystemSettings()
-  const fallbackInputRef = useRef<HTMLInputElement | null>(null)
+  const [browsing, setBrowsing] = useState(false)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
 
@@ -161,14 +161,8 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
     setError(null)
     const result: FolderPickResult = await pickFolder()
     if (result.kind === 'native') return applyPick(result.name, result.path)
-    if (result.kind === 'fallback') return fallbackInputRef.current?.click()
+    if (result.kind === 'serverBrowse') return setBrowsing(true)
     if (result.kind === 'error') setError(t('workspace.pickerError'))
-  }
-
-  const onFallbackChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const relative = event.target.files?.[0]?.webkitRelativePath
-    if (relative) applyPick(relative.split('/')[0] ?? '')
-    event.target.value = ''
   }
 
   const saveWorkspace = async () => {
@@ -330,14 +324,13 @@ function FirstRunSetup({ initialRoot }: { initialRoot: string }) {
                       {t('workspace.pick')}
                     </Button>
                   </div>
-                  <input
-                    ref={fallbackInputRef}
-                    type="file"
-                    className="hidden"
-                    multiple
-                    {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-                    onChange={onFallbackChange}
-                  />
+                  {browsing ? (
+                    <ServerFolderPicker
+                      open
+                      onOpenChange={setBrowsing}
+                      onSelect={(absolutePath) => applyPick(absolutePath, absolutePath)}
+                    />
+                  ) : null}
                   <div className="mt-5 flex items-start gap-2 rounded-xl bg-muted/60 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
                     <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
                     <p>{t('workspace.privacy')}</p>

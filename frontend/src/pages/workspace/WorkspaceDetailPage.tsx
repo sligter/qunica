@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { PageState } from '@/components/ui/page-state'
 import { DetailSkeleton } from '@/components/ui/skeleton'
 import { SettingsRow, SettingsSection } from '@/components/ui/settings-row'
+import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroups, useUpdateGroup } from '@/hooks/useGroups'
 import {
@@ -86,6 +87,7 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
   const [name, setName] = useState(workspace.name)
   const [localPath, setLocalPath] = useState(workspace.local_path ?? '')
   const [sandboxRef, setSandboxRef] = useState(workspace.sandbox_ref ?? '')
+  const [browsing, setBrowsing] = useState(false)
   const [error, setError] = useState<LocalizedError | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [copiedPath, setCopiedPath] = useState(false)
@@ -118,14 +120,12 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
     setError(null)
     const result = await pickFolder()
     if (result.kind === 'native') {
-      const nextPath = result.path ?? result.name
-      setLocalPath(nextPath)
-      saveRememberedPrefix(PICKER_SCOPE, nextPath)
+      onPathChange(result.path ?? result.name)
       return
     }
     if (result.kind === 'cancelled') return
-    if (result.kind === 'fallback') {
-      setError(translatedError('workspaces:validation.pickerUnavailable'))
+    if (result.kind === 'serverBrowse') {
+      setBrowsing(true)
       return
     }
     setError(messageError(result.message))
@@ -262,6 +262,13 @@ function WorkspaceDetail({ workspace, onDeleted }: WorkspaceDetailProps) {
                 >
                   {t('workspaces:actions.pickFolder')}
                 </Button>
+                {browsing ? (
+                  <ServerFolderPicker
+                    open
+                    onOpenChange={setBrowsing}
+                    onSelect={(absolutePath) => onPathChange(absolutePath)}
+                  />
+                ) : null}
               </div>
             </SettingsRow>
           ) : (

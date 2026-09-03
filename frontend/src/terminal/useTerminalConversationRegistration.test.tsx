@@ -46,31 +46,35 @@ function workspace(overrides: Partial<WorkspaceRead> = {}): WorkspaceRead {
 }
 
 describe('resolveTerminalConversationTarget', () => {
-  it('prioritizes desktop and workspace availability before resolving paths', () => {
+  // The web build runs the PTY on the server, so availability no longer
+  // depends on which runtime is asking.
+  it('resolves workspace availability before paths, in either runtime', () => {
     expect(resolveTerminalConversationTarget(
-      'chat-1', 'workspace-1', { data: undefined, isLoading: true }, false,
-    )).toEqual({ conversationId: 'chat-1', availability: 'desktopRequired' })
-    expect(resolveTerminalConversationTarget(
-      'chat-1', null, { data: [], isLoading: false }, true,
+      'chat-1', null, { data: [], isLoading: false },
     )).toEqual({ conversationId: 'chat-1', availability: 'workspaceRequired' })
     expect(resolveTerminalConversationTarget(
-      'chat-1', 'workspace-1', { data: undefined, isLoading: true }, true,
+      'chat-1', 'workspace-1', { data: undefined, isLoading: true },
     )).toEqual({ conversationId: 'chat-1', availability: 'loading' })
+    expect(resolveTerminalConversationTarget(
+      'chat-1', 'workspace-1', { data: [workspace()], isLoading: false },
+    )).toEqual({
+      conversationId: 'chat-1',
+      availability: 'ready',
+      cwd: 'D:/projects/example',
+    })
   })
 
   it('rejects cloud, missing, and relative local workspace paths', () => {
     expect(resolveTerminalConversationTarget(
       'chat-1', 'workspace-1',
       { data: [workspace({ backend_type: 'cloud_sandbox' })], isLoading: false },
-      true,
     )).toEqual({ conversationId: 'chat-1', availability: 'localWorkspaceRequired' })
     expect(resolveTerminalConversationTarget(
-      'chat-1', 'missing', { data: [workspace()], isLoading: false }, true,
+      'chat-1', 'missing', { data: [workspace()], isLoading: false },
     )).toEqual({ conversationId: 'chat-1', availability: 'workspaceRequired' })
     expect(resolveTerminalConversationTarget(
       'chat-1', 'workspace-1',
       { data: [workspace({ local_path: 'relative/project' })], isLoading: false },
-      true,
     )).toEqual({ conversationId: 'chat-1', availability: 'pathRequired' })
   })
 
@@ -79,14 +83,13 @@ describe('resolveTerminalConversationTarget', () => {
       expect(resolveTerminalConversationTarget(
         'chat-1', 'workspace-1',
         { data: [workspace({ local_path: cwd })], isLoading: false },
-        true,
       )).toEqual({ conversationId: 'chat-1', availability: 'ready', cwd })
     }
   })
 
   it('uses a task worktree as the terminal directory', () => {
     expect(resolveTerminalConversationTarget(
-      'thread-1', 'workspace-1', { data: [workspace()], isLoading: false }, true,
+      'thread-1', 'workspace-1', { data: [workspace()], isLoading: false },
       'D:/projects/example/.worktrees/group-1/thread-1',
     )).toEqual({
       conversationId: 'thread-1',

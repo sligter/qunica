@@ -226,6 +226,137 @@ async fn workspace_relative_paths_create_and_rebind_inside_the_configured_root()
     assert!(!base.path().join("escape").exists());
 }
 
+/// A browser can only ever show the *client* machine's folders, so a remote
+/// deployment has to enumerate directories server side.
+#[tokio::test]
+async fn workspace_directories_browse_inside_the_configured_root() {
+    let app = app().await;
+    let token = register_and_login(&app, "browse@example.com").await;
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("workspaces");
+    std::fs::create_dir_all(root.join("alpha").join("nested")).unwrap();
+    std::fs::create_dir(root.join("beta")).unwrap();
+    std::fs::write(root.join("notes.md"), "not a directory").unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"group_workspace_root": root}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, listing) = send(
+        &app,
+        authed("GET", "/api/v2/workspaces/directories", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listing["relative_path"], "");
+    assert_eq!(listing["parent_relative_path"], Value::Null);
+    let names: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["alpha", "beta"], "files are not directories");
+
+    let (status, nested) = send(
+        &app,
+        authed("GET", "/api/v2/workspaces/directories?path=alpha", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(nested["relative_path"], "alpha");
+    assert_eq!(nested["parent_relative_path"], "");
+    assert_eq!(nested["entries"][0]["name"], "nested");
+    assert_eq!(nested["entries"][0]["relative_path"], "alpha/nested");
+}
+
+#[tokio::test]
+async fn workspace_directories_reject_paths_outside_the_root() {
+    let app = app().await;
+    let token = register_and_login(&app, "browse-escape@example.com").await;
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("workspaces");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(base.path().join("secrets")).unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"group_workspace_root": root}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for path in ["../secrets", ".."] {
+        let (status, _) = send(
+            &app,
+            authed(
+                "GET",
+                &format!("/api/v2/workspaces/directories?path={path}"),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "escaping via {path}");
+    }
+
+    let absolute = base.path().join("secrets");
+    let (status, _) = send(
+        &app,
+        authed(
+            "GET",
+            &format!(
+                "/api/v2/workspaces/directories?path={}",
+                urlencoded(&absolute.to_string_lossy())
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn workspace_directories_require_authentication() {
+    let app = app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v2/workspaces/directories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Percent-encode the few characters a Windows path contributes to a query
+/// string. Enough for a temp-dir path; not a general encoder.
+fn urlencoded(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\\' => "%5C".to_string(),
+            ':' => "%3A".to_string(),
+            ' ' => "%20".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn workspace_create_rejects_missing_or_nonexistent_local_path() {
     let app = app().await;

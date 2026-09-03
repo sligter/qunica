@@ -6,6 +6,7 @@ import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 import { useCreateWorkspace } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import {
@@ -28,6 +29,7 @@ export function WorkspaceCreatePage() {
   const createWorkspace = useCreateWorkspace()
   const [name, setName] = useState('')
   const [localPath, setLocalPath] = useState('')
+  const [browsing, setBrowsing] = useState(false)
   const [error, setError] = useState<LocalizedError | null>(null)
 
   const trimmedName = name.trim()
@@ -45,21 +47,24 @@ export function WorkspaceCreatePage() {
     }
   }
 
+  const applyPickedPath = (nextPath: string) => {
+    setLocalPath(nextPath)
+    saveRememberedPrefix(PICKER_SCOPE, nextPath)
+    if (!name.trim()) {
+      setName(basename(nextPath) || nextPath)
+    }
+  }
+
   const onPickFolder = async () => {
     setError(null)
     const result = await pickFolder()
     if (result.kind === 'native') {
-      const nextPath = result.path ?? result.name
-      setLocalPath(nextPath)
-      saveRememberedPrefix(PICKER_SCOPE, nextPath)
-      if (!name.trim()) {
-        setName(result.name)
-      }
+      applyPickedPath(result.path ?? result.name)
       return
     }
     if (result.kind === 'cancelled') return
-    if (result.kind === 'fallback') {
-      setError(translatedError('validation.pickerUnavailable'))
+    if (result.kind === 'serverBrowse') {
+      setBrowsing(true)
       return
     }
     setError(messageError(result.message))
@@ -123,6 +128,13 @@ export function WorkspaceCreatePage() {
               <Button type="button" variant="outline" onClick={() => void onPickFolder()}>
                 {t('actions.pickFolder')}
               </Button>
+              {browsing ? (
+                <ServerFolderPicker
+                  open
+                  onOpenChange={setBrowsing}
+                  onSelect={(absolutePath) => applyPickedPath(absolutePath)}
+                />
+              ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
               {t('fields.backendLocalPathDescription')}

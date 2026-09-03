@@ -15,6 +15,7 @@ use crate::{
     db::Db,
     mcp::McpManager,
     runtime::group_scheduler::{ActiveTurnRegistry, SchedulerStore},
+    terminal::TerminalManager,
 };
 
 /// Runtime options for embedding or launching the backend HTTP service.
@@ -110,6 +111,7 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         // The same pool the group runtime uses, so a settings edit evicts the
         // connection a turn would otherwise reuse.
         mcp: McpManager::shared(),
+        terminals: TerminalManager::shared(),
     })
 }
 

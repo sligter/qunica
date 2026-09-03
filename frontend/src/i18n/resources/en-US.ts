@@ -656,6 +656,16 @@ export const enUS = {
     resources: { title: 'Skill package resources', empty: 'This skill has no imported skill package resources.', file_one: '{{count}} file', file_other: '{{count}} files', search: 'Search files…', noMatches: 'No matching files.', metadataError: 'Failed to load resource editability. Showing skill package metadata only.', text: 'text', select: 'Select a resource file.', editable: 'editable text', notEditable: 'not editable', loading: 'Loading file…', loadError: 'Failed to load file.', loadErrorDetail: 'Failed to load file: {{message}}', saveError: 'Failed to save file', saveErrorDetail: 'Failed to save file: {{message}}', saving: 'Saving…', save: 'Save file', binaryHint: 'This file cannot be previewed. It may be binary or missing from package storage.' },
   },
   workspaces: {
+    serverPicker: {
+      title: 'Choose a folder on the server',
+      description: 'Qunica lists directories under the workspace root on the machine running the backend. Folders on your own computer are not visible to it.',
+      parent: 'Up one level',
+      empty: 'No sub-folders here.',
+      truncated: 'Only the first 500 folders are shown.',
+      loadFailed: 'Failed to list directories.',
+      rootRequired: 'Set the workspace root first: there is nowhere to browse yet.',
+      useThisFolder: 'Use this folder',
+    },
     title: 'Workspaces',
     new: 'New workspace',
     search: 'Search workspaces',

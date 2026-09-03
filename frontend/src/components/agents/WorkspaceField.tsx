@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card'
 import { EntityPicker } from '@/components/ui/entity-picker'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 import { useCreateWorkspace, useWorkspaces } from '@/hooks/useWorkspaces'
 import { ApiError } from '@/lib/api-v2/client'
 import {
@@ -63,9 +64,9 @@ export function WorkspaceField({
   const { t } = useTranslation(['agents', 'common'])
   const workspaces = useWorkspaces()
   const createWorkspace = useCreateWorkspace()
-  const fallbackInputRef = useRef<HTMLInputElement | null>(null)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [localPath, setLocalPath] = useState('')
   const [createError, setCreateError] = useState<LocalizedError | null>(null)
@@ -111,19 +112,7 @@ export function WorkspaceField({
       setCreateError(messageError(result.message))
       return
     }
-    fallbackInputRef.current?.click()
-  }
-
-  const onFallbackChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    const relative = file?.webkitRelativePath
-    if (relative) {
-      const folderName = relative.split('/')[0] ?? ''
-      applyPick(folderName)
-    }
-    if (fallbackInputRef.current) {
-      fallbackInputRef.current.value = ''
-    }
+    setBrowsing(true)
   }
 
   const onCreate = async () => {
@@ -321,17 +310,14 @@ export function WorkspaceField({
             <p className="text-xs text-muted-foreground">
               {t('agents:workspacePicker.pathHelp')}
             </p>
-            <input
-              ref={fallbackInputRef}
-              type="file"
-              className="hidden"
-              multiple
-              {...({
-                webkitdirectory: '',
-                directory: '',
-              } as Record<string, string>)}
-              onChange={onFallbackChange}
-            />
+            {browsing ? (
+              <ServerFolderPicker
+                open
+                onOpenChange={setBrowsing}
+                onSelect={(absolutePath) =>
+                  applyPick(inferWorkspaceName(absolutePath), absolutePath)}
+              />
+            ) : null}
           </div>
           <Button
             type="button"

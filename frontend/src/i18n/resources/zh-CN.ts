@@ -562,6 +562,16 @@ export const zhCN: TranslationShape<typeof enUS> = {
     resources: { title: '技能包资源', empty: '此技能没有导入的技能包资源。', file_one: '{{count}} 个文件', file_other: '{{count}} 个文件', search: '搜索文件…', noMatches: '没有匹配的文件。', metadataError: '无法加载资源可编辑性信息，仅显示技能包元数据。', text: '文本', select: '请选择资源文件。', editable: '可编辑文本', notEditable: '不可编辑', loading: '正在加载文件…', loadError: '无法加载文件。', loadErrorDetail: '无法加载文件：{{message}}', saveError: '保存文件失败', saveErrorDetail: '保存文件失败：{{message}}', saving: '正在保存…', save: '保存文件', binaryHint: '无法预览此文件；它可能是二进制文件，或已从技能包存储中丢失。' },
   },
   workspaces: {
+    serverPicker: {
+      title: '在服务器上选择文件夹',
+      description: 'Qunica 列出的是运行后端那台机器上、工作区根目录下的目录；你本机的文件夹它看不到。',
+      parent: '返回上一级',
+      empty: '这里没有子目录。',
+      truncated: '仅显示前 500 个目录。',
+      loadFailed: '无法列出目录。',
+      rootRequired: '请先设置工作区根目录，目前无处可浏览。',
+      useThisFolder: '使用此文件夹',
+    },
     title: '工作区',
     new: '新建工作区',
     search: '搜索工作区',

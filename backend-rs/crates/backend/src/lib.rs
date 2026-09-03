@@ -11,4 +11,5 @@ pub mod runtime;
 pub mod server;
 pub mod skills;
 pub mod telemetry;
+pub mod terminal;
 pub mod tools;
