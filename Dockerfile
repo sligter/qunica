@@ -7,17 +7,19 @@
 #
 # See DOCKER.md for volumes, environment, and first-run setup.
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=22
 ARG RUST_VERSION=1.88
+ARG GO_VERSION=1.27
+ARG UV_VERSION=0.12.9
+ARG DOCKER_VERSION=29
 
 # ---------------------------------------------------------------- web assets
 FROM node:${NODE_VERSION}-bookworm-slim AS web
 WORKDIR /src
 ENV CI=1 \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-# Upgrade corepack before enabling it: the version bundled with Node 20 carries
-# signing keys old enough to reject current pnpm releases. The pnpm version
-# itself still comes from `packageManager` in package.json.
+# Upgrade corepack before enabling it. The pnpm version itself still comes from
+# `packageManager` in package.json.
 RUN npm install --global corepack@latest && corepack enable
 
 # Manifests first so a source-only edit reuses the install layer.
@@ -49,36 +51,48 @@ RUN --mount=type=cache,id=qunica-cargo-registry,target=/usr/local/cargo/registry
     cargo build --manifest-path backend-rs/Cargo.toml --package qunica-backend --release \
     && cp /build-target/release/qunica-backend /usr/local/bin/qunica-server
 
-# ------------------------------------------------------------------- runtime
-FROM node:${NODE_VERSION}-bookworm-slim AS node-dist
+# ---------------------------------------------------------- runtime toolchains
+FROM golang:${GO_VERSION}-bookworm AS go-dist
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-dist
+FROM docker:${DOCKER_VERSION}-cli AS docker-dist
 
-FROM debian:bookworm-slim AS runtime
+FROM ubuntu:24.04 AS runtime
 
-# git and bash back the workspace Git panel and the guarded shell tools; less
-# and procps are what those shell commands routinely reach for; tini reaps the
-# shells and ACP agents the backend spawns; gosu drops root in the entrypoint
-# once mounted volumes have been made writable.
+# The compiler and headers make the bundled language toolchains useful for
+# native dependencies, not merely present enough to print a version number.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
+        build-essential \
         ca-certificates \
         curl \
         git \
         gosu \
         less \
-        libssl3 \
+        libssl-dev \
         openssh-client \
+        pkg-config \
         procps \
+        python-is-python3 \
+        python3.12 \
+        python3.12-venv \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Node powers the external ACP runtimes (Codex, Claude Code, OpenCode, ...),
 # which the Agents page installs and launches through npm/npx.
-COPY --from=node-dist /usr/local/bin/node /usr/local/bin/node
-COPY --from=node-dist /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=web /usr/local/bin/node /usr/local/bin/node
+COPY --from=web /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+
+COPY --from=go-dist /usr/local/go /usr/local/go
+COPY --from=server /usr/local/cargo/bin /usr/local/cargo/bin
+COPY --from=server --chown=10001:10001 /usr/local/rustup /usr/local/rustup
+COPY --from=uv-dist /uv /uvx /usr/local/bin/
+COPY --from=docker-dist /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-dist /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
 
 RUN groupadd --gid 10001 qunica \
     && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash qunica \
@@ -110,7 +124,22 @@ ENV QUNICA_HOST=0.0.0.0 \
 # /usr/local is root-owned, so `npm install -g` from the Agents page would fail
 # with EACCES. Global packages go under the qunica home instead.
 ENV NPM_CONFIG_PREFIX=/home/qunica/.npm-global
-ENV PATH=/home/qunica/.npm-global/bin:${PATH}
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH=/home/qunica/.npm-global/bin:/home/qunica/.local/bin:/home/qunica/.cargo/bin:/home/qunica/go/bin:/usr/local/go/bin:/usr/local/cargo/bin:${PATH}
+
+# Fail the image build if any promised tool is missing or the two requested
+# language baselines are not met. Run as the same non-root user agents use.
+RUN gosu qunica node -e "if (+process.versions.node.split('.')[0] < 22) process.exit(1)" \
+    && gosu qunica npm --version \
+    && gosu qunica git --version \
+    && gosu qunica python3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)" \
+    && gosu qunica uv --version \
+    && gosu qunica go version \
+    && gosu qunica rustc --version \
+    && gosu qunica cargo --version \
+    && gosu qunica docker --version \
+    && gosu qunica docker compose version \
+    && gosu qunica docker buildx version
 
 # /data holds the SQLite database, the generated secret key, skills and logs.
 # /workspaces is where onboarding should point the group workspace root.

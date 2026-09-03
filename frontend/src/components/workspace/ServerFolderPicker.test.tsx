@@ -7,7 +7,7 @@ import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 import i18n from '@/i18n'
 import { useAuthStore } from '@/stores/authStore'
 
-function listing(path: '' | 'demo') {
+function listing(path: '' | 'demo' | 'new-project') {
   return path === ''
     ? {
         root: '/workspaces',
@@ -23,8 +23,8 @@ function listing(path: '' | 'demo') {
       }
     : {
         root: '/workspaces',
-        absolute_path: '/workspaces/demo',
-        relative_path: 'demo',
+        absolute_path: `/workspaces/${path}`,
+        relative_path: path,
         parent_relative_path: '',
         entries: [],
         truncated: false,
@@ -76,5 +76,47 @@ describe('ServerFolderPicker', () => {
       expect(String(url)).toContain('/api/v2/workspaces/directories?path=')
       expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer owner-token')
     }
+  })
+
+  it('creates a folder on the server and enters it', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          name: 'new-project',
+          relative_path: 'new-project',
+          absolute_path: '/workspaces/new-project',
+        }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const path = new URL(String(input), 'http://localhost').searchParams.get('path')
+      return new Response(JSON.stringify(listing(path === 'new-project' ? path : '')), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onSelect = vi.fn()
+    const user = userEvent.setup()
+
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <ServerFolderPicker open onOpenChange={vi.fn()} onSelect={onSelect} />
+      </QueryClientProvider>,
+    )
+
+    await screen.findByTitle('/workspaces')
+    await user.type(screen.getByRole('textbox', { name: 'New folder name' }), 'new-project')
+    await user.click(screen.getByRole('button', { name: 'Create folder' }))
+    expect(await screen.findByTitle('/workspaces/new-project')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Use this folder' }))
+    expect(onSelect).toHaveBeenCalledWith('/workspaces/new-project', 'new-project')
+
+    const [, init] = fetchMock.mock.calls.find(([, options]) => options?.method === 'POST') ?? []
+    expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer owner-token')
+    expect(JSON.parse(String(init?.body))).toEqual({ parent: '', name: 'new-project' })
   })
 })

@@ -29,10 +29,17 @@ Without compose:
 docker build -t qunica:local .
 docker run -d --name qunica \
   -p 127.0.0.1:18765:8765 \
+  -p 127.0.0.1:8900-8999:8900-8999 \
   -v qunica-data:/data \
   -v qunica-workspaces:/workspaces \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   qunica:local
 ```
+
+Compose also maps container ports `8900-8999` to the same loopback ports on the
+VPS for services started by agents. Those services must listen on `0.0.0.0`;
+for example, container port `8999` is available at `http://127.0.0.1:8999` on
+the VPS. Keep public access behind an authenticated HTTPS reverse proxy.
 
 The first build compiles the Rust backend from scratch and takes a while.
 Rebuilds reuse BuildKit cache mounts for cargo and pnpm, so they are much
@@ -68,7 +75,7 @@ password or add another user.
 | --- | --- | --- |
 | `/data` | SQLite database, generated `SECRET_KEY`, skills, logs | every account, group, agent, and message is gone |
 | `/workspaces` | group workspaces, uploads, agent-created files | agent work products are gone |
-| `/home/qunica` | optional; npm-installed ACP runtimes and their sign-in state | external CLI agents must be installed and signed in again |
+| `/home/qunica` | user-installed tools, caches, and external-agent sign-in state | those tools, caches, and sessions are lost |
 
 Named volumes come out of the image with the right ownership. Bind mounts do
 not, so the entrypoint chowns `/data` and `/workspaces` to the container's
@@ -116,10 +123,14 @@ Pushing to a remote needs credentials you supply: mount an SSH key at
 
 ## External CLI agents
 
-Node 20, npm, and npx are in the image, so the Agents page can install and run
-ACP runtimes such as Codex, Claude Code, and OpenCode. Their **accounts are not**
-part of the image. Sign in inside the container, or mount the runtime's config
-directory from a host that is already signed in:
+The runtime is based on Ubuntu 24.04 and includes Node 22 with npm/npx,
+Python 3.12 with uv, Go 1.27, Rust 1.88 with Cargo, Git, and native build tools.
+Docker 29 CLI, Compose, and Buildx are included too; no Docker daemon runs
+inside the container.
+The Agents page can therefore install and run ACP runtimes such as Codex,
+Claude Code, and OpenCode. Their **accounts are not** part of the image. Sign
+in inside the container, or mount the runtime's config directory from a host
+that is already signed in:
 
 ```yaml
 volumes:
@@ -127,11 +138,20 @@ volumes:
   - ~/.codex:/home/qunica/.codex
 ```
 
-Global npm packages install under `/home/qunica/.npm-global`, which is on
-`PATH`. That path is in the container filesystem, so installed runtimes are gone
-after a rebuild. To keep them, mount a volume at `/home/qunica` — that also
-persists each runtime's own config and its npx cache — or bake the installs into
-your own image built `FROM qunica:local`.
+Global npm packages install under `/home/qunica/.npm-global`; `uv tool`,
+`cargo install`, and `go install` use paths under `/home/qunica` too. All are on
+`PATH`. Keep the compose volume at `/home/qunica` to persist those installs,
+runtime configuration, and caches across rebuilds, or bake them into your own
+image built `FROM qunica:local`.
+
+Compose mounts the host Docker socket by default, and the entrypoint maps its
+group to the non-root `qunica` user. This uses the host daemon rather than
+running a second daemon inside Qunica. **Anyone who can run an agent can take
+full control of the Docker host**, including mounting and editing host files;
+Docker documents this as part of the
+[daemon attack surface](https://docs.docker.com/engine/security/#docker-daemon-attack-surface).
+Remove the `/var/run/docker.sock` volume to disable it or use a remote Docker
+context instead.
 
 ## Behind a reverse proxy
 
@@ -197,5 +217,5 @@ once `GET /api/v2/health` returns 200.
 docker buildx build --platform linux/arm64 -t qunica:arm64 .
 ```
 
-Both build stages are plain multi-arch base images, so cross-building works
+All build stages use multi-arch base images, so cross-building works
 under emulation. Native runners are considerably faster for the Rust stage.

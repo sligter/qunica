@@ -14,6 +14,8 @@ services:
       # The host port differs from the container port on purpose: the desktop
       # build runs its own backend on 127.0.0.1:8765, and the two would collide.
       - "127.0.0.1:18765:8765"
+      # Reserved for agent-started services; keep them off the public interface.
+      # - "127.0.0.1:8900-8999:8900-8999"
     environment:
       # Generated into /data/desktop-secret.key on first boot when unset. Set it
       # explicitly to keep sessions valid across a volume reset.
@@ -35,6 +37,8 @@ services:
       # rebuilds. Mount a host directory here instead to reuse an existing
       # Codex or Claude Code login.
       - qunica-home:/home/qunica
+      # DANGER: gives every signed-in agent root-equivalent control of the host.
+      - /var/run/docker.sock:/var/run/docker.sock
     # Agents spawn shells and external CLI runtimes; without a raised limit a
     # busy group can exhaust the default process budget.
     pids_limit: 4096

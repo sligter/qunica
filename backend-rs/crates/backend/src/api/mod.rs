@@ -105,7 +105,7 @@ pub fn router(state: AppState) -> Router {
         // the static segment has to win, or the picker id-parses as a uuid.
         .route(
             "/api/v2/workspaces/directories",
-            get(workspaces::browse_directories),
+            get(workspaces::browse_directories).post(workspaces::create_directory),
         )
         .route(
             "/api/v2/terminal/sessions",

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
@@ -37,5 +37,17 @@ export function useWorkspaceDirectories(relativePath: string, enabled: boolean) 
     enabled: enabled && token !== null,
     // A directory the user just created elsewhere in the app should show up.
     staleTime: 0,
+  })
+}
+
+export function useCreateWorkspaceDirectory() {
+  const token = useAuthStore((s) => s.token)
+  return useMutation({
+    mutationFn: ({ parent, name }: { parent: string; name: string }) =>
+      fetchJson<WorkspaceDirectoryEntry>('/workspaces/directories', {
+        method: 'POST',
+        token,
+        body: { parent, name },
+      }),
   })
 }

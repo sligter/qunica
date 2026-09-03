@@ -17,6 +17,19 @@ if [ "$(id -u)" = "0" ]; then
   # ownership the host still needs, so only the mount point itself is adjusted.
   chown -R qunica:qunica "${APP_DATA}"
   chown qunica:qunica "${WORKSPACES}"
+
+  # When mounted, mirror the socket's host GID so the unprivileged server and
+  # its agents can use the bundled Docker CLI.
+  if [ -S /var/run/docker.sock ]; then
+    SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+    SOCKET_GROUP="$(getent group "${SOCKET_GID}" | cut -d: -f1 || true)"
+    if [ -z "${SOCKET_GROUP}" ]; then
+      groupadd --gid "${SOCKET_GID}" docker-host
+      SOCKET_GROUP=docker-host
+    fi
+    usermod -aG "${SOCKET_GROUP}" qunica
+  fi
+
   exec gosu qunica "${BASH_SOURCE[0]}" "$@"
 fi
 

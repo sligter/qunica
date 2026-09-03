@@ -20,8 +20,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useWorkspaceDirectories } from '@/hooks/useWorkspaceDirectories'
+import {
+  useCreateWorkspaceDirectory,
+  useWorkspaceDirectories,
+} from '@/hooks/useWorkspaceDirectories'
 import { ApiError } from '@/lib/api-v2/client'
 
 export interface ServerFolderPickerProps {
@@ -42,13 +46,16 @@ export interface ServerFolderPickerProps {
 export function ServerFolderPicker({ open, onOpenChange, onSelect }: ServerFolderPickerProps) {
   const { t } = useTranslation(['workspaces', 'common'])
   const [path, setPath] = useState('')
+  const [newFolder, setNewFolder] = useState('')
   const listing = useWorkspaceDirectories(path, open)
+  const createDirectory = useCreateWorkspaceDirectory()
 
   // Every visit starts at the root: a stale path from a previous open may not
   // exist any more, and the request would just 404.
   useEffect(() => {
     if (open) {
       setPath('')
+      setNewFolder('')
     }
   }, [open])
 
@@ -60,6 +67,21 @@ export function ServerFolderPicker({ open, onOpenChange, onSelect }: ServerFolde
     if (!data) return
     onSelect(data.absolute_path, data.relative_path)
     onOpenChange(false)
+  }
+
+  const createFolder = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const name = newFolder.trim()
+    if (!data || !name) return
+    createDirectory.mutate(
+      { parent: data.relative_path, name },
+      {
+        onSuccess: (directory) => {
+          setNewFolder('')
+          setPath(directory.relative_path)
+        },
+      },
+    )
   }
 
   return (
@@ -142,6 +164,29 @@ export function ServerFolderPicker({ open, onOpenChange, onSelect }: ServerFolde
               </p>
             ) : null}
 
+            <form className="flex gap-2" onSubmit={createFolder}>
+              <Input
+                value={newFolder}
+                onChange={(event) => setNewFolder(event.target.value)}
+                placeholder={t('workspaces:serverPicker.newFolderPlaceholder')}
+                aria-label={t('workspaces:serverPicker.newFolderPlaceholder')}
+                disabled={!data || createDirectory.isPending}
+              />
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={!data || !newFolder.trim() || createDirectory.isPending}
+              >
+                {t('workspaces:serverPicker.createFolder')}
+              </Button>
+            </form>
+            {createDirectory.isError ? (
+              <p className="text-xs text-destructive" role="alert">
+                {createDirectory.error instanceof Error
+                  ? createDirectory.error.message
+                  : t('workspaces:serverPicker.createFailed')}
+              </p>
+            ) : null}
           </div>
         )}
 

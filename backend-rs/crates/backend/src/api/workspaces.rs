@@ -231,6 +231,13 @@ pub struct BrowseQuery {
     path: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateDirectoryRequest {
+    #[serde(default)]
+    parent: Option<String>,
+    name: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DirectoryEntry {
     name: String,
@@ -271,25 +278,7 @@ pub async fn browse_directories(
 ) -> Result<Json<BrowseResponse>, ApiError> {
     let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
     let root = resolve_workspace_root(&state, &owner_id).await?;
-
-    let requested = query.path.as_deref().map(str::trim).unwrap_or_default();
-    let candidate = if requested.is_empty() {
-        root.clone()
-    } else if std::path::Path::new(requested).is_absolute() {
-        PathBuf::from(requested)
-    } else {
-        root.join(requested)
-    };
-    let target = std::fs::canonicalize(&candidate)
-        .map_err(|_| ApiError::not_found("directory not found"))?;
-    if !target.starts_with(&root) {
-        return Err(ApiError::permission_denied(
-            "path is outside the workspace root",
-        ));
-    }
-    if !target.is_dir() {
-        return Err(ApiError::invalid_input("path is not a directory"));
-    }
+    let target = resolve_directory(&root, query.path.as_deref())?;
 
     let mut entries = Vec::new();
     let mut truncated = false;
@@ -331,6 +320,66 @@ pub async fn browse_directories(
         entries,
         truncated,
     }))
+}
+
+/// Create one child directory below the current picker location.
+pub async fn create_directory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateDirectoryRequest>,
+) -> Result<(StatusCode, Json<DirectoryEntry>), ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let root = resolve_workspace_root(&state, &owner_id).await?;
+    let parent = resolve_directory(&root, request.parent.as_deref())?;
+    let name = validate_directory_name(&request.name)?;
+    let path = parent.join(&name);
+
+    std::fs::create_dir(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            ApiError::conflict("directory already exists")
+        } else {
+            ApiError::invalid_input("failed to create directory")
+        }
+    })?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|_| ApiError::internal("failed to resolve directory"))?;
+    if !path.starts_with(&root) {
+        return Err(ApiError::permission_denied(
+            "path is outside the workspace root",
+        ));
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DirectoryEntry {
+            relative_path: relative_to_root(&root, &path)
+                .ok_or_else(|| ApiError::internal("failed to resolve directory"))?,
+            absolute_path: path.to_string_lossy().into_owned(),
+            name,
+        }),
+    ))
+}
+
+fn resolve_directory(root: &std::path::Path, requested: Option<&str>) -> Result<PathBuf, ApiError> {
+    let requested = requested.map(str::trim).unwrap_or_default();
+    let candidate = if requested.is_empty() {
+        root.to_path_buf()
+    } else if std::path::Path::new(requested).is_absolute() {
+        PathBuf::from(requested)
+    } else {
+        root.join(requested)
+    };
+    let target =
+        std::fs::canonicalize(candidate).map_err(|_| ApiError::not_found("directory not found"))?;
+    if !target.starts_with(root) {
+        return Err(ApiError::permission_denied(
+            "path is outside the workspace root",
+        ));
+    }
+    if !target.is_dir() {
+        return Err(ApiError::invalid_input("path is not a directory"));
+    }
+    Ok(target)
 }
 
 /// `path` expressed relative to `root`, with forward slashes so the value round

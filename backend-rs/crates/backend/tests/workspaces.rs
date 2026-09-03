@@ -279,6 +279,68 @@ async fn workspace_directories_browse_inside_the_configured_root() {
 }
 
 #[tokio::test]
+async fn workspace_directories_create_child_inside_the_configured_root() {
+    let app = app().await;
+    let token = register_and_login(&app, "mkdir@example.com").await;
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("workspaces");
+    std::fs::create_dir_all(root.join("alpha")).unwrap();
+    std::fs::create_dir(base.path().join("outside")).unwrap();
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({"group_workspace_root": root}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, directory) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces/directories",
+            &token,
+            json!({"parent": "alpha", "name": "new-project"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(directory["relative_path"], "alpha/new-project");
+    assert!(root.join("alpha/new-project").is_dir());
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces/directories",
+            &token,
+            json!({"parent": "../outside", "name": "escape"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!base.path().join("outside/escape").exists());
+
+    let (status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/workspaces/directories",
+            &token,
+            json!({"parent": "alpha", "name": "../escape"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!root.join("escape").exists());
+}
+
+#[tokio::test]
 async fn workspace_directories_reject_paths_outside_the_root() {
     let app = app().await;
     let token = register_and_login(&app, "browse-escape@example.com").await;
