@@ -510,16 +510,16 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
     // Drain the rest of the stream to completion.
     let mut tokens = String::new();
     let mut saw_reasoning = false;
-    let mut saw_tool_start = false;
-    let mut saw_tool_result = false;
+    let mut tool_start = None;
+    let mut tool_result = None;
     let mut saw_usage = false;
     let mut terminal_status = None;
     while let Some(event) = run.next_event().await {
         match event.kind {
             AcpEventKind::Token => tokens.push_str(event.data.as_str().unwrap_or_default()),
             AcpEventKind::Reasoning => saw_reasoning = true,
-            AcpEventKind::ToolCallStart => saw_tool_start = true,
-            AcpEventKind::ToolCallResult => saw_tool_result = true,
+            AcpEventKind::ToolCallStart => tool_start = Some(event.data),
+            AcpEventKind::ToolCallResult => tool_result = Some(event.data),
             AcpEventKind::Usage => saw_usage = true,
             AcpEventKind::Warning => {}
             AcpEventKind::Run => {
@@ -533,8 +533,12 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
         "expected token text, got {tokens:?}"
     );
     assert!(saw_reasoning, "expected a reasoning event");
-    assert!(saw_tool_start, "expected a tool_call_start event");
-    assert!(saw_tool_result, "expected a tool_call_result event");
+    let tool_start = tool_start.expect("expected a tool_call_start event");
+    assert_eq!(tool_start["args_summary"], "{}");
+    let tool_result = tool_result.expect("expected a tool_call_result event");
+    assert_eq!(tool_result["args_summary"], "{\"a\":1}");
+    assert_eq!(tool_result["result_summary"], "{\"ok\":true}");
+    assert!(tool_result.get("tool_name").is_none());
     assert!(saw_usage, "expected a usage event");
     assert_eq!(terminal_status.as_deref(), Some("completed"));
 
@@ -2190,14 +2194,14 @@ fn run_fake_child(mode: &str) {
                         &stdout,
                         &session_update(json!({
                             "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "do_thing",
-                            "status": "in_progress", "rawInput": { "a": 1 },
+                            "status": "in_progress", "rawInput": {},
                         })),
                     );
                     write_line(
                         &stdout,
                         &session_update(json!({
-                            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "do_thing",
-                            "status": "completed", "rawOutput": { "ok": true },
+                            "sessionUpdate": "tool_call_update", "toolCallId": "t1",
+                            "status": "completed", "rawInput": { "a": 1 }, "rawOutput": { "ok": true },
                         })),
                     );
                     write_line(

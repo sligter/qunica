@@ -169,6 +169,7 @@ function emitActiveSchedulerStream(
       tool_call_id: `${streamId}-tool`,
       tool_name: 'lookup',
       status: 'started',
+      args_summary: '{}',
     },
   })
 }
@@ -236,6 +237,41 @@ describe('useSendMessageStream scheduler events', () => {
       payload: { agent_id: 'agent-1', display_name: 'Agent One' },
     })
     expect(hook.result.current.activeStreamCount).toBe(1)
+  })
+
+  it('merges parameters from partial ACP tool updates', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => ignoreSend(hook.result.current.send('hello')))
+    const stream = mocks.streams[0]
+    emitActiveSchedulerStream(stream.handlers, 'stream-1', 'message-1', 'agent-1')
+    emit(stream.handlers, {
+      stream_id: 'stream-1',
+      seq: 6,
+      event_id: 'stream-1-event-6',
+      kind: 'tool_call_result',
+      payload: {
+        agent_id: 'agent-1',
+        tool_call_id: 'stream-1-tool',
+        status: 'completed',
+        args_summary: '{"path":"README.md"}',
+        result_summary: 'done',
+      },
+    })
+
+    const tool = useMessageStore
+      .getState()
+      .streamRunsByGroup['group-1']['stream-1'].events.find(
+        (event) => event.type === 'tool',
+      )
+    expect(tool).toMatchObject({
+      tool_name: 'lookup',
+      status: 'completed',
+      args_summary: '{"path":"README.md"}',
+      result_summary: 'done',
+    })
   })
 
   it('echoes the message and opens its run before the server acknowledges it', async () => {

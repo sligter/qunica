@@ -2809,6 +2809,17 @@ impl TurnData {
         }
     }
 
+    fn record_tool_args_summary(&mut self, tool_call_id: &str, args_summary: &str) {
+        if let Some(call) = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| call.tool_call_id.as_deref() == Some(tool_call_id))
+        {
+            call.args = serde_json::from_str(args_summary).ok();
+            call.args_summary = Some(args_summary.to_string());
+        }
+    }
+
     fn record_tool_output(&mut self, tool_call_id: &str, result: String) {
         if let Some(call) = self
             .tool_calls
@@ -3908,6 +3919,12 @@ async fn run_acp_agent_turn(
                     payload.get("status").and_then(json_str),
                     payload.get("result_summary").and_then(json_str),
                 );
+                if let (Some(tool_call_id), Some(args_summary)) = (
+                    payload.get("tool_call_id").and_then(Value::as_str),
+                    payload.get("args_summary").and_then(Value::as_str),
+                ) {
+                    turn.record_tool_args_summary(tool_call_id, args_summary);
+                }
                 ctx.emit(StreamEventKind::ToolCallResult, payload).await?;
             }
             AcpEventKind::Usage => {
@@ -8682,9 +8699,9 @@ mod tests {
             Some("call-1".to_string()),
             Some("Read".to_string()),
             Some("started".to_string()),
-            Some("{\"file_path\":\"note.txt\"}".to_string()),
+            Some("{}".to_string()),
         );
-        turn.record_tool_args("call-1", json!({"file_path": "note.txt"}));
+        turn.record_tool_args_summary("call-1", "{\"file_path\":\"note.txt\"}");
         turn.record_tool_result(
             Some("call-1".to_string()),
             Some("Read".to_string()),
@@ -8697,6 +8714,10 @@ mod tests {
         assert_eq!(
             payload["tool_calls"][0]["args"],
             json!({"file_path": "note.txt"})
+        );
+        assert_eq!(
+            payload["tool_calls"][0]["args_summary"],
+            "{\"file_path\":\"note.txt\"}"
         );
         assert_eq!(payload["tool_calls"][0]["result"], "complete file contents");
     }

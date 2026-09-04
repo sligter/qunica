@@ -546,25 +546,50 @@ fn tool_start_payload(update: &Value) -> Value {
 
 /// Build the `tool_call_result` payload, mirroring Python `_tool_progress_payload`.
 fn tool_progress_payload(update: &Value) -> Value {
-    let status = update
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("completed");
-    let tool_name = update
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "tool_call_id".to_string(),
+        update.get("toolCallId").cloned().unwrap_or(Value::Null),
+    );
+    if let Some(tool_name) = update
         .get("title")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .unwrap_or("ACP tool call");
+    {
+        payload.insert(
+            "tool_name".to_string(),
+            Value::String(tool_name.to_string()),
+        );
+    }
+    if let Some(status) = update.get("status").and_then(Value::as_str) {
+        let status = if status == "pending" || status == "in_progress" {
+            "started"
+        } else {
+            status
+        };
+        payload.insert("status".to_string(), Value::String(status.to_string()));
+    }
+    let args_source = update
+        .get("rawInput")
+        .filter(|v| !v.is_null())
+        .or_else(|| update.get("kind").filter(|v| !v.is_null()));
+    if args_source.is_some() {
+        payload.insert(
+            "args_summary".to_string(),
+            Value::String(bounded_metadata(args_source)),
+        );
+    }
     let result_source = update
         .get("rawOutput")
         .filter(|v| !v.is_null())
         .or_else(|| update.get("content").filter(|v| !v.is_null()));
-    json!({
-        "tool_call_id": update.get("toolCallId").cloned().unwrap_or(Value::Null),
-        "tool_name": tool_name,
-        "status": status,
-        "result_summary": bounded_metadata(result_source),
-    })
+    if result_source.is_some() {
+        payload.insert(
+            "result_summary".to_string(),
+            Value::String(bounded_metadata(result_source)),
+        );
+    }
+    Value::Object(payload)
 }
 
 /// Stringify a tool input/output summary and cap it to [`MAX_METADATA_CHARS`],

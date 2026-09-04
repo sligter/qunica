@@ -830,7 +830,17 @@ export function useSendMessageStream(
               case 'tool_call_result': {
                 const parsed = toolCallPayloadSchema.safeParse(event.payload)
                 if (!parsed.success || !parsed.data.tool_call_id) return
-                const status = normalizeToolStatus(parsed.data.status)
+                const existingEvent = useMessageStore
+                  .getState()
+                  .streamRunsByGroup[storeId]?.[streamId]?.events.find(
+                    (item) =>
+                      item.type === 'tool' &&
+                      item.tool_call_id === parsed.data.tool_call_id,
+                  )
+                const existing = existingEvent?.type === 'tool' ? existingEvent : undefined
+                const status = parsed.data.status === undefined
+                  ? existing?.status ?? 'unavailable'
+                  : normalizeToolStatus(parsed.data.status)
                 const activity: ToolActivity = {
                   id: parsed.data.tool_call_id,
                   agent_id: parsed.data.agent_id ?? 'unknown-agent',
@@ -838,10 +848,10 @@ export function useSendMessageStream(
                     parsed.data.agent_id,
                     parsed.data.display_name,
                   ),
-                  tool_name: parsed.data.tool_name ?? 'Unknown tool',
+                  tool_name: parsed.data.tool_name ?? existing?.tool_name ?? 'Unknown tool',
                   status,
-                  args_summary: parsed.data.args_summary,
-                  result_summary: parsed.data.result_summary,
+                  args_summary: parsed.data.args_summary ?? existing?.args_summary,
+                  result_summary: parsed.data.result_summary ?? existing?.result_summary,
                   pending_action:
                     pendingActionFromOutput(parsed.data.output) ?? undefined,
                 }
