@@ -340,6 +340,76 @@ describe('MessageList scheduler summary integration', () => {
     expect(screen.queryByTestId('stream-timeline')).not.toBeInTheDocument()
   })
 
+  it('renders a tool-only error checkpoint instead of a duplicate agent timeline', () => {
+    const run: StreamRun = {
+      id: 'stream-error',
+      group_id: 'group-1',
+      user_message_id: userMessage.id,
+      status: 'error',
+      turn_id: 'turn-error',
+      scheduler_status: 'failed',
+      moderator_active: false,
+      terminal_reason: 'failure_budget_exhausted',
+      criticalSummaries: [],
+      created_at: '2026-07-15T10:00:00Z',
+      updated_at: '2026-07-15T10:00:02Z',
+      events: [
+        {
+          id: 'start-1',
+          type: 'agent_start',
+          stream_id: 'stream-error',
+          agent_id: 'agent-1',
+          display_name: 'Agent One',
+          created_at: '2026-07-15T10:00:01Z',
+        },
+        {
+          id: 'external-1',
+          type: 'external_run',
+          stream_id: 'stream-error',
+          run_id: 'acp-run-1',
+          agent_id: 'agent-1',
+          display_name: 'Agent One',
+          adapter: 'acp',
+          status: 'failed',
+          summary: 'ACP request failed (-32603): Internal error',
+          created_at: '2026-07-15T10:00:02Z',
+        },
+        {
+          id: 'error-1',
+          type: 'agent_error',
+          stream_id: 'stream-error',
+          message: 'ACP request failed (-32603): Internal error',
+          created_at: '2026-07-15T10:00:02Z',
+        },
+      ],
+    }
+    const checkpoint: Message = {
+      ...userMessage,
+      id: 'checkpoint-error',
+      sender_type: 'agent',
+      sender_id: 'agent-1',
+      content: '',
+      status: 'interrupted',
+      tool_calls: [
+        {
+          tool_call_id: 'acp-run-1',
+          tool_name: 'External CLI: acp',
+          status: 'failed',
+          args_summary: null,
+          result_summary: 'ACP request failed (-32603): Internal error',
+        },
+      ],
+      reply_to_message_id: userMessage.id,
+      turn_summary: null,
+    }
+    setMessageState(run, [userMessage, checkpoint])
+
+    render(<MessageList groupId="group-1" />)
+
+    expect(screen.getByTestId('message-checkpoint-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('stream-timeline')).not.toBeInTheDocument()
+  })
+
   it('hands an approval turn between its live timeline and persisted message without two bubbles', () => {
     const run: StreamRun = {
       id: 'stream-approval',

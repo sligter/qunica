@@ -150,6 +150,18 @@ function checkpointedRunIds(
     )
     if (!runId) continue
     const run = runs[runId]
+    // ACP/provider failures can checkpoint tool activity before producing any
+    // text. The durable interrupted row owns that activity and its resume control.
+    if (
+      run?.status === 'error' &&
+      message.status === 'interrupted' &&
+      run.events.some((event) =>
+        'agent_id' in event && event.agent_id === message.sender_id,
+      )
+    ) {
+      checkpointed.add(runId)
+      continue
+    }
     if (run && message.status === 'visible' && messageMatchesRunApproval(message, run)) {
       checkpointed.add(runId)
       continue
