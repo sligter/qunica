@@ -1331,10 +1331,7 @@ pub(crate) async fn create_inner(
         None => create_group_workspace(state.db.pool(), &owner_id, &id, &name, &now).await?,
     };
 
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group create transaction"))?;
 
@@ -1670,10 +1667,7 @@ pub(crate) async fn update_inner(
     };
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group update transaction"))?;
     sqlx::query(
@@ -2914,10 +2908,7 @@ pub(crate) async fn create_group_note_inner(
     let note_id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
 
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group note create transaction"))?;
 
@@ -2984,10 +2975,7 @@ pub(crate) async fn update_group_note_inner(
     let content = body.content.unwrap_or(existing.content);
     let now = now_rfc3339();
 
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group note update transaction"))?;
 
@@ -3045,10 +3033,7 @@ pub async fn delete_group_note(
     load_active_group_note(state.db.pool(), &group_id, &note_id).await?;
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group note delete transaction"))?;
 
@@ -3133,10 +3118,7 @@ pub(crate) async fn add_group_member_inner(
         .ok_or_else(|| ApiError::not_found("user not found"))?;
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group member transaction"))?;
 
@@ -3220,10 +3202,7 @@ pub(crate) async fn remove_group_member_inner(
     }
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group member transaction"))?;
 
@@ -3261,10 +3240,7 @@ pub async fn set_group_member_muted(
     }
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group member mute transaction"))?;
     set_group_member_muted_json(&mut tx, &group_id, &user_id, body.muted, &now).await?;
@@ -3343,10 +3319,7 @@ pub(crate) async fn add_group_agent_inner(
     validate_owned_active_agent(state.db.pool(), &agent_id, owner_id).await?;
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group agent transaction"))?;
 
@@ -3453,10 +3426,7 @@ pub(crate) async fn remove_group_agent_inner(
     load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group agent transaction"))?;
 
@@ -3512,10 +3482,7 @@ pub async fn set_group_agent_muted(
     load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group mute transaction"))?;
     set_group_agent_muted_json(&mut tx, &group_id, &agent_id, body.muted, &now).await?;
@@ -3583,10 +3550,7 @@ pub async fn set_group_agent_topology(
     let (topology_role, speaking_order) =
         validate_agent_topology_patch(&group.communication_mode, &body)?;
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start topology transaction"))?;
 

@@ -201,8 +201,7 @@ pub(crate) async fn insert_direct_chat(
 ) -> Result<String, ApiError> {
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
-    let mut tx = pool
-        .begin()
+    let mut tx = crate::db::begin_write(pool)
         .await
         .map_err(|_| ApiError::internal("failed to start direct chat transaction"))?;
     sqlx::query("INSERT INTO groups (id, owner_id, workspace_id, name, free_speech, proactive_mode, scheduler_enabled, agent_mention_policy, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, moderator_enabled, allow_agent_free_mention, agent_free_mention_max_dispatches, conversation_kind, direct_agent_id, title_source, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, 1, 'display_only', 1, 1, 0, 0, 1, 1, 0, 0, 0, 'direct', ?, 'automatic', 'active', ?, ?)")

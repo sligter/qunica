@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use qunica_domain::events::StreamEventKind;
 
+use crate::db::begin_write;
 use crate::runtime::sequence::persist_message_with_event_in_tx;
 
 use super::{
@@ -49,7 +50,7 @@ impl SchedulerStore {
         let topology_snapshot_json = serde_json::to_string(&input.topology_snapshot)?;
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         let superseded = supersede_active_turn_in_tx(&mut tx, &input.thread_id, &now).await?;
         let created = insert_turn_in_tx(
@@ -69,7 +70,7 @@ impl SchedulerStore {
         let topology_snapshot_json = serde_json::to_string(&input.topology_snapshot)?;
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let snapshot = insert_turn_in_tx(
             &mut tx,
             &input,
@@ -92,7 +93,7 @@ impl SchedulerStore {
         let reason = reason.map(TurnReason::try_from).transpose()?;
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let snapshot =
             transition_turn_in_tx(&mut tx, turn_id, expected, next, reason, &now).await?;
         tx.commit().await?;
@@ -105,7 +106,7 @@ impl SchedulerStore {
     pub async fn cancel_turn(&self, turn_id: &str) -> Result<TurnSnapshot, SchedulerStoreError> {
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let current = fetch_turn_in_tx(&mut tx, turn_id).await?;
         let snapshot = if is_terminal_turn(current.status) {
             current
@@ -134,7 +135,7 @@ impl SchedulerStore {
     ) -> Result<Option<TurnSnapshot>, SchedulerStoreError> {
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let snapshot = supersede_active_turn_in_tx(&mut tx, thread_id, &now).await?;
         tx.commit().await?;
         Ok(snapshot)
@@ -151,7 +152,7 @@ impl SchedulerStore {
         }
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         let result = sqlx::query(
             "INSERT INTO agent_dispatches \
@@ -193,7 +194,7 @@ impl SchedulerStore {
         validate_dispatch_transition(DispatchStatus::Queued, DispatchStatus::Running)?;
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         let result = sqlx::query(
             "UPDATE agent_dispatches \
@@ -280,7 +281,7 @@ impl SchedulerStore {
     ) -> Result<DispatchSnapshot, SchedulerStoreError> {
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         let result = sqlx::query(
             "UPDATE agent_dispatches \
@@ -377,7 +378,7 @@ impl SchedulerStore {
         validate_dispatch_transition(DispatchStatus::Queued, DispatchStatus::Cancelled)?;
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let result = sqlx::query(
             "UPDATE agent_dispatches \
              SET status = ?, completed_at = ?, updated_at = ? \
@@ -403,7 +404,7 @@ impl SchedulerStore {
 
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         sqlx::query(
             "UPDATE agent_dispatches \
@@ -480,7 +481,7 @@ impl SchedulerStore {
         }
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let result = sqlx::query(
             "UPDATE group_turns \
              SET agent_steps = ?, moderator_calls = ?, consecutive_failures = ?, \
@@ -506,6 +507,8 @@ impl SchedulerStore {
     }
 
     pub async fn load_turn_trace(&self, turn_id: &str) -> Result<TurnTrace, SchedulerStoreError> {
+        // Read-only: a deferred transaction is right here, and taking the writer
+        // would serialize trace reads behind every scheduler write.
         let mut tx = self.pool.begin().await?;
         let turn = fetch_turn_in_tx(&mut tx, turn_id).await?;
         let rows = sqlx::query_as::<_, DispatchRow>(

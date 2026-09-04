@@ -5494,7 +5494,7 @@ async fn touch_direct_conversation_after_user_message(
     group_id: &str,
 ) -> anyhow::Result<Option<Value>> {
     let _guard = services.write_lock.lock().await;
-    let mut tx = services.pool.begin().await?;
+    let mut tx = crate::db::begin_write(&services.pool).await?;
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT conversation_kind, title_source FROM groups WHERE id = ? AND status = 'active'",
     )

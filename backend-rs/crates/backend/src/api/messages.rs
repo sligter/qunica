@@ -391,10 +391,7 @@ async fn clear_for_kind(
 
     let _guard = state.write_lock.lock().await;
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start message clear transaction"))?;
 
@@ -502,10 +499,7 @@ async fn delete_for_kind(
 
     let _guard = state.write_lock.lock().await;
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start message delete transaction"))?;
 

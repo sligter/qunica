@@ -3,7 +3,7 @@ use std::{str::FromStr, time::Duration};
 use sqlx::{
     migrate::{Migration, Migrator},
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-    SqlitePool,
+    Sqlite, SqlitePool, Transaction,
 };
 use thiserror::Error;
 
@@ -26,6 +26,28 @@ const SCHEDULER_MIGRATION_DESCRIPTION: &str = "bounded group scheduler";
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
+}
+
+/// Open a transaction that is going to write, reserving SQLite's single writer
+/// slot up front.
+///
+/// sqlx's `begin()` issues `BEGIN DEFERRED`, which takes no lock until the first
+/// statement. A transaction that reads before it writes therefore has to
+/// *upgrade* to the writer mid-transaction, and SQLite deliberately refuses to
+/// run the busy handler for an upgrade — waiting there could deadlock two
+/// transactions against each other. It returns immediately instead:
+/// `SQLITE_BUSY` (5) when another connection holds the writer, or
+/// `SQLITE_BUSY_SNAPSHOT` (517) when one committed since the read snapshot was
+/// taken. Either way the configured `busy_timeout` never applies, and a write
+/// that only needed to wait a few milliseconds fails outright.
+///
+/// `BEGIN IMMEDIATE` takes the writer at BEGIN, where the busy handler *does*
+/// apply, so a contended write waits for the other writer to commit instead.
+///
+/// Read-only transactions should keep using `begin()`: making them immediate
+/// would serialize reads behind the writer for nothing.
+pub async fn begin_write(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
+    pool.begin_with("BEGIN IMMEDIATE").await
 }
 
 #[derive(Debug, Error)]
@@ -66,6 +88,11 @@ impl Db {
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Open a transaction that is going to write. See [`begin_write`].
+    pub async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
+        begin_write(&self.pool).await
     }
 
     pub async fn migrate(&self) -> Result<(), DbError> {

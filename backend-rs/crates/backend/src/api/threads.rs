@@ -413,10 +413,7 @@ pub async fn delete(
             .map_err(|_| ApiError::internal("database error"))?;
 
     let _guard = state.write_lock.lock().await;
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start task delete transaction"))?;
 

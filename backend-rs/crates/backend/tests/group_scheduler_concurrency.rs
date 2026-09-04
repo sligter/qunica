@@ -239,6 +239,39 @@ async fn persisting_a_stream_event_retries_a_transient_sqlite_write_lock() {
     assert_eq!(event_count, 1);
 }
 
+/// `cancel_turn` reads the turn before it updates it, and it has no retry loop.
+///
+/// Under `BEGIN DEFERRED` that upgrade is refused the instant another
+/// connection holds SQLite's writer — the error comes back as "database is
+/// locked" without `busy_timeout` ever being consulted, and the cancel fails
+/// outright. Opening the transaction with `BEGIN IMMEDIATE` makes the same call
+/// queue behind the other writer instead.
+#[tokio::test]
+async fn cancelling_a_turn_waits_out_a_concurrent_writer() {
+    let (fixture, _directory) = Fixture::new_file().await;
+    fixture.create_running_turn("turn-contended").await;
+
+    // Stands in for an API handler's transaction: it holds the writer and does
+    // not take the runtime write lock, so nothing serializes the two in-process.
+    let mut holder = qunica_backend::db::begin_write(&fixture.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE groups SET updated_at = 'held' WHERE id = ?")
+        .bind(&fixture.group_id)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let (cancelled, ()) = tokio::join!(fixture.store.cancel_turn("turn-contended"), async {
+        // Long enough that the cancel has certainly reached the database and is
+        // blocked on the writer rather than racing past it.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        holder.commit().await.unwrap();
+    });
+
+    assert_eq!(cancelled.unwrap().status, TurnStatus::Cancelled);
+}
+
 struct Fixture {
     pool: sqlx::SqlitePool,
     store: SchedulerStore,

@@ -620,10 +620,7 @@ pub(crate) async fn create_inner(
 
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start agent create transaction"))?;
 
@@ -803,10 +800,7 @@ pub(crate) async fn update_inner(
     };
 
     let now = now_rfc3339();
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start agent update transaction"))?;
     sqlx::query(
@@ -876,10 +870,7 @@ pub async fn delete(
     // Scheduler dispatch transitions use this lock too. The check and delete
     // therefore cannot race a queued/running reply into existence.
     let _guard = state.write_lock.lock().await;
-    let mut tx = state
-        .db
-        .pool()
-        .begin()
+    let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start agent delete transaction"))?;
     let replying: i64 = sqlx::query_scalar(

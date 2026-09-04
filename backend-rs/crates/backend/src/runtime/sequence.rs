@@ -12,6 +12,8 @@ use std::time::Duration;
 use qunica_domain::events::{StreamEvent, StreamEventKind};
 use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+
+use crate::db::begin_write;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -63,7 +65,7 @@ impl SequenceAllocator {
         event: &StreamEvent<Value>,
     ) -> anyhow::Result<i64> {
         let _guard = self.write_lock.lock().await;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let next_seq =
             persist_message_with_event_in_tx(&mut tx, thread_id, group_id, message, event).await?;
         tx.commit().await?;
@@ -82,7 +84,7 @@ impl SequenceAllocator {
     ) -> anyhow::Result<Option<i64>> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_thread_writable(&mut tx, thread_id).await?;
 
         if let Some(dispatch_id) = active_dispatch_id {
@@ -151,7 +153,7 @@ impl SequenceAllocator {
     ) -> anyhow::Result<()> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_thread_writable(&mut tx, thread_id).await?;
 
         let result = sqlx::query(
@@ -192,7 +194,7 @@ impl SequenceAllocator {
     ) -> anyhow::Result<()> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_thread_writable(&mut tx, thread_id).await?;
 
         let result = sqlx::query(
@@ -253,7 +255,7 @@ impl SequenceAllocator {
     pub async fn supersede_paused_thread(&self, thread_id: &str) -> anyhow::Result<bool> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         let result = sqlx::query(
             "UPDATE threads SET status = 'active', updated_at = ? \
              WHERE id = ? AND status = 'paused'",
@@ -346,7 +348,7 @@ impl SequenceAllocator {
     ) -> anyhow::Result<()> {
         let _guard = self.write_lock.lock().await;
         let now = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_write(&self.pool).await?;
         for event in events {
             insert_stream_event(&mut tx, thread_id, event, &now).await?;
         }
@@ -460,4 +462,98 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+
+    use super::*;
+
+    /// A pool configured exactly like the running app: the hazard this module
+    /// guards against is WAL-specific and invisible under a rollback journal.
+    async fn wal_pool(directory: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(directory.join("sequence-lock.sqlite3"))
+                    .create_if_missing(true)
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .busy_timeout(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Documents the failure `begin_write` exists to prevent.
+    ///
+    /// A deferred transaction that reads before it writes pins a snapshot; a
+    /// commit from any other connection then makes its write fail *instantly*,
+    /// with the five-second `busy_timeout` never consulted.
+    #[tokio::test]
+    async fn a_deferred_read_then_write_fails_when_another_commit_lands() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = wal_pool(directory.path()).await;
+
+        let mut deferred = pool.begin().await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT id FROM t WHERE id = 1")
+            .fetch_one(&mut *deferred)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (id) VALUES (2)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let error = sqlx::query("INSERT INTO t (id) VALUES (3)")
+            .execute(&mut *deferred)
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the upgrade must fail without waiting out busy_timeout"
+        );
+        assert!(is_transient_sqlite_lock(&anyhow::Error::new(error)));
+        deferred.rollback().await.unwrap();
+    }
+
+    /// The same read-then-write sequence, opened with `begin_write`, commits.
+    ///
+    /// Holding the writer from BEGIN is what removes the upgrade step: no other
+    /// connection can commit underneath this transaction to invalidate it.
+    #[tokio::test]
+    async fn a_write_transaction_reads_then_writes_without_an_upgrade() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = wal_pool(directory.path()).await;
+
+        let mut tx = begin_write(&pool).await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT id FROM t WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (id) VALUES (2)")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
 }
