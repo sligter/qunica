@@ -70,6 +70,7 @@ const tokenPayloadSchema = z.object({
 
 const contextUsageSchema = z.object({
   input_tokens: z.number().nullable().optional(),
+  cached_input_tokens: z.number().nullable().optional(),
   output_tokens: z.number().nullable().optional(),
   total_tokens: z.number().nullable().optional(),
   context_window_tokens: z.number().nullable().optional(),
@@ -172,6 +173,7 @@ function normalizeContextUsage(input: ContextUsageInput | null | undefined): Con
   if (!input) return null
   return {
     input_tokens: input.input_tokens ?? null,
+    cached_input_tokens: input.cached_input_tokens ?? null,
     output_tokens: input.output_tokens ?? null,
     total_tokens: input.total_tokens ?? null,
     context_window_tokens: input.context_window_tokens ?? null,
@@ -194,6 +196,7 @@ function contextUsageFromPayload(payload: ContextUsagePayload): ContextUsage | n
   if (!hasUsage) return null
   return {
     input_tokens: payload.input_tokens ?? null,
+    cached_input_tokens: null,
     output_tokens: payload.output_tokens ?? null,
     total_tokens: payload.total_tokens ?? null,
     context_window_tokens: null,

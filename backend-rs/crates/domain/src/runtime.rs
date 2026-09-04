@@ -271,6 +271,8 @@ pub struct ToolDefinition {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextUsage {
     pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub cached_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     #[serde(default)]

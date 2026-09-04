@@ -180,6 +180,7 @@ fn parse(line: &str) -> Vec<ChatDelta> {
     if !usage.is_null() {
         out.push(ChatDelta::Usage(ContextUsage {
             input_tokens: usage["promptTokenCount"].as_i64(),
+            cached_input_tokens: Some(usage["cachedContentTokenCount"].as_i64().unwrap_or(0)),
             output_tokens: usage["candidatesTokenCount"].as_i64(),
             total_tokens: usage["totalTokenCount"].as_i64(),
             ..ContextUsage::default()
@@ -259,5 +260,21 @@ impl LlmProvider for GeminiProvider {
             pump(resp, tx, parse).await;
         });
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, ChatDelta};
+
+    #[test]
+    fn reads_cached_content_tokens() {
+        let deltas = parse(
+            r#"data: {"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":75,"candidatesTokenCount":5,"totalTokenCount":105}}"#,
+        );
+        let ChatDelta::Usage(usage) = &deltas[0] else {
+            panic!("expected usage delta");
+        };
+        assert_eq!(usage.cached_input_tokens, Some(75));
     }
 }

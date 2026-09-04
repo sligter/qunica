@@ -53,6 +53,7 @@ describe('AgentAvatar', () => {
           name="Researcher"
           contextUsage={{
             input_tokens: 10,
+            cached_input_tokens: 8,
             output_tokens: null,
             total_tokens: null,
             context_window_tokens: 100,
@@ -67,6 +68,7 @@ describe('AgentAvatar', () => {
     )
 
     await user.hover(screen.getByText('R'))
+    expect((await screen.findAllByText('Cache hit 80% · 8 cached tokens'))[0]).toBeVisible()
     expect((await screen.findAllByText('Source: future_context_source'))[0]).toBeVisible()
     const provider = (await screen.findAllByText('A provider name that is deliberately longer than the card'))[0]
     expect(provider).toHaveClass('truncate')

@@ -325,6 +325,7 @@ export interface AppActionList {
 
 export interface ContextUsage {
   input_tokens: number | null
+  cached_input_tokens?: number | null
   output_tokens: number | null
   total_tokens: number | null
   context_window_tokens: number | null
@@ -338,6 +339,8 @@ export interface ContextUsage {
 
 export interface TokenUsageTotals {
   input_tokens: number
+  cached_input_tokens: number
+  cache_hit_rate: number | null
   output_tokens: number
   total_tokens: number
   calls: number

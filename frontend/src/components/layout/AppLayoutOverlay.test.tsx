@@ -63,7 +63,7 @@ vi.mock('@/pages/settings/MediaSettingsPage', () => ({
 vi.mock('@/hooks/useTokenUsage', () => ({
   useTokenUsage: () => ({
     data: {
-      summary: { input_tokens: 120, output_tokens: 30, total_tokens: 150, calls: 2, active_agents: 2 },
+      summary: { input_tokens: 120, cached_input_tokens: 60, cache_hit_rate: 0.5, output_tokens: 30, total_tokens: 150, calls: 2, active_agents: 2 },
       timeline: [
         { date: '2026-08-21', input_tokens: 80, output_tokens: 20, total_tokens: 100, calls: 1 },
         { date: '2026-08-22', input_tokens: 40, output_tokens: 10, total_tokens: 50, calls: 1 },
@@ -185,6 +185,8 @@ describe('settings overlay keeps the conversation mounted', () => {
 
     expect(within(trend).getAllByRole('tab')).toHaveLength(4)
     expect(within(trend).getByRole('img', { name: 'Daily token usage by Group' }).querySelectorAll('path')).toHaveLength(2)
+    expect(within(dialog).getByText('Cache hit rate')).toBeVisible()
+    expect(within(dialog).getByText('50%')).toBeVisible()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
 

@@ -208,8 +208,15 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
 
     let usage = &value["usage"];
     if !usage.is_null() {
+        let cached_input_tokens = usage["prompt_tokens_details"]["cached_tokens"]
+            .as_i64()
+            .or_else(|| usage["input_tokens_details"]["cached_tokens"].as_i64())
+            .or_else(|| usage["prompt_cache_hit_tokens"].as_i64())
+            .or_else(|| usage["cache_read_input_tokens"].as_i64())
+            .or_else(|| usage["prompt_cache_miss_tokens"].as_i64().map(|_| 0));
         out.push(ChatDelta::Usage(ContextUsage {
             input_tokens: usage["prompt_tokens"].as_i64(),
+            cached_input_tokens,
             output_tokens: usage["completion_tokens"].as_i64(),
             total_tokens: usage["total_tokens"].as_i64(),
             ..ContextUsage::default()
@@ -275,5 +282,30 @@ impl LlmProvider for OpenAiCompatibleProvider {
             pump(resp, tx, move |line| parse(line, &mut state)).await;
         });
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, ChatDelta, State};
+
+    #[test]
+    fn reads_openai_and_deepseek_cache_hits() {
+        for (line, expected) in [
+            (
+                r#"data: {"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}}"#,
+                80,
+            ),
+            (
+                r#"data: {"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}}"#,
+                60,
+            ),
+        ] {
+            let deltas = parse(line, &mut State::default());
+            let ChatDelta::Usage(usage) = &deltas[0] else {
+                panic!("expected usage delta");
+            };
+            assert_eq!(usage.cached_input_tokens, Some(expected));
+        }
     }
 }

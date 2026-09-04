@@ -6,7 +6,7 @@ import { AgentAvatarArt } from '@/components/chat/AgentAvatarArt'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { formatNumber, formatTime } from '@/lib/format'
+import { formatNumber, formatPercent, formatTime } from '@/lib/format'
 import { findAgentAvatarPreset, agentInitialsTone } from '@/lib/agentAvatar'
 import { normalizeLanguage } from '@/i18n'
 import type { ContextUsage } from '@/types/api'
@@ -72,6 +72,12 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
     : t('messages.context.usageUnknown')
   const hasOutput =
     typeof usage.output_tokens === 'number' || typeof usage.total_tokens === 'number'
+  const cacheHitRate =
+    typeof usage.cached_input_tokens === 'number' &&
+    typeof usage.input_tokens === 'number' &&
+    usage.input_tokens > 0
+      ? Math.max(0, Math.min(1, usage.cached_input_tokens / usage.input_tokens))
+      : null
   const updatedLabel = formatUpdatedAt(usage.updated_at, language)
   const sourceLabels: Record<string, string> = {
     provider: t('messages.context.provider'),
@@ -105,6 +111,12 @@ function UsageTooltipBody({ usage }: { usage: ContextUsage }) {
           {t('messages.context.outputTotal', { output: formatTokens(usage.output_tokens, language), total: formatTokens(usage.total_tokens, language) })}
         </div>
       )}
+      <div className="text-muted-foreground">
+        {t('messages.context.cacheHit', {
+          rate: cacheHitRate === null ? '—' : formatPercent(cacheHitRate, language),
+          count: formatTokens(usage.cached_input_tokens, language),
+        })}
+      </div>
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
         <span>{sourceLabel}</span>
         {updatedLabel && (

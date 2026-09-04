@@ -5,6 +5,7 @@ import {
   Bot,
   Braces,
   Coins,
+  Gauge,
   Layers3,
   RefreshCw,
   SlidersHorizontal,
@@ -25,6 +26,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useTokenUsage, type TokenUsageFilters } from '@/hooks/useTokenUsage'
 import { normalizeLanguage } from '@/i18n'
+import { formatPercent } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type {
   TokenUsageBreakdown,
@@ -357,6 +359,8 @@ export function TokenUsagePage() {
   const summary = data?.summary ?? {
     total_tokens: 0,
     input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_hit_rate: null,
     output_tokens: 0,
     calls: 0,
     active_agents: 0,
@@ -438,9 +442,10 @@ export function TokenUsagePage() {
           </p>
         ) : null}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label={t('summary.title')}>
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" aria-label={t('summary.title')}>
           <MetricCard icon={Coins} label={t('summary.total')} value={formatTokens(summary.total_tokens, locale, true)} note={t('summary.totalNote')} tone="bg-primary" />
           <MetricCard icon={ArrowDownToLine} label={t('summary.input')} value={formatTokens(summary.input_tokens, locale, true)} note={t('summary.inputNote')} tone="bg-avatar-3" />
+          <MetricCard icon={Gauge} label={t('summary.cacheHitRate')} value={summary.cache_hit_rate === null ? '—' : formatPercent(summary.cache_hit_rate, locale)} note={summary.cache_hit_rate === null ? t('summary.cacheUnavailable') : t('summary.cachedTokens', { count: formatTokens(summary.cached_input_tokens, locale, true) })} tone="bg-avatar-4" />
           <MetricCard icon={ArrowUpFromLine} label={t('summary.output')} value={formatTokens(summary.output_tokens, locale, true)} note={t('summary.outputNote')} tone="bg-avatar-5" />
           <MetricCard icon={Bot} label={t('summary.calls')} value={formatTokens(summary.calls, locale)} note={t('summary.agentCount', { count: summary.active_agents })} tone="bg-avatar-2" />
         </section>

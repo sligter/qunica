@@ -202,6 +202,7 @@ fn anthropic_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
 struct State {
     tools: BTreeMap<i64, ToolAccum>,
     input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
 }
 
 /// Map a single Anthropic stream event to zero or more [`ChatDelta`]s.
@@ -218,9 +219,15 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
     match value["type"].as_str().unwrap_or_default() {
         "message_start" => {
             if let Some(input) = value["message"]["usage"]["input_tokens"].as_i64() {
+                let usage = &value["message"]["usage"];
+                let cached = usage["cache_read_input_tokens"].as_i64().unwrap_or(0);
+                let created = usage["cache_creation_input_tokens"].as_i64().unwrap_or(0);
+                let input = input.saturating_add(cached).saturating_add(created);
                 state.input_tokens = Some(input);
+                state.cached_input_tokens = Some(cached);
                 out.push(ChatDelta::Usage(ContextUsage {
                     input_tokens: Some(input),
+                    cached_input_tokens: Some(cached),
                     output_tokens: None,
                     total_tokens: None,
                     ..ContextUsage::default()
@@ -277,6 +284,7 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
                 let total = state.input_tokens.map(|input| input.saturating_add(output));
                 out.push(ChatDelta::Usage(ContextUsage {
                     input_tokens: state.input_tokens,
+                    cached_input_tokens: state.cached_input_tokens,
                     output_tokens: Some(output),
                     total_tokens: total,
                     ..ContextUsage::default()
@@ -375,10 +383,10 @@ mod tests {
     use super::{parse, ChatDelta, State};
 
     #[test]
-    fn final_usage_keeps_anthropic_input_tokens() {
+    fn final_usage_includes_anthropic_cache_tokens() {
         let mut state = State::default();
         parse(
-            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":40}}}"#,
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":25,"cache_creation_input_tokens":5}}}"#,
             &mut state,
         );
         let deltas = parse(
@@ -390,6 +398,7 @@ mod tests {
             panic!("expected usage delta");
         };
         assert_eq!(usage.input_tokens, Some(40));
+        assert_eq!(usage.cached_input_tokens, Some(25));
         assert_eq!(usage.output_tokens, Some(2));
         assert_eq!(usage.total_tokens, Some(42));
     }

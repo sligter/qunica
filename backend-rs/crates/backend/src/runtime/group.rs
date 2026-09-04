@@ -2887,6 +2887,7 @@ fn context_usage_to_json(
 ) -> Value {
     json!({
         "input_tokens": usage.input_tokens,
+        "cached_input_tokens": usage.cached_input_tokens,
         "output_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
         "context_window_tokens": usage.context_window_tokens,
@@ -2918,6 +2919,9 @@ async fn persist_token_usage(
     usage: &qunica_domain::runtime::ContextUsage,
 ) -> anyhow::Result<()> {
     let input_tokens = usage.input_tokens.unwrap_or(0).max(0);
+    let cached_input_tokens = usage
+        .cached_input_tokens
+        .map(|tokens| tokens.max(0).min(input_tokens));
     let output_tokens = usage.output_tokens.unwrap_or(0).max(0);
     let total_tokens = usage
         .total_tokens
@@ -2927,9 +2931,10 @@ async fn persist_token_usage(
     sqlx::query(
         "INSERT INTO token_usage_records (id, owner_id, group_id, group_name, conversation_kind, \
             thread_id, agent_id, agent_name, provider_id, provider_name, model, input_tokens, \
-            output_tokens, total_tokens, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            cached_input_tokens, output_tokens, total_tokens, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET input_tokens = excluded.input_tokens, \
+            cached_input_tokens = excluded.cached_input_tokens, \
             output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, \
             updated_at = excluded.updated_at",
     )
@@ -2945,6 +2950,7 @@ async fn persist_token_usage(
     .bind(dimensions.provider_name)
     .bind(dimensions.model)
     .bind(input_tokens)
+    .bind(cached_input_tokens)
     .bind(output_tokens)
     .bind(total_tokens)
     .bind(&now)
@@ -4057,6 +4063,7 @@ fn acp_context_usage(data: &Value) -> qunica_domain::runtime::ContextUsage {
     };
     qunica_domain::runtime::ContextUsage {
         input_tokens: used,
+        cached_input_tokens: None,
         output_tokens: None,
         total_tokens: used,
         context_window_tokens: size,
@@ -4074,6 +4081,7 @@ fn acp_context_usage(data: &Value) -> qunica_domain::runtime::ContextUsage {
 fn acp_ledger_usage(total: i64) -> qunica_domain::runtime::ContextUsage {
     qunica_domain::runtime::ContextUsage {
         input_tokens: Some(total),
+        cached_input_tokens: None,
         output_tokens: None,
         total_tokens: Some(total),
         context_window_tokens: None,
@@ -4117,6 +4125,7 @@ fn estimated_acp_context_usage(
     let total_tokens = input_tokens.saturating_add(output_tokens);
     qunica_domain::runtime::ContextUsage {
         input_tokens: Some(input_tokens),
+        cached_input_tokens: None,
         output_tokens: Some(output_tokens),
         total_tokens: Some(total_tokens),
         context_window_tokens,
@@ -5164,6 +5173,7 @@ async fn account_summarizer_usage(
         dimensions,
         &qunica_domain::runtime::ContextUsage {
             input_tokens: None,
+            cached_input_tokens: None,
             output_tokens: None,
             total_tokens: Some(token_count_i64(delta)),
             context_window_tokens: None,

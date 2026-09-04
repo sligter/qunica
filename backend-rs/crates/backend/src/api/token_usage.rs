@@ -44,6 +44,7 @@ struct UsageRow {
     provider_name: String,
     model: String,
     input_tokens: i64,
+    cached_input_tokens: Option<i64>,
     output_tokens: i64,
     total_tokens: i64,
 }
@@ -51,14 +52,29 @@ struct UsageRow {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UsageTotals {
     input_tokens: i64,
+    cached_input_tokens: i64,
+    cache_hit_rate: Option<f64>,
     output_tokens: i64,
     total_tokens: i64,
     calls: i64,
+    #[serde(skip)]
+    cache_measured_input_tokens: i64,
 }
 
 impl UsageTotals {
     fn add(&mut self, row: &UsageRow) {
-        self.input_tokens = self.input_tokens.saturating_add(row.input_tokens.max(0));
+        let input_tokens = row.input_tokens.max(0);
+        self.input_tokens = self.input_tokens.saturating_add(input_tokens);
+        if let Some(cached_input_tokens) = row.cached_input_tokens {
+            self.cached_input_tokens = self
+                .cached_input_tokens
+                .saturating_add(cached_input_tokens.max(0).min(input_tokens));
+            self.cache_measured_input_tokens = self
+                .cache_measured_input_tokens
+                .saturating_add(input_tokens);
+            self.cache_hit_rate = (self.cache_measured_input_tokens > 0)
+                .then(|| self.cached_input_tokens as f64 / self.cache_measured_input_tokens as f64);
+        }
         self.output_tokens = self.output_tokens.saturating_add(row.output_tokens.max(0));
         self.total_tokens = self.total_tokens.saturating_add(row.total_tokens.max(0));
         self.calls = self.calls.saturating_add(1);
@@ -145,7 +161,8 @@ pub async fn get(
     // groupings into SQL if a user's usage history becomes too large for RAM.
     let rows = sqlx::query_as::<_, UsageRow>(
         "SELECT created_at AS day, group_id, group_name, agent_id, agent_name, \
-                provider_id, provider_name, model, input_tokens, output_tokens, total_tokens \
+                provider_id, provider_name, model, input_tokens, cached_input_tokens, \
+                output_tokens, total_tokens \
          FROM token_usage_records \
          WHERE owner_id = ? \
            AND (? IS NULL OR substr(created_at, 1, 10) >= ?) \
@@ -411,6 +428,7 @@ mod tests {
             provider_name: provider.to_string(),
             model: model.to_string(),
             input_tokens: total - 10,
+            cached_input_tokens: None,
             output_tokens: 10,
             total_tokens: total,
         }
@@ -418,8 +436,10 @@ mod tests {
 
     #[test]
     fn filters_and_groups_usage_once() {
+        let mut cached = row("2026-08-12", "agent-1", "provider-1", "model-a", 100);
+        cached.cached_input_tokens = Some(45);
         let rows = vec![
-            row("2026-08-12", "agent-1", "provider-1", "model-a", 100),
+            cached,
             row("2026-08-13", "agent-1", "provider-1", "model-a", 25),
             row("2026-08-12", "agent-2", "provider-2", "model-b", 50),
         ];
@@ -434,6 +454,8 @@ mod tests {
         let result = response(&filtered, filter_options(&rows));
 
         assert_eq!(result.summary.totals.total_tokens, 125);
+        assert_eq!(result.summary.totals.cached_input_tokens, 45);
+        assert_eq!(result.summary.totals.cache_hit_rate, Some(0.5));
         assert_eq!(result.summary.totals.calls, 2);
         assert_eq!(result.summary.active_agents, 1);
         assert_eq!(result.by_provider[0].id, "provider-1");

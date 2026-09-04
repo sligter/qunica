@@ -24,6 +24,13 @@ export function formatNumber(value: number, language: Language): string {
   return new Intl.NumberFormat(language).format(value)
 }
 
+export function formatPercent(value: number, language: Language): string {
+  return new Intl.NumberFormat(language, {
+    style: 'percent',
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
 export function formatRelativeTime(
   value: DateTimeValue,
   language: Language,

@@ -375,6 +375,7 @@ mod tests {
             .unwrap();
         tx.send(ChatDelta::Usage(qunica_domain::runtime::ContextUsage {
             input_tokens: Some(1_200),
+            cached_input_tokens: None,
             output_tokens: Some(30),
             total_tokens: Some(1_230),
             context_window_tokens: None,
