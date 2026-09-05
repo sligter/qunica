@@ -69,5 +69,5 @@ landing/
 # is the pre-rename name, kept so old workspaces stay ignored.
 .qunica/
 .ag-swarmer/
-MOBILE-CONNECT.md
+.MOBILE-CONNECT.md
 
