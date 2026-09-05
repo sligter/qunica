@@ -41,6 +41,10 @@ describe('ACP runtime version hooks', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
       )
+      // Installation invalidates the active query and awaits this refetch.
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
     vi.stubGlobal('fetch', fetchMock)
     useAuthStore.setState({ token: 'owner-token' })
     const queryClient = new QueryClient({

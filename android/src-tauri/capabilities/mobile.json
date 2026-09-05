@@ -1,0 +1,7 @@
+{
+  "identifier": "mobile",
+  "description": "Bundled Android UI only; no desktop commands or shell permissions",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": ["core:default"]
+}

@@ -12,6 +12,7 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 
 import { apiUrl } from '@/lib/runtime'
+import { abortOnAuthChange, authFetch, expireAuthToken } from '@/lib/authFetch'
 import { useAuthStore } from '@/stores/authStore'
 
 import {
@@ -67,7 +68,7 @@ async function request<T>(
 ): Promise<T | null> {
   let response: Response
   try {
-    response = await fetch(apiUrl(`/api/v2${path}`), {
+    response = await authFetch(apiUrl(`/api/v2${path}`), {
       method: init.method,
       headers: {
         'Content-Type': 'application/json',
@@ -108,8 +109,31 @@ export function createHttpTerminalTransport(): TerminalTransport {
   function openStream(
     sessionId: string,
     onEvent: (event: TerminalEvent) => void,
+    lastEventId?: string,
   ): AbortController {
     const controller = new AbortController()
+    const token = authToken()
+    const cleanupAuth = abortOnAuthChange(controller, token)
+    let recoveryQueued = false
+    const recover = () => {
+      if (controller.signal.aborted || document.hidden || !navigator.onLine || recoveryQueued) return
+      recoveryQueued = true
+      queueMicrotask(() => {
+        if (controller.signal.aborted) return
+        controller.abort()
+        openStream(sessionId, onEvent, lastEventId)
+      })
+    }
+    const cleanup = () => {
+      cleanupAuth()
+      document.removeEventListener('visibilitychange', recover)
+      window.removeEventListener('online', recover)
+      controller.signal.removeEventListener('abort', cleanup)
+      if (streams.get(sessionId) === controller) streams.delete(sessionId)
+    }
+    controller.signal.addEventListener('abort', cleanup, { once: true })
+    document.addEventListener('visibilitychange', recover)
+    window.addEventListener('online', recover)
     // Tracked so `close` can stop the stream before the session is deleted; a
     // pending reconnect would otherwise resurrect a 404 loop.
     streams.set(sessionId, controller)
@@ -118,28 +142,45 @@ export function createHttpTerminalTransport(): TerminalTransport {
       method: 'GET',
       headers: {
         Accept: 'text/event-stream',
-        Authorization: `Bearer ${useAuthStore.getState().token ?? ''}`,
+        Authorization: `Bearer ${token}`,
+        ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
       },
       signal: controller.signal,
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers)
+        headers.delete('last-event-id')
+        if (lastEventId) headers.set('last-event-id', lastEventId)
+        return authFetch(input, { ...init, headers })
+      },
       // The PTY keeps running while the tab is in the background, so the stream
       // has to keep draining or the reconnect replays a backlog.
       openWhenHidden: true,
       onopen: async (response) => {
         if (response.ok) return
+        if (response.status === 401) expireAuthToken(token)
         throw errorFromEnvelope(
           response.status,
           await response.json().catch(() => null),
         )
       },
       onmessage: (message) => {
+        if (controller.signal.aborted) return
         if (!message.data.trim()) return
         let parsed: WireTerminalEvent
         try {
           parsed = JSON.parse(message.data) as WireTerminalEvent
         } catch {
-          return
+          throw new TerminalTransportError('terminal.invalid_event', 'The terminal returned an invalid event.')
+        }
+        const seq = Number(message.id)
+        if (!Number.isSafeInteger(seq) || seq < 1) throw new TerminalTransportError('terminal.invalid_cursor', 'The terminal returned an invalid cursor.')
+        if (seq <= Number(lastEventId ?? 0)) return
+        if (seq > Number(lastEventId ?? 0) + 1) {
+          throw new TerminalTransportError('terminal.output_gap', 'Terminal output exceeded the replay buffer. Reopen the terminal to start a new session.')
         }
         onEvent(wireEventToTerminalEvent(parsed))
+        lastEventId = message.id
+        if (parsed.event === 'exit' || parsed.event === 'error') controller.abort()
       },
       onerror: (cause) => {
         if (controller.signal.aborted) return
@@ -151,15 +192,15 @@ export function createHttpTerminalTransport(): TerminalTransport {
             event: 'error',
             data: { code: cause.code, message: cause.message },
           })
+          controller.abort()
           throw cause
         }
       },
       onclose: () => {
-        // The server ends the stream after the shell exits; the exit frame has
-        // already been delivered, so there is nothing to reconnect for.
-        streams.delete(sessionId)
+        if (controller.signal.aborted) return
+        throw new TypeError('Terminal stream closed before the shell exited')
       },
-    }).catch(() => undefined)
+    }).catch(() => controller.abort())
 
     return controller
   }

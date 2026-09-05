@@ -3,6 +3,7 @@ import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer } from '@/components/chat/Composer'
+import { MobileActionContext } from '@/components/chat/MobileAction'
 import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHeaderActions'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
 import { MessageList } from '@/components/chat/MessageList'
@@ -10,6 +11,9 @@ import { TurnTraceDrawer } from '@/components/chat/TurnTraceDrawer'
 import { WorkspaceEditorStage } from '@/components/chat/WorkspaceEditorStage'
 import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
+import { useMobilePanel } from '@/components/layout/mobilePanels'
+import { useCompactLayout } from '@/hooks/useMediaQuery'
 import {
   type ConversationScope,
   useEnhanceGroupPrompt,
@@ -168,7 +172,7 @@ export function ConversationChatView({
   })
   const sendMessage = stream.send
   const submitHumanInput = useCallback((content: string) => {
-    void sendMessage(content).catch(() => undefined)
+    return sendMessage(content)
   }, [sendMessage])
   const clearWarnings = useMessageStore((state) => state.clearWarnings)
   const activeResumesByMessageId = useMessageStore(
@@ -266,9 +270,20 @@ export function ConversationChatView({
   ])
 
   const traceTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(() =>
+  const compactLayout = useCompactLayout()
+  const [mobileActionTarget, setMobileActionTarget] = useState<HTMLDivElement | null>(null)
+  const [mobileWorkspaceOpen, setMobileWorkspaceOpen] = useMobilePanel('workspace')
+  const [mobileTerminalOpen, setMobileTerminalOpen] = useMobilePanel('terminal')
+  const [desktopWorkspaceOpen, setWorkspaceFilesOpen] = useState(() =>
     capabilities.showWorkspace ? readWorkspaceFilesOpen(conversationId) : false,
   )
+  const workspaceFilesOpen = compactLayout ? mobileWorkspaceOpen : desktopWorkspaceOpen
+  const activeEditorId = useFileNavStore(state => state.editorStages[conversationId]?.activeTabId)
+  const previousEditorId = useRef(activeEditorId)
+  useEffect(() => {
+    if (compactLayout && activeEditorId && activeEditorId !== previousEditorId.current) setMobileWorkspaceOpen(false)
+    previousEditorId.current = activeEditorId
+  }, [compactLayout, activeEditorId, setMobileWorkspaceOpen])
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const workspaceFilesPane = usePersistentPaneWidth({
     storageKey: 'qunica:layout:workspace-files-pane-width',
@@ -312,13 +327,17 @@ export function ConversationChatView({
 
   const setWorkspaceFilesOpenPersisted = useCallback(
     (next: WorkspaceFilesOpenUpdater) => {
+      if (compactLayout) {
+        setMobileWorkspaceOpen(typeof next === 'function' ? next(mobileWorkspaceOpen) : next)
+        return
+      }
       setWorkspaceFilesOpen((current) => {
         const resolved = typeof next === 'function' ? next(current) : next
         storeWorkspaceFilesOpen(conversationId, resolved)
         return resolved
       })
     },
-    [conversationId],
+    [conversationId, compactLayout, mobileWorkspaceOpen, setMobileWorkspaceOpen],
   )
 
   const openTurnTrace = useCallback((turnId: string, trigger: HTMLButtonElement) => {
@@ -326,14 +345,17 @@ export function ConversationChatView({
     setSelectedTurnId(turnId)
   }, [])
 
+  const handledFileRequest = useRef<typeof fileNavRequest>(null)
   useEffect(() => {
-    if (capabilities.showWorkspace && fileNavRequest?.groupId === conversationId) {
+    if (capabilities.showWorkspace && fileNavRequest?.groupId === conversationId && handledFileRequest.current !== fileNavRequest) {
+      handledFileRequest.current = fileNavRequest
       setWorkspaceFilesOpenPersisted(true)
     }
   }, [capabilities.showWorkspace, conversationId, fileNavRequest, setWorkspaceFilesOpenPersisted])
 
   const hint = !agentIsSystem && agents.length === 0 ? t('composer.noAgents') : undefined
   return (
+    <MobileActionContext.Provider value={compactLayout ? mobileActionTarget : null}>
     <div className="flex h-full flex-col">
       <header
         className={cn(
@@ -365,7 +387,12 @@ export function ConversationChatView({
             <Button
               variant={terminal.isDockOpen ? 'secondary' : 'ghost'}
               size="icon"
-              onClick={() => void terminal.toggleDock().catch(() => undefined)}
+              onClick={() => {
+                if (compactLayout) {
+                  setMobileTerminalOpen(!mobileTerminalOpen)
+                  if (!mobileTerminalOpen && (!terminal.isDockOpen || terminal.activeTabs.length === 0)) void terminal.toggleDock().catch(() => undefined)
+                } else void terminal.toggleDock().catch(() => undefined)
+              }}
               aria-label={terminal.isDockOpen ? t('terminal.hide') : t('terminal.show')}
               aria-pressed={terminal.isDockOpen}
             >
@@ -438,6 +465,11 @@ export function ConversationChatView({
                     {stream.retryExhausted
                       ? t('stream.retryExhausted', { max: MAX_RETRY_ATTEMPTS })
                       : t('stream.error', { message: stream.error })}
+                    {stream.retryExhausted ? (
+                      <Button variant="ghost" size="sm" onClick={() => window.dispatchEvent(new Event('qunica:reconnect'))}>
+                        {t('common:mobile.reconnect')}
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -466,6 +498,7 @@ export function ConversationChatView({
                 </div>
               ) : null}
 
+              <div ref={setMobileActionTarget} className="max-h-[40dvh] shrink-0 space-y-2 overflow-y-auto overscroll-contain px-3 empty:hidden" />
               <Composer
                 supportsReasoningEffort={supportsReasoningEffort}
                 key={`${scope}:${conversationId}:${threadId ?? 'no-thread'}:${workspaceId ?? 'no-workspace'}`}
@@ -493,7 +526,7 @@ export function ConversationChatView({
             </div>
           </WorkspaceEditorStage>
         </div>
-        {capabilities.showWorkspace && workspaceFilesOpen ? (
+        {capabilities.showWorkspace && workspaceFilesOpen && !compactLayout ? (
           <>
             <VerticalResizeHandle
               label={t('workspace.resize')}
@@ -516,6 +549,18 @@ export function ConversationChatView({
         ) : null}
       </div>
 
+      {capabilities.showWorkspace && compactLayout ? (
+        <Sheet open={mobileWorkspaceOpen} onOpenChange={setMobileWorkspaceOpen}>
+          <SheetContent className="mobile-sheet w-full" closeLabel={t('workspace.hide')} aria-describedby={undefined}>
+            <SheetTitle className="shrink-0 border-b border-border px-4 py-4 pr-16">{t('workspace.files')} / {t('workspace.git')}</SheetTitle>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <GroupWorkspacePanel scope={scope} groupId={conversationId} threadId={threadId}
+                taskBranch={threadGitBranch} workspaceId={workspaceId} className="w-full border-l-0" />
+            </div>
+          </SheetContent>
+        </Sheet>
+      ) : null}
+
       {capabilities.showTurnTrace ? (
         <TurnTraceDrawer
           groupId={conversationId}
@@ -529,5 +574,6 @@ export function ConversationChatView({
         />
       ) : null}
     </div>
+    </MobileActionContext.Provider>
   )
 }

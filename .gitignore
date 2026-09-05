@@ -51,6 +51,14 @@ workspaces/
 uploads/
 data/
 frontend/src-tauri/gen/
+frontend/dist-android/
+android/src-tauri/gen/android/.gradle/
+android/src-tauri/gen/android/.kotlin/
+android/src-tauri/gen/android/local.properties
+android/src-tauri/gen/android/app/src/main/jniLibs/
+android/src-tauri/gen/android/app/src/main/assets/
+android/src-tauri/gen/schemas/
+android/artifacts/
 landing/
 
 # Local agent tooling and scratch state

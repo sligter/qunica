@@ -9519,6 +9519,49 @@ async fn a_destructive_command_pauses_for_approval_instead_of_running_or_being_r
 }
 
 #[tokio::test]
+async fn mobile_read_only_replay_checks_owner_and_cursor_without_creating_messages() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "mobile-replay@example.com").await;
+    let other = register_and_login(&app, "mobile-other@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let thread = seed_thread(&state, &group, "active").await;
+    let stream = uuid::Uuid::new_v4();
+    for (seq, kind) in [(0, "token"), (1, "done")] {
+        sqlx::query("INSERT INTO stream_events (id, stream_id, thread_id, seq, event_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, '{}', '2024-01-01T00:00:00Z')")
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(stream.to_string()).bind(&thread).bind(seq)
+            .bind(format!("{stream}:{seq}")).bind(kind)
+            .execute(state.db.pool()).await.unwrap();
+    }
+    let url = format!("/api/v2/groups/{group}/streams/{stream}");
+    for (credential, cursor, status, count) in [
+        (token.as_str(), None, StatusCode::OK, 2),
+        (token.as_str(), Some(format!("{stream}:0")), StatusCode::OK, 1),
+        (other.as_str(), None, StatusCode::FORBIDDEN, 0),
+        (token.as_str(), Some(format!("{}:0", uuid::Uuid::new_v4())), StatusCode::BAD_REQUEST, 0),
+    ] {
+        let mut request = Request::builder().uri(&url)
+            .header("authorization", format!("Bearer {credential}"));
+        if let Some(cursor) = cursor { request = request.header("last-event-id", cursor); }
+        let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), status);
+        if status == StatusCode::OK {
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(parse_sse_frames(std::str::from_utf8(&body).unwrap()).len(), count);
+        }
+    }
+    let response = app.clone().oneshot(Request::builder()
+        .uri(format!("/api/v2/groups/{group}/streams/{}", uuid::Uuid::new_v4()))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
+        .bind(group).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!(messages, 0);
+}
+
+#[tokio::test]
 async fn approving_replays_the_exact_paused_call() {
     let (app, state) = router_with_state_for_tests().await;
     let (root, token, thread_id, _) = pause_on_shell_approval(

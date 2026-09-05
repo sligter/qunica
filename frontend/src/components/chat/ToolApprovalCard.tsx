@@ -1,11 +1,12 @@
 import { AlertTriangle, Check, ShieldCheck, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import type { StreamApprovalRequest } from '@/stores/messageStore'
 import { cn } from '@/lib/utils'
+import { MobileAction } from './MobileAction'
 
 export interface ApprovalAnswer {
   tool_call_id: string
@@ -20,6 +21,7 @@ interface ToolApprovalCardProps {
   resolved?: 'approved' | 'declined'
   onAnswer?: (answer: ApprovalAnswer) => void
   className?: string
+  error?: string | null
 }
 
 /**
@@ -36,10 +38,12 @@ export function ToolApprovalCard({
   resolved,
   onAnswer,
   className,
+  error,
 }: ToolApprovalCardProps) {
   const { t } = useTranslation('chat')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  useEffect(() => { if (error) setBusy(false) }, [error])
   const answered = Boolean(resolved)
   const disabled = answered || busy || !onAnswer
 
@@ -55,6 +59,7 @@ export function ToolApprovalCard({
   }
 
   return (
+    <MobileAction active={!answered}>
     <div
       className={cn(
         'min-w-0 rounded-md border p-3 text-foreground',
@@ -133,10 +138,12 @@ export function ToolApprovalCard({
                   {t('approval.decline')}
                 </Button>
               </div>
+              {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
             </>
           )}
         </div>
       </div>
     </div>
+    </MobileAction>
   )
 }

@@ -34,6 +34,7 @@ function isEditable(target: EventTarget | null): boolean {
 export function useSuppressNativeContextMenu(): void {
   useEffect(() => {
     const suppress = (event: MouseEvent) => {
+      if (window.matchMedia && !window.matchMedia('(pointer: fine)').matches) return
       if (isEditable(event.target)) return
       event.preventDefault()
     }

@@ -89,6 +89,7 @@ interface Registration {
 
 export interface TerminalRuntimeProviderProps extends PropsWithChildren {
   transport?: TerminalTransport
+  restoreOnRegister?: boolean
   /**
    * The account's shell preference, applied to sessions started from now on.
    * A running tab keeps the shell it was started with until it is restarted.
@@ -198,7 +199,10 @@ export function TerminalRuntimeProvider({
   children,
   transport: injectedTransport,
   shell,
+  restoreOnRegister = true,
 }: TerminalRuntimeProviderProps) {
+  const restoreOnRegisterRef = useRef(restoreOnRegister)
+  restoreOnRegisterRef.current = restoreOnRegister
   const transportRef = useRef<TerminalTransport | null>(null)
   if (transportRef.current === null) {
     // The desktop shell drives a native PTY; the web build gets the same
@@ -554,7 +558,7 @@ export function TerminalRuntimeProvider({
       for (const entry of runtimeRef.current.values()) {
         if (entry.conversationId === target.conversationId) entry.fallbackCwd = target.cwd
       }
-      ensureConversationRestored(target.conversationId, target.cwd)
+      if (restoreOnRegisterRef.current) ensureConversationRestored(target.conversationId, target.cwd)
     }
 
     let registered = true
@@ -584,10 +588,11 @@ export function TerminalRuntimeProvider({
     if (target === null) return
     if (closingConversationScopesRef.current.has(target.conversationId)) return
     const current = metadataRef.current.conversations[target.conversationId]
-    const opening = !(current?.open ?? false)
+    const opening = !restoredConversationsRef.current.has(target.conversationId) || !(current?.open ?? false)
     updateConversationMetadata(target.conversationId, (conversation) => {
       conversation.open = opening
     })
+    if (opening && target.availability === 'ready') ensureConversationRestored(target.conversationId, target.cwd)
     if (
       opening &&
       target.availability === 'ready' &&
@@ -595,7 +600,7 @@ export function TerminalRuntimeProvider({
     ) {
       await createTabFor(target.conversationId, target.cwd)
     }
-  }, [createTabFor, updateConversationMetadata])
+  }, [createTabFor, ensureConversationRestored, updateConversationMetadata])
 
   const selectTab = useCallback((tabId: string): void => {
     if (isClosingAllRef.current) return

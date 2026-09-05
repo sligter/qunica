@@ -274,20 +274,40 @@ export function useResumeStream(
       threadId: queryThreadId,
       scope,
     })
-    if (approval) {
-      resolveStreamApproval(
-        stateId,
-        approval.tool_call_id,
-        approval.approved ? 'approved' : 'declined',
-      )
-    }
-
     const ctrl = openApiV2SseStream({
       url: `/api/v2/threads/${threadId}/resume`,
       body: approval ? { approval } : {},
       token,
+      replayUrl: () => streamIdRef.current
+        ? `/api/v2/${scope}/${groupId}/streams/${streamIdRef.current}`
+        : null,
       handlers: {
-        onOpen: () => setRetry(null),
+        onOpen: () => {
+          setRetry(null); setRetryExhausted(false); setError(null)
+          if (approval) resolveStreamApproval(
+            stateId, approval.tool_call_id, approval.approved ? 'approved' : 'declined',
+          )
+        },
+        onRecover: async signal => {
+          const streamId = streamIdRef.current
+          const turnId = streamId ? useMessageStore.getState().streamRunsByGroup[stateId]?.[streamId]?.turn_id : null
+          if (!streamId) {
+            await qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId, queryThreadId) })
+            return true
+          }
+          if (!turnId) return true
+          const trace = parseGroupTurnTrace(await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}`, { token, signal }))
+          if (signal.aborted || useAuthStore.getState().token !== token) return false
+          if (['pending', 'running', 'waiting_for_user'].includes(trace.turn.status)) return true
+          reconcileSchedulerTurn(stateId, trace)
+          await qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId, queryThreadId) })
+          return false
+        },
+        onDisconnect: err => {
+          setRetry(null)
+          setRetryExhausted(true)
+          setError(err instanceof Error ? err.message : String(err))
+        },
         onEvent: (event) => {
           setRetry(null)
           const streamId = event.stream_id
@@ -461,6 +481,7 @@ export function useResumeStream(
     markStreamRunDone,
     markStreamRunWaitingForUser,
     qc,
+    reconcileSchedulerTurn,
     queryThreadId,
     replaceMessage,
     resolveStreamApproval,

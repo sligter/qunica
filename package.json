@@ -4,6 +4,8 @@
   "version": "0.1.1",
   "description": "Qunica 群式多 Agent 协作工作台",
   "scripts": {
+    "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android.ps1 build",
+    "android:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android.ps1 open",
     "dev": "pnpm --filter @qunica/frontend dev",
     "build": "pnpm --filter @qunica/frontend build",
     "desktop:dev": "pnpm desktop:icons && pnpm --filter @qunica/frontend tauri dev",

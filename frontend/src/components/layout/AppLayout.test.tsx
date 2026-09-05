@@ -95,6 +95,26 @@ async function renderAppLayout(
 }
 
 describe('AppLayout', () => {
+  it('uses a mobile drawer, preserves native long press, and closes the drawer on Back', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
+      media, matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    })))
+    try {
+      const transport = createFakeTransport()
+      const { router } = await renderAppLayout('en-US', transport)
+      expect(screen.queryByTestId('terminal-dock-host')).not.toBeInTheDocument()
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      fireEvent(screen.getByText('Full agent reply'), event)
+      expect(event.defaultPrevented).toBe(false)
+      fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
+      expect(await screen.findByRole('dialog', { name: 'Open navigation' })).toBeInTheDocument()
+      await act(async () => { await router.navigate(-1) })
+      expect(screen.queryByRole('dialog', { name: 'Open navigation' })).not.toBeInTheDocument()
+      expect(transport.create).not.toHaveBeenCalled()
+      expect(transport.closeAll).not.toHaveBeenCalled()
+    } finally { vi.unstubAllGlobals() }
+  })
+
   afterEach(() => {
     cleanup()
     useAuthStore.setState({ token: null, user: null, hydrated: false })

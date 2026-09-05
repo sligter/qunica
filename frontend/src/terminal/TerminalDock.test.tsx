@@ -65,6 +65,7 @@ vi.mock('@/terminal/TerminalRuntimeProvider', () => ({
 }))
 
 import { FULL_ACCESS_WARNING_KEY, TerminalDock } from '@/terminal/TerminalDock'
+import { MobilePanelContext } from '@/components/layout/mobilePanels'
 
 function resetRuntime(): void {
   runtime = {
@@ -80,6 +81,20 @@ function resetRuntime(): void {
 }
 
 describe('TerminalDock', () => {
+  it('keeps panes mounted when leaving mobile fullscreen and sends touch keys once', async () => {
+    const setPanel = vi.fn()
+    const { rerender } = render(<MobilePanelContext.Provider value={{ panel: 'terminal', setPanel }}><TerminalDock mobile /></MobilePanelContext.Provider>)
+    const pane = await screen.findByTestId('mock-pane-tab-a')
+    fireEvent.click(screen.getByRole('button', { name: 'Esc' }))
+    expect(actions.write).toHaveBeenCalledExactlyOnceWith('tab-a', '\x1b')
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse terminal' }))
+    expect(setPanel).toHaveBeenCalledWith(null)
+    rerender(<MobilePanelContext.Provider value={{ panel: null, setPanel }}><TerminalDock mobile /></MobilePanelContext.Provider>)
+    expect(screen.getByTestId('mock-pane-tab-a')).toBe(pane)
+    expect(actions.closeTab).not.toHaveBeenCalled()
+    expect(actions.closeAll).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     localStorage.clear()
     resetRuntime()

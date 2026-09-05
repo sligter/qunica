@@ -1,0 +1,12 @@
+# Run Caddy on the same host as the loopback-bound Docker Compose service.
+{$QUNICA_DOMAIN} {
+    header {
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+        Cache-Control no-store
+    }
+    reverse_proxy 127.0.0.1:18765 {
+        flush_interval -1
+    }
+}

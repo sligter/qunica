@@ -6,11 +6,13 @@ import '@/i18n'
 import App from './App.tsx'
 import { queryClient } from './lib/queryClient'
 import './index.css'
+import { AndroidShell } from './components/layout/AndroidShell'
+import { isAndroidRuntime } from './lib/androidSession'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      {isAndroidRuntime() ? <AndroidShell><App /></AndroidShell> : <App />}
     </QueryClientProvider>
   </StrictMode>,
 )

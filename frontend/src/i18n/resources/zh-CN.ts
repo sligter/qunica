@@ -6,6 +6,13 @@ type TranslationShape<T> = {
 
 export const zhCN: TranslationShape<typeof enUS> = {
   common: {
+    mobile: {
+      offline: '当前已离线，恢复连接后可发送消息或处理审批。',
+      updateReady: '更新已下载，关闭所有 Qunica 标签页后重新打开以应用。',
+      navigation: '打开导航',
+      reconnect: '重新连接',
+      terminalKeys: '终端辅助键盘',
+    },
     textMenu: {
       label: '文本编辑菜单',
       cut: '剪切',

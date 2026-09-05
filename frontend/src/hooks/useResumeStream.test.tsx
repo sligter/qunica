@@ -138,6 +138,30 @@ describe('useResumeStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
+  it('ignores a completed recovery snapshot after the approval subscription was cancelled', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useResumeStream('group-1', 'thread-1', 'message-1'), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => hook.result.current.resume())
+    const stream = mocks.streams[0]!
+    emit(stream.handlers, { stream_id: 'stream-1', seq: 1, event_id: 'event-1',
+      kind: 'turn_started', payload: { turn_id: 'turn-1', budget } })
+    const before = useMessageStore.getState().streamRunsByGroup['thread-1']['stream-1']
+    const trace = traceResponse('completed', null)
+    let resolve!: (value: typeof trace) => void
+    mocks.fetchJson.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const ctrl = new AbortController()
+    const recovery = stream.handlers.onRecover!(ctrl.signal)
+    expect(mocks.fetchJson).toHaveBeenLastCalledWith('/groups/group-1/turns/turn-1', {
+      token: 'token-1', signal: ctrl.signal,
+    })
+    ctrl.abort()
+    await act(async () => { resolve(trace); expect(await recovery).toBe(false) })
+    expect(useMessageStore.getState().streamRunsByGroup['thread-1']['stream-1']).toEqual(before)
+    expect(mocks.streams).toHaveLength(1)
+  })
+
   it('normalizes scheduler events with live-send parity and refreshes live trace data', () => {
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')

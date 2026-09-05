@@ -206,6 +206,7 @@ export function MessageItemView({
           <div className="min-w-0 w-full max-w-full rounded-lg">
             <HumanInputRequestForm
               request={inputRequest}
+              pin={isInterrupted}
               targetDisplayName={senderName}
               onSubmitResponse={onSubmitHumanInput}
             />

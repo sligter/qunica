@@ -57,6 +57,9 @@ vi.mock('@/hooks/useGroups', () => ({
 vi.mock('@/hooks/useDeleteGroup', () => ({
   useDeleteGroup: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
+vi.mock('@/hooks/useGroupAgents', () => ({
+  useGroupAgents: () => ({ data: [], isLoading: false }),
+}))
 vi.mock('@/hooks/useGroupMessages', () => ({
   useClearGroupMessages: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))

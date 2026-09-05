@@ -185,6 +185,43 @@ describe('useSendMessageStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
+  it('ignores a completed recovery snapshot after its subscription was cancelled', async () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1'), { wrapper: wrapper(queryClient) })
+    act(() => ignoreSend(hook.result.current.send('hello')))
+    const stream = mocks.streams[0]!
+    emitActiveSchedulerStream(stream.handlers, 'stream-1', 'message-1', 'agent-1')
+    const before = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    const trace = traceResponse('completed', null)
+    trace.turn.id = 'stream-1-turn'
+    let resolve!: (value: typeof trace) => void
+    mocks.fetchJson.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const ctrl = new AbortController()
+    const recovery = stream.handlers.onRecover!(ctrl.signal)
+    expect(mocks.fetchJson).toHaveBeenLastCalledWith('/groups/group-1/turns/stream-1-turn', {
+      token: 'token-1', signal: ctrl.signal,
+    })
+    ctrl.abort()
+    await act(async () => { resolve(trace); expect(await recovery).toBe(false) })
+    expect(useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']).toEqual(before)
+    expect(mocks.streams).toHaveLength(1)
+  })
+
+  it('refreshes messages when disconnected before the first turn event without sending again', async () => {
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const hook = renderHook(() => useSendMessageStream('group-1'), { wrapper: wrapper(queryClient) })
+    act(() => ignoreSend(hook.result.current.send('hello')))
+    const stream = mocks.streams[0]!
+    await act(async () => {
+      expect(await stream.handlers.onRecover!(new AbortController().signal)).toBe(true)
+    })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['groups', 'group-1', 'messages'] })
+    expect(mocks.streams).toHaveLength(1)
+    expect(hook.result.current.activeStreamCount).toBe(1)
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+  })
+
   it('sends its stable local request id and selected task to the backend', () => {
     const queryClient = new QueryClient()
     const hook = renderHook(

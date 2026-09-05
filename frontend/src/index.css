@@ -208,6 +208,13 @@
     height: 100%;
   }
 
+  #root {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
   body {
     overflow: hidden;
     font-family:
@@ -224,6 +231,25 @@
 }
 
 @layer components {
+  @media (width < 1024px) {
+    button, [role="button"], [role="tab"], nav a {
+      min-height: 44px;
+      min-width: 44px;
+    }
+    input, textarea, select {
+      font-size: max(1rem, 16px);
+    }
+    .mobile-sheet {
+      box-sizing: border-box;
+      height: 100dvh;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+    .mobile-sheet > button:last-child {
+      top: max(0.5rem, env(safe-area-inset-top));
+      right: max(0.5rem, env(safe-area-inset-right));
+    }
+  }
+
   .workspace-code-input {
     color: transparent;
     caret-color: var(--color-foreground);

@@ -35,6 +35,9 @@ import {
 } from '@/components/assistant/useAssistantDockPlacement'
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { useCompactLayout } from '@/hooks/useMediaQuery'
+import { useMobilePanel } from '@/components/layout/mobilePanels'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useProvider } from '@/hooks/useProviders'
 import { cn } from '@/lib/utils'
@@ -84,6 +87,8 @@ export function AssistantDock() {
   // application window is exactly what the utility is for there. The browser
   // build keeps the in-page panel below.
   const desktop = isDesktopRuntime()
+  const compactLayout = useCompactLayout()
+  const [mobileOpen, setMobileOpen] = useMobilePanel('assistant')
   const { placement, setPlacement, snapToNearestCorner, toggleCollapsed } =
     useAssistantDockPlacement()
   const launcherRef = useRef<HTMLButtonElement>(null)
@@ -101,7 +106,7 @@ export function AssistantDock() {
   const supportsReasoningEffort = Boolean(
     provider.data?.models?.find((model) => model.id === activeModel)?.supports_reasoning_effort,
   )
-  const expanded = !placement.collapsed
+  const expanded = !compactLayout && !placement.collapsed
   const ready = assistant.data?.provider_configured === true
   const status = showSettings
     ? t('status.settings')
@@ -224,6 +229,37 @@ export function AssistantDock() {
   // would be both useless and unauthenticated.
   if (!token) return null
 
+  const content = showSettings ? (
+    <AssistantSettings onClose={() => setShowSettings(false)} />
+  ) : assistant.data?.provider_configured && assistant.data.chat_id ? (
+    <ConversationChatView conversationId={assistant.data.chat_id} workspaceId={null}
+      supportsReasoningEffort={supportsReasoningEffort} scope="direct-chats" agents={[]}
+      agentIsSystem compact title={t('chat.title')}
+      capabilities={{ showAnnouncement: false, showManage: false, showTurnTrace: false,
+        showWorkspace: false, showTerminal: false, allowMentions: false }} />
+  ) : <AssistantSetupChecklist loading={assistant.isLoading} error={Boolean(assistant.error)} />
+
+  if (compactLayout && !desktop) {
+    return (
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetTrigger asChild>
+          <Button variant="ghost" size="icon" className="fixed right-2 top-[max(0.25rem,env(safe-area-inset-top))] z-30" aria-label={t('title')}>
+            <Sparkles className="h-5 w-5 text-primary" aria-hidden />
+          </Button>
+        </SheetTrigger>
+        <SheetContent className="mobile-sheet top-auto w-full rounded-t-2xl border-t" style={{ height: '92dvh' }} closeLabel={t('collapse')} aria-describedby={undefined}>
+          <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 pr-16">
+            <SheetTitle className="flex-1">{t('title')}</SheetTitle>
+            <Button variant="ghost" size="icon" aria-label={t('settings.title')} aria-pressed={showSettings} onClick={() => setShowSettings(open => !open)}>
+              <Settings2 className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">{content}</div>
+        </SheetContent>
+      </Sheet>
+    )
+  }
+
   if (desktop) {
     return createPortal(
       <button
@@ -341,36 +377,7 @@ export function AssistantDock() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden bg-background">
-        {showSettings ? (
-          <AssistantSettings onClose={() => setShowSettings(false)} />
-        ) : assistant.data?.provider_configured && assistant.data.chat_id ? (
-          <ConversationChatView
-            conversationId={assistant.data.chat_id}
-            workspaceId={null}
-            supportsReasoningEffort={supportsReasoningEffort}
-            scope="direct-chats"
-            agents={[]}
-            agentIsSystem
-            compact
-            title={t('chat.title')}
-            capabilities={{
-              showAnnouncement: false,
-              showManage: false,
-              showTurnTrace: false,
-              // The Assistant's only workspace is the scratch temp directory it
-              // manages itself. A file browser over disposable files is not
-              // worth the room in a panel this small.
-              showWorkspace: false,
-              showTerminal: false,
-              allowMentions: false,
-            }}
-          />
-        ) : (
-          <AssistantSetupChecklist
-            loading={assistant.isLoading}
-            error={Boolean(assistant.error)}
-          />
-        )}
+        {content}
       </div>
 
       {/* Edges and corners, each with a hit area wider than the visible border

@@ -58,7 +58,7 @@ export function InterruptedMessageActions({
   const liveCardExists = useMessageStore((s) =>
     approval ? s.hasStreamApprovalNotice(approval.tool_call_id) : false,
   )
-  if (isStreaming && !retry) return null
+  if (isStreaming && !retry && !retryExhausted) return null
 
   // A turn stopped at a gate is not continuable — pressing continue only invites
   // the model to propose the command again, and the user would answer the same
@@ -66,12 +66,12 @@ export function InterruptedMessageActions({
   // button rather than sitting beside it.
   const showApproval = Boolean(approval) && !liveCardExists
   const showContinue = !isStreaming && !showApproval
-  const showStatus = Boolean(retry) || (!isStreaming && Boolean(error))
+  const showStatus = Boolean(retry) || Boolean(error)
 
   return (
     <div className="flex min-w-0 w-full max-w-full flex-col gap-2 text-xs">
       {showApproval && approval ? (
-        <ToolApprovalCard request={approval} onAnswer={isStreaming ? undefined : resume} />
+        <ToolApprovalCard request={approval} onAnswer={isStreaming ? undefined : resume} error={error} />
       ) : null}
       {showContinue || showStatus ? (
         <div className="flex items-center gap-2">
@@ -89,7 +89,12 @@ export function InterruptedMessageActions({
               {t('stream.reconnecting', { attempt: retry.attempt, max: MAX_RETRY_ATTEMPTS })}
             </span>
           ) : null}
-          {!isStreaming && error ? (
+          {retryExhausted ? (
+            <Button size="sm" variant="outline" onClick={() => window.dispatchEvent(new Event('qunica:reconnect'))}>
+              {t('common:mobile.reconnect')}
+            </Button>
+          ) : null}
+          {error ? (
             <span className="text-destructive">
               {retryExhausted
                 ? t('stream.retryExhausted', { max: MAX_RETRY_ATTEMPTS })

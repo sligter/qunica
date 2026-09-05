@@ -2,6 +2,7 @@ import path from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { pwaAssets } from './pwa'
 
 const reactPackages = new Set(['react', 'react-dom', 'react-router', 'react-router-dom', 'scheduler'])
 const statePackages = new Set(['@tanstack/react-query', 'zustand'])
@@ -45,7 +46,7 @@ function manualChunks(id: string): string | undefined {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), pwaAssets()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

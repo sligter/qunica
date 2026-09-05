@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 
 import { ToolApprovalCard } from '@/components/chat/ToolApprovalCard'
+import { Button } from '@/components/ui/button'
 import { useResumeStream } from '@/hooks/useResumeStream'
 import { useMessageStore, type StreamApprovalRequest } from '@/stores/messageStore'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
@@ -41,15 +42,21 @@ export function ToolApprovalPrompt({
     }
     return undefined
   })
-  const { resume, isStreaming, error } = useResumeStream(groupId, stateId, messageId, scope)
+  const { resume, isStreaming, error, retryExhausted } = useResumeStream(groupId, stateId, messageId, scope)
 
   return (
     <div className="min-w-0">
       <ToolApprovalCard
         request={request}
         resolved={resolved}
+        error={error}
         onAnswer={messageId && !isStreaming ? resume : undefined}
       />
+      {retryExhausted ? (
+        <Button size="sm" variant="outline" onClick={() => window.dispatchEvent(new Event('qunica:reconnect'))}>
+          {t('common:mobile.reconnect')}
+        </Button>
+      ) : null}
       {error ? (
         <div className="mt-1 text-xs text-destructive">
           {t('messages.resumeFailed', { message: error })}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { AlertCircle, ArrowRight, Eye, EyeOff, Loader2, LockKeyhole, Mail, UserRound } from 'lucide-react'
 import { useForm } from 'react-hook-form'
@@ -24,6 +24,8 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [showPassword, setShowPassword] = useState(false)
   const isLogin = mode === 'login'
+  const requestRef = useRef<AbortController | null>(null)
+  useEffect(() => () => requestRef.current?.abort(), [])
 
   const loginSchema = z.object({
     email: z.string().trim().email(t('validation.validEmail')),
@@ -40,22 +42,32 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
   })
 
   const onSubmit = form.handleSubmit(async (values) => {
+    requestRef.current?.abort()
+    const request = new AbortController()
+    requestRef.current = request
     setSubmitError(null)
     try {
       if (!isLogin) {
         await fetchJson<UserRead>('/auth/register', {
           method: 'POST',
+          signal: request.signal,
           body: { email: values.email, password: values.password, name: values.name ?? '' },
         })
       }
       const token = await fetchJson<Token>('/auth/login', {
         method: 'POST',
+        signal: request.signal,
         body: { email: values.email, password: values.password },
       })
-      setToken(token.access_token)
-      setUser(await fetchJson<UserRead>('/auth/me', { token: token.access_token }))
+      if (request.signal.aborted) return
+      await setToken(token.access_token)
+      if (request.signal.aborted || useAuthStore.getState().token !== token.access_token) return
+      const user = await fetchJson<UserRead>('/auth/me', { token: token.access_token, signal: request.signal })
+      if (request.signal.aborted || useAuthStore.getState().token !== token.access_token) return
+      setUser(user)
       onSuccess()
     } catch (err) {
+      if (request.signal.aborted) return
       if (err instanceof ApiError) {
         if (isLogin && (err.status === 401 || err.status === 403)) {
           setSubmitError(t('errors.invalidCredentials'))

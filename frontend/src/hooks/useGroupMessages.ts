@@ -45,6 +45,13 @@ export const conversationStateKey = (
 export const conversationApiPath = (scope: ConversationScope, id: string | undefined) =>
   `/${scope}/${id}`
 
+function hasLocalStream(stateId: string | undefined): boolean {
+  if (!stateId) return false
+  const state = useMessageStore.getState()
+  return Boolean(state.activeSendsByGroup[stateId]) || Object.values(state.activeResumesByMessageId)
+    .some(resume => resume.state_id === stateId)
+}
+
 export const conversationMessagesQueryOptions = (
   scope: ConversationScope,
   conversationId: string | undefined,
@@ -68,6 +75,16 @@ export const conversationMessagesQueryOptions = (
     )
   },
   enabled: token !== null && conversationId !== undefined,
+  // A reloaded phone has no local SSE owner. Refresh its server snapshot without
+  // executing another send/resume. Live streams own their incremental state.
+  refetchOnWindowFocus: () => !hasLocalStream(conversationStateKey(conversationId, threadId)),
+  refetchOnReconnect: () => !hasLocalStream(conversationStateKey(conversationId, threadId)),
+  refetchInterval: query => {
+    if (hasLocalStream(conversationStateKey(conversationId, threadId))) return false
+    return query.state.data?.pages.some(page => page.some(message =>
+      message.turn_summary && ['pending', 'running'].includes(message.turn_summary.status),
+    )) ? 2_000 : false
+  },
   initialPageParam: INITIAL_PAGE_PARAM,
   getNextPageParam: (lastPage) =>
     lastPage.length === MESSAGE_PAGE_SIZE ? lastPage[0]?.id : undefined,

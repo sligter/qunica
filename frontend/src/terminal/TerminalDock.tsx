@@ -28,6 +28,8 @@ import {
   type TerminalRuntimeTab,
 } from '@/terminal/TerminalRuntimeProvider'
 import { usePersistentPaneHeight } from '@/terminal/usePersistentPaneHeight'
+import { useMobilePanel } from '@/components/layout/mobilePanels'
+import { controlInput } from './controlInput'
 
 export const FULL_ACCESS_WARNING_KEY = 'qunica:terminal-full-access-warning:v1'
 
@@ -91,10 +93,43 @@ function rememberWarningDismissed(): void {
   }
 }
 
-export function TerminalDock() {
+export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
   const { t } = useTranslation('chat')
   const runtime = useTerminalRuntime()
   const hostRef = useRef<HTMLElement>(null)
+  const [mobileOpen, setMobileOpen] = useMobilePanel('terminal')
+  const [controlArmed, setControlArmed] = useState(false)
+  const controlRef = useRef(false)
+  const transformInput = useCallback((data: string) => {
+    if (!controlRef.current) return data
+    controlRef.current = false
+    setControlArmed(false)
+    return controlInput(data)
+  }, [])
+  useEffect(() => {
+    if (!mobile || !mobileOpen) return
+    const host = hostRef.current
+    const previous = document.activeElement
+    host?.focus()
+    const keydown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && event.target === host) setMobileOpen(false)
+      if (event.key !== 'Tab' || !host) return
+      const items = [...host.querySelectorAll<HTMLElement>('button:not(:disabled), input, textarea, [tabindex="0"]')]
+        .filter(item => !item.closest('[hidden]'))
+      const first = items[0]
+      const last = items.at(-1)
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === host)) {
+        event.preventDefault(); last?.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first?.focus()
+      }
+    }
+    host?.addEventListener('keydown', keydown)
+    return () => {
+      host?.removeEventListener('keydown', keydown)
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus()
+    }
+  }, [mobile, mobileOpen, setMobileOpen])
   const [availableHeight, setAvailableHeight] = useState(() => (
     typeof window === 'undefined' ? 800 : window.innerHeight
   ))
@@ -123,7 +158,7 @@ export function TerminalDock() {
   })
 
   const activeTarget = runtime.activeConversation
-  const chromeVisible = activeTarget !== null && runtime.isDockOpen
+  const chromeVisible = activeTarget !== null && (mobile ? mobileOpen : runtime.isDockOpen)
   const ready = activeTarget?.availability === 'ready'
   const runtimeChromeVisible = chromeVisible && ready
   const displayedHeight = runtime.isMaximized ? availableHeight : paneHeight.height
@@ -180,12 +215,19 @@ export function TerminalDock() {
     }
   })()
 
+  if (mobile && !mobileOpen && runtime.allTabs.length === 0) return null
+
   return (
     <section
       ref={hostRef}
-      data-testid="terminal-dock-host"
-      className="terminal-dock relative flex shrink-0 flex-col overflow-hidden border-t border-border bg-[var(--terminal-background)] text-[var(--terminal-foreground)]"
-      style={{ height: chromeVisible ? displayedHeight : 0 }}
+      data-testid={mobile ? 'terminal-fullscreen-host' : 'terminal-dock-host'}
+      role={mobile ? 'dialog' : undefined}
+      aria-modal={mobile && chromeVisible || undefined}
+      aria-label={t('terminal.show')}
+      tabIndex={mobile ? -1 : undefined}
+      inert={!chromeVisible || undefined}
+      className={cn('terminal-dock flex shrink-0 flex-col overflow-hidden border-t border-border bg-[var(--terminal-background)] text-[var(--terminal-foreground)]', mobile ? 'mobile-sheet fixed inset-0 z-40' : 'relative')}
+      style={{ height: chromeVisible ? mobile ? '100dvh' : displayedHeight : 0, display: mobile && !chromeVisible ? 'none' : undefined }}
       aria-hidden={!chromeVisible}
     >
       {chromeVisible ? (
@@ -198,12 +240,12 @@ export function TerminalDock() {
             aria-valuemax={separatorMax}
             aria-valuenow={separatorNow}
             tabIndex={0}
-            className="terminal-resize-handle absolute inset-x-0 top-0 z-10 h-3 cursor-row-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className={cn('terminal-resize-handle absolute inset-x-0 top-0 z-10 h-3 cursor-row-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', mobile && 'hidden')}
             onDoubleClick={paneHeight.reset}
             {...paneHeight.separatorProps}
           />
 
-          <div className="flex h-8 min-h-8 items-center gap-1 border-b border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-1.5">
+          <div className={cn('flex shrink-0 items-center gap-1 border-b border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-1.5', mobile ? 'min-h-12' : 'h-8 min-h-8')}>
             {ready ? (
               <div className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto" role="tablist">
                 {runtime.activeTabs.map((tab) => {
@@ -289,18 +331,18 @@ export function TerminalDock() {
                   />
                 </>
               ) : null}
-              <IconAction
+              {!mobile ? <IconAction
                 label={runtime.isMaximized
                   ? t('terminal.restore')
                   : t('terminal.maximize')}
                 icon={runtime.isMaximized ? Minimize2 : Maximize2}
                 active={runtime.isMaximized}
                 onClick={runtime.toggleMaximized}
-              />
+              /> : null}
               <IconAction
                 label={t('terminal.collapse')}
                 icon={ChevronDown}
-                onClick={() => void runtime.toggleDock().catch(() => undefined)}
+                onClick={() => mobile ? setMobileOpen(false) : void runtime.toggleDock().catch(() => undefined)}
               />
             </div>
           </div>
@@ -331,7 +373,7 @@ export function TerminalDock() {
                 aria-hidden={!paneVisible}
                 className="absolute inset-0 p-2"
               >
-                <TerminalPane tab={tab} />
+                <TerminalPane tab={tab} transformInput={mobile ? transformInput : undefined} />
               </div>
             )
           })}
@@ -389,6 +431,22 @@ export function TerminalDock() {
           </div>
         ) : null}
       </div>
+      {mobile && chromeVisible ? (
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-t border-[var(--terminal-border)] p-2" role="toolbar" aria-label={t('common:mobile.terminalKeys')}>
+          <Button variant={controlArmed ? 'secondary' : 'ghost'} aria-pressed={controlArmed}
+            onPointerDown={event => event.preventDefault()} onClick={() => { controlRef.current = !controlRef.current; setControlArmed(controlRef.current) }}>Ctrl</Button>
+          {([['Esc', '\x1b'], ['Tab', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']] as const).map(([label, data]) => (
+            <Button key={label} variant="ghost" disabled={activeTab?.status !== 'running'}
+              onPointerDown={event => event.preventDefault()} onClick={() => {
+                if (!activeTab) return
+                void runtime.write(activeTab.tabId, transformInput(data)).catch(() => undefined)
+                hostRef.current?.querySelector<HTMLElement>('[data-terminal-tab-id="' + activeTab.tabId + '"] textarea')?.focus()
+              }}>{label}</Button>
+          ))}
+        </div>
+      ) : null}
     </section>
   )
 }
+
+export { TerminalSurface as TerminalDock }

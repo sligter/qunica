@@ -5,7 +5,12 @@ use std::{
 };
 
 use anyhow::Context;
-use axum::{http::StatusCode, routing::any, Router};
+use axum::{
+    http::{header, StatusCode, Uri},
+    response::{IntoResponse, Response},
+    routing::any,
+    Router,
+};
 use tokio::{net::TcpListener, sync::Mutex};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -139,10 +144,50 @@ pub fn build_router(state: AppState, web_dir: Option<&Path>) -> Router {
     // `fallback`, not `not_found_service`: the latter forces the index response
     // to 404, which turns every deep-link reload into an error page.
     let index = ServeFile::new(web_dir.join("index.html"));
+    guard_api_routes(router).fallback_service(ServeDir::new(web_dir).fallback(index))
+}
+
+/// A frontend asset the embedding shell resolved for [`SpaAssetLookup`].
+pub struct SpaAsset {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
+/// Resolves a frontend asset from a request path, or `None` when the shell
+/// holds nothing under it.
+pub type SpaAssetLookup = Arc<dyn Fn(&str) -> Option<SpaAsset> + Send + Sync>;
+
+/// The API router plus a single-page app the shell resolves for itself.
+///
+/// The desktop bundles its frontend inside the executable, so it has no
+/// directory to hand [`build_router`] — yet a phone reaching this process
+/// through a tunnel still has to load the app from the API origin.
+pub fn build_router_with_embedded_spa(state: AppState, lookup: SpaAssetLookup) -> Router {
+    guard_api_routes(api::router(state)).fallback(move |uri: Uri| {
+        let lookup = Arc::clone(&lookup);
+        async move { embedded_spa_response(lookup.as_ref(), uri.path()) }
+    })
+}
+
+fn embedded_spa_response(
+    lookup: &(dyn Fn(&str) -> Option<SpaAsset> + Send + Sync),
+    path: &str,
+) -> Response {
+    // A client route owns no asset of its own and only resolves once the shell
+    // boots, so a miss serves index.html instead of a 404 page — the same trade
+    // `ServeDir::fallback` makes for `web_dir`.
+    let Some(asset) = lookup(path).or_else(|| lookup("/index.html")) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    ([(header::CONTENT_TYPE, asset.mime_type)], asset.bytes).into_response()
+}
+
+/// Keeps a single-page app fallback from answering unknown `/api` paths with
+/// HTML, which would hand the client a 200 it cannot parse.
+fn guard_api_routes(router: Router) -> Router {
     router
         .route("/api", any(|| async { StatusCode::NOT_FOUND }))
         .route("/api/*path", any(|| async { StatusCode::NOT_FOUND }))
-        .fallback_service(ServeDir::new(web_dir).fallback(index))
 }
 
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
@@ -160,15 +205,6 @@ pub async fn serve_with_shutdown(
     }
     let router = build_router(state, config.web_dir.as_deref());
     serve_router_with_shutdown(listener, addr, router, shutdown).await
-}
-
-pub async fn serve_listener_with_shutdown(
-    listener: TcpListener,
-    addr: SocketAddr,
-    state: AppState,
-    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-) -> anyhow::Result<()> {
-    serve_router_with_shutdown(listener, addr, api::router(state), shutdown).await
 }
 
 pub async fn serve_router_with_shutdown(

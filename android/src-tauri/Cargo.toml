@@ -1,0 +1,18 @@
+[package]
+name = "qunica-android"
+version = "0.1.1"
+description = "Qunica Android remote client"
+edition = "2021"
+
+[lib]
+name = "qunica_android_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+
+# Deliberately no dependency on the desktop crate, backend, shell or local PTY.

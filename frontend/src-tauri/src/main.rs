@@ -911,6 +911,7 @@ fn shutdown_terminal_sessions(app: &tauri::AppHandle) {
 fn start_in_process_backend(
     app_data_dir: PathBuf,
     log_dir: PathBuf,
+    spa: server::SpaAssetLookup,
 ) -> Result<oneshot::Sender<()>, String> {
     let config = AppConfig::for_desktop_app_data(app_data_dir, BACKEND_PORT).map_err(|err| {
         let message = err.to_string();
@@ -928,10 +929,14 @@ fn start_in_process_backend(
     }
 
     let server_config = server::ServerConfig::from(config);
-    let (state, listener, addr) = tauri::async_runtime::block_on(async {
+    let (router, listener, addr) = tauri::async_runtime::block_on(async {
         let state = server::build_state(&server_config).await?;
         let (listener, addr) = server::bind_listener(&server_config).await?;
-        anyhow::Ok((state, listener, addr))
+        // The webview paints from the embedded bundle, but a phone reaching
+        // this process through a tunnel has to load the same app over HTTP,
+        // from the origin the API already answers on.
+        let router = server::build_router_with_embedded_spa(state, spa);
+        anyhow::Ok((router, listener, addr))
     })
     .map_err(|err| {
         let message = format!("{err:#}");
@@ -945,7 +950,7 @@ fn start_in_process_backend(
     let backend_log_dir = log_dir.clone();
     tauri::async_runtime::spawn(async move {
         append_backend_log(&backend_log_dir, "in-process backend starting");
-        let result = server::serve_listener_with_shutdown(listener, addr, state, async move {
+        let result = server::serve_router_with_shutdown(listener, addr, router, async move {
             let _ = shutdown_rx.await;
         })
         .await;
@@ -1092,7 +1097,18 @@ fn main() {
             #[cfg(target_os = "windows")]
             clipboard_history::start();
             clear_backend_port(&log_dir, BACKEND_PORT);
-            let shutdown = start_in_process_backend(app_data_dir, log_dir.clone())?;
+            // Resolved lazily per request: the assets live in this executable,
+            // so there is no directory to point the backend at.
+            let assets = app.asset_resolver();
+            let spa: server::SpaAssetLookup = std::sync::Arc::new(move |path: &str| {
+                assets
+                    .get(path.to_string())
+                    .map(|asset| server::SpaAsset {
+                        bytes: asset.bytes,
+                        mime_type: asset.mime_type,
+                    })
+            });
+            let shutdown = start_in_process_backend(app_data_dir, log_dir.clone(), spa)?;
             let state = app.state::<BackendShutdown>();
             *state.0.lock().expect("backend shutdown mutex poisoned") = Some(shutdown);
             create_main_window(app)?;

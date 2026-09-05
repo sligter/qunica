@@ -681,8 +681,29 @@ export function useSendMessageStream(
           url: `/api/v2${conversationApiPath(scope, groupId)}/messages/stream`,
           body: message,
           token,
+          replayUrl: () => `/api/v2${conversationApiPath(scope, groupId)}/streams/${id}`,
           handlers: {
-          onOpen: () => clearRetry(id),
+          onOpen: () => { clearRetry(id); setRetryExhausted(false); setError(null) },
+          onRecover: async signal => {
+            const turnId = schedulerTurnByRequestRef.current.get(id)
+            if (!turnId) {
+              await qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId, threadId) })
+              return true
+            }
+            const trace = parseGroupTurnTrace(await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}`, { token, signal }))
+            if (signal.aborted || useAuthStore.getState().token !== token) return false
+            if (['pending', 'running', 'waiting_for_user'].includes(trace.turn.status)) return true
+            reconcileSchedulerTurn(storeId, trace)
+            const streamId = streamIdsRef.current.get(id)
+            if (streamId) clearStreamInFlight(storeId, streamId)
+            await qc.invalidateQueries({ queryKey: conversationMessagesKey(scope, groupId, threadId) })
+            return false
+          },
+          onDisconnect: err => {
+            clearRetry(id)
+            setRetryExhausted(true)
+            setError(err instanceof Error ? err.message : String(err))
+          },
           onEvent: (event) => {
             clearRetry(id)
             const streamId = event.stream_id
@@ -1074,6 +1095,7 @@ export function useSendMessageStream(
       qc,
       refreshActiveCount,
       refreshRetry,
+      reconcileSchedulerTurn,
       rejectSendBeforeAcknowledgement,
       scope,
       setActiveAgent,

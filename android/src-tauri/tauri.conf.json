@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Qunica",
+  "version": "0.1.1",
+  "identifier": "app.qunica.mobile",
+  "build": {
+    "beforeDevCommand": "pnpm --dir ../frontend exec vite build --mode android --outDir dist-android",
+    "beforeBuildCommand": "pnpm --dir ../frontend exec vite build --mode android --outDir dist-android",
+    "frontendDist": "../../frontend/dist-android"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Qunica", "useHttpsScheme": true }],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ipc: http://ipc.localhost https:; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["../../frontend/src-tauri/icons/icon.png"],
+    "android": { "minSdkVersion": 26 }
+  }
+}

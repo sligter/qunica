@@ -221,12 +221,12 @@ describe('conversation workspace file client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       '/api/v2/groups/group-1/workspace-files/download?path=docs%2Fguide.md',
-      { headers: { Authorization: 'Bearer owner-token' }, signal: undefined },
+      { headers: { Authorization: 'Bearer owner-token' }, signal: undefined, cache: 'no-store' },
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       '/api/v2/direct-chats/chat-1/workspace-files/download?path=images%2Fphoto.png',
-      { headers: { Authorization: 'Bearer owner-token' }, signal: undefined },
+      { headers: { Authorization: 'Bearer owner-token' }, signal: undefined, cache: 'no-store' },
     )
     for (const [url] of fetchMock.mock.calls) {
       expect(String(url)).not.toContain('owner-token')

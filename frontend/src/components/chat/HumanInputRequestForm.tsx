@@ -1,5 +1,5 @@
 import { CheckCircle2, SendHorizontal } from 'lucide-react'
-import { useId, useState, type FormEvent } from 'react'
+import { useId, useRef, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
@@ -7,10 +7,12 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { formatHumanInputResponse, type HumanInputRequest } from '@/lib/humanInput'
 import { cn } from '@/lib/utils'
+import { MobileAction } from './MobileAction'
 
 interface HumanInputRequestFormProps {
   request: HumanInputRequest
-  onSubmitResponse?: (content: string) => void
+  onSubmitResponse?: (content: string) => void | Promise<unknown>
+  pin?: boolean
   targetDisplayName?: string
   className?: string
   compact?: boolean
@@ -22,30 +24,45 @@ export function HumanInputRequestForm({
   targetDisplayName,
   className,
   compact = false,
+  pin = true,
 }: HumanInputRequestFormProps) {
   const { t } = useTranslation('chat')
   const inputId = useId()
   const [value, setValue] = useState('')
   const [selectedChoice, setSelectedChoice] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submitting = useRef(false)
   const trimmed = value.trim()
   const choices = request.choices ?? []
   const hasChoices = choices.length > 0 || request.input_type === 'choice'
   const answer = selectedChoice
     ? [selectedChoice, trimmed].filter(Boolean).join('\n\n')
     : trimmed
-  const canSubmit = Boolean(answer) && Boolean(onSubmitResponse) && !submitted
+  const canSubmit = Boolean(answer) && Boolean(onSubmitResponse) && !submitted && !busy
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!canSubmit) return
-    onSubmitResponse?.(formatHumanInputResponse(answer, targetDisplayName))
-    setValue('')
-    setSelectedChoice('')
-    setSubmitted(true)
+    if (!canSubmit || submitting.current) return
+    submitting.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      await onSubmitResponse?.(formatHumanInputResponse(answer, targetDisplayName))
+      setValue('')
+      setSelectedChoice('')
+      setSubmitted(true)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      submitting.current = false
+      setBusy(false)
+    }
   }
 
   return (
+    <MobileAction active={pin && !submitted && Boolean(onSubmitResponse)}>
     <form
       className={cn(
         'min-w-0 rounded-md border border-warning bg-warning/55 p-3 text-foreground',
@@ -80,7 +97,7 @@ export function HumanInputRequestForm({
                     key={choice}
                     type="button"
                     aria-pressed={selected}
-                    disabled={submitted || !onSubmitResponse}
+                    disabled={submitted || busy || !onSubmitResponse}
                     className={cn(
                       'rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
                       selected
@@ -107,7 +124,7 @@ export function HumanInputRequestForm({
             onChange={(event) => setValue(event.target.value)}
             placeholder={hasChoices ? t('stream.addDetails') : t('stream.typeResponse')}
             rows={compact ? 2 : 3}
-            disabled={submitted || !onSubmitResponse}
+            disabled={submitted || busy || !onSubmitResponse}
             className="min-h-0 resize-none bg-background"
           />
           <Button type="submit" size="sm" className="shrink-0" disabled={!canSubmit}>
@@ -120,6 +137,8 @@ export function HumanInputRequestForm({
           </Button>
         </div>
       </div>
+      {error ? <p role="alert" className="mt-2 text-xs text-destructive">{t('stream.error', { message: error })}</p> : null}
     </form>
+    </MobileAction>
   )
 }

@@ -1,3 +1,5 @@
+import { authFetch } from '@/lib/authFetch'
+
 export const MAX_RETRY_ATTEMPTS = 10
 
 const BASE_RETRY_MS = 500
@@ -64,7 +66,7 @@ export async function fetchWithRetry(
   for (;;) {
     let response: Response
     try {
-      response = await fetch(input, init)
+      response = await authFetch(input, init)
     } catch (error) {
       if (
         init.signal?.aborted ||

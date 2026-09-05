@@ -1,5 +1,12 @@
 export const enUS = {
   common: {
+    mobile: {
+      offline: 'You are offline. Reconnect to send messages or respond to approvals.',
+      updateReady: 'Update downloaded. Close all Qunica tabs and reopen to apply it.',
+      navigation: 'Open navigation',
+      reconnect: 'Reconnect',
+      terminalKeys: 'Terminal keyboard shortcuts',
+    },
     textMenu: {
       label: 'Text editing menu',
       cut: 'Cut',

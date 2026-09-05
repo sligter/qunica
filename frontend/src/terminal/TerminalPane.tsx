@@ -36,9 +36,12 @@ export function terminalThemeFromDocument(): ITheme {
 
 export interface TerminalPaneProps {
   tab: TerminalRuntimeTab
+  transformInput?: (data: string) => string
 }
 
-export function TerminalPane({ tab }: TerminalPaneProps) {
+export function TerminalPane({ tab, transformInput }: TerminalPaneProps) {
+  const transformInputRef = useRef(transformInput)
+  transformInputRef.current = transformInput
   const containerRef = useRef<HTMLDivElement>(null)
   const sessionRef = useRef({ sessionId: tab.sessionId, status: tab.status })
   const resetResizeRef = useRef<(() => void) | null>(null)
@@ -150,7 +153,7 @@ export function TerminalPane({ tab }: TerminalPaneProps) {
       ) {
         return
       }
-      void write(tab.tabId, data).catch(() => undefined)
+      void write(tab.tabId, transformInputRef.current?.(data) ?? data).catch(() => undefined)
     })
     const unsubscribeOutput = subscribeOutput(tab.tabId, scheduleOutput)
     const resizeObserver = new ResizeObserver(scheduleFit)

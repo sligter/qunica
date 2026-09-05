@@ -71,9 +71,16 @@ pub struct AuthSettings {
 }
 
 pub fn router(state: AppState) -> Router {
+    let origin_config = match std::env::var("QUNICA_ALLOWED_ORIGINS") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => String::new(),
+        Err(_) => panic!("QUNICA_ALLOWED_ORIGINS must be valid Unicode"),
+    };
+    let allowed_origins = parse_allowed_origins(&origin_config)
+        .expect("QUNICA_ALLOWED_ORIGINS must contain comma-separated HTTP(S) origins without wildcards or paths");
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            is_allowed_origin(origin)
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            is_allowed_origin(origin) || origin.to_str().is_ok_and(|value| allowed_origins.iter().any(|allowed| allowed == value))
         }))
         .allow_methods([
             Method::GET,
@@ -489,6 +496,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(messages::stream_group),
         )
         .route(
+            "/api/v2/groups/:group_id/streams/:stream_id",
+            get(messages::replay_group),
+        )
+        .route(
             "/api/v2/groups/:group_id/threads",
             axum::routing::post(threads::create_group).get(threads::list_group),
         )
@@ -511,6 +522,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v2/direct-chats/:group_id/messages/stream",
             axum::routing::post(messages::stream_direct),
+        )
+        .route(
+            "/api/v2/direct-chats/:group_id/streams/:stream_id",
+            get(messages::replay_direct),
         )
         .route(
             "/api/v2/direct-chats/:chat_id/workspace-files",
@@ -626,8 +641,40 @@ fn is_allowed_origin(origin: &HeaderValue) -> bool {
             | "tauri://localhost"
             | "http://localhost"
             | "http://127.0.0.1"
-    ) || origin.starts_with("http://localhost:")
-        || origin.starts_with("http://127.0.0.1:")
+    ) || reqwest::Url::parse(origin).is_ok_and(|url| {
+        url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1"))
+            && url.origin().ascii_serialization() == origin
+    })
+}
+
+fn parse_allowed_origins(value: &str) -> Result<Vec<String>, &'static str> {
+    if value.trim().is_empty() { return Ok(Vec::new()); }
+    value.split(',').map(|raw| {
+        let raw = raw.trim();
+        let url = reqwest::Url::parse(raw).map_err(|_| "invalid origin")?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+            || raw.contains('*') || !url.username().is_empty() || url.password().is_some()
+            || url.path() != "/" || url.query().is_some() || url.fragment().is_some()
+        { return Err("invalid origin"); }
+        Ok(url.origin().ascii_serialization())
+    }).collect()
+}
+
+#[cfg(test)]
+mod mobile_cors_tests {
+    use super::*;
+
+    #[test]
+    fn mobile_origins_are_exact_and_reject_wildcards_and_non_origins() {
+        assert_eq!(parse_allowed_origins("https://PHONE.example:443, https://phone.example:8443").unwrap(),
+            vec!["https://phone.example", "https://phone.example:8443"]);
+        for value in ["*", "https://*.example", "https://phone.example/path", "https://user@phone.example", "https://phone.example?q=1", "null", "https://phone.example,"] {
+            assert!(parse_allowed_origins(value).is_err(), "accepted {value}");
+        }
+        assert!(is_allowed_origin(&HeaderValue::from_static("http://localhost:5173")));
+        assert!(!is_allowed_origin(&HeaderValue::from_static("http://localhost:5173@evil.example")));
+    }
 }
 
 /// Build a router backed by a fresh, migrated in-memory database for tests.

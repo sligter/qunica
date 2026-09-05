@@ -911,6 +911,50 @@ pub async fn stream_group(
     stream_for_kind(state, headers, group_id, body, ConversationKind::Group).await
 }
 
+/// Reattach without executing a send or approval, including before its first frame arrives.
+pub async fn replay_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, stream_id)): Path<(String, String)>,
+) -> Result<SseResponse, ApiError> {
+    replay_for_kind(state, headers, group_id, stream_id, ConversationKind::Group).await
+}
+
+pub async fn replay_direct(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((group_id, stream_id)): Path<(String, String)>,
+) -> Result<SseResponse, ApiError> {
+    replay_for_kind(state, headers, group_id, stream_id, ConversationKind::Direct).await
+}
+
+async fn replay_for_kind(
+    state: AppState,
+    headers: HeaderMap,
+    group_id: String,
+    stream_id: String,
+    expected: ConversationKind,
+) -> Result<SseResponse, ApiError> {
+    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let group_id = validate_uuid(&group_id, "group id")?;
+    let stream_id = Uuid::parse_str(&stream_id)
+        .map_err(|_| ApiError::invalid_input("stream id must be a UUID"))?;
+    ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
+    if let Some(raw) = last_event_id(&headers)? {
+        let cursor = parse_replay_cursor(&raw)?;
+        if raw.split(':').next() != Some(stream_id.to_string().as_str()) {
+            return Err(ApiError::invalid_input("cursor does not belong to this stream"));
+        }
+        return Ok(sse_response(replay_group_stream(
+            state.db.pool().clone(), group_id, cursor,
+        ).await?));
+    }
+    let replay = replay_existing_stream(state.db.pool().clone(), group_id, stream_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("stream event not found"))?;
+    Ok(sse_response(replay))
+}
+
 pub async fn stream_direct(
     State(state): State<AppState>,
     headers: HeaderMap,

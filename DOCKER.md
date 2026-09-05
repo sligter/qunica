@@ -12,6 +12,45 @@ and the integrated terminal runs a shell inside the container.
 
 ## Quick start
 
+### Mobile PWA over HTTPS
+
+Use a dedicated hostname at `/`, serving the UI and API from the same origin.
+The example `docker/Caddyfile.mobile` runs on the Docker host, proxies the
+loopback-bound Compose port `18765`, obtains HTTPS certificates through Caddy,
+and streams SSE without response buffering. Set `QUNICA_DOMAIN` to your real
+hostname, configure DNS and the certificate challenge access required by your
+deployment, then run Caddy with that config. Private VPN deployments still need
+a certificate trusted by the phone. Keep the initial-account and registration
+settings described below; the proxy preserves the app's bearer authentication.
+
+The CSP permits existing dynamic styles, but not inline scripts or arbitrary
+script/connect origins. Remote images are supported; add other origins only
+for a verified integration. The browser theme bootstrap is a same-origin
+external script. The sample disables HTTP caching; the PWA worker separately
+caches only exact public build assets, fonts and app icons. It never handles
+API responses, authenticated requests, workspace files or downloads. Navigation
+requires the network; offline execution and offline sending are not supported.
+
+Build with `pnpm build`. Production browsers register `/sw.js`; desktop shells
+and development builds do not. Updates wait until all old Qunica tabs/windows
+close; the app displays a notice instead of reloading a draft or approval.
+Keep the prior release's hashed assets available until its old tabs are closed.
+
+Before remote use, verify installation and safe areas on iOS/Android, a deep
+link reload, timely SSE events through the proxy, and expired-token logout.
+Inspect Cache Storage to confirm no private response was stored. Logging out
+clears local auth and message state and stops streams; it does not revoke a
+previously issued JWT on the server. Per-device revocation is a separate server
+capability. This example config must be validated against your actual domain
+and proxy installation before deployment.
+
+For a deliberately cross-origin browser client, set `QUNICA_ALLOWED_ORIGINS` to
+a comma-separated list such as `https://phone.example,https://phone.example:8443`.
+Origins are normalized at startup; wildcard hosts, credentials, paths, queries,
+fragments and invalid entries fail startup. The existing desktop/local development
+origins remain allowed. This setting is additive and is unnecessary for a same-origin
+PWA. Add the environment variable to your service/Compose environment explicitly.
+
 ```bash
 docker compose up -d --build
 ```

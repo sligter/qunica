@@ -1,4 +1,5 @@
-import { Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Menu } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useRoutes, type Location } from 'react-router-dom'
 
@@ -24,7 +25,11 @@ import {
   TerminalRuntimeProvider,
   type TerminalRuntimeProviderProps,
 } from '@/terminal/TerminalRuntimeProvider'
-import { TerminalDock } from '@/terminal/TerminalDock'
+import { TerminalSurface } from '@/terminal/TerminalDock'
+import { useCompactLayout } from '@/hooks/useMediaQuery'
+import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { MobilePanelContext, type MobilePanel } from './mobilePanels'
 import type { TerminalTransport } from '@/terminal/transport'
 
 export interface AppLayoutProps {
@@ -181,6 +186,20 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const navigate = useNavigate()
   const location = useLocation()
   const auxiliaryWindow = isAuxiliaryDesktopWindow()
+  const compactLayout = useCompactLayout()
+  const mobilePanel = (location.state as { mobilePanel?: MobilePanel } | null)?.mobilePanel ?? null
+  const setMobilePanel = useCallback((panel: MobilePanel | null) => {
+    if (panel === mobilePanel) return
+    if (panel === null) {
+      if (mobilePanel) void navigate(-1)
+    } else {
+      void navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, {
+        state: { ...location.state, mobilePanel: panel },
+        replace: mobilePanel !== null,
+      })
+    }
+  }, [location, mobilePanel, navigate])
+  const mobilePanels = useMemo(() => ({ panel: mobilePanel, setPanel: setMobilePanel }), [mobilePanel, setMobilePanel])
 
   // The settings overlay is React Router's background-location pattern: the
   // real browser location is the overlay URL, and the conversation it was
@@ -318,6 +337,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   }
 
   const openMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (window.matchMedia && !window.matchMedia('(pointer: fine)').matches) return
     event.preventDefault()
     const clamp = (items: number) => ({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 8)),
@@ -451,25 +471,43 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
     // element so its global chord listener is never torn down mid-typing.
     <CommandPaletteProvider>
     <UnsavedChangesProvider>
+      <MobilePanelContext.Provider value={mobilePanels}>
       <AppTerminalRuntimeBoundary
         enabled={!auxiliaryWindow}
         transport={terminalTransport}
         shell={systemSettings.data?.shell_preference}
+        restoreOnRegister={!compactLayout}
       >
       <div
         className="flex h-full min-h-0 overflow-hidden bg-background"
         onContextMenu={openMenu}
         inert={overlayOpen || undefined}
       >
-        {auxiliaryWindow ? null : <AppSidebar />}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {auxiliaryWindow || compactLayout ? null : <AppSidebar />}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" inert={compactLayout && mobilePanel === 'terminal' || undefined}>
+          {!auxiliaryWindow && compactLayout ? (
+            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
+              <Sheet open={mobilePanel === 'navigation'} onOpenChange={open => setMobilePanel(open ? 'navigation' : null)}>
+                <SheetTrigger asChild>
+                  <Button variant="ghost" size="icon" aria-label={t('mobile.navigation')}><Menu className="h-5 w-5" /></Button>
+                </SheetTrigger>
+                <SheetContent className="mobile-sheet left-0 right-auto w-[min(88vw,22rem)]" closeLabel={t('actions.close')} aria-describedby={undefined}>
+                  <SheetTitle className="sr-only">{t('mobile.navigation')}</SheetTitle>
+                  <AppSidebar mobile />
+                </SheetContent>
+              </Sheet>
+              <span className="font-serif text-sm font-semibold tracking-tight">Qunica</span>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-hidden">
             <Suspense fallback={<RouteFallback />}>
               {stageElement}
             </Suspense>
           </div>
-          {auxiliaryWindow ? null : <TerminalDock />}
         </main>
+        {auxiliaryWindow ? null : <TerminalSurface mobile={compactLayout} />}
+        </div>
         {/* Portals to document.body, so it floats over the whole shell rather
             than being clipped by the main column's overflow. Only mounted
             inside the authenticated tree: the login and register routes render
@@ -521,6 +559,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         </OverlayProvider>
       ) : null}
       </AppTerminalRuntimeBoundary>
+      </MobilePanelContext.Provider>
     </UnsavedChangesProvider>
     </CommandPaletteProvider>
   )

@@ -163,9 +163,10 @@ function storeCollapsed(value: boolean): void {
  * settings surface, and a bottom Settings row plus user menu. Collapses to a
  * narrow icon strip; the collapsed state persists in localStorage.
  */
-export function AppSidebar() {
+export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
   const { t, i18n } = useTranslation(['navigation', 'groups', 'common'])
-  const [collapsed, setCollapsed] = useState(readCollapsed)
+  const [desktopCollapsed, setCollapsed] = useState(readCollapsed)
+  const collapsed = !mobile && desktopCollapsed
   const [dialogOpen, setDialogOpen] = useState(false)
   const [directDialogOpen, setDirectDialogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -270,7 +271,7 @@ export function AppSidebar() {
     <aside
       className={cn(
         'flex h-full shrink-0 flex-col border-r border-border bg-card',
-        collapsed ? 'w-14' : 'w-[248px]',
+        mobile ? 'w-full border-r-0' : collapsed ? 'w-14' : 'w-[248px]',
       )}
     >
       {dialogOpen ? (
@@ -372,6 +373,7 @@ export function AppSidebar() {
           variant="ghost"
           size="icon"
           onClick={toggleCollapsed}
+          className={mobile ? 'hidden' : undefined}
           aria-label={t(collapsed ? 'navigation:expandSidebar' : 'navigation:collapseSidebar')}
         >
           {collapsed ? (

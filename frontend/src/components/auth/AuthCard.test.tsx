@@ -2,12 +2,16 @@ import { cleanup, render, screen } from '@testing-library/react'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { enUS } from '@/i18n/resources/en-US'
 import { zhCN } from '@/i18n/resources/zh-CN'
+
+vi.mock('@/hooks/useAuthConfig', () => ({
+  useAuthConfig: () => ({ data: { registration_enabled: true } }),
+}))
 
 async function renderAuthPage(page: 'login' | 'register', language: 'en-US' | 'zh-CN') {
   const i18n = i18next.createInstance()

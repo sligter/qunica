@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
+import { MobileAction } from '@/components/chat/MobileAction'
 import { useAppActions, useResolveAppAction } from '@/hooks/useAppActions'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
@@ -130,6 +131,7 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
   }
 
   return (
+    <MobileAction active={!resolved}>
     <div className="min-w-0 rounded-md border border-warning bg-warning/40 p-3 text-sm text-foreground">
       <div className="text-xs font-semibold text-warning-foreground">
         {resolved ? statusLabel[resolved] ?? resolved : t('actions.pending')}
@@ -172,5 +174,6 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
         </p>
       ) : null}
     </div>
+    </MobileAction>
   )
 }
