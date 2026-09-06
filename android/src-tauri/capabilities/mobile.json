@@ -3,5 +3,5 @@
   "description": "Bundled Android UI only; no desktop commands or shell permissions",
   "windows": ["main"],
   "platforms": ["android"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "barcode-scanner:allow-scan", "barcode-scanner:allow-cancel", "barcode-scanner:allow-check-permissions", "barcode-scanner:allow-request-permissions"]
 }

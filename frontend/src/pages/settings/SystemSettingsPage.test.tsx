@@ -312,6 +312,7 @@ describe('SystemSettingsPage about and updates', () => {
     tauri.listen.mockResolvedValue(unlisten)
     let rejectInstall!: (reason: unknown) => void
     tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'mobile_link_status') return Promise.resolve({ endpoint: null, interfaces: [], devices: [] })
       if (command === 'app_about') return Promise.resolve(about)
       if (command === 'check_for_update') return Promise.resolve(release)
       if (command === 'install_update') {

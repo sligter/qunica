@@ -46,6 +46,7 @@ import {
   type FolderPickResult,
 } from '@/lib/folderPicker'
 import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
+import { MobileConnection } from '@/components/settings/MobileConnection'
 
 const PICKER_SCOPE = 'group-workspace-root'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
@@ -485,6 +486,7 @@ export function SystemSettingsPage() {
       subtitle={t('subtitle')}
     >
       <div className="space-y-10">
+        {isDesktopRuntime() ? <MobileConnection /> : null}
         {user ? (
           <SettingsSection
             title={t('profile.title')}

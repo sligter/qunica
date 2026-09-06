@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/stores/authStore'
+import { isAndroidRuntime, LAN_ORIGIN, useAndroidSession } from './androidSession'
 
 /** A late 401 for an old token must not sign out a newly signed-in account. */
 export function expireAuthToken(token: string | null | undefined): void {
@@ -20,7 +21,9 @@ export function abortOnAuthChange(controller: AbortController, token: string): (
 }
 
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const response = await fetch(input, { ...init, cache: 'no-store' })
+  const response = isAndroidRuntime() && useAndroidSession.getState().server === LAN_ORIGIN
+    ? await (await import('./lanFetch')).lanFetch(input, init)
+    : await fetch(input, { ...init, cache: 'no-store' })
   if (response.status === 401) {
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
     const authorization = headers.get('authorization')

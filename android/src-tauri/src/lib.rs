@@ -1,3 +1,5 @@
+mod lan;
+
 #[cfg(target_os = "android")]
 mod mobile {
     use tauri::{plugin::PluginHandle, Manager, State, Wry};
@@ -17,6 +19,8 @@ mod mobile {
     #[tauri::mobile_entry_point]
     pub fn run() {
         tauri::Builder::default()
+            .manage(crate::lan::Lan::default())
+            .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri::plugin::Builder::<Wry>::new("secure-session")
                 .setup(|app, api| {
                     let handle = api.register_android_plugin("app.qunica.mobile", "SecureSessionPlugin")?;
@@ -27,7 +31,10 @@ mod mobile {
                     // The native bridge belongs only to the bundled UI, never to a remote page.
                     url.scheme() == "https" && url.host_str() == Some("tauri.localhost")
                 }).build())
-            .invoke_handler(tauri::generate_handler![mobile_session_read, mobile_session_write])
+            .invoke_handler(tauri::generate_handler![mobile_session_read, mobile_session_write,
+                crate::lan::mobile_lan_pair, crate::lan::mobile_lan_configure,
+                crate::lan::mobile_lan_prepare, crate::lan::mobile_lan_open,
+                crate::lan::mobile_lan_read, crate::lan::mobile_lan_close])
             .run(tauri::generate_context!())
             .expect("unable to start Qunica Android");
     }

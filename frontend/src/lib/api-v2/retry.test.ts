@@ -13,6 +13,13 @@ afterEach(() => {
 })
 
 describe('API retry policy', () => {
+  it('does not replay a native mutation with uncertain delivery', async () => {
+    const error = Object.assign(new TypeError('encrypted connection lost'), { requestMayHaveBeenSent: true })
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(error)
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(fetchWithRetry('/write', { method: 'POST' }, false)).rejects.toBe(error)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
   it('uses capped exponential backoff and only the recoverable HTTP statuses', () => {
     expect([1, 2, 3, 4, 5, 6, 7, 10].map((attempt) => retryDelayMs(attempt, () => 0.5)))
       .toEqual([500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000])

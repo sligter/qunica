@@ -1,0 +1,26 @@
+[package]
+name = "qunica-mobile-link"
+version = "0.1.1"
+edition = "2021"
+publish = false
+
+[features]
+server = ["dep:axum", "dep:tower", "dep:if-addrs", "dep:tempfile"]
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+snow = "0.10"
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+axum = { version = "0.7", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+if-addrs = { version = "0.15", optional = true }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
+futures-util = "0.3"

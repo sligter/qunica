@@ -3,6 +3,7 @@
 #[cfg(target_os = "windows")]
 mod clipboard_history;
 mod terminal;
+mod mobile_link;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -909,10 +910,12 @@ fn shutdown_terminal_sessions(app: &tauri::AppHandle) {
 }
 
 fn start_in_process_backend(
+    app: &tauri::AppHandle,
     app_data_dir: PathBuf,
     log_dir: PathBuf,
     spa: server::SpaAssetLookup,
 ) -> Result<oneshot::Sender<()>, String> {
+    let mobile_state_path = app_data_dir.join("mobile-devices.json");
     let config = AppConfig::for_desktop_app_data(app_data_dir, BACKEND_PORT).map_err(|err| {
         let message = err.to_string();
         append_launcher_log(
@@ -946,6 +949,8 @@ fn start_in_process_backend(
         );
         message
     })?;
+    // Mobile identity storage failures must not prevent the desktop from starting.
+    app.manage(mobile_link::MobileLink(qunica_mobile_link::server::MobileServer::load(mobile_state_path, router.clone()).map_err(|e| e.to_string())));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let backend_log_dir = log_dir.clone();
     tauri::async_runtime::spawn(async move {
@@ -1056,6 +1061,11 @@ fn main() {
         .manage(BackendShutdown(std::sync::Mutex::new(None)))
         .manage(TerminalManager::new(Arc::new(NativePtySpawner)))
         .invoke_handler(tauri::generate_handler![
+            mobile_link::mobile_link_status,
+            mobile_link::mobile_link_start,
+            mobile_link::mobile_link_offer,
+            mobile_link::mobile_link_stop,
+            mobile_link::mobile_link_revoke,
             backend_base_url,
             pick_workspace_folder,
             reveal_in_file_manager,
@@ -1108,7 +1118,7 @@ fn main() {
                         mime_type: asset.mime_type,
                     })
             });
-            let shutdown = start_in_process_backend(app_data_dir, log_dir.clone(), spa)?;
+            let shutdown = start_in_process_backend(app.handle(), app_data_dir, log_dir.clone(), spa)?;
             let state = app.state::<BackendShutdown>();
             *state.0.lock().expect("backend shutdown mutex poisoned") = Some(shutdown);
             create_main_window(app)?;

@@ -6,6 +6,25 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); mocks.invoke.mockReset(); localStorage.clear() })
 
 describe('Android remote session', () => {
+  it('restores the paired identity through native validation and keeps all secrets out of browser storage', async () => {
+    const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
+    mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://qunica-lan.invalid', token: 'account-token', lan }) }).mockResolvedValue({})
+    const session = await import('./androidSession')
+    await expect(session.initializeAndroidSession()).resolves.toBe('account-token')
+    expect(mocks.invoke).toHaveBeenCalledWith('mobile_lan_configure', { connection: lan })
+    expect(session.androidDesktopAddress()).toBe('192.168.1.4:8766')
+    await session.saveAndroidToken(null)
+    const last = mocks.invoke.mock.calls.at(-1)!
+    expect(JSON.parse(last[1].value)).toMatchObject({ token: null, lan })
+    expect(localStorage.length).toBe(0)
+  })
+
+  it('fails closed if the native bridge rejects a saved pairing identity', async () => {
+    mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://qunica-lan.invalid', token: 'token', lan: { endpoint: '8.8.8.8:8766' } }) }).mockRejectedValueOnce(new Error('Only LAN IPv4 addresses'))
+    const session = await import('./androidSession')
+    await expect(session.initializeAndroidSession()).rejects.toThrow('Only LAN')
+    expect(session.useAndroidSession.getState()).toMatchObject({ ready: false, server: null })
+  })
   it('accepts exact HTTPS origins and rejects insecure or ambiguous server addresses', async () => {
     const { normalizeServerOrigin } = await import('./androidSession')
     expect(normalizeServerOrigin(' https://PHONE.example:443/ ')).toBe('https://phone.example')

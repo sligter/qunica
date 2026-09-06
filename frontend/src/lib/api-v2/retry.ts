@@ -72,6 +72,7 @@ export async function fetchWithRetry(
         init.signal?.aborted ||
         isAbortError(error) ||
         !isNetworkError(error) ||
+        (!retryHttpResponses && typeof error === 'object' && error !== null && 'requestMayHaveBeenSent' in error) ||
         attempts >= MAX_RETRY_ATTEMPTS
       ) {
         throw error

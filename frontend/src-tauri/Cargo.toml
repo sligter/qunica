@@ -9,6 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+qunica-mobile-link = { path = "../../mobile-link", features = ["server"] }
 qunica-backend = { path = "../../backend-rs/crates/backend" }
 anyhow = "1"
 tauri = { version = "2", features = ["tray-icon"] }
