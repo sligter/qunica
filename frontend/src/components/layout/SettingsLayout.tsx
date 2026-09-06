@@ -38,7 +38,7 @@ export function SettingsLayout() {
   ]
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+    <div className="settings-shell flex h-full w-full flex-col overflow-hidden bg-background">
       <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
@@ -65,10 +65,10 @@ export function SettingsLayout() {
           </div>
         </div>
       </div>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
-        <aside className="shrink-0 overflow-hidden border-b border-border bg-card p-2 md:w-52 md:border-b-0 md:border-r md:p-3">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:flex-row">
+        <aside className="shrink-0 overflow-hidden border-b border-border bg-card p-2 lg:w-52 lg:border-b-0 lg:border-r lg:p-3">
           <nav
-            className="flex gap-3 overflow-x-auto overscroll-x-contain md:flex-col md:gap-5 md:overflow-visible"
+            className="flex gap-3 overflow-x-auto overscroll-x-contain lg:flex-col lg:gap-5 lg:overflow-visible"
             aria-label={t('navigation:settings')}
           >
             {groups.map((group) => (
@@ -76,11 +76,11 @@ export function SettingsLayout() {
                 key={group.label}
                 role="group"
                 aria-label={group.label}
-                className="flex shrink-0 gap-1 md:w-full md:flex-col"
+                className="flex shrink-0 gap-1 lg:w-full lg:flex-col"
               >
                 <p
                   aria-hidden
-                  className="hidden px-3 pb-1 pt-1 text-xs font-medium uppercase tracking-wider text-muted-foreground md:block"
+                  className="hidden px-3 pb-1 pt-1 text-xs font-medium uppercase tracking-wider text-muted-foreground lg:block"
                 >
                   {group.label}
                 </p>
@@ -91,7 +91,7 @@ export function SettingsLayout() {
                     className={({ isActive }) =>
                       navItemClass(
                         isActive,
-                        'w-auto shrink-0 items-center gap-2.5 px-3 py-2 text-sm md:w-full',
+                        'w-auto shrink-0 items-center gap-2.5 px-3 py-2 text-sm lg:w-full',
                       )
                     }
                   >

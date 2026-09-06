@@ -28,6 +28,18 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('MessageAttachments', () => {
+  it('shows a download failure and allows retry instead of dropping the rejected promise', async () => {
+    const user = userEvent.setup()
+    mocks.download.mockRejectedValueOnce(new Error('Destination unavailable'))
+    render(<MessageAttachments groupId="group-1" attachments={[attachments[1]!]} />)
+    const button = screen.getByRole('button', { name: 'Open report.pdf' })
+    await user.click(button)
+    expect(await screen.findByRole('alert')).toBeVisible()
+    expect(button).toBeEnabled()
+    await user.click(button)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(mocks.download).toHaveBeenCalledTimes(2)
+  })
   it('renders image previews and generic file metadata with open actions', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:photo'), revokeObjectURL: vi.fn() })

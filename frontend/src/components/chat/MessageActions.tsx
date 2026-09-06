@@ -1,3 +1,4 @@
+import { CompactActions } from '@/components/layout/CompactActions'
 import { Check, Copy, Share2, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -309,7 +310,8 @@ export function MessageActions({
 
   return (
     <>
-      <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100">
+      <div className="message-actions flex items-center gap-1 opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100">
+        <CompactActions label={t('common:actions.more')}>
         <Button
           type="button"
           variant="ghost"
@@ -340,6 +342,7 @@ export function MessageActions({
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
+        </CompactActions>
       </div>
 
       {shareOpen ? (

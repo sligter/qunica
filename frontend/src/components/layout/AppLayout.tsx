@@ -486,7 +486,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         {auxiliaryWindow || compactLayout ? null : <AppSidebar />}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" inert={compactLayout && mobilePanel === 'terminal' || undefined}>
-          {!auxiliaryWindow && compactLayout ? (
+          {!auxiliaryWindow && compactLayout && !isOverlayPath(stage.pathname) ? (
             <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
               <Sheet open={mobilePanel === 'navigation'} onOpenChange={open => setMobilePanel(open ? 'navigation' : null)}>
                 <SheetTrigger asChild>

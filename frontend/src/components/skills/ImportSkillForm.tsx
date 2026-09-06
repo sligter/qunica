@@ -165,8 +165,11 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
               className={cn('h-8 w-8', dragActive ? 'text-primary' : 'text-muted-foreground')}
             />
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium">
-                {selectedFile ? selectedFile.name : t('form.dropPackage')}
+              <p className="break-all text-sm font-medium">
+                {selectedFile ? selectedFile.name : <>
+                  <span className="lg:hidden">{t('form.packageTab')}</span>
+                  <span className="hidden lg:inline">{t('form.dropPackage')}</span>
+                </>}
               </p>
               {/* Only when a file is chosen: the prompt above is the hint when
                   nothing is, and the button below names the action. */}
@@ -194,7 +197,7 @@ export function ImportSkillForm({ onCreated }: ImportSkillFormProps = {}) {
             />
             <label
               htmlFor={ZIP_INPUT_ID}
-              className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium transition-colors hover:bg-muted peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-background"
+              className="inline-flex h-11 cursor-pointer items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm font-medium transition-colors hover:bg-muted lg:h-8 lg:text-xs peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-background"
             >
               <FolderOpen aria-hidden className="h-3.5 w-3.5" />
               {selectedFile ? t('form.replaceFile') : t('form.chooseFile')}

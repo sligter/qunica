@@ -49,7 +49,7 @@ const RAIL_GROUPS: RailGroup[] = [
  * Three shapes, all in CSS so there is no layout flash and no media-query hook
  * to keep in sync with the breakpoints:
  *
- * - `< lg` — a horizontal scroller above the list, labels shown
+ * - `< lg` — a two-row touch grid above the list, labels shown
  * - `lg`   — a 56px icon strip, labels dropped (kept as `title` for the pointer)
  * - `xl`   — 200px, labels and group headings shown
  */
@@ -60,7 +60,7 @@ export function ResourceRail() {
     <nav
       aria-label={t('library')}
       className={[
-        'flex shrink-0 gap-1 overflow-auto overscroll-contain border-border bg-card/60',
+        'resource-navigation flex shrink-0 gap-1 overflow-auto overscroll-contain border-border bg-card/60',
         'max-lg:w-full max-lg:flex-row max-lg:items-center max-lg:border-b max-lg:px-2 max-lg:py-1.5',
         'lg:h-full lg:w-14 lg:flex-col lg:border-r lg:p-2',
         'xl:w-[200px] xl:p-3',

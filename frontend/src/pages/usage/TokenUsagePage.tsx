@@ -5,6 +5,7 @@ import {
   Bot,
   Braces,
   Coins,
+  ChevronDown,
   Gauge,
   Layers3,
   RefreshCw,
@@ -25,6 +26,7 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useTokenUsage, type TokenUsageFilters } from '@/hooks/useTokenUsage'
+import { useCompactLayout } from '@/hooks/useMediaQuery'
 import { normalizeLanguage } from '@/i18n'
 import { formatPercent } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -321,6 +323,7 @@ function BreakdownList({
 }
 
 export function TokenUsagePage() {
+  const compact = useCompactLayout()
   const { t, i18n } = useTranslation(['usage', 'navigation'])
   const locale = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   // Today by default: the page exists to answer "what has this cost me", and
@@ -387,22 +390,19 @@ export function TokenUsagePage() {
       }
     >
       <div className="space-y-6">
-        <section className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-          <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-5 py-3">
+        <details open={!compact || undefined} className="usage-filters group overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+          <summary tabIndex={compact ? 0 : -1} onClick={event => { if (!compact) event.preventDefault() }} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 bg-muted/30 px-4 py-3 lg:cursor-default [&::-webkit-details-marker]:hidden">
             <div className="flex items-center gap-2 text-sm font-medium">
               <SlidersHorizontal className="h-4 w-4 text-primary" />
               {t('filters.title')}
             </div>
-            {dimensionFilters ? (
-              <button type="button" className="text-xs font-medium text-primary hover:underline" onClick={clearDimensions}>
-                {t('filters.clear')}
-              </button>
-            ) : null}
-          </div>
+            <span className="flex items-center gap-2 text-xs text-muted-foreground"><span>{t(`ranges.${range}`)}{dimensionFilters ? ' · ●' : ''}</span><ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180 lg:hidden" /></span>
+          </summary>
+          {dimensionFilters ? <button type="button" className="mx-4 mt-2 text-xs font-medium text-primary hover:underline" onClick={clearDimensions}>{t('filters.clear')}</button> : null}
           <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-6">
             <div className="space-y-1.5 md:col-span-2">
               <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">{t('filters.range')}</span>
-              <div className="grid h-9 grid-cols-6 rounded-md border border-input bg-background p-0.5">
+              <div className="grid grid-cols-3 rounded-md border border-input bg-background p-0.5 lg:h-9 lg:grid-cols-6">
                 {RANGE_PRESETS.map((preset) => (
                   <button
                     key={preset}
@@ -434,7 +434,7 @@ export function TokenUsagePage() {
               {!validRange ? <p className="pb-2 text-sm text-destructive" role="alert">{t('filters.invalidRange')}</p> : null}
             </div>
           ) : null}
-        </section>
+        </details>
 
         {usage.error ? (
           <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert">
@@ -442,7 +442,7 @@ export function TokenUsagePage() {
           </p>
         ) : null}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" aria-label={t('summary.title')}>
+        <section className="usage-summary grid gap-4 sm:grid-cols-2 xl:grid-cols-5" aria-label={t('summary.title')}>
           <MetricCard icon={Coins} label={t('summary.total')} value={formatTokens(summary.total_tokens, locale, true)} note={t('summary.totalNote')} tone="bg-primary" />
           <MetricCard icon={ArrowDownToLine} label={t('summary.input')} value={formatTokens(summary.input_tokens, locale, true)} note={t('summary.inputNote')} tone="bg-avatar-3" />
           <MetricCard icon={Gauge} label={t('summary.cacheHitRate')} value={summary.cache_hit_rate === null ? '—' : formatPercent(summary.cache_hit_rate, locale)} note={summary.cache_hit_rate === null ? t('summary.cacheUnavailable') : t('summary.cachedTokens', { count: formatTokens(summary.cached_input_tokens, locale, true) })} tone="bg-avatar-4" />

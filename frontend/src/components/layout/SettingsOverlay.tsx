@@ -128,7 +128,7 @@ export function SettingsOverlay({
     <div
       className={cn(
         'fixed inset-0 z-40 flex',
-        variant === 'drawer' ? 'justify-end' : 'p-2 sm:p-4',
+        variant === 'drawer' ? 'justify-end' : 'lg:p-4',
       )}
       onContextMenu={onContextMenu}
     >
@@ -153,10 +153,10 @@ export function SettingsOverlay({
         tabIndex={-1}
         style={variant === 'drawer' ? { width: drawerWidth.width } : undefined}
         className={cn(
-          'relative flex min-h-0 flex-col overflow-hidden border-border bg-background outline-none',
+          'settings-overlay-panel relative flex min-h-0 flex-col overflow-hidden border-border bg-background outline-none',
           variant === 'drawer'
             ? 'animate-overlay-drawer h-full w-full max-w-full border-l shadow-2xl'
-            : 'animate-overlay-panel w-full flex-1 rounded-lg border shadow-lg',
+            : 'animate-overlay-panel w-full flex-1 lg:rounded-lg lg:border lg:shadow-lg',
         )}
       >
         {variant === 'drawer' ? (
@@ -168,7 +168,7 @@ export function SettingsOverlay({
             increaseOnArrowRight={false}
             onResizeStart={(event) => drawerWidth.startResize(event, -1)}
             onStep={drawerWidth.resizeBy}
-            className="absolute inset-y-0 left-0 z-30"
+            className="absolute inset-y-0 left-0 z-30 hidden lg:block"
           />
         ) : null}
         {children}

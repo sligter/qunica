@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError, fetchFormData, fetchJson } from '@/lib/api-v2/client'
 import { authFetch } from '@/lib/authFetch'
+import { isAndroidRuntime } from '@/lib/androidSession'
+import { saveAndroidFile } from '@/lib/androidFileExport'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
@@ -585,6 +587,10 @@ export async function downloadConversationWorkspaceFile(
     agentId,
   )
   const fileName = workspaceFileName(path)
+  if (isAndroidRuntime()) {
+    await saveAndroidFile(fileName, blob)
+    return
+  }
   if (isDesktopRuntime()) {
     await saveFileViaDialog(fileName, new Uint8Array(await blob.arrayBuffer()))
     return

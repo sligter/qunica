@@ -123,6 +123,33 @@ function conversationDataTransfer(id: string) {
 }
 
 describe('Composer', () => {
+  it('keeps all members selectable on phones and Enter inserts a new line', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    const members = Array.from({ length: 6 }, (_, index) => ({ ...groupAgents[0], id: `member-${index}`, agent_id: `agent-${index}`, display_name: `Member ${index}` }))
+    render(<Composer groupAgents={members} onSend={onSend} />)
+    expect(screen.queryByText('@Member 0')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Group members' }))
+    await user.click(screen.getByRole('option', { name: /Member 5/ }))
+    expect(screen.queryByRole('listbox', { name: 'Group members' })).toBeNull()
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    expect(textarea).toHaveValue('@Member 5')
+    await user.type(textarea, '{Enter}Next line')
+    expect(textarea).toHaveValue('@Member 5\nNext line')
+    expect(onSend).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: '@Member 5\nNext line' }))
+  })
+
+  it('does not send while an IME is confirming composition', () => {
+    const onSend = vi.fn()
+    render(<Composer onSend={onSend} />)
+    const textarea = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(textarea, { target: { value: '中文输入' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true })
+    expect(onSend).not.toHaveBeenCalled()
+  })
   beforeEach(() => {
     localStorage.clear()
     mocks.getFile.mockReset()

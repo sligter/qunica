@@ -1,3 +1,4 @@
+import { CompactActions } from '@/components/layout/CompactActions'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -360,10 +361,10 @@ export function ConversationChatView({
       <header
         className={cn(
           'flex shrink-0 items-center justify-between border-b border-border/60 bg-background',
-          compact ? 'h-11 gap-2 px-3' : 'h-14 gap-4 px-4 lg:px-5',
+          compact ? 'h-11 gap-2 px-3' : 'min-h-14 gap-2 px-3 py-1 lg:h-14 lg:gap-4 lg:px-5 lg:py-0',
         )}
       >
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="chat-heading flex min-w-0 flex-1 items-center gap-2">
           <h1
             className={cn(
               'font-serif truncate font-semibold tracking-tight',
@@ -375,7 +376,7 @@ export function ConversationChatView({
           {renderHeaderContext?.(isConversationStreaming)}
           {subtitle ? <span className="hidden text-xs text-muted-foreground lg:inline">{subtitle}</span> : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <CompactActions label={t('common:actions.more')}>
           {scope === 'direct-chats' ? (
             <DirectChatHeaderActions
               key={conversationId}
@@ -410,7 +411,7 @@ export function ConversationChatView({
             </Button>
           ) : null}
           {capabilities.showManage ? headerActions : null}
-        </div>
+        </CompactActions>
       </header>
 
       {capabilities.showAnnouncement && announcement ? (

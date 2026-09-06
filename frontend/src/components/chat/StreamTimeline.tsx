@@ -520,7 +520,7 @@ function AgentBlockView({
   }
 
   return (
-    <div className="flex min-w-0 w-full gap-2 px-3 py-1.5">
+    <div className="chat-stream-row flex min-w-0 w-full gap-2 px-3 py-1.5">
       <AgentAvatar
         name={block.displayName}
         kind={agentIsSystem ? 'system' : 'agent'}
@@ -539,7 +539,7 @@ function AgentBlockView({
           each flip resizes the block, and a list pinned to the bottom answers
           that by scrolling the whole backlog a few pixels.
         */}
-        <div className="flex min-h-5 min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <div className="chat-message-meta flex min-h-5 min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0 font-medium text-foreground">{block.displayName}</span>
           {status ? (
             <StreamStatusPill status={status} className="min-w-0" />
@@ -564,7 +564,7 @@ function AgentBlockView({
 function SchedulerWaiting({ since }: { since: string }) {
   const { t } = useTranslation('chat')
   return (
-    <div className="flex min-w-0 w-full gap-2 px-3 py-2.5" data-scheduler-waiting>
+    <div className="chat-stream-row flex min-w-0 w-full gap-2 px-3 py-2.5" data-scheduler-waiting>
       <AgentAvatar name={t('stream.moderator')} kind="agent" className="mt-0.5" />
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
@@ -619,7 +619,7 @@ export function StreamTimeline({
       return <SchedulerWaiting since={run.updated_at} />
     }
     return (
-      <div className="flex min-w-0 w-full gap-2 px-3 py-2.5">
+      <div className="chat-stream-row flex min-w-0 w-full gap-2 px-3 py-2.5">
         <AgentAvatar
           name={t('stream.assistant')}
           kind={agentIsSystem ? 'system' : 'agent'}

@@ -158,7 +158,7 @@ export function WorkspaceField({
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
           {variant === 'default' ? <Label htmlFor="agent-workspace">{t('agents:fields.workspace')}</Label> : <span />}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
             {allowQuickCreate ? (
               <Button
                 type="button"

@@ -1,3 +1,4 @@
+import { CompactActions } from '@/components/layout/CompactActions'
 import { useState, type FormEvent } from 'react'
 import { Archive, ArchiveRestore, ChevronRight, Eraser, ListPlus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -103,7 +104,7 @@ export function GroupChatHeaderActions({
   }
 
   return (
-    <div className="flex min-w-0 items-center gap-0.5">
+    <div className="chat-thread-controls flex min-w-0 items-center gap-0.5">
       <ChevronRight
         className="mx-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/50"
         aria-hidden="true"
@@ -179,6 +180,7 @@ export function GroupChatHeaderActions({
         </SelectContent>
       </Select>
 
+      <CompactActions label={t('actions.taskActions')} icon={<ListPlus className="h-5 w-5" />}>
       <Dialog open={createOpen} onOpenChange={(open) => {
         setCreateOpen(open)
         if (open) {
@@ -315,6 +317,7 @@ export function GroupChatHeaderActions({
           <Archive className="h-4 w-4" aria-hidden="true" />
         </Button>
       )}
+      </CompactActions>
       <ConfirmDialog
         open={clearOpen}
         onOpenChange={setClearOpen}

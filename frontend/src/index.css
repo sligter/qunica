@@ -232,7 +232,7 @@
 
 @layer components {
   @media (width < 1024px) {
-    button, [role="button"], [role="tab"], nav a {
+    button:not([role="switch"]), [data-slot="button"], [role="button"], [role="tab"], nav a {
       min-height: 44px;
       min-width: 44px;
     }
@@ -793,4 +793,105 @@
     opacity: 1;
     transform: none;
   }
+}
+
+/* Compact surfaces share one breakpoint. These scoped overrides intentionally
+   follow utilities so desktop sizing cannot squeeze the touch layouts. */
+@media (width < 1024px) {
+  .compact-action-list { max-height: min(65dvh, 28rem); overflow-y: auto; }
+  .compact-action-list > div { display: contents; }
+  .compact-action-list :is(button, a)[aria-label] {
+    display: flex; width: 100%; height: auto; min-height: 44px;
+    justify-content: flex-start; gap: 12px; padding: 10px 12px;
+    border-radius: 8px; font-size: 14px; text-align: left;
+  }
+  .compact-action-list :is(button, a)[aria-label]::after {
+    content: attr(aria-label); white-space: normal; overflow-wrap: anywhere;
+  }
+  .compact-action-list svg { flex-shrink: 0; }
+  .chat-heading:has(.chat-thread-controls) { flex-wrap: wrap; gap: 0; padding-block: 4px; }
+  .chat-heading:has(.chat-thread-controls) > h1 { width: 100%; font-size: 14px; }
+  .chat-thread-controls { width: 100%; gap: 4px; }
+  .chat-thread-controls > svg { display: none; }
+  .chat-thread-controls > [role="combobox"] {
+    min-width: 0; width: auto; flex: 1; padding-left: 0; font-size: 14px;
+  }
+  .chat-message[data-sender="agent"], .chat-stream-row {
+    display: grid; grid-template-columns: 36px minmax(0, 1fr);
+    column-gap: 8px; row-gap: 6px; align-items: center; padding: 10px 12px;
+  }
+  .chat-message[data-sender="agent"] > span, .chat-stream-row > span { grid-column: 1; grid-row: 1; }
+  .chat-message[data-sender="agent"] > div, .chat-stream-row > div { display: contents; }
+  .chat-message[data-sender="agent"] > div > *, .chat-stream-row > div > * { grid-column: 1 / -1; }
+  .chat-message[data-sender="agent"] > div > :first-child, .chat-stream-row > div > :first-child {
+    grid-column: 2; grid-row: 1; min-height: 36px;
+  }
+  .chat-message-meta { width: 100%; flex-wrap: wrap; column-gap: 8px; row-gap: 0; }
+  .chat-message-meta > span:first-child { flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .message-actions { margin-left: auto; opacity: 1; }
+  .chat-message[data-sender="user"] > div { max-width: calc(100% - 44px); }
+  .markdown-message { font-size: 15px; line-height: 1.7; }
+  .markdown-message p button, .markdown-message li button {
+    display: inline; min-height: 0; min-width: 0; vertical-align: baseline; text-align: inherit;
+  }
+  .chat-composer textarea, .chat-composer [data-mention-highlights] {
+    padding: 12px 12px 6px; font-size: 16px; line-height: 24px;
+  }
+  .chat-composer textarea { max-height: min(160px, 30dvh); }
+  .composer-toolbar > button { flex-shrink: 0; }
+  .composer-members > div > button { min-width: 0; max-width: 100%; padding-inline: 8px; font-size: 12px; }
+  .composer-members > div > button svg { flex-shrink: 0; }
+  .composer-menu { width: min(224px, 65vw); max-height: min(224px, 40dvh); }
+  .composer-members .composer-menu { right: 0; left: auto; }
+  .settings-overlay-panel { width: 100% !important; border: 0; border-radius: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .resource-navigation, .settings-shell nav {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 6px 8px;
+  }
+  .settings-shell nav { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0; }
+  .resource-navigation > div, .settings-shell nav > div { display: contents; }
+  .resource-navigation a, .settings-shell nav a {
+    min-width: 0; width: 100%; justify-content: center; gap: 6px;
+    padding: 8px 4px; font-size: 12px; line-height: 1.35; text-align: center;
+  }
+  .resource-navigation a span { white-space: normal; }
+  .resource-shell[data-detail-open] .resource-navigation { display: none; }
+  .detail-shell > header { padding: 12px 16px; }
+  .detail-heading > div:first-child { max-width: 100%; }
+  .detail-heading h1 { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+  .detail-actions { gap: 6px; }
+  .detail-actions:has(input[type="search"]) { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; }
+  .detail-actions:has(input[type="search"]) > div { min-width: 0; }
+  .resource-metrics { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+  .resource-metrics > div { padding: 12px 10px; }
+  .resource-metrics > div > div > span { white-space: normal; }
+  .resource-metrics svg { display: none; }
+  .detail-content { overflow-wrap: anywhere; }
+  [data-slot="section-heading"] { flex-wrap: wrap; align-items: center; gap: 10px; }
+  [data-slot="section-heading"] > div { max-width: 100%; }
+  [data-slot="section-heading"] > div:last-child > div { justify-content: flex-start; }
+  [data-slot="settings-row"] { padding-block: 16px; }
+  [data-slot="settings-row"] > div:first-child p { line-height: 1.6; }
+  [data-slot="settings-control"] { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+  [data-slot="settings-control"] [role="radiogroup"] { display: flex; flex-wrap: wrap; width: 100%; }
+  [data-slot="settings-control"] [role="radio"] { min-width: 0; flex: 1; white-space: normal; height: auto; }
+  [role="switch"] { position: relative; }
+  [role="switch"]::after { content: ''; position: absolute; inset: -12px -4px; }
+  [data-slot="settings-row"]:has([role="switch"]):not([data-stacked]) { flex-direction: row; align-items: center; }
+  [data-slot="settings-row"]:has([role="switch"]) > [data-slot="settings-control"] { width: auto; flex-shrink: 0; }
+  [role="tablist"] { height: auto; min-height: 44px; max-width: 100%; flex-wrap: wrap; }
+  [role="tab"] { white-space: normal; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), select { min-height: 44px; font-size: 16px; }
+  textarea { font-size: 16px; }
+  [data-slot="dialog-content"] {
+    max-width: calc(100vw - 24px); max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 32px);
+    overflow-y: auto; overscroll-behavior: contain; border-radius: 16px; padding: 52px 16px 16px;
+  }
+  [data-slot="dialog-content"] > button:last-child { top: 4px; right: 4px; display: grid; place-items: center; }
+  .system-log-entry > summary { min-width: 0; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; padding-block: 12px; }
+  .system-log-entry > summary > :nth-child(n+4) { grid-column: 2 / -1; }
+  .system-log-entry > pre { min-width: 0; max-width: 100%; padding: 12px; }
+  .usage-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .usage-summary > :first-child { grid-column: 1 / -1; }
+  .usage-summary > div { padding: 14px; }
+  .usage-summary > div:not(:first-child) > div > span { display: none; }
 }

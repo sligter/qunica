@@ -88,7 +88,7 @@ function formatTimestamp(value: string, locale: string): string {
 function LogEntryRow({ entry, locale }: { entry: SystemLogEntry; locale: string }) {
   const level = entry.level.toLowerCase()
   return (
-    <details className="group border-b border-border last:border-b-0">
+    <details className="system-log-entry group border-b border-border last:border-b-0">
       <summary className="grid min-w-[52rem] cursor-pointer list-none grid-cols-[1rem_7.5rem_4.5rem_minmax(12rem,18rem)_1fr] items-start gap-3 px-3 py-2 text-xs marker:content-none hover:bg-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <ChevronRight className="mt-0.5 h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
         <time className="font-mono tabular-nums text-muted-foreground" dateTime={entry.timestamp}>

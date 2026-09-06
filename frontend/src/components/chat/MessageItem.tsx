@@ -123,8 +123,9 @@ export function MessageItemView({
     <div
       id={`message-${message.id}`}
       data-copy-text={copyText}
+      data-sender={isUser ? 'user' : 'agent'}
       className={cn(
-        'group/message flex min-w-0 w-full gap-2 px-3 py-2 transition-opacity',
+        'chat-message group/message flex min-w-0 w-full gap-2 px-3 py-2 transition-opacity',
         isUser ? 'flex-row-reverse' : 'flex-row',
         isPending && 'opacity-70',
       )}
@@ -154,7 +155,7 @@ export function MessageItemView({
           pending, or has no content yet — without the reservation the row
           grows once they appear and nudges the list under it.
         */}
-        <div className="flex min-h-7 min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        <div className="chat-message-meta flex min-h-7 min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0 font-medium text-foreground">{senderName}</span>
           {workspaceModeKey ? (
             <button

@@ -1,6 +1,10 @@
 # Add project specific ProGuard rules here.
 -keep class app.qunica.mobile.SecureSessionPlugin { *; }
 -keep class app.qunica.mobile.WriteSessionArgs { *; }
+-keep class app.qunica.mobile.FileExportPlugin { *; }
+-keep class app.qunica.mobile.BeginExportArgs { *; }
+-keep class app.qunica.mobile.ExportIdArgs { *; }
+-keep class app.qunica.mobile.AppendExportArgs { *; }
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
 #

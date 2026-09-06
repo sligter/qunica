@@ -176,7 +176,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({
   return (
     <div
       className={cn(
-        'min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-sm leading-6',
+        'markdown-message min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-sm leading-6',
         isUser && 'whitespace-pre-wrap',
         isUser ? 'chat-user-message text-current' : 'text-foreground',
       )}

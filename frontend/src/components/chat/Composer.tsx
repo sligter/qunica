@@ -3,6 +3,7 @@ import { ArrowUp, Check, ChevronDown, FileText, Image, Paperclip, RotateCw, Spar
 import { useTranslation } from 'react-i18next'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
+import { useCompactLayout } from '@/hooks/useMediaQuery'
 import { ImageLightbox } from '@/components/chat/ImageLightbox'
 import { Button } from '@/components/ui/button'
 import {
@@ -196,7 +197,7 @@ function ComposerMenu({
           event.stopPropagation()
           onClose()
         }}
-        className="absolute bottom-full left-0 z-50 mb-2 max-h-56 w-56 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+        className="composer-menu absolute bottom-full left-0 z-50 mb-2 max-h-56 w-56 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
       >
         {children}
       </div>
@@ -300,6 +301,7 @@ export function Composer({
   allowConversationDrop = false,
 }: ComposerProps) {
   const { t } = useTranslation('chat')
+  const compactLayout = useCompactLayout()
   const [value, setValue] = useState(() => readComposerDraft(draftKey))
   const [attachments, setAttachmentState] = useState<PendingAttachment[]>([])
   const [uploadError, setUploadError] = useState<WorkspaceErrorMessageKey | null>(null)
@@ -931,7 +933,7 @@ export function Composer({
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (showMention) return
+    if (showMention || e.nativeEvent.isComposing || compactLayout) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void send()
@@ -951,7 +953,7 @@ export function Composer({
   ) ?? null
   const enhanceAgentLabel = selectedEnhanceAgent?.display_name
     ?? t('composer.enhanceAgentAuto')
-  const visibleAgents = groupAgents.slice(0, 3)
+  const visibleAgents = groupAgents.slice(0, compactLayout ? 0 : 3)
   const hiddenAgentCount = groupAgents.length - visibleAgents.length
   const mentionParts = useMemo(
     () => splitMentions(
@@ -963,7 +965,7 @@ export function Composer({
   const hasHighlightedMention = mentionParts.some((part) => part.mentioned)
 
   return (
-    <div className="shrink-0 px-4 pb-4 pt-1">
+    <div className="chat-composer shrink-0 px-3 pb-2 pt-1 lg:px-4 lg:pb-4">
       <div className="mx-auto w-full max-w-6xl">
         {uploadError ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('errors.uploadDetail', { message: t(uploadError) })}</p> : null}
         {enhanceError ? <p role="alert" aria-live="polite" className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{t('composer.enhanceFailed', { message: enhanceError })}</p> : null}
@@ -1051,7 +1053,7 @@ export function Composer({
             aria-label={t('composer.resize')}
             title={t('composer.resizeTitle')}
             className={cn(
-              'group absolute left-1/2 top-0 z-20 flex h-3.5 w-16 -translate-x-1/2 cursor-ns-resize items-center justify-center',
+              'group absolute left-1/2 top-0 z-20 hidden h-3.5 w-16 -translate-x-1/2 cursor-ns-resize items-center justify-center lg:flex',
               'rounded-b focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
               isDisabled && 'pointer-events-none opacity-0',
             )}
@@ -1073,7 +1075,7 @@ export function Composer({
               })}
             </div>
           ) : null}
-          <div className="flex items-center gap-1 px-2.5 pb-2 pt-0.5">
+          <div className="composer-toolbar flex flex-wrap items-center gap-1 px-2 pb-2 pt-0.5 lg:flex-nowrap lg:px-2.5">
             {hasWorkspace ? (
               <>
                 <input
@@ -1178,7 +1180,7 @@ export function Composer({
               </div>
             ) : null}
             {allowMentions && groupAgents.length > 0 ? (
-              <div className="relative min-w-0 flex-1">
+              <div className="composer-members relative min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1 pl-1">
                   {visibleAgents.map((agent) => (
                     <button
@@ -1198,9 +1200,9 @@ export function Composer({
                       onClick={() => setAgentSummaryOpen((open) => !open)}
                       aria-expanded={agentSummaryOpen}
                       aria-haspopup="listbox"
-                      aria-label={t('composer.showMore', { count: hiddenAgentCount })}
+                      aria-label={compactLayout ? t('composer.membersList') : t('composer.showMore', { count: hiddenAgentCount })}
                     >
-                      +{hiddenAgentCount}
+                      <span className="truncate">{compactLayout ? `@ ${t('composer.membersCompact')} · ${groupAgents.length}` : `+${hiddenAgentCount}`}</span>
                       <ChevronDown className="h-3 w-3" />
                     </button>
                   ) : null}
@@ -1215,7 +1217,10 @@ export function Composer({
                       <ComposerMenuItem
                         key={agent.id}
                         title={t('composer.mentionTitle', { name: agent.display_name })}
-                        onClick={() => insertTextAtCursor(`@${agent.display_name}`)}
+                        onClick={() => {
+                          insertTextAtCursor(`@${agent.display_name}`)
+                          setAgentSummaryOpen(false)
+                        }}
                       >
                         @{agent.display_name}
                       </ComposerMenuItem>
@@ -1231,7 +1236,7 @@ export function Composer({
               <div className="flex-1" />
             )}
             {effortSupported ? (
-              <div className="flex w-32 shrink-0 items-center gap-1.5 pl-1">
+              <div className="flex w-32 shrink-0 items-center gap-1.5 pl-1 max-lg:order-first max-lg:mb-1 max-lg:w-full max-lg:border-b max-lg:border-border max-lg:px-2 max-lg:pb-2">
                 <span className="w-10 shrink-0 truncate text-right text-2xs text-muted-foreground">
                   {effortOverride
                     ? t(`composer.effort.${effortOverride}`)
@@ -1287,7 +1292,7 @@ export function Composer({
                 onClick={() => void send()}
                 disabled={isDisabled || isSending || isEnhancing || hasUploading || (!hasText && !hasUploaded)}
                 aria-label={t('composer.send')}
-                title={t('composer.sendTitle')}
+                title={t(compactLayout ? 'composer.send' : 'composer.sendTitle')}
               >
                 <ArrowUp className="h-4 w-4" />
               </Button>

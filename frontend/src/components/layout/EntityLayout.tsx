@@ -50,7 +50,7 @@ export function EntityLayout({ titleKey }: EntityLayoutProps) {
   useDocumentTitle(area)
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+    <div data-detail-open={detailOpen || undefined} className="resource-shell flex h-full w-full flex-col overflow-hidden bg-background">
       <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
