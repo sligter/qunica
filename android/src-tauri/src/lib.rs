@@ -51,7 +51,7 @@ mod mobile {
                     url.scheme() == "https" && url.host_str() == Some("tauri.localhost")
                 }).build())
             .invoke_handler(tauri::generate_handler![mobile_session_read, mobile_session_write, mobile_file_export,
-                crate::lan::mobile_lan_pair, crate::lan::mobile_lan_configure,
+                crate::lan::mobile_lan_pair, crate::lan::mobile_lan_configure, crate::lan::mobile_lan_verify,
                 crate::lan::mobile_lan_prepare, crate::lan::mobile_lan_open,
                 crate::lan::mobile_lan_read, crate::lan::mobile_lan_close])
             .run(tauri::generate_context!())

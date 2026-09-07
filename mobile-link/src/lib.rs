@@ -70,6 +70,97 @@ pub fn lan_address(endpoint: &str) -> Result<SocketAddr> {
     ensure!(addr.port() > 0, "Invalid port");
     Ok(addr)
 }
+
+/// A destination is only a route. Noise's pinned key remains the server identity.
+/// No URL syntax, local-only destinations, or ambiguous numeric host spellings.
+pub fn endpoint_parts(endpoint: &str) -> Result<(String, u16)> {
+    ensure!(endpoint.len() <= 260, "Address is too long");
+    if let Ok(address) = endpoint.parse::<SocketAddr>() {
+        ensure!(
+            address.port() != 0 && usable_ip(address.ip()),
+            "Invalid destination address"
+        );
+        return Ok((address.ip().to_string(), address.port()));
+    }
+    let (host, port) = endpoint
+        .rsplit_once(':')
+        .context("Use host:port, without http://")?;
+    let port: u16 = port.parse().context("Invalid port")?;
+    ensure!(
+        port > 0 && !host.is_empty() && host.len() <= 253,
+        "Invalid host or port"
+    );
+    ensure!(
+        host.contains('.') && host.bytes().any(|b| b.is_ascii_alphabetic()),
+        "Use a full DNS name or IP address"
+    );
+    ensure!(
+        host.split('.').all(|label| !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')),
+        "Invalid DNS name"
+    );
+    let host = host.to_ascii_lowercase();
+    ensure!(
+        !host.ends_with(".localhost") && !host.ends_with(".local"),
+        "Use a routable destination"
+    );
+    Ok((host, port))
+}
+
+fn usable_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_link_local()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && ip.octets()[0] != 0
+        }
+        std::net::IpAddr::V6(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && (ip.segments()[0] & 0xffc0) != 0xfe80
+                && ip.to_ipv4_mapped().is_none()
+        }
+    }
+}
+
+async fn connect_endpoint(endpoint: &str, key: &[u8]) -> Result<(Receiver, Sender)> {
+    let (host, port) = endpoint_parts(endpoint)?;
+    timeout(Duration::from_secs(15), async {
+        let addresses = tokio::net::lookup_host((host.as_str(), port)).await?;
+        // Resolve once per connection; validate and connect the exact resolved IP.
+        // Never retry an HTTP operation here: only the Noise handshake is retried.
+        for address in addresses.filter(|a| usable_ip(a.ip())).take(8) {
+            if let Ok(Ok(connection)) = timeout(Duration::from_secs(3), connect(address, key)).await
+            {
+                return Ok(connection);
+            }
+        }
+        anyhow::bail!("Cannot reach the paired desktop at this address")
+    })
+    .await?
+}
+
+pub async fn verify_connection(connection: &Connection) -> Result<()> {
+    let (mut rx, mut tx) =
+        connect_endpoint(&connection.endpoint, &decode(&connection.public_key)?).await?;
+    tx.json(&Auth {
+        credential: connection.credential.clone(),
+        claim: false,
+        name: String::new(),
+    })
+    .await?;
+    let _: Authorized = rx.json().await?;
+    Ok(())
+}
 impl Offer {
     pub fn parse(value: &str) -> Result<Self> {
         ensure!(value.len() < 2048, "Pairing code is too large");
@@ -78,8 +169,15 @@ impl Offer {
             .strip_prefix("qunica://pair?data=")
             .context("Scan a Qunica pairing code")?;
         let offer: Self = serde_json::from_slice(&decode(raw)?)?;
-        ensure!(offer.v == 1, "Unsupported pairing version");
-        lan_address(&offer.endpoint)?;
+        match offer.v {
+            1 => {
+                lan_address(&offer.endpoint)?;
+            }
+            2 => {
+                endpoint_parts(&offer.endpoint)?;
+            }
+            _ => anyhow::bail!("Unsupported pairing version; update the app"),
+        }
         ensure!(
             decode(&offer.public_key)?.len() == 32 && decode(&offer.code)?.len() == 32,
             "Invalid pairing key"
@@ -230,8 +328,7 @@ pub async fn accept(mut stream: TcpStream, private_key: &[u8]) -> Result<(Receiv
 }
 
 pub async fn pair(offer: Offer, name: String) -> Result<Connection> {
-    let (mut rx, mut tx) =
-        connect(lan_address(&offer.endpoint)?, &decode(&offer.public_key)?).await?;
+    let (mut rx, mut tx) = connect_endpoint(&offer.endpoint, &decode(&offer.public_key)?).await?;
     tx.json(&Auth {
         credential: offer.code,
         claim: true,
@@ -252,11 +349,8 @@ pub async fn request(
     body: &[u8],
 ) -> Result<(ResponseHead, Receiver, Sender)> {
     ensure!(body.len() <= MAX_BODY, "Upload exceeds 32 MiB");
-    let (mut rx, mut tx) = connect(
-        lan_address(&connection.endpoint)?,
-        &decode(&connection.public_key)?,
-    )
-    .await?;
+    let (mut rx, mut tx) =
+        connect_endpoint(&connection.endpoint, &decode(&connection.public_key)?).await?;
     tx.json(&Auth {
         credential: connection.credential.clone(),
         claim: false,
@@ -276,6 +370,53 @@ pub async fn request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relay_offers_accept_routable_destinations_but_keep_legacy_lan_rules() {
+        for endpoint in [
+            "203.0.113.8:18766",
+            "relay.example.com:18766",
+            "[2001:db8::1]:18766",
+            "192.168.1.2:8766",
+        ] {
+            assert!(endpoint_parts(endpoint).is_ok(), "{endpoint}");
+            let offer = Offer {
+                v: 2,
+                endpoint: endpoint.into(),
+                public_key: encode(&keypair().unwrap().public),
+                code: secret().unwrap(),
+            };
+            assert!(Offer::parse(&offer.uri().unwrap()).is_ok());
+            if lan_address(endpoint).is_err() {
+                assert!(Offer::parse(&Offer { v: 1, ..offer }.uri().unwrap()).is_err());
+            }
+        }
+        for endpoint in [
+            "http://example.com:8766",
+            "user@example.com:8766",
+            "example.com:0",
+            "example.com:65536",
+            "example.com:8766/path",
+            "example.com:8766?token=x",
+            "example.com:8766#x",
+            " example.com:8766",
+            "localhost:8766",
+            "a.localhost:8766",
+            "a.local:8766",
+            "-a.example:8766",
+            "a..example:8766",
+            "127.0.0.1:8766",
+            "0.0.0.0:8766",
+            "169.254.169.254:80",
+            "224.0.0.1:8766",
+            "255.255.255.255:8766",
+            "[::1]:8766",
+            "[::ffff:127.0.0.1]:8766",
+            "[fe80::1]:8766",
+            "2130706433:8766",
+        ] {
+            assert!(endpoint_parts(endpoint).is_err(), "{endpoint}");
+        }
+    }
     #[test]
     fn pairing_parser_rejects_public_loopback_dns_and_extra_fields() {
         for address in [

@@ -69,5 +69,30 @@ export async function pairAndroidDesktop(offer: string): Promise<void> {
 }
 
 export const androidDesktopAddress = () => session.lan?.endpoint ?? session.server
+export const hasAndroidDesktopPairing = () => !!session.lan
+
+/** Keep the pinned identity. Verify it before changing either storage or live requests. */
+export async function changeAndroidDesktopEndpoint(endpoint: string): Promise<void> {
+  if (!session.lan) throw new Error('Pair a desktop first.')
+  const previous = session
+  const lan = { ...session.lan, endpoint: endpoint.trim() }
+  await invoke('mobile_lan_verify', { connection: lan })
+  if (session !== previous) throw new Error('Session changed. Try again.')
+  // Unlike token writes, a failed route update must not replace the working route.
+  const next = { ...previous, lan }
+  // Join the same write queue as login/logout so late writes cannot restore a token.
+  session = next
+  const operation = writes.then(async () => {
+    try {
+      await invoke('mobile_session_write', { value: JSON.stringify(next) })
+    } catch (error) {
+      if (session === next) session = previous
+      throw error
+    }
+    if (session.lan === lan) await invoke('mobile_lan_configure', { connection: lan })
+  })
+  writes = operation.catch(error => { useAndroidSession.setState({ error: String(error) }) })
+  await operation
+}
 
 export const retryAndroidPersistence = () => persist(session)

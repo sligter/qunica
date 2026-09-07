@@ -38,7 +38,12 @@ pub async fn mobile_lan_pair(offer: String, name: String) -> Result<Connection, 
     let offer = link::Offer::parse(&offer).map_err(|e| e.to_string())?;
     link::pair(offer, name)
         .await
-        .map_err(|_| "Pairing failed. Check LAN connectivity and generate a fresh QR code.".into())
+        .map_err(|_| "Pairing failed. Check desktop sharing, LAN or VPS relay connectivity and generate a fresh QR code.".into())
+}
+#[tauri::command]
+pub async fn mobile_lan_verify(connection: Connection) -> Result<(), String> {
+    link::verify_connection(&connection).await
+        .map_err(|_| "Cannot verify the paired desktop at this address. Check the relay and sharing mode.".into())
 }
 #[tauri::command]
 pub fn mobile_lan_configure(
@@ -46,7 +51,7 @@ pub fn mobile_lan_configure(
     connection: Option<Connection>,
 ) -> Result<(), String> {
     if let Some(c) = &connection {
-        link::lan_address(&c.endpoint).map_err(|e| e.to_string())?;
+        link::endpoint_parts(&c.endpoint).map_err(|e| e.to_string())?;
         if link::decode(&c.public_key)
             .map_err(|e| e.to_string())?
             .len()
@@ -104,7 +109,7 @@ pub async fn mobile_lan_open(
         let (head, rx, tx) = link::request(&request.connection, head, &body)
             .await
             .map_err(|_| {
-                "Encrypted connection failed. Check desktop sharing, pairing and LAN routing."
+                "Encrypted connection failed. Check desktop sharing, pairing and LAN or VPS relay routing."
                     .to_string()
             })?;
         *request.stream.lock().await = Some((rx, tx));

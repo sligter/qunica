@@ -59,6 +59,7 @@ struct State {
     stored: Stored,
     pending: Option<Pending>,
     listener: Option<(SocketAddr, CancellationToken)>,
+    advertised: Option<String>,
     devices: HashMap<String, Active>,
 }
 
@@ -108,6 +109,91 @@ mod tests {
         server.bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let address = server.state.lock().await.listener.as_ref().unwrap().0;
         (dir, server, address)
+    }
+    #[tokio::test]
+    async fn relay_publishes_separate_address_and_preserves_noise_streams_and_revocation() {
+        let (_dir, server, _) = fixture().await;
+        server.stop().await;
+        assert!(server.start_relay("https://bad.example:443").await.is_err());
+        assert!(server.status().await.unwrap().endpoint.is_none());
+        server
+            .bind_with_endpoint(
+                "127.0.0.1:0".parse().unwrap(),
+                Some("relay.example.com:18766".into()),
+            )
+            .await
+            .unwrap();
+        let local = server.state.lock().await.listener.as_ref().unwrap().0;
+        let status = server.status().await.unwrap();
+        assert_eq!(status.endpoint.as_deref(), Some("relay.example.com:18766"));
+        assert_eq!(status.listen_endpoint, Some(local.to_string()));
+        assert!(local.ip().is_loopback());
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let public = proxy.local_addr().unwrap();
+        let relay_stop = CancellationToken::new();
+        let cancel = relay_stop.clone();
+        let relay = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = proxy.accept() => {
+                        let (mut phone, _) = result.unwrap();
+                        let cancel = cancel.clone();
+                        tokio::spawn(async move {
+                            let mut desktop = TcpStream::connect(local).await.unwrap();
+                            tokio::select! {
+                                _ = cancel.cancelled() => {},
+                                _ = tokio::io::copy_bidirectional(&mut phone, &mut desktop) => {},
+                            }
+                        });
+                    }
+                }
+            }
+        });
+        let offer = server.offer().await.unwrap();
+        let parsed = Offer::parse(&offer.uri).unwrap();
+        assert_eq!(parsed.v, 2);
+        assert_eq!(parsed.endpoint, "relay.example.com:18766");
+        assert!(connect(public, &keypair().unwrap().public).await.is_err());
+        let credential = claim(&server, public, &offer.uri).await.unwrap();
+        assert!(claim(&server, public, &offer.uri).await.is_err());
+        let payload = vec![173; CHUNK * 3 + 17];
+        let (head, mut rx, _tx) = send(&server, public, &credential, "/api/v2/echo", &payload)
+            .await
+            .unwrap();
+        assert_eq!(head.status, 200);
+        let mut output = vec![];
+        loop {
+            let (kind, bytes) = rx.frame().await.unwrap();
+            if kind == END {
+                break;
+            }
+            if kind == DATA {
+                output.extend(bytes);
+            }
+        }
+        assert_eq!(output, payload);
+        let (_, mut rx, _tx) = send(&server, public, &credential, "/api/v2/events", &[])
+            .await
+            .unwrap();
+        loop {
+            let (kind, bytes) = rx.frame().await.unwrap();
+            if kind == DATA {
+                assert!(String::from_utf8(bytes).unwrap().contains("id: stream:1"));
+                break;
+            }
+        }
+        let id = server.status().await.unwrap().devices[0].id.clone();
+        server.revoke(&id).await.unwrap();
+        assert!(timeout(Duration::from_secs(2), rx.frame())
+            .await
+            .unwrap()
+            .is_err());
+        server.stop().await;
+        let stopped = server.status().await.unwrap();
+        assert!(stopped.endpoint.is_none() && stopped.listen_endpoint.is_none());
+        relay_stop.cancel();
+        relay.await.unwrap();
     }
     async fn channel(server: &MobileServer, address: SocketAddr) -> (Receiver, Sender) {
         let key = decode(&server.state.lock().await.stored.public_key).unwrap();
@@ -299,6 +385,7 @@ pub struct Interface {
 #[derive(Serialize)]
 pub struct Status {
     pub endpoint: Option<String>,
+    pub listen_endpoint: Option<String>,
     pub interfaces: Vec<Interface>,
     pub devices: Vec<Device>,
 }
@@ -335,6 +422,7 @@ impl MobileServer {
                 stored: stored.clone(),
                 pending: None,
                 listener: None,
+                advertised: None,
                 devices: HashMap::new(),
             }),
             path,
@@ -399,7 +487,11 @@ impl MobileServer {
     pub async fn status(&self) -> Result<Status> {
         let state = self.state.lock().await;
         Ok(Status {
-            endpoint: state.listener.as_ref().map(|(a, _)| a.to_string()),
+            endpoint: state
+                .advertised
+                .clone()
+                .or_else(|| state.listener.as_ref().map(|(a, _)| a.to_string())),
+            listen_endpoint: state.listener.as_ref().map(|(a, _)| a.to_string()),
             interfaces: Self::interfaces()?,
             devices: state
                 .stored
@@ -417,7 +509,22 @@ impl MobileServer {
         self.bind(SocketAddr::new(address.parse::<Ipv4Addr>()?.into(), PORT))
             .await
     }
+    pub async fn start_relay(self: &Arc<Self>, endpoint: &str) -> Result<()> {
+        endpoint_parts(endpoint)?;
+        self.bind_with_endpoint(
+            SocketAddr::from(([127, 0, 0, 1], PORT)),
+            Some(endpoint.to_owned()),
+        )
+        .await
+    }
     async fn bind(self: &Arc<Self>, address: SocketAddr) -> Result<()> {
+        self.bind_with_endpoint(address, None).await
+    }
+    async fn bind_with_endpoint(
+        self: &Arc<Self>,
+        address: SocketAddr,
+        advertised: Option<String>,
+    ) -> Result<()> {
         let mut state = self.state.lock().await;
         ensure!(
             state.listener.is_none(),
@@ -428,6 +535,7 @@ impl MobileServer {
         let address = listener.local_addr()?;
         let cancel = CancellationToken::new();
         state.listener = Some((address, cancel.clone()));
+        state.advertised = advertised;
         let server = self.clone();
         tokio::spawn(async move {
             let slots = Arc::new(Semaphore::new(64));
@@ -459,15 +567,17 @@ impl MobileServer {
             active.cancel.cancel();
         }
         state.pending = None;
+        state.advertised = None;
     }
     pub async fn offer(&self) -> Result<Pairing> {
         let mut state = self.state.lock().await;
-        let endpoint = state
+        let listener_endpoint = state
             .listener
             .as_ref()
-            .context("Enable LAN sharing first")?
+            .context("Enable phone sharing first")?
             .0
             .to_string();
+        let endpoint = state.advertised.clone().unwrap_or(listener_endpoint);
         ensure!(
             state.stored.devices.len() < 32,
             "Remove an old device before pairing another"
@@ -475,7 +585,7 @@ impl MobileServer {
         let code = secret()?;
         let expires = now() + 120;
         let uri = Offer {
-            v: 1,
+            v: if state.advertised.is_some() { 2 } else { 1 },
             endpoint,
             public_key: state.stored.public_key.clone(),
             code: code.clone(),

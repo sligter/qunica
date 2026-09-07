@@ -6,6 +6,31 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); mocks.invoke.mockReset(); localStorage.clear() })
 
 describe('Android remote session', () => {
+  it('verifies a changed route against the original key and keeps the account token', async () => {
+    const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
+    mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://qunica-lan.invalid', token: 'account-token', lan }) }).mockResolvedValue({})
+    const session = await import('./androidSession')
+    await session.initializeAndroidSession()
+    await session.changeAndroidDesktopEndpoint(' relay.example.com:18766 ')
+    const changed = { ...lan, endpoint: 'relay.example.com:18766' }
+    expect(mocks.invoke.mock.calls.slice(2).map(([name]) => name)).toEqual(['mobile_lan_verify', 'mobile_session_write', 'mobile_lan_configure'])
+    expect(mocks.invoke).toHaveBeenCalledWith('mobile_lan_verify', { connection: changed })
+    expect(JSON.parse(mocks.invoke.mock.calls[3][1].value)).toMatchObject({ token: 'account-token', lan: changed })
+    expect(session.androidDesktopAddress()).toBe(changed.endpoint)
+  })
+  it('keeps the old route when verification or secure storage fails', async () => {
+    const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
+    mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://qunica-lan.invalid', token: null, lan }) }).mockResolvedValue({})
+    const session = await import('./androidSession')
+    await session.initializeAndroidSession()
+    mocks.invoke.mockRejectedValueOnce(new Error('Wrong desktop key'))
+    await expect(session.changeAndroidDesktopEndpoint('relay.example.com:18766')).rejects.toThrow('Wrong desktop key')
+    expect(session.androidDesktopAddress()).toBe(lan.endpoint)
+    expect(mocks.invoke).not.toHaveBeenCalledWith('mobile_session_write', expect.anything())
+    mocks.invoke.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('Disk full'))
+    await expect(session.changeAndroidDesktopEndpoint('relay.example.com:18766')).rejects.toThrow('Disk full')
+    expect(session.androidDesktopAddress()).toBe(lan.endpoint)
+  })
   it('restores the paired identity through native validation and keeps all secrets out of browser storage', async () => {
     const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
     mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://qunica-lan.invalid', token: 'account-token', lan }) }).mockResolvedValue({})

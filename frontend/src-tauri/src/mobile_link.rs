@@ -17,9 +17,14 @@ pub async fn mobile_link_status(state: State<'_, MobileLink>) -> Result<Status, 
 pub async fn mobile_link_start(
     state: State<'_, MobileLink>,
     address: String,
+    advertised_endpoint: Option<String>,
 ) -> Result<Status, String> {
     let server = state.server()?;
-    server.start(&address).await.map_err(|e| e.to_string())?;
+    if let Some(endpoint) = advertised_endpoint {
+        server.start_relay(endpoint.trim()).await
+    } else {
+        server.start(&address).await
+    }.map_err(|e| e.to_string())?;
     server.status().await.map_err(|e| e.to_string())
 }
 #[tauri::command]
