@@ -430,6 +430,7 @@ export function ConversationChatView({
                 </p>
               ) : null}
               <MessageList
+                isVisible={!activeEditorId}
                 groupId={conversationId}
                 stateId={stateId}
                 threadId={threadId}

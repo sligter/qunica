@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -47,6 +47,23 @@ describe('WorkspaceEditorStage', () => {
   afterEach(() => {
     cleanup()
     useFileNavStore.setState({ request: null, editorStages: {} })
+  })
+
+  it('preserves the chat DOM when opening the first and closing the last editor', async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceEditorStage scope="groups" conversationId="group-1">
+      <div data-testid="chat-scroll">message stage</div>
+    </WorkspaceEditorStage>)
+    const chat = screen.getByTestId('chat-scroll')
+    chat.scrollTop = 375
+    act(() => useFileNavStore.getState().openEditor('group-1', firstFile))
+    expect(screen.getByTestId('chat-scroll')).toBe(chat)
+    expect(chat.parentElement).toHaveClass('hidden')
+    await user.click(screen.getByRole('button', { name: 'Close first.ts' }))
+    expect(screen.getByTestId('chat-scroll')).toBe(chat)
+    expect(chat).toBeVisible()
+    expect(chat.scrollTop).toBe(375)
+    expect(screen.queryByRole('tablist')).toBeNull()
   })
 
   it('keeps multiple editors mounted and confirms before closing a dirty tab', async () => {

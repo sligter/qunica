@@ -8,14 +8,29 @@ async fn main() -> anyhow::Result<()> {
     let endpoint = std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("Provide relay host:port"))?;
     let directory = tempfile::tempdir()?;
     let router = Router::new()
+        .route("/api/v2/auth/me", get(|headers: axum::http::HeaderMap| async move {
+            if headers.get("authorization").is_some_and(|v| v == "Bearer isolated-smoke-account") {
+                axum::http::StatusCode::OK
+            } else { axum::http::StatusCode::UNAUTHORIZED }
+        }))
         .route("/api/v2/echo", post(|body: axum::body::Bytes| async move { body }))
         .route("/api/v2/events", get(|| async {
             ([("content-type", "text/event-stream")], "id: relay:1\ndata: first\n\nid: relay:2\ndata: second\n\n")
         }));
     let server = MobileServer::load(directory.path().join("identity.json"), router)?;
     server.start_relay(&endpoint).await?;
-    let offer = server.offer().await?;
-    let connection = link::pair(link::Offer::parse(&offer.uri)?, "Relay smoke".into()).await?;
+    let offer = server.offer_for_account("isolated-smoke-account".into()).await?;
+    let paired = link::pair(link::Offer::parse(&offer.uri)?, "Relay smoke".into()).await?;
+    anyhow::ensure!(paired.account_token.as_deref() == Some("isolated-smoke-account"));
+    let serialized = serde_json::to_value(&paired)?;
+    anyhow::ensure!(serialized["accountToken"] == "isolated-smoke-account");
+    let connection = paired.connection;
+    let login_head = link::RequestHead {
+        method: "GET".into(), path: "/api/v2/auth/me".into(),
+        headers: vec![("authorization".into(), format!("Bearer {}", paired.account_token.unwrap()))],
+    };
+    let (login, _rx, _tx) = link::request(&connection, login_head, &[]).await?;
+    anyhow::ensure!(login.status == 200, "Handed-off login must authenticate the phone");
     anyhow::ensure!(link::pair(link::Offer::parse(&offer.uri)?, "Replay".into()).await.is_err());
     link::verify_connection(&connection).await?;
     let mut wrong = connection.clone();
@@ -38,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     server.revoke(&server.status().await?.devices[0].id).await?;
     anyhow::ensure!(link::verify_connection(&connection).await.is_err());
     server.stop().await;
-    println!("PASS: frp pairing, single use, pinned identity, 100003-byte binary roundtrip, SSE and revocation");
+    println!("PASS: frp pairing, account handoff, single use, pinned identity, 100003-byte binary roundtrip, SSE and revocation");
     Ok(())
 }
 #[cfg(not(feature = "server"))]

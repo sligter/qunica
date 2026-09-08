@@ -58,6 +58,16 @@ pub struct Connection {
     pub credential: String,
 }
 
+/// Account handoff is delivered once over Noise, never inside the QR or device identity.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Paired {
+    #[serde(flatten)]
+    pub connection: Connection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_token: Option<String>,
+}
+
 /// Only numeric RFC1918 addresses: no DNS rebinding, proxy routing or public endpoint.
 pub fn lan_address(endpoint: &str) -> Result<SocketAddr> {
     let addr: SocketAddr = endpoint
@@ -156,6 +166,7 @@ pub async fn verify_connection(connection: &Connection) -> Result<()> {
         credential: connection.credential.clone(),
         claim: false,
         name: String::new(),
+        device_info: None,
     })
     .await?;
     let _: Authorized = rx.json().await?;
@@ -197,10 +208,23 @@ pub struct Auth {
     pub credential: String,
     pub claim: bool,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_info: Option<DeviceInfo>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInfo {
+    pub manufacturer: String,
+    pub model: String,
+    pub system_version: String,
+    pub sdk_version: u32,
+    pub app_version: String,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Authorized {
     pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_token: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RequestHead {
@@ -327,20 +351,25 @@ pub async fn accept(mut stream: TcpStream, private_key: &[u8]) -> Result<(Receiv
     .await?
 }
 
-pub async fn pair(offer: Offer, name: String) -> Result<Connection> {
+pub async fn pair(offer: Offer, name: String) -> Result<Paired> {
+    pair_with_device(offer, name, None).await
+}
+
+pub async fn pair_with_device(offer: Offer, name: String, device_info: Option<DeviceInfo>) -> Result<Paired> {
     let (mut rx, mut tx) = connect_endpoint(&offer.endpoint, &decode(&offer.public_key)?).await?;
     tx.json(&Auth {
         credential: offer.code,
         claim: true,
         name,
+        device_info,
     })
     .await?;
     let auth: Authorized = rx.json().await?;
-    Ok(Connection {
+    Ok(Paired { connection: Connection {
         endpoint: offer.endpoint,
         public_key: offer.public_key,
         credential: auth.credential.context("Pairing was rejected")?,
-    })
+    }, account_token: auth.account_token })
 }
 
 pub async fn request(
@@ -355,6 +384,7 @@ pub async fn request(
         credential: connection.credential.clone(),
         claim: false,
         name: String::new(),
+        device_info: None,
     })
     .await?;
     let _: Authorized = rx.json().await?;

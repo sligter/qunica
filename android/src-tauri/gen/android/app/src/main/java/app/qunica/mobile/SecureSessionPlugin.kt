@@ -2,6 +2,7 @@ package app.qunica.mobile
 
 import android.app.Activity
 import android.content.Context
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -75,6 +76,16 @@ class SecureSessionPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     override fun onDestroy(activity: AppCompatActivity) { worker.shutdown() }
+
+    @Command
+    fun deviceInfo(invoke: Invoke) {
+        invoke.resolve(JSObject()
+            .put("manufacturer", Build.MANUFACTURER)
+            .put("model", Build.MODEL)
+            .put("systemVersion", Build.VERSION.RELEASE)
+            .put("sdkVersion", Build.VERSION.SDK_INT)
+            .put("appVersion", BuildConfig.VERSION_NAME))
+    }
 
     @Command
     fun readSession(invoke: Invoke) {

@@ -225,6 +225,32 @@ describe('MessageList scheduler summary integration', () => {
     await waitFor(() => expect(scrollRoot.scrollTop).toBe(500))
   })
 
+  it.each([200, 450])('restores offset %i after editor close despite hidden scroll and incoming messages', (offset) => {
+    const { container, rerender } = render(<MessageList groupId="group-1" />)
+    const scrollRoot = container.firstElementChild as HTMLDivElement
+    let height = 1000
+    let viewport = 500
+    Object.defineProperties(scrollRoot, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, get: () => viewport },
+    })
+    act(() => setMessageState())
+    scrollRoot.scrollTop = offset
+    fireEvent.scroll(scrollRoot)
+    rerender(<MessageList groupId="group-1" isVisible={false} />)
+    height = 0
+    viewport = 0
+    scrollRoot.scrollTop = 0
+    fireEvent.scroll(scrollRoot)
+    act(() => setMessageState(undefined, [userMessage, { ...userMessage, id: 'new-message' }]))
+    expect(sessionStorage.getItem('qunica:groups:message-scroll:group-1')).toBe(String(offset))
+    height = 1000
+    viewport = 500
+    rerender(<MessageList groupId="group-1" isVisible />)
+    expect(scrollRoot.scrollTop).toBe(offset)
+    expect(container.firstElementChild).toBe(scrollRoot)
+  })
+
   it('anchors a persisted turn summary below its trigger message', async () => {
     const user = userEvent.setup()
     const onViewTurnTrace = vi.fn()

@@ -61,11 +61,13 @@ export async function changeAndroidServer(value: string): Promise<void> {
   useAndroidSession.setState({ server })
 }
 
-export async function pairAndroidDesktop(offer: string): Promise<void> {
-  const lan = await invoke<LanConnection>('mobile_lan_pair', { offer, name: 'Android' })
-  await persist({ server: LAN_ORIGIN, token: null, lan })
+export async function pairAndroidDesktop(offer: string): Promise<string | null> {
+  const { accountToken, ...lan } = await invoke<LanConnection & { accountToken?: string }>('mobile_lan_pair', { offer })
+  const token = typeof accountToken === 'string' && accountToken ? accountToken : null
+  await persist({ server: LAN_ORIGIN, token, lan })
   await invoke('mobile_lan_configure', { connection: lan })
   useAndroidSession.setState({ server: LAN_ORIGIN })
+  return token
 }
 
 export const androidDesktopAddress = () => session.lan?.endpoint ?? session.server

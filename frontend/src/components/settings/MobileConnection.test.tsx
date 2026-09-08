@@ -1,13 +1,24 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useAuthStore } from '@/stores/authStore'
 import { MobileConnection } from './MobileConnection'
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en-US' } }) }))
 afterEach(() => { cleanup(); mocks.invoke.mockReset(); localStorage.clear() })
+beforeEach(() => { useAuthStore.setState({ token: 'desktop-token', user: null }) })
 const off = { endpoint: null, interfaces: [{ name: 'Wi-Fi', address: '192.168.1.2' }], devices: [] }
 describe('desktop phone pairing', () => {
+  it('shows reported model, Android version and app version alongside legacy devices', async () => {
+    mocks.invoke.mockResolvedValue({ ...off, devices: [
+      { id: 'phone', name: 'OnePlus PKX110', created: 1, deviceInfo: { manufacturer: 'OnePlus', model: 'PKX110', systemVersion: '15', sdkVersion: 35, appVersion: '0.1.2' } },
+      { id: 'legacy', name: 'Android', created: 1 },
+    ] })
+    render(<MobileConnection />)
+    expect(await screen.findByText('OnePlus PKX110 · Android 15 · API 35 · Qunica 0.1.2')).toBeInTheDocument()
+    expect(screen.getByText('Update the phone app and pair again to add device details.')).toBeInTheDocument()
+  })
   it('allows relay mode without a LAN interface and publishes the VPS separately', async () => {
     const status = { ...off, interfaces: [], listen_endpoint: null as string | null, endpoint: null as string | null }
     mocks.invoke.mockImplementation(async (command: string) => {
@@ -22,6 +33,7 @@ describe('desktop phone pairing', () => {
     await userEvent.type(screen.getByLabelText('Phone destination'), 'relay.example.com:18766')
     await userEvent.click(screen.getByRole('button', { name: 'Enable and pair' }))
     expect(await screen.findByTitle('Phone pairing code')).toBeInTheDocument()
+    expect(mocks.invoke).toHaveBeenCalledWith('mobile_link_offer', { accountToken: 'desktop-token' })
     expect(mocks.invoke).toHaveBeenCalledWith('mobile_link_start', { address: '127.0.0.1', advertisedEndpoint: 'relay.example.com:18766' })
     expect(screen.getByText(/Desktop listener: 127.0.0.1:8766/)).toBeInTheDocument()
   })

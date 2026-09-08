@@ -35,6 +35,8 @@ pub struct Device {
     pub id: String,
     pub name: String,
     pub created: u64,
+    #[serde(default, rename = "deviceInfo", skip_serializing_if = "Option::is_none")]
+    pub device_info: Option<DeviceInfo>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Registered {
@@ -50,6 +52,7 @@ struct Stored {
 struct Pending {
     hash: String,
     expires: u64,
+    account_token: Option<String>,
 }
 struct Active {
     cancel: CancellationToken,
@@ -109,6 +112,66 @@ mod tests {
         server.bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let address = server.state.lock().await.listener.as_ref().unwrap().0;
         (dir, server, address)
+    }
+    #[tokio::test]
+    async fn device_details_survive_restart_and_old_device_records_remain_readable() {
+        let (dir, server, _) = fixture().await;
+        let offer = server.offer().await.unwrap();
+        let parsed: Offer = serde_json::from_slice(&decode(offer.uri.strip_prefix("qunica://pair?data=").unwrap()).unwrap()).unwrap();
+        server.authorize(Auth { credential: parsed.code, claim: true, name: "OnePlus PKX110".into(), device_info: Some(DeviceInfo {
+            manufacturer: "OnePlus\n".into(), model: "PKX110".into(), system_version: "15".into(), sdk_version: 35, app_version: "0.1.2".into(),
+        }) }).await.unwrap();
+        server.stop().await;
+        let restarted = MobileServer::load(dir.path().join("devices.json"), server.router.clone()).unwrap();
+        let devices = restarted.status().await.unwrap().devices;
+        assert_eq!(devices[0].name, "OnePlus PKX110");
+        let info = devices[0].device_info.as_ref().unwrap();
+        assert_eq!(info.manufacturer, "OnePlus");
+        assert_eq!(info.model, "PKX110");
+        assert_eq!(info.system_version, "15");
+        assert_eq!(info.sdk_version, 35);
+        assert_eq!(serde_json::to_value(&devices[0]).unwrap()["deviceInfo"]["appVersion"], "0.1.2");
+        let legacy: Device = serde_json::from_value(serde_json::json!({"id":"old","name":"Android","created":1})).unwrap();
+        assert!(legacy.device_info.is_none());
+    }
+    #[tokio::test]
+    async fn account_handoff_is_validated_single_use_encrypted_and_never_persisted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let valid = Arc::new(AtomicBool::new(true));
+        let check = valid.clone();
+        let router = Router::new().route("/api/v2/auth/me", get(move |headers: HeaderMap| {
+            let check = check.clone();
+            async move {
+                if check.load(Ordering::SeqCst) && headers.get("authorization").is_some_and(|v| v == "Bearer account-handoff-secret") {
+                    StatusCode::OK
+                } else { StatusCode::UNAUTHORIZED }
+            }
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let server = MobileServer::load(dir.path().join("devices.json"), router).unwrap();
+        server.bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let address = server.state.lock().await.listener.as_ref().unwrap().0;
+        assert!(server.offer_for_account("wrong-token".into()).await.is_err());
+        assert!(server.state.lock().await.pending.is_none());
+        let offer = server.offer_for_account("account-handoff-secret".into()).await.unwrap();
+        let parsed: Offer = serde_json::from_slice(&decode(offer.uri.strip_prefix("qunica://pair?data=").unwrap()).unwrap()).unwrap();
+        assert!(!String::from_utf8(decode(offer.uri.strip_prefix("qunica://pair?data=").unwrap()).unwrap()).unwrap().contains("account-handoff-secret"));
+        valid.store(false, Ordering::SeqCst);
+        assert!(claim(&server, address, &offer.uri).await.is_err());
+        assert!(server.status().await.unwrap().devices.is_empty());
+        valid.store(true, Ordering::SeqCst);
+        let (mut rx, mut tx) = channel(&server, address).await;
+        tx.json(&Auth { credential: parsed.code, claim: true, name: "Phone".into(), device_info: None }).await.unwrap();
+        let auth: Authorized = rx.json().await.unwrap();
+        assert_eq!(auth.account_token.as_deref(), Some("account-handoff-secret"));
+        assert!(claim(&server, address, &offer.uri).await.is_err());
+        assert!(server.state.lock().await.pending.is_none());
+        assert!(!std::fs::read_to_string(dir.path().join("devices.json")).unwrap().contains("account-handoff-secret"));
+        let (mut rx, mut tx) = channel(&server, address).await;
+        tx.json(&Auth { credential: auth.credential.unwrap(), claim: false, name: String::new(), device_info: None }).await.unwrap();
+        let auth: Authorized = rx.json().await.unwrap();
+        assert!(auth.account_token.is_none(), "Reconnect must not silently log in again after phone logout");
+        server.stop().await;
     }
     #[tokio::test]
     async fn relay_publishes_separate_address_and_preserves_noise_streams_and_revocation() {
@@ -185,10 +248,10 @@ mod tests {
         }
         let id = server.status().await.unwrap().devices[0].id.clone();
         server.revoke(&id).await.unwrap();
-        assert!(timeout(Duration::from_secs(2), rx.frame())
-            .await
-            .unwrap()
-            .is_err());
+        // A heartbeat already buffered by the relay may arrive before its EOF.
+        assert!(timeout(Duration::from_secs(2), async {
+            while rx.frame().await.is_ok() {}
+        }).await.is_ok());
         server.stop().await;
         let stopped = server.status().await.unwrap();
         assert!(stopped.endpoint.is_none() && stopped.listen_endpoint.is_none());
@@ -207,6 +270,7 @@ mod tests {
             credential: offer.code,
             claim: true,
             name: "Test phone".into(),
+            device_info: None,
         })
         .await?;
         let reply: Authorized = rx.json().await?;
@@ -224,6 +288,7 @@ mod tests {
             credential: credential.into(),
             claim: false,
             name: String::new(),
+        device_info: None,
         })
         .await?;
         let _: Authorized = rx.json().await?;
@@ -330,6 +395,7 @@ mod tests {
             credential,
             claim: false,
             name: String::new(),
+        device_info: None,
         };
         assert!(restarted.authorize(auth).await.is_ok());
         let stored = std::fs::read_to_string(dir.path().join("devices.json")).unwrap();
@@ -569,7 +635,23 @@ impl MobileServer {
         state.pending = None;
         state.advertised = None;
     }
-    pub async fn offer(&self) -> Result<Pairing> {
+    pub async fn offer(self: &Arc<Self>) -> Result<Pairing> {
+        self.offer_internal(None).await
+    }
+    async fn validate_account_token(&self, token: &str) -> Result<()> {
+        ensure!(!token.is_empty() && token.len() <= 8192, "Sign in on the desktop before pairing");
+        let request = Request::builder().uri("/api/v2/auth/me")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())?;
+        let response = timeout(Duration::from_secs(5), self.router.clone().oneshot(request)).await??;
+        ensure!(response.status() == axum::http::StatusCode::OK, "Desktop login expired. Sign in and generate a new QR code");
+        Ok(())
+    }
+    pub async fn offer_for_account(self: &Arc<Self>, token: String) -> Result<Pairing> {
+        self.validate_account_token(&token).await?;
+        self.offer_internal(Some(token)).await
+    }
+    async fn offer_internal(self: &Arc<Self>, account_token: Option<String>) -> Result<Pairing> {
         let mut state = self.state.lock().await;
         let listener_endpoint = state
             .listener
@@ -594,6 +676,18 @@ impl MobileServer {
         state.pending = Some(Pending {
             hash: hash(&code),
             expires,
+            account_token,
+        });
+        let weak = Arc::downgrade(self);
+        let pending_hash = hash(&code);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            if let Some(server) = weak.upgrade() {
+                let mut state = server.state.lock().await;
+                if state.pending.as_ref().is_some_and(|p| p.hash == pending_hash) {
+                    state.pending = None;
+                }
+            }
         });
         Ok(Pairing {
             uri,
@@ -616,8 +710,19 @@ impl MobileServer {
         auth: Auth,
     ) -> Result<(Authorized, CancellationToken, Arc<Semaphore>)> {
         ensure!(auth.credential.len() <= 128, "Invalid credential");
-        let mut state = self.state.lock().await;
         let credential_hash = hash(&auth.credential);
+        let account_token = if auth.claim {
+            let token = {
+                let state = self.state.lock().await;
+                let pending = state.pending.as_ref().context("Pairing code expired or already used")?;
+                ensure!(pending.expires > now() && pending.hash == credential_hash, "Pairing code expired or invalid");
+                pending.account_token.clone()
+            };
+            if let Some(token) = &token { self.validate_account_token(token).await?; }
+            token
+        } else { None };
+        // Recheck code and expiry after account validation: rotation/claim may race it.
+        let mut state = self.state.lock().await;
         let (id, credential) = if auth.claim {
             let pending = state
                 .pending
@@ -644,6 +749,14 @@ impl MobileServer {
                     name
                 },
                 created: now(),
+                device_info: auth.device_info.map(|mut info| {
+                    let clean = |value: &str| value.chars().filter(|c| !c.is_control()).take(96).collect();
+                    info.manufacturer = clean(&info.manufacturer);
+                    info.model = clean(&info.model);
+                    info.system_version = clean(&info.system_version);
+                    info.app_version = clean(&info.app_version);
+                    info
+                }),
             };
             let mut next = state.stored.clone();
             next.devices.push(Registered {
@@ -673,7 +786,7 @@ impl MobileServer {
             slots: Arc::new(Semaphore::new(24)),
         });
         Ok((
-            Authorized { credential },
+            Authorized { credential, account_token },
             active.cancel.clone(),
             active.slots.clone(),
         ))

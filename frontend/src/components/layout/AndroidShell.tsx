@@ -5,31 +5,39 @@ import { androidDesktopAddress, changeAndroidDesktopEndpoint, hasAndroidDesktopP
 import { useAuthStore } from '@/stores/authStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { clearComposerDrafts } from '@/lib/composerDraft'
 
 export function AndroidShell({ children }: { children: ReactNode }) {
   const { i18n } = useTranslation()
   const zh = i18n.language.startsWith('zh')
   const { server, ready, error } = useAndroidSession()
   const token = useAuthStore(s => s.token)
+  const [sessionReady, setSessionReady] = useState(false)
   const [editing, setEditing] = useState(false)
   const [address, setAddress] = useState('')
   const [destination, setDestination] = useState('')
   const [busy, setBusy] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const initialize = () => {
-    void initializeAndroidSession().then(token => useAuthStore.setState({ token })).catch(() => undefined)
+    void initializeAndroidSession().then(token => {
+      useAuthStore.setState({ token, user: null, hydrated: false })
+      setSessionReady(true)
+    }).catch(() => undefined)
   }
   useEffect(initialize, [])
 
   async function connect(offer: string) {
+    setSessionReady(false)
     setBusy(true); setConnectionError(null)
     try {
-      await pairAndroidDesktop(offer)
-      useAuthStore.getState().logout()
-      window.history.replaceState(null, '', '/')
+      const token = await pairAndroidDesktop(offer)
+      clearComposerDrafts()
+      // The vault already contains the handed-off login. Logout would erase it.
+      useAuthStore.setState({ token, user: null, hydrated: false })
       // Rebuild the router and all query scopes against the newly saved origin.
-      window.location.reload()
+      window.location.replace('/')
     } catch (cause) {
+      setSessionReady(true)
       setConnectionError(zh ? `连接失败：${String(cause)}。请检查桌面手机连接及局域网或 VPS 转发；配对码过期请重新生成。` : `Connection failed: ${String(cause)}. Check desktop sharing and LAN or VPS forwarding. Generate a fresh code if it expired.`)
     } finally { setBusy(false) }
   }
@@ -46,7 +54,13 @@ export function AndroidShell({ children }: { children: ReactNode }) {
     finally { setBusy(false) }
   }
 
-  if (!ready || !server || editing) return (
+  // A saved pairing publishes its origin before the token lands in the auth
+  // store. Showing the scan form in that gap invites a second pairing.
+  if (ready && server && !sessionReady && !editing) return (
+    <main role="status" aria-label={zh ? '正在恢复登录' : 'Restoring sign-in'} className="app-safe-area flex h-full items-center justify-center bg-background"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></main>
+  )
+
+  if (!sessionReady || !ready || !server || editing) return (
     <main className="app-safe-area flex h-full min-h-0 flex-col overflow-y-auto bg-background px-6 py-8">
       <header className="mb-12 flex items-center justify-between">
         <span className="font-serif text-2xl font-semibold">Qunica<span className="ml-2 text-xs font-sans font-normal text-muted-foreground">Android</span></span>
@@ -66,7 +80,7 @@ export function AndroidShell({ children }: { children: ReactNode }) {
             <Button type="button" disabled={busy} onClick={() => void scanDesktop()} className="h-12 w-full gap-2">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}{zh ? '扫描桌面二维码' : 'Scan desktop QR code'}</Button>
             <label htmlFor="android-server" className="block pt-4 text-sm font-medium">{zh ? '或粘贴配对链接' : 'Or paste a pairing link'}</label>
             <Input id="android-server" type="text" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} placeholder="qunica://pair?data=…" value={address} onChange={event => setAddress(event.target.value)} required disabled={busy} className="h-12 text-base" />
-            <p className="text-xs leading-5 text-muted-foreground">{zh ? '配对链接两分钟有效，只能使用一次。配对后使用工作台账户登录。' : 'Pairing links expire in two minutes and work once. Sign in with your workspace account after pairing.'}</p>
+            <p className="text-xs leading-5 text-muted-foreground">{zh ? '配对链接两分钟有效，只能使用一次。扫码后直接登录桌面当前账号；旧版桌面仍需手动登录。' : 'Pairing links expire in two minutes and work once. Scanning signs you in to the desktop account; older desktops require manual login.'}</p>
             {connectionError ? <p role="alert" className="text-sm text-destructive">{connectionError}</p> : null}
             <Button type="submit" variant="outline" disabled={busy || !address.trim()} className="h-12 w-full">{zh ? '使用链接连接' : 'Connect using link'}</Button>
           </form>

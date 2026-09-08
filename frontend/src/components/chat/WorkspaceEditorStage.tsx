@@ -32,8 +32,6 @@ export function WorkspaceEditorStage({
   const activeTabId = stage?.activeTabId ?? null
   const pendingClose = tabs.find((tab) => tab.id === pendingCloseId) ?? null
 
-  if (tabs.length === 0) return <>{children}</>
-
   const requestClose = (tab: WorkspaceEditorTab) => {
     if (tab.dirty) setPendingCloseId(tab.id)
     else closeEditor(conversationId, tab.id)
@@ -41,7 +39,7 @@ export function WorkspaceEditorStage({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <div
+      {tabs.length > 0 ? <div
         className="flex h-10 shrink-0 items-stretch overflow-x-auto border-b border-border bg-muted/35"
         role="tablist"
         aria-label={t('workspace.previewPanel.editorTabs')}
@@ -96,7 +94,7 @@ export function WorkspaceEditorStage({
             </div>
           )
         })}
-      </div>
+      </div> : null}
 
       <div className={cn('min-h-0 flex-1 flex-col', activeTabId === null ? 'flex' : 'hidden')}>
         {children}

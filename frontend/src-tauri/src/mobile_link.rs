@@ -28,8 +28,8 @@ pub async fn mobile_link_start(
     server.status().await.map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub async fn mobile_link_offer(state: State<'_, MobileLink>) -> Result<Pairing, String> {
-    state.server()?.offer().await.map_err(|e| e.to_string())
+pub async fn mobile_link_offer(state: State<'_, MobileLink>, account_token: String) -> Result<Pairing, String> {
+    state.server()?.offer_for_account(account_token).await.map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub async fn mobile_link_stop(state: State<'_, MobileLink>) -> Result<Status, String> {

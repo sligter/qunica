@@ -6,6 +6,28 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); mocks.invoke.mockReset(); localStorage.clear() })
 
 describe('Android remote session', () => {
+  it('saves a paired desktop login directly in the vault and separates it from device identity', async () => {
+    const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
+    mocks.invoke.mockResolvedValueOnce({ ...lan, accountToken: 'desktop-account-token' }).mockResolvedValue({})
+    const session = await import('./androidSession')
+    await expect(session.pairAndroidDesktop('qunica://pair?data=once')).resolves.toBe('desktop-account-token')
+    const saved = JSON.parse(mocks.invoke.mock.calls[1][1].value)
+    expect(saved).toEqual({ server: session.LAN_ORIGIN, token: 'desktop-account-token', lan })
+    expect(mocks.invoke).toHaveBeenLastCalledWith('mobile_lan_configure', { connection: lan })
+    expect(localStorage.length).toBe(0)
+    await session.saveAndroidToken(null)
+    expect(JSON.parse(mocks.invoke.mock.calls.at(-1)![1].value)).toMatchObject({ token: null, lan })
+  })
+  it('retains manual login for older desktops and does not configure a pairing after vault failure', async () => {
+    const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
+    mocks.invoke.mockResolvedValueOnce(lan).mockResolvedValue({})
+    const session = await import('./androidSession')
+    await expect(session.pairAndroidDesktop('old-offer')).resolves.toBeNull()
+    mocks.invoke.mockClear()
+    mocks.invoke.mockResolvedValueOnce({ ...lan, accountToken: 'new-token' }).mockRejectedValueOnce(new Error('Vault failed'))
+    await expect(session.pairAndroidDesktop('new-offer')).rejects.toThrow('Vault failed')
+    expect(mocks.invoke).not.toHaveBeenCalledWith('mobile_lan_configure', expect.anything())
+  })
   it('verifies a changed route against the original key and keeps the account token', async () => {
     const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
     mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://qunica-lan.invalid', token: 'account-token', lan }) }).mockResolvedValue({})

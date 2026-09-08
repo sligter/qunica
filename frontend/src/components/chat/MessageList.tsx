@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowRight, ChevronDown, Sparkles } from 'lucide-react'
 
@@ -18,6 +18,7 @@ interface MessageListProps {
   /** Thread the surrounding view's message query is keyed by, if any. */
   threadId?: string
   isInitialLoading?: boolean
+  isVisible?: boolean
   hasOlderMessages?: boolean
   isLoadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
@@ -177,6 +178,7 @@ export function MessageList({
   stateId = groupId,
   threadId,
   isInitialLoading = false,
+  isVisible = true,
   hasOlderMessages = false,
   isLoadingOlderMessages = false,
   onLoadOlderMessages,
@@ -233,12 +235,13 @@ export function MessageList({
   }, [])
 
   const updateNearBottom = useCallback(() => {
+    if (!isVisible) return
     const node = scrollRef.current
     if (node) storeScrollTop(stateId, node.scrollTop)
     const { canScroll, isNearBottom } = getScrollState()
     isNearBottomRef.current = isNearBottom
     setShowJumpToLatest(canScroll && !isNearBottom)
-  }, [getScrollState, stateId])
+  }, [getScrollState, stateId, isVisible])
 
   const jumpToLatest = () => {
     const node = scrollRef.current
@@ -247,31 +250,32 @@ export function MessageList({
     setShowJumpToLatest(false)
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     restoredScrollRef.current = false
     isNearBottomRef.current = true
     setShowJumpToLatest(false)
-  }, [stateId])
+  }, [stateId, isVisible])
 
-  useEffect(() => {
-    if (restoredScrollRef.current) return
+  useLayoutEffect(() => {
+    // Hidden editor siblings have zero-sized geometry. Never persist or follow it.
+    if (!isVisible) return
     if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
     const node = scrollRef.current
     if (!node) return
-    const storedScrollTop = readStoredScrollTop(stateId)
-
-    const maxRestorableScrollTop = maxScrollTop(node)
-    node.scrollTop = storedScrollTop === null
-      ? maxRestorableScrollTop
-      : Math.min(storedScrollTop, maxRestorableScrollTop)
-    const { canScroll, isNearBottom } = getScrollState()
-    isNearBottomRef.current = isNearBottom
-    setShowJumpToLatest(canScroll && !isNearBottom)
-    restoredScrollRef.current = true
-  }, [getScrollState, messages.length, stateId, streamRuns])
-
-  useEffect(() => {
-    if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
+    if (!restoredScrollRef.current) {
+      const storedScrollTop = readStoredScrollTop(stateId)
+      const maxRestorableScrollTop = maxScrollTop(node)
+      node.scrollTop = storedScrollTop === null
+        ? maxRestorableScrollTop
+        : Math.min(storedScrollTop, maxRestorableScrollTop)
+      storeScrollTop(stateId, node.scrollTop)
+      const { canScroll, isNearBottom } = getScrollState()
+      isNearBottomRef.current = isNearBottom
+      setShowJumpToLatest(canScroll && !isNearBottom)
+      restoredScrollRef.current = true
+      // Preserve the exact saved offset, including positions close to the bottom.
+      return
+    }
     const { canScroll, isNearBottom } = getScrollState()
     const shouldStickToBottom = isNearBottomRef.current || isNearBottom
     if (shouldStickToBottom) {
@@ -283,7 +287,7 @@ export function MessageList({
     }
     isNearBottomRef.current = false
     setShowJumpToLatest(canScroll)
-  }, [messages, streamRuns, warnings, stateId, getScrollState])
+  }, [messages, streamRuns, warnings, stateId, isVisible, getScrollState])
 
   return (
     <div

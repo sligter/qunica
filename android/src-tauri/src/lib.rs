@@ -8,6 +8,17 @@ mod mobile {
     struct FileExport(PluginHandle<Wry>);
 
     #[tauri::command]
+    async fn mobile_device_info(session: State<'_, SecureSession>) -> Result<serde_json::Value, String> {
+        session.0.run_mobile_plugin_async("deviceInfo", serde_json::json!({})).await.map_err(|e| e.to_string())
+    }
+
+    #[tauri::command]
+    async fn mobile_lan_pair(session: State<'_, SecureSession>, offer: String) -> Result<qunica_mobile_link::Paired, String> {
+        let info = mobile_device_info(session).await?;
+        crate::lan::pair(offer, serde_json::from_value(info).map_err(|e| e.to_string())?).await
+    }
+
+    #[tauri::command]
     async fn mobile_file_export(export: State<'_, FileExport>, operation: String, payload: serde_json::Value) -> Result<serde_json::Value, String> {
         let method = match operation.as_str() {
             "begin" => "beginExport",
@@ -51,7 +62,7 @@ mod mobile {
                     url.scheme() == "https" && url.host_str() == Some("tauri.localhost")
                 }).build())
             .invoke_handler(tauri::generate_handler![mobile_session_read, mobile_session_write, mobile_file_export,
-                crate::lan::mobile_lan_pair, crate::lan::mobile_lan_configure, crate::lan::mobile_lan_verify,
+                mobile_lan_pair, mobile_device_info, crate::lan::mobile_lan_configure, crate::lan::mobile_lan_verify,
                 crate::lan::mobile_lan_prepare, crate::lan::mobile_lan_open,
                 crate::lan::mobile_lan_read, crate::lan::mobile_lan_close])
             .run(tauri::generate_context!())

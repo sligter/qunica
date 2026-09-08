@@ -69,5 +69,9 @@ landing/
 # is the pre-rename name, kept so old workspaces stay ignored.
 .qunica/
 .ag-swarmer/
-.MOBILE-CONNECT.md
+
+# Local Android delivery notes
+/android/MOBILE-UI.md
+/android/README.md
+/android/RELAY.md
 

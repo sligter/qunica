@@ -33,10 +33,20 @@ impl Lan {
         }
     }
 }
-#[tauri::command]
-pub async fn mobile_lan_pair(offer: String, name: String) -> Result<Connection, String> {
+pub async fn pair(offer: String, info: link::DeviceInfo) -> Result<link::Paired, String> {
     let offer = link::Offer::parse(&offer).map_err(|e| e.to_string())?;
-    link::pair(offer, name)
+    // Build.MANUFACTURER is commonly lowercase ("samsung"); Build.MODEL may already
+    // carry the brand ("OnePlus PKX110"). Produce one readable label without repeats.
+    let mut chars = info.manufacturer.trim().chars();
+    let manufacturer = match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    };
+    let model = info.model.trim();
+    let name = if manufacturer.is_empty() || model.to_lowercase().starts_with(&manufacturer.to_lowercase()) {
+        model.to_string()
+    } else { format!("{manufacturer} {model}") };
+    link::pair_with_device(offer, name, Some(info))
         .await
         .map_err(|_| "Pairing failed. Check desktop sharing, LAN or VPS relay connectivity and generate a fresh QR code.".into())
 }
