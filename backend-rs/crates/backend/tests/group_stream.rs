@@ -9537,27 +9537,62 @@ async fn mobile_read_only_replay_checks_owner_and_cursor_without_creating_messag
     let url = format!("/api/v2/groups/{group}/streams/{stream}");
     for (credential, cursor, status, count) in [
         (token.as_str(), None, StatusCode::OK, 2),
-        (token.as_str(), Some(format!("{stream}:0")), StatusCode::OK, 1),
+        (
+            token.as_str(),
+            Some(format!("{stream}:0")),
+            StatusCode::OK,
+            1,
+        ),
         (other.as_str(), None, StatusCode::FORBIDDEN, 0),
-        (token.as_str(), Some(format!("{}:0", uuid::Uuid::new_v4())), StatusCode::BAD_REQUEST, 0),
+        (
+            token.as_str(),
+            Some(format!("{}:0", uuid::Uuid::new_v4())),
+            StatusCode::BAD_REQUEST,
+            0,
+        ),
     ] {
-        let mut request = Request::builder().uri(&url)
+        let mut request = Request::builder()
+            .uri(&url)
             .header("authorization", format!("Bearer {credential}"));
-        if let Some(cursor) = cursor { request = request.header("last-event-id", cursor); }
-        let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+        if let Some(cursor) = cursor {
+            request = request.header("last-event-id", cursor);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(response.status(), status);
         if status == StatusCode::OK {
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            assert_eq!(parse_sse_frames(std::str::from_utf8(&body).unwrap()).len(), count);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                parse_sse_frames(std::str::from_utf8(&body).unwrap()).len(),
+                count
+            );
         }
     }
-    let response = app.clone().oneshot(Request::builder()
-        .uri(format!("/api/v2/groups/{group}/streams/{}", uuid::Uuid::new_v4()))
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::empty()).unwrap()).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v2/groups/{group}/streams/{}",
+                    uuid::Uuid::new_v4()
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id = ?")
-        .bind(group).fetch_one(state.db.pool()).await.unwrap();
+        .bind(group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
     assert_eq!(messages, 0);
 }
 

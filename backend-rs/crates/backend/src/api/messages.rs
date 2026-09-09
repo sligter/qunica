@@ -925,7 +925,14 @@ pub async fn replay_direct(
     headers: HeaderMap,
     Path((group_id, stream_id)): Path<(String, String)>,
 ) -> Result<SseResponse, ApiError> {
-    replay_for_kind(state, headers, group_id, stream_id, ConversationKind::Direct).await
+    replay_for_kind(
+        state,
+        headers,
+        group_id,
+        stream_id,
+        ConversationKind::Direct,
+    )
+    .await
 }
 
 async fn replay_for_kind(
@@ -943,11 +950,13 @@ async fn replay_for_kind(
     if let Some(raw) = last_event_id(&headers)? {
         let cursor = parse_replay_cursor(&raw)?;
         if raw.split(':').next() != Some(stream_id.to_string().as_str()) {
-            return Err(ApiError::invalid_input("cursor does not belong to this stream"));
+            return Err(ApiError::invalid_input(
+                "cursor does not belong to this stream",
+            ));
         }
-        return Ok(sse_response(replay_group_stream(
-            state.db.pool().clone(), group_id, cursor,
-        ).await?));
+        return Ok(sse_response(
+            replay_group_stream(state.db.pool().clone(), group_id, cursor).await?,
+        ));
     }
     let replay = replay_existing_stream(state.db.pool().clone(), group_id, stream_id)
         .await?

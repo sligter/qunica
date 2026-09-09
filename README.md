@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.1-c65d3b?style=flat-square" alt="Version 0.1.1">
+  <img src="https://img.shields.io/badge/version-0.1.2-c65d3b?style=flat-square" alt="Version 0.1.2">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3f6f91?style=flat-square" alt="Windows | macOS | Linux">
   <img src="https://img.shields.io/badge/data-local--first-4f7651?style=flat-square" alt="Local-first">
 </p>

@@ -39,6 +39,9 @@ ENV/
 *.swp
 
 # Env
+*.jks
+*.keystore
+keystore.properties
 .env*
 !.env.example
 
@@ -74,4 +77,3 @@ landing/
 /android/MOBILE-UI.md
 /android/README.md
 /android/RELAY.md
-

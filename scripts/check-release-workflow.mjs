@@ -75,7 +75,7 @@ function checkWorkflowShape(text) {
   expect(/push:\s*\n\s+tags:\s*\n\s+- ['"]v\*\.\*\.\*['"]/.test(text), "workflow must trigger on v*.*.* tags");
   expect(/workflow_dispatch:/.test(text), "workflow must support workflow_dispatch");
 
-  for (const job of ["validate-release", "create-draft-release", "desktop", "server", "publish-release"]) {
+  for (const job of ["validate-release", "create-draft-release", "desktop", "server", "android", "publish-release"]) {
     expect(new RegExp(`^  ${escapeRegExp(job)}:`, "m").test(text), `missing ${job} job`);
   }
 
@@ -123,6 +123,16 @@ function checkWorkflowShape(text) {
   const serverJob = jobBlock(text, "server");
   const createDraftReleaseJob = jobBlock(text, "create-draft-release");
   const publishJob = jobBlock(text, "publish-release");
+  const androidJob = jobBlock(text, "android");
+  const androidWorkflow = readText(".github/workflows/android.yml");
+  expect(androidJob.includes("uses: ./.github/workflows/android.yml"), "release must reuse the Android build workflow");
+  expect(androidJob.includes("ref: ${{ needs.validate-release.outputs.tag_commit }}"), "Android must build the validated tag commit");
+  expect(androidJob.includes("secrets: inherit"), "Android release must receive signing secrets");
+  expect(publishJob.includes("needs.android.result == 'success'"), "publishing requires successful Android builds");
+  for (const value of ["aarch64-linux-android", "x86_64-linux-android", "apksigner", "zipalign", "sha256sum", "--frozen-lockfile", "--split-per-abi", "ANDROID_KEY_BASE64", "ANDROID_KEY_PASSWORD", "ANDROID_KEY_ALIAS", "test${ANDROID_VARIANT}DebugUnitTest"]) {
+    expect(androidWorkflow.includes(value), `Android workflow must include ${value}`);
+  }
+  expect(readText(".github/workflows/ci.yml").includes("uses: ./.github/workflows/android.yml"), "normal CI must build Android");
   expect(createDraftReleaseJob.includes("actions/checkout@v4"), "create draft release job must checkout before using gh release create");
   expect(createDraftReleaseJob.includes("ref: ${{ needs.validate-release.outputs.tag_commit }}"), "create draft release job must checkout the validated tag commit");
   expect(text.includes('if [[ "${tag}" == *-* ]]; then'), "semver prerelease tags such as alpha and beta must publish as prereleases");
@@ -137,7 +147,7 @@ function checkWorkflowShape(text) {
   expect(serverJob.includes("PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"), "Linux server arm64 build must set cross PKG_CONFIG_LIBDIR");
   expect(desktopJob.includes("libssl-dev:arm64"), "Linux desktop arm64 build must install arm64 OpenSSL development files");
   expect(serverJob.includes("libssl-dev:arm64"), "Linux server arm64 build must install arm64 OpenSSL development files");
-  expect(publishJob.includes("needs: [validate-release, create-draft-release, desktop, server]"), "publish job must depend on desktop and server jobs");
+  expect(publishJob.includes("needs: [validate-release, create-draft-release, desktop, server, android]"), "publish job must depend on desktop, server and Android jobs");
   expect(publishJob.includes("needs.desktop.result == 'success'"), "publish job must explicitly require successful desktop builds");
   expect(publishJob.includes("needs.server.result == 'success'"), "publish job must explicitly require successful server builds");
 }

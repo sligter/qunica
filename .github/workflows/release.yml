@@ -108,6 +108,9 @@ jobs:
             ["frontend/src-tauri/tauri.conf.json", readJsonVersion("frontend/src-tauri/tauri.conf.json")],
             ["frontend/src-tauri/Cargo.toml", readTomlVersion("frontend/src-tauri/Cargo.toml", "Tauri crate")],
             ["backend-rs/Cargo.toml", readWorkspaceVersion("backend-rs/Cargo.toml")],
+            ["android/src-tauri/tauri.conf.json", readJsonVersion("android/src-tauri/tauri.conf.json")],
+            ["android/src-tauri/Cargo.toml", readTomlVersion("android/src-tauri/Cargo.toml", "Android crate")],
+            ["mobile-link/Cargo.toml", readTomlVersion("mobile-link/Cargo.toml", "mobile link crate")],
           ]);
           const unique = new Set(versions.values());
           if (unique.size !== 1) {
@@ -213,7 +216,7 @@ jobs:
               -f tag_name="${TAG}" \
               -f target_commitish="${TAG_COMMIT}" \
               -f name="Qunica ${TAG}" \
-              -f body="Automated release draft for ${TAG}." \
+              -f body="$(cat "releases/${TAG}.md")" \
               -F draft=true \
               -F prerelease="${PRERELEASE}" \
               --jq '.id')"
@@ -535,11 +538,21 @@ jobs:
             "${RELEASE_DIST_DIR}/${RELEASE_ARTIFACT}.sig" \
             --clobber
 
+  android:
+    needs: [validate-release, create-draft-release]
+    if: ${{ always() && needs.validate-release.result == 'success' && (needs.create-draft-release.result == 'success' || needs.validate-release.outputs.publish == 'false') }}
+    uses: ./.github/workflows/android.yml
+    with:
+      ref: ${{ needs.validate-release.outputs.tag_commit }}
+      tag: ${{ needs.validate-release.outputs.tag }}
+      publish: ${{ needs.validate-release.outputs.publish == 'true' }}
+    secrets: inherit
+
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
-    needs: [validate-release, create-draft-release, desktop, server]
-    if: ${{ needs.validate-release.outputs.publish == 'true' && needs.create-draft-release.result == 'success' && needs.desktop.result == 'success' && needs.server.result == 'success' }}
+    needs: [validate-release, create-draft-release, desktop, server, android]
+    if: ${{ needs.validate-release.outputs.publish == 'true' && needs.create-draft-release.result == 'success' && needs.desktop.result == 'success' && needs.server.result == 'success' && needs.android.result == 'success' }}
     steps:
       - name: Publish draft release
         env:

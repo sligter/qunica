@@ -59,14 +59,33 @@ async fn web_assets_are_served_from_disk() {
 async fn pwa_entrypoints_are_served_as_assets_with_browser_compatible_mime_types() {
     let (dir, app) = app_with_web_dir().await;
     for (name, source, content_type) in [
-        ("sw.js", "self.addEventListener('fetch', () => {});", "text/javascript"),
-        ("appearance.js", "document.documentElement.dataset.theme = 'light';", "text/javascript"),
-        ("manifest.webmanifest", r#"{"name":"Qunica","start_url":"/","display":"standalone"}"#, "application/manifest+json"),
+        (
+            "sw.js",
+            "self.addEventListener('fetch', () => {});",
+            "text/javascript",
+        ),
+        (
+            "appearance.js",
+            "document.documentElement.dataset.theme = 'light';",
+            "text/javascript",
+        ),
+        (
+            "manifest.webmanifest",
+            r#"{"name":"Qunica","start_url":"/","display":"standalone"}"#,
+            "application/manifest+json",
+        ),
     ] {
         std::fs::write(dir.path().join(name), source).unwrap();
-        let response = app.clone().oneshot(
-            Request::builder().uri(format!("/{name}")).body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{name}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["content-type"], content_type);
         assert_eq!(body_text(response).await, source);

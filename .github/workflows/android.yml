@@ -1,0 +1,138 @@
+name: Android
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+      tag:
+        type: string
+        default: ''
+      publish:
+        type: boolean
+        default: false
+    secrets:
+      ANDROID_KEY_BASE64:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+
+jobs:
+  build:
+    name: APK ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64
+            triple: aarch64-linux-android
+            arch: arm64
+            variant: Arm64
+          - target: x86_64
+            triple: x86_64-linux-android
+            arch: x86_64
+            variant: X86_64
+    env:
+      NDK_VERSION: 28.2.13676358
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android/src-tauri
+          key: android-${{ matrix.target }}
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}"
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "${GITHUB_ENV}"
+          chmod +x android/src-tauri/gen/android/gradlew
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure release signing
+        if: ${{ inputs.publish }}
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_KEY_BASE64}" && test -n "${ANDROID_KEY_ALIAS}" && test -n "${ANDROID_KEY_PASSWORD}"
+          umask 077
+          printf '%s' "${ANDROID_KEY_BASE64}" | base64 --decode > "${RUNNER_TEMP}/qunica-release.jks"
+          echo "ANDROID_KEYSTORE_PATH=${RUNNER_TEMP}/qunica-release.jks" >> "${GITHUB_ENV}"
+
+      - name: Build APK
+        working-directory: android
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PUBLISH: ${{ inputs.publish }}
+          ANDROID_TARGET: ${{ matrix.target }}
+        run: |
+          args=(--ci --apk --split-per-abi --target "${ANDROID_TARGET}")
+          if [ "${PUBLISH}" != "true" ]; then args+=(--debug); fi
+          node ../frontend/node_modules/@tauri-apps/cli/tauri.js android build "${args[@]}"
+
+      - name: Run Android unit tests
+        working-directory: android/src-tauri/gen/android
+        env:
+          ANDROID_VARIANT: ${{ matrix.variant }}
+        run: bash gradlew ":app:test${ANDROID_VARIANT}DebugUnitTest" -x ":app:rustBuild${ANDROID_VARIANT}Debug"
+
+      - name: Verify and package APK
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          ANDROID_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          profile=debug
+          if [ "${PUBLISH}" = "true" ]; then profile=release; fi
+          version="$(node -p "require('./android/src-tauri/tauri.conf.json').version")"
+          apk="android/src-tauri/gen/android/app/build/outputs/apk/${ANDROID_ARCH}/${profile}/app-${ANDROID_ARCH}-${profile}.apk"
+          test -s "${apk}"
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${apk}"
+          "${ANDROID_HOME}/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${apk}"
+          mkdir -p dist/release-android
+          name="qunica_${version}_android-${ANDROID_ARCH}-${profile}.apk"
+          cp "${apk}" "dist/release-android/${name}"
+          (cd dist/release-android && sha256sum "${name}" > "${name}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.arch }}
+          path: dist/release-android/*
+          if-no-files-found: error
+
+      - name: Upload APK to draft release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "${TAG}" dist/release-android/* --clobber
+
+      - name: Remove signing keystore
+        if: ${{ always() && inputs.publish }}
+        run: rm -f "${RUNNER_TEMP}/qunica-release.jks"

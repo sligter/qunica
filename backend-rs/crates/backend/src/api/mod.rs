@@ -80,7 +80,10 @@ pub fn router(state: AppState) -> Router {
         .expect("QUNICA_ALLOWED_ORIGINS must contain comma-separated HTTP(S) origins without wildcards or paths");
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
-            is_allowed_origin(origin) || origin.to_str().is_ok_and(|value| allowed_origins.iter().any(|allowed| allowed == value))
+            is_allowed_origin(origin)
+                || origin
+                    .to_str()
+                    .is_ok_and(|value| allowed_origins.iter().any(|allowed| allowed == value))
         }))
         .allow_methods([
             Method::GET,
@@ -649,16 +652,28 @@ fn is_allowed_origin(origin: &HeaderValue) -> bool {
 }
 
 fn parse_allowed_origins(value: &str) -> Result<Vec<String>, &'static str> {
-    if value.trim().is_empty() { return Ok(Vec::new()); }
-    value.split(',').map(|raw| {
-        let raw = raw.trim();
-        let url = reqwest::Url::parse(raw).map_err(|_| "invalid origin")?;
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
-            || raw.contains('*') || !url.username().is_empty() || url.password().is_some()
-            || url.path() != "/" || url.query().is_some() || url.fragment().is_some()
-        { return Err("invalid origin"); }
-        Ok(url.origin().ascii_serialization())
-    }).collect()
+    if value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|raw| {
+            let raw = raw.trim();
+            let url = reqwest::Url::parse(raw).map_err(|_| "invalid origin")?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || raw.contains('*')
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.path() != "/"
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err("invalid origin");
+            }
+            Ok(url.origin().ascii_serialization())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -667,13 +682,27 @@ mod mobile_cors_tests {
 
     #[test]
     fn mobile_origins_are_exact_and_reject_wildcards_and_non_origins() {
-        assert_eq!(parse_allowed_origins("https://PHONE.example:443, https://phone.example:8443").unwrap(),
-            vec!["https://phone.example", "https://phone.example:8443"]);
-        for value in ["*", "https://*.example", "https://phone.example/path", "https://user@phone.example", "https://phone.example?q=1", "null", "https://phone.example,"] {
+        assert_eq!(
+            parse_allowed_origins("https://PHONE.example:443, https://phone.example:8443").unwrap(),
+            vec!["https://phone.example", "https://phone.example:8443"]
+        );
+        for value in [
+            "*",
+            "https://*.example",
+            "https://phone.example/path",
+            "https://user@phone.example",
+            "https://phone.example?q=1",
+            "null",
+            "https://phone.example,",
+        ] {
             assert!(parse_allowed_origins(value).is_err(), "accepted {value}");
         }
-        assert!(is_allowed_origin(&HeaderValue::from_static("http://localhost:5173")));
-        assert!(!is_allowed_origin(&HeaderValue::from_static("http://localhost:5173@evil.example")));
+        assert!(is_allowed_origin(&HeaderValue::from_static(
+            "http://localhost:5173"
+        )));
+        assert!(!is_allowed_origin(&HeaderValue::from_static(
+            "http://localhost:5173@evil.example"
+        )));
     }
 }
 
