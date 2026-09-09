@@ -425,6 +425,7 @@ export interface AgentSystemPromptGenerateResponse {
 
 export type ProviderKind =
   | 'openai-compatible'
+  | 'openai-responses'
   | 'anthropic'
   | 'anthropic-compatible'
   | 'gemini'

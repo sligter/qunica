@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::{body::Body, http::header, response::IntoResponse, Router};
 use qunica_backend::llm::{
     AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider, ReasoningEffort, ToolCall,
+    OpenAiCompatibleProvider, OpenAiResponsesProvider, ReasoningEffort, ToolCall,
 };
 use qunica_domain::runtime::ChatContentPart;
 use serde_json::{json, Value};
@@ -1030,4 +1030,177 @@ async fn llm_contract_absent_effort_omits_the_key_entirely() {
         body["generationConfig"].get("thinkingConfig").is_none(),
         "{body}"
     );
+}
+
+// Responses uses complete output items for calls and a required terminal event.
+const RESPONSES_TEXT: &str = concat!(
+    "event: response.created\ndata: {\"type\":\"response.created\"}\r\n\r\n",
+    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"Checking\"}\n\n",
+    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n\n",
+    "data: {\"type\":\"response.output_text.done\",\"text\":\"你好\"}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":80},\"output_tokens\":5,\"total_tokens\":105}}}",
+);
+
+#[tokio::test]
+async fn responses_streams_text_reasoning_and_usage_without_duplicate_done() {
+    let url = fake_server(RESPONSES_TEXT).await;
+    let deltas = collect(
+        OpenAiResponsesProvider::new(url, "test-key")
+            .stream(request())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(matches!(&deltas[0], ChatDelta::Reasoning(text) if text == "Checking"));
+    assert!(matches!(&deltas[1], ChatDelta::Token(text) if text == "你好"));
+    let ChatDelta::Usage(usage) = &deltas[2] else {
+        panic!("expected usage")
+    };
+    assert_eq!(usage.input_tokens, Some(100));
+    assert_eq!(usage.cached_input_tokens, Some(80));
+    assert_eq!(usage.output_tokens, Some(5));
+    assert_eq!(usage.total_tokens, Some(105));
+    assert!(matches!(deltas[3], ChatDelta::Done));
+    assert_eq!(deltas.len(), 4);
+}
+
+#[tokio::test]
+async fn responses_encodes_history_images_tools_and_optional_settings() {
+    let (url, captures) = capture_server(RESPONSES_TEXT).await;
+    let provider = OpenAiResponsesProvider::new(url, "test-key");
+    let mut req = continuation_request();
+    req.messages
+        .insert(2, image_request("user").messages.remove(0));
+    req.temperature = None;
+    req.reasoning_effort = Some(ReasoningEffort::XHigh);
+    req.tools = vec![qunica_backend::llm::ToolDefinition {
+        name: "Read".into(),
+        description: "Read a file".into(),
+        input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"}}}),
+    }];
+    collect(provider.stream(req).await.unwrap()).await;
+    let body = captures.lock().await[0].clone();
+    assert_eq!(body["store"], false);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(body["reasoning"]["effort"], "xhigh");
+    for key in [
+        "messages",
+        "stream_options",
+        "temperature",
+        "reasoning_effort",
+    ] {
+        assert!(body.get(key).is_none(), "unexpected {key}");
+    }
+    assert_eq!(body["input"][0]["role"], "system");
+    assert_eq!(body["input"][2]["content"][0]["type"], "input_text");
+    assert_eq!(
+        body["input"][2]["content"][1],
+        json!({"type":"input_image","image_url":"data:image/png;base64,AQID"})
+    );
+    assert_eq!(
+        body["input"][3],
+        json!({"role":"assistant","content":"Checking."})
+    );
+    assert_eq!(body["input"][4]["type"], "function_call");
+    assert_eq!(body["input"][4]["call_id"], "call_1");
+    assert_eq!(
+        serde_json::from_str::<Value>(body["input"][4]["arguments"].as_str().unwrap()).unwrap(),
+        json!({"file_path":"note.txt"})
+    );
+    assert_eq!(body["input"][5]["type"], "function_call_output");
+    assert_eq!(body["input"][5]["call_id"], "call_1");
+    assert_eq!(body["tools"][0]["name"], "Read");
+    assert_eq!(body["tools"][0]["strict"], false);
+    assert!(body["tools"][0].get("function").is_none());
+    let mut req = request();
+    req.temperature = Some(0.5);
+    collect(provider.stream(req.clone()).await.unwrap()).await;
+    req.include_empty_tools = true;
+    collect(provider.stream(req).await.unwrap()).await;
+    let captures = captures.lock().await;
+    assert_eq!(captures[1]["temperature"], 0.5);
+    assert!(captures[1].get("tools").is_none());
+    assert!(captures[1].get("reasoning").is_none());
+    assert_eq!(captures[2]["tools"], json!([]));
+}
+
+#[tokio::test]
+async fn responses_parallel_calls_replay_call_ids_and_encrypted_reasoning() {
+    let fixture = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"opaque\",\"summary\":[]}}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"fc_2\",\"call_id\":\"call_2\",\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"b\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"a\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+    );
+    let (url, captures) = capture_server(fixture).await;
+    let provider = OpenAiResponsesProvider::new(url, "test-key");
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+    let calls: Vec<_> = deltas
+        .into_iter()
+        .filter_map(|delta| match delta {
+            ChatDelta::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[1].id, "call_2");
+    assert_eq!(calls[0].args, json!({"file_path":"a"}));
+    let mut req = request();
+    req.messages
+        .push(ChatMessage::assistant_tool_calls("", calls));
+    req.messages
+        .push(ChatMessage::tool_result("call_1", "Read", "first result"));
+    req.messages
+        .push(ChatMessage::tool_result("call_2", "Read", "second result"));
+    collect(provider.stream(req).await.unwrap()).await;
+    let captures = captures.lock().await;
+    let input = captures[1]["input"].as_array().unwrap();
+    assert_eq!(input.len(), 6);
+    assert_eq!(
+        input[1],
+        json!({"type":"reasoning","id":"rs_1","encrypted_content":"opaque","summary":[]})
+    );
+    assert_eq!(input[2]["call_id"], "call_1");
+    assert_eq!(input[3]["call_id"], "call_2");
+    assert_eq!(input[4]["output"], "first result");
+}
+
+#[tokio::test]
+async fn responses_requires_successful_completion_before_releasing_any_calls() {
+    for fixture in [
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"server failed\"}}}\n\n",
+        "data: {\"type\":\"error\",\"message\":\"quota exceeded\"}\n\n",
+        "data: invalid-json\n\n",
+        concat!(
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"Read\",\"arguments\":\"{}\"}}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{}}\n\n",
+        ),
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"Read\",\"arguments\":\"{}\"},{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"Read\",\"arguments\":\"{\"}]}}\n\n",
+    ] {
+        let url = fake_server(fixture).await;
+        let deltas = collect(OpenAiResponsesProvider::new(url, "test-key").stream(request()).await.unwrap()).await;
+        assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))), "{deltas:?}");
+        assert!(!deltas.iter().any(|delta| matches!(delta, ChatDelta::Done | ChatDelta::ToolCall(_))));
+    }
+}
+
+#[tokio::test]
+async fn responses_transport_failure_is_truncated() {
+    let url = truncating_server(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+    )
+    .await;
+    let deltas = collect(
+        OpenAiResponsesProvider::new(url, "test-key")
+            .stream(request())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))));
+    assert!(!deltas.iter().any(|delta| matches!(delta, ChatDelta::Done)));
 }

@@ -29,7 +29,7 @@ import type { LLMProviderRead, ProviderKind } from '@/types/api'
 
 function createSchema(required: string) { return z.object({
   name: z.string().min(1, required).max(100),
-  kind: z.enum(['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']),
+  kind: z.enum(['openai-compatible', 'openai-responses', 'anthropic', 'anthropic-compatible', 'gemini']),
   base_url: z.string().optional(),
   api_key: z.string().min(1, required),
   user_agent: z.string().optional(),
@@ -42,8 +42,8 @@ interface CreateProviderFormProps {
   onCreated?: (provider: LLMProviderRead) => void
 }
 
-const KIND_OPTIONS: ProviderKind[] = ['openai-compatible', 'anthropic', 'anthropic-compatible', 'gemini']
-const KIND_KEYS: Record<ProviderKind, 'openai' | 'anthropic' | 'anthropicCompatible' | 'gemini'> = { 'openai-compatible': 'openai', anthropic: 'anthropic', 'anthropic-compatible': 'anthropicCompatible', gemini: 'gemini' }
+const KIND_OPTIONS: ProviderKind[] = ['openai-compatible', 'openai-responses', 'anthropic', 'anthropic-compatible', 'gemini']
+const KIND_KEYS: Record<ProviderKind, 'openai' | 'openaiResponses' | 'anthropic' | 'anthropicCompatible' | 'gemini'> = { 'openai-compatible': 'openai', 'openai-responses': 'openaiResponses', anthropic: 'anthropic', 'anthropic-compatible': 'anthropicCompatible', gemini: 'gemini' }
 
 function baseUrlPlaceholder(kind: ProviderKind): string {
   if (kind === 'anthropic' || kind === 'anthropic-compatible') {

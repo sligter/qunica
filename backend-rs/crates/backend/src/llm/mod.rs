@@ -10,11 +10,13 @@ pub mod anthropic;
 pub mod gemini;
 pub mod model_catalog;
 pub mod openai_compatible;
+pub mod openai_responses;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
 pub use model_catalog::{discover_models, ModelCatalogError, ModelInfo, MODEL_CATALOG_TIMEOUT};
 pub use openai_compatible::OpenAiCompatibleProvider;
+pub use openai_responses::OpenAiResponsesProvider;
 
 // Re-export the runtime data contract so integration tests (which link only
 // against this crate) can name the shared types without depending on the domain
@@ -201,6 +203,11 @@ pub fn build_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvide
     let base_url = cfg.base_url.clone().unwrap_or_default();
     let client = build_http_client(cfg, reqwest::Client::builder())?;
     let provider: Box<dyn LlmProvider> = match cfg.kind.as_str() {
+        "openai-responses" => Box::new(OpenAiResponsesProvider::with_client(
+            client,
+            base_url,
+            cfg.api_key.clone(),
+        )),
         "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
         | "openrouter" => Box::new(OpenAiCompatibleProvider::with_client(
             client,
@@ -327,8 +334,27 @@ impl ToolAccum {
 ///
 /// Bytes are buffered so that multi-byte UTF-8 sequences and SSE lines split
 /// across network chunks are reassembled before parsing.
-pub(crate) async fn pump<F>(resp: reqwest::Response, tx: Sender<ChatDelta>, mut parse: F)
+pub(crate) async fn pump<F>(resp: reqwest::Response, tx: Sender<ChatDelta>, parse: F)
 where
+    F: FnMut(&str) -> Vec<ChatDelta>,
+{
+    pump_inner(resp, tx, parse, false).await;
+}
+
+/// Responses requires a terminal event; a clean HTTP EOF alone is not success.
+pub(crate) async fn pump_terminal<F>(resp: reqwest::Response, tx: Sender<ChatDelta>, parse: F)
+where
+    F: FnMut(&str) -> Vec<ChatDelta>,
+{
+    pump_inner(resp, tx, parse, true).await;
+}
+
+async fn pump_inner<F>(
+    resp: reqwest::Response,
+    tx: Sender<ChatDelta>,
+    mut parse: F,
+    require_terminal: bool,
+) where
     F: FnMut(&str) -> Vec<ChatDelta>,
 {
     let mut stream = resp.bytes_stream();
@@ -349,7 +375,8 @@ where
             let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim_end_matches(['\r', '\n']);
             for delta in parse(line) {
-                if tx.send(delta).await.is_err() {
+                let terminal = matches!(delta, ChatDelta::Done | ChatDelta::Truncated(_));
+                if tx.send(delta).await.is_err() || terminal {
                     return;
                 }
             }
@@ -360,13 +387,19 @@ where
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf);
         for delta in parse(line.trim()) {
-            if tx.send(delta).await.is_err() {
+            let terminal = matches!(delta, ChatDelta::Done | ChatDelta::Truncated(_));
+            if tx.send(delta).await.is_err() || terminal {
                 return;
             }
         }
     }
 
-    let _ = tx.send(ChatDelta::Done).await;
+    let end = if require_terminal {
+        ChatDelta::Truncated("Responses stream ended without a terminal event".to_string())
+    } else {
+        ChatDelta::Done
+    };
+    let _ = tx.send(end).await;
 }
 
 /// Extract the JSON payload of an SSE `data:` line.

@@ -26,8 +26,9 @@ const PROVIDER_COLUMNS: &str =
      context_window_tokens, context_output_reserve_ratio, description, reasoning_passback, \
      models_json, status, created_at, updated_at";
 
-const VALID_KINDS: [&str; 4] = [
+const VALID_KINDS: [&str; 5] = [
     "openai-compatible",
+    "openai-responses",
     "anthropic",
     "anthropic-compatible",
     "gemini",

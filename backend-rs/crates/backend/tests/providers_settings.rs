@@ -1702,3 +1702,77 @@ async fn acp_runtime_presets_include_codex_and_claude_with_options() {
         }
     }
 }
+
+#[tokio::test]
+async fn providers_settings_responses_creation_discovery_and_model_test() {
+    let app = app().await;
+    let token = register_and_login(&app, "responses-provider@example.com").await;
+    let (base, captures) = catalog_server(
+        StatusCode::OK,
+        json!({"data":[{"id":"response-model"}]}).to_string(),
+    )
+    .await;
+    let endpoint = format!("{base}/v1/responses/");
+    let provider = create_provider_config(
+        &app,
+        &token,
+        "Responses",
+        "openai-responses",
+        &endpoint,
+        "responses-secret",
+        "response-model",
+    )
+    .await;
+    assert_eq!(provider["kind"], "openai-responses");
+    let id = provider["id"].as_str().unwrap();
+    let (status, models) = send(
+        &app,
+        authed("GET", &format!("/api/v2/llm-providers/{id}/models"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        models,
+        json!([{"id":"response-model","name":"response-model"}])
+    );
+    let captured = captures.lock().await;
+    assert_eq!(captured[0].uri, "/v1/models");
+    assert_eq!(
+        captured[0].headers[header::AUTHORIZATION],
+        "Bearer responses-secret"
+    );
+    drop(captured);
+
+    let (base, captures) = catalog_server(
+        StatusCode::OK,
+        concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+        ),
+    )
+    .await;
+    let endpoint = format!("{base}/v1/responses/?tenant=a");
+    let (status, _) = send(&app, authed_json("PATCH", &format!("/api/v2/llm-providers/{id}"), &token,
+        json!({"kind":"openai-responses", "base_url":endpoint, "headers":{"X-Tenant":"tenant-secret"},"user_agent":"Responses-Test/1.0"}))).await;
+    assert_eq!(status, StatusCode::OK);
+    // Both root and full endpoint forms reach precisely /v1/responses.
+    for endpoint in [format!("{base}/v1/"), endpoint] {
+        let (status, response) = send(&app, authed_json("POST", "/api/v2/llm-providers/test-model", &token,
+            json!({"provider_id":id,"kind":"openai-responses","base_url":endpoint,"model":"response-model"}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["ok"], true);
+    }
+    let captured = captures.lock().await;
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].uri, "/v1/responses");
+    assert_eq!(captured[1].uri, "/v1/responses?tenant=a");
+    for capture in captured.iter() {
+        assert_eq!(capture.method, "POST");
+        assert_eq!(
+            capture.headers[header::AUTHORIZATION],
+            "Bearer responses-secret"
+        );
+        assert_eq!(capture.headers["x-tenant"], "tenant-secret");
+        assert_eq!(capture.headers[header::USER_AGENT], "Responses-Test/1.0");
+    }
+}

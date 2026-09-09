@@ -182,7 +182,7 @@ async fn discover_models_inner(
 
 fn catalog_kind(config: &ProviderConfig) -> Result<CatalogKind, ModelCatalogError> {
     match config.kind.as_str() {
-        "openai-compatible" => Ok(CatalogKind::OpenAi),
+        "openai-compatible" | "openai-responses" => Ok(CatalogKind::OpenAi),
         "anthropic" | "anthropic-compatible" => Ok(CatalogKind::Anthropic),
         "gemini" => Ok(CatalogKind::Gemini),
         _ => Err(ModelCatalogError::UnsupportedProvider {
@@ -218,6 +218,7 @@ fn catalog_url(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .or(match config.kind.as_str() {
+            "openai-responses" => Some(super::openai_responses::DEFAULT_BASE_URL),
             "anthropic" => Some(ANTHROPIC_BASE_URL),
             "gemini" => Some(GEMINI_BASE_URL),
             _ => None,
@@ -236,6 +237,11 @@ fn catalog_url(
 
     url.set_fragment(None);
     let base_path = url.path().trim_end_matches('/');
+    let base_path = if config.kind == "openai-responses" {
+        base_path.strip_suffix("/responses").unwrap_or(base_path)
+    } else {
+        base_path
+    };
     let path = match catalog_kind {
         CatalogKind::OpenAi => format!("{base_path}/models"),
         CatalogKind::Anthropic => format!("{base_path}/v1/models"),
@@ -380,6 +386,24 @@ mod tests {
 
     #[test]
     fn native_catalogs_use_canonical_base_urls_when_absent() {
+        let responses = config("openai-responses", None);
+        assert_eq!(catalog_kind(&responses).unwrap(), CatalogKind::OpenAi);
+        assert_eq!(
+            catalog_url(&responses, CatalogKind::OpenAi)
+                .unwrap()
+                .as_str(),
+            "https://api.openai.com/v1/models"
+        );
+        let responses = config(
+            "openai-responses",
+            Some("https://gateway.test/v1/responses/?tenant=a"),
+        );
+        assert_eq!(
+            catalog_url(&responses, CatalogKind::OpenAi)
+                .unwrap()
+                .as_str(),
+            "https://gateway.test/v1/models?tenant=a"
+        );
         let anthropic = config("anthropic", None);
         assert_eq!(
             catalog_url(&anthropic, CatalogKind::Anthropic)
