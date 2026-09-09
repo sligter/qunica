@@ -676,36 +676,6 @@ fn parse_allowed_origins(value: &str) -> Result<Vec<String>, &'static str> {
         .collect()
 }
 
-#[cfg(test)]
-mod mobile_cors_tests {
-    use super::*;
-
-    #[test]
-    fn mobile_origins_are_exact_and_reject_wildcards_and_non_origins() {
-        assert_eq!(
-            parse_allowed_origins("https://PHONE.example:443, https://phone.example:8443").unwrap(),
-            vec!["https://phone.example", "https://phone.example:8443"]
-        );
-        for value in [
-            "*",
-            "https://*.example",
-            "https://phone.example/path",
-            "https://user@phone.example",
-            "https://phone.example?q=1",
-            "null",
-            "https://phone.example,",
-        ] {
-            assert!(parse_allowed_origins(value).is_err(), "accepted {value}");
-        }
-        assert!(is_allowed_origin(&HeaderValue::from_static(
-            "http://localhost:5173"
-        )));
-        assert!(!is_allowed_origin(&HeaderValue::from_static(
-            "http://localhost:5173@evil.example"
-        )));
-    }
-}
-
 /// Build a router backed by a fresh, migrated in-memory database for tests.
 #[doc(hidden)]
 pub async fn router_for_tests() -> Router {
@@ -739,4 +709,34 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         terminals: TerminalManager::shared(),
     };
     (router(state.clone()), state)
+}
+
+#[cfg(test)]
+mod mobile_cors_tests {
+    use super::*;
+
+    #[test]
+    fn mobile_origins_are_exact_and_reject_wildcards_and_non_origins() {
+        assert_eq!(
+            parse_allowed_origins("https://PHONE.example:443, https://phone.example:8443").unwrap(),
+            vec!["https://phone.example", "https://phone.example:8443"]
+        );
+        for value in [
+            "*",
+            "https://*.example",
+            "https://phone.example/path",
+            "https://user@phone.example",
+            "https://phone.example?q=1",
+            "null",
+            "https://phone.example,",
+        ] {
+            assert!(parse_allowed_origins(value).is_err(), "accepted {value}");
+        }
+        assert!(is_allowed_origin(&HeaderValue::from_static(
+            "http://localhost:5173"
+        )));
+        assert!(!is_allowed_origin(&HeaderValue::from_static(
+            "http://localhost:5173@evil.example"
+        )));
+    }
 }
