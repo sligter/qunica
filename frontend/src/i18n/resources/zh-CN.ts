@@ -461,7 +461,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     header: { agent_one: '{{formattedCount}} 个 Agent', agent_other: '{{formattedCount}} 个 Agent', announcement: '公告：{{text}}' },
     emptyAgents: '此群组中还没有 Agent，请在群组设置中添加。',
     actions: { taskActions: '任务操作', manage: '管理群组', create: '创建群组', delete: '删除群组', newTask: '新任务' },
-    delegationDescription: 'Agent 回复中的 @提及只作为文字显示。委派统一走 AgentAsTool，可选助手是本回合未参与的成员。',
+    delegationDescription: '无主持的网状有界回合中，Agent 回复里的 @提及可在步骤和跳数预算内请求成员接续回复。工具委派使用 AgentAsTool。',
     create: { title: '创建新群组', description: '群组是你与 Agent 协作的共享空间。', name: '群组名称', required: '必填', nameTooLong: '不得超过 100 个字符', template: '群模板', noTemplate: '从空白开始', templateDescription: '填入协作设置与初始 Agent，不复制文件和历史。', workspace: '群组工作区', workspaceDescription: '选择现有工作区，留空则自动创建。', workspaceSelected: '此群组将使用所选工作区。', workspaceLoading: '正在加载系统设置…', workspaceAutoCreate: '将在以下位置创建新的专用工作区：', workspaceMissing: '尚未配置群组工作区根目录。', workspaceSettingsLink: '请在系统设置中配置', workspaceMissingSuffix: '后再创建群组。', optionalDescription: '描述（可选）', optionalAnnouncement: '公告（可选）', announcementPlaceholder: '每个 Agent 系统提示词中都会包含的简短说明。', responseMode: '响应方式', communicationMode: '协作拓扑', initialAgents: '初始 Agent（可选）', noAgents: '暂无 Agent。请先在 Agent 标签页中创建。', submit: '创建群组', creating: '正在创建…', cancel: '取消' },
     manage: {
       title: '管理群组', documentTitle: '{{name}} · 管理 · Qunica', back: '返回群组聊天', members: '成员', settings: '设置', notes: '笔记', resize: '调整群设置宽度', loading: '正在加载…', loadError: '无法加载群组。', loadErrorDetail: '无法加载群组：{{message}}', notFound: '未找到群组。',

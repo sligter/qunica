@@ -29,8 +29,8 @@ pub use cancellation::{ActiveTurn, ActiveTurnRegistry, TurnCancellation};
 /// Pick who speaks next, or report why the turn is over.
 ///
 /// Priority is user `@mentions`, then the group's deterministic speaking order.
-/// Mentions written by an agent are display-only; structured delegation enters
-/// through `AgentAsTool` and the turn runtime. In bounded mode the moderator only
+/// The turn runtime handles peer mentions in unmoderated mesh turns and
+/// structured delegation through `AgentAsTool`. In bounded mode the moderator only
 /// chooses who runs; automatic mode also lets it finish the turn.
 pub fn next_decision(
     budget: &TurnBudget,

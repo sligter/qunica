@@ -31,7 +31,7 @@ pub enum SelectionReason {
     UserMention,
     AgentCall,
     AgentHandoff,
-    /// Read-only compatibility for traces created before agent prose became display-only.
+    /// A public peer reply requested by an agent in an unmoderated mesh turn.
     AgentTextMention,
     DeterministicOrder,
     Moderator,

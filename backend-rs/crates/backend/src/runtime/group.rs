@@ -29,7 +29,7 @@ use std::sync::{
     Arc,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     io::Read,
     path::{Path, PathBuf},
@@ -932,6 +932,7 @@ async fn run_scheduled_turn(
         .map(Some)
         .collect::<Vec<Option<Candidate>>>();
     let mut pending_user_mentions = user_mentioned_agent_ids;
+    let mut pending_peer_mentions: VecDeque<PeerMention> = VecDeque::new();
     let mut previous_speaker: Option<String> = None;
     let mut had_visible = false;
     loop {
@@ -962,15 +963,77 @@ async fn run_scheduled_turn(
             .filter(|agent_id| candidate_pool.contains(agent_id))
             .cloned()
             .collect::<Vec<_>>();
-        let decision = next_decision(
-            &scheduler_runtime.budget,
-            previous_speaker.as_deref(),
-            &remaining_user_mentions,
-            &scheduler_candidates,
-            group.moderator_enabled,
-            automatic_scheduler,
-        );
+        let mut peer_mention = None;
         let mut preselected_agent = None;
+        // User requests retain priority. Peer requests can revisit an earlier
+        // (including silent) responder, but never bypass the turn's budgets.
+        if remaining_user_mentions.is_empty() {
+            while let Some(mention) = pending_peer_mentions.pop_front() {
+                if scheduler_runtime
+                    .helper_claims
+                    .contains_key(&mention.target_agent_id)
+                    || scheduler_runtime
+                        .budget
+                        .check_dispatch(&mention.target_agent_id, mention.hop)
+                        .is_err()
+                {
+                    continue;
+                }
+                match is_agent_currently_muted(
+                    &services.pool,
+                    &req.group_id,
+                    &mention.target_agent_id,
+                )
+                .await
+                {
+                    Ok(false) => {}
+                    Ok(true) => continue,
+                    Err(_) => return fail_scheduled_persistence(ctx, &store, &turn_id).await,
+                }
+                let candidate = match load_candidate_by_id(
+                    &services.pool,
+                    &req.group_id,
+                    &mention.target_agent_id,
+                    group,
+                )
+                .await
+                {
+                    Ok(candidate) if peer_mention_eligible(&candidate) => candidate,
+                    Ok(_) | Err(CandidateLoadError::Ineligible(_)) => continue,
+                    Err(CandidateLoadError::Persistence(_)) => {
+                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
+                    }
+                };
+                for slot in &mut remaining {
+                    if slot
+                        .as_ref()
+                        .is_some_and(|agent| agent.agent_id == candidate.agent_id)
+                    {
+                        slot.take();
+                    }
+                }
+                preselected_agent = Some(candidate);
+                peer_mention = Some(mention);
+                break;
+            }
+        }
+        let decision = if let Some(mention) = &peer_mention {
+            SchedulerDecision::Dispatch(SchedulerDispatch {
+                target_agent_id: mention.target_agent_id.clone(),
+                selection_reason: SelectionReason::AgentTextMention,
+                action_kind: ActionKind::Speak,
+                hop: mention.hop,
+            })
+        } else {
+            next_decision(
+                &scheduler_runtime.budget,
+                previous_speaker.as_deref(),
+                &remaining_user_mentions,
+                &scheduler_candidates,
+                group.moderator_enabled,
+                automatic_scheduler,
+            )
+        };
         // Why the moderator could not pick, when a fallback is reported.
         let mut moderator_failure: Option<&'static str> = None;
         let mut moderator_remaining_work = None;
@@ -1300,6 +1363,8 @@ async fn run_scheduled_turn(
         };
         if dispatch.selection_reason == SelectionReason::UserMention {
             pending_user_mentions.retain(|agent_id| agent_id != &dispatch.target_agent_id);
+            pending_peer_mentions
+                .retain(|mention| mention.target_agent_id != dispatch.target_agent_id);
         }
         let agent = if let Some(agent) = preselected_agent {
             agent
@@ -1344,8 +1409,12 @@ async fn run_scheduled_turn(
             .queue_dispatch(NewDispatch {
                 id: dispatch_id.clone(),
                 turn_id: turn_id.clone(),
-                parent_dispatch_id: None,
-                source_agent_id: None,
+                parent_dispatch_id: peer_mention
+                    .as_ref()
+                    .map(|mention| mention.parent_dispatch_id.clone()),
+                source_agent_id: peer_mention
+                    .as_ref()
+                    .map(|mention| mention.source_agent_id.clone()),
                 target_agent_id: agent.agent_id.clone(),
                 selection_reason: dispatch.selection_reason,
                 action_kind: dispatch.action_kind,
@@ -1366,7 +1435,9 @@ async fn run_scheduled_turn(
             SpeakerSelection {
                 turn_id: &turn_id,
                 dispatch_id: &dispatch_id,
-                source_agent_id: None,
+                source_agent_id: peer_mention
+                    .as_ref()
+                    .map(|mention| mention.source_agent_id.as_str()),
                 target_agent_id: &agent.agent_id,
                 selection_reason: dispatch.selection_reason,
                 action_kind: dispatch.action_kind,
@@ -1611,7 +1682,7 @@ async fn run_scheduled_turn(
         if let Some(next) = next {
             if let Err(_error) = store
                 .finish_dispatch(FinishDispatch {
-                    dispatch_id,
+                    dispatch_id: dispatch_id.clone(),
                     next,
                     artifact: moderator_artifact.clone(),
                     total_tokens: ctx.scheduled_total_tokens.min(i64::MAX as u64) as i64,
@@ -1676,6 +1747,40 @@ async fn run_scheduled_turn(
                 agent_id, content, ..
             } => {
                 had_visible = true;
+                if group.schedules_peer_mentions() && !parent_already_terminal {
+                    let peers = match load_candidates(&services.pool, &req.group_id, group).await {
+                        Ok(peers) => peers,
+                        Err(_) => return fail_scheduled_persistence(ctx, &store, &turn_id).await,
+                    };
+                    let hop = dispatch.hop.saturating_add(1);
+                    for index in scan_mentions(&content, &peers) {
+                        let peer = &peers[index];
+                        if peer.agent_id == agent_id
+                            || !peer_mention_eligible(peer)
+                            || scheduler_runtime.helper_claims.contains_key(&peer.agent_id)
+                            || !allows_agent_edge(
+                                &scheduler_runtime.topology,
+                                &agent_id,
+                                &peer.agent_id,
+                            )
+                            || scheduler_runtime
+                                .budget
+                                .check_dispatch(&peer.agent_id, hop)
+                                .is_err()
+                            || pending_peer_mentions
+                                .iter()
+                                .any(|mention| mention.target_agent_id == peer.agent_id)
+                        {
+                            continue;
+                        }
+                        pending_peer_mentions.push_back(PeerMention {
+                            target_agent_id: peer.agent_id.clone(),
+                            source_agent_id: agent_id.clone(),
+                            parent_dispatch_id: dispatch_id.clone(),
+                            hop,
+                        });
+                    }
+                }
                 scheduler_runtime.consecutive_same_speaker =
                     if previous_speaker.as_deref() == Some(agent_id.as_str()) {
                         scheduler_runtime.consecutive_same_speaker.saturating_add(1)
@@ -2515,6 +2620,27 @@ struct InvocationContext {
     workspace_root: Option<PathBuf>,
 }
 
+impl GroupRuntimeConfig {
+    fn schedules_peer_mentions(&self) -> bool {
+        self.conversation_kind != "direct"
+            && self.communication_mode == "mesh"
+            && self.scheduler_mode == "bounded"
+            && !self.moderator_enabled
+            && self.max_scheduler_hops > 0
+    }
+}
+
+struct PeerMention {
+    target_agent_id: String,
+    source_agent_id: String,
+    parent_dispatch_id: String,
+    hop: u32,
+}
+
+fn peer_mention_eligible(candidate: &Candidate) -> bool {
+    candidate.response_mode != "muted" && candidate.response_mode != "manual_only"
+}
+
 /// What `AgentAsTool` can actually do for this dispatch.
 ///
 /// The scheduler narrows the helper list per dispatch — already-run agents,
@@ -2986,6 +3112,13 @@ async fn run_agent_turn(
     )
     .await?;
 
+    // Peer replies are public scheduler dispatches even when their mention
+    // chain has a nonzero hop. Preserve partial output on cancellation.
+    let checkpoint_interrupted = handoff_depth == 0
+        || ctx
+            .scheduled_dispatch
+            .as_ref()
+            .is_some_and(|dispatch| dispatch.action_kind == ActionKind::Speak);
     if agent.runtime_kind == "acp" {
         return run_acp_agent_turn(
             services,
@@ -2993,7 +3126,7 @@ async fn run_agent_turn(
             agent,
             group,
             delegated_input,
-            handoff_depth == 0,
+            checkpoint_interrupted,
         )
         .await;
     }
@@ -3056,7 +3189,6 @@ async fn run_agent_turn(
         .as_ref()
         .map(|resume| resume.existing_content.clone())
         .unwrap_or_default();
-    let checkpoint_interrupted = handoff_depth == 0;
     let mut turn = ctx
         .resume
         .as_ref()
@@ -6343,8 +6475,13 @@ async fn build_agent_system_prompt(
             "ring" => "Ring: contribute your current stage, then return control so the next speaking_order member can continue.",
             _ => "Mesh: contribute as a peer; there is no fixed coordinator.",
         };
+        let mention_rule = if group.schedules_peer_mentions() {
+            "An @mention of a group member in your final public reply requests their next response after you finish, subject to member availability and the turn's step and hop budgets. Use it when you need that member's input; do not mention members merely to list them. Shared notes and workspace files do not dispatch peers."
+        } else {
+            "Any @mention you write is display-only. Writing a shared note or workspace file, or assigning work in prose, does not dispatch or notify another Agent."
+        };
         sections.push(format!(
-            "Group scheduler rules:\n- Agents are dispatched sequentially, never in the background. Finish this response to return control to the scheduler; do not poll or wait for peer output during this dispatch.\n- Any @mention you write is display-only. Writing a shared note or workspace file, or assigning work in prose, does not dispatch or notify another Agent.\n- {}\n- {topology_rule}",
+            "Group scheduler rules:\n- Agents are dispatched sequentially, never in the background. Finish this response to return control to the scheduler; do not poll or wait for peer output during this dispatch.\n- {mention_rule}\n- {}\n- {topology_rule}",
             delegation.prompt_rule()
         ));
     }
@@ -6365,7 +6502,7 @@ async fn build_agent_system_prompt(
     }
     if group.proactive_mode {
         sections.push(format!(
-            "Proactive mode is enabled. Reply with exactly {SILENT_MARKER} to skip this turn without persisting a message."
+            "Proactive mode is enabled. Decide whether you can contribute based on the latest conversation, including peer replies and requests addressed to you; a user addressing another member does not exclude you. Reply with exactly {SILENT_MARKER} only when you have nothing useful to add, without persisting a message."
         ));
     }
     Ok(sections.join("\n\n"))

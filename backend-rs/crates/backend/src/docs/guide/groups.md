@@ -14,7 +14,7 @@ You can save an existing group's settings and Agent roster as a reusable templat
 - **free_speech.** When on, every eligible agent enters the turn and replies sequentially.
 - **proactive_mode.** Includes every eligible agent in the current turn. An agent can answer with `<SILENT>` to skip without creating a message.
 
-Only a user's `@mention` selects public responders. An `@mention` written by an Agent is display-only. Legacy mention-dispatch fields remain readable so old intent is not erased, but requests that send those removed fields are rejected with `400 Bad Request`.
+In a bounded mesh turn without a moderator, an Agent's public `@mention` requests a response from that member after the current speaker finishes. This can revisit a member who previously replied or stayed silent, within the configured total steps, per-member steps, and hop limits. Muted and manual-only members are excluded; a pending user mention takes priority. A zero hop limit disables these follow-ups. In other topologies and moderated turns, Agent mentions remain display-only. Legacy mention-dispatch fields remain readable, but requests that send those removed fields are rejected with `400 Bad Request`.
 
 ## Communication modes
 

@@ -5833,7 +5833,7 @@ async fn scheduler_token_budget_stops_before_the_next_dispatch() {
 
 #[tokio::test]
 #[allow(clippy::type_complexity)]
-async fn legacy_bounded_mentions_are_display_only() {
+async fn unmoderated_mesh_mentions_schedule_a_public_peer_reply() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-mentions@example.com").await;
     let owner = owner_id(&state, "bounded-mentions@example.com").await;
@@ -5863,7 +5863,7 @@ async fn legacy_bounded_mentions_are_display_only() {
         "2024-01-01T00:00:00Z",
     )
     .await;
-    seed_agent(
+    let bob = seed_agent(
         &state,
         &owner,
         &group,
@@ -5888,7 +5888,11 @@ async fn legacy_bounded_mentions_are_display_only() {
     .fetch_all(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[1].1.as_ref(), Some(&dispatches[0].0));
+    assert_eq!(dispatches[1].2.as_ref(), Some(&alice));
+    assert_eq!(dispatches[1].3, "agent_text_mention");
+    assert_eq!(dispatches[1].4, 1);
     assert_eq!(dispatches[0].1, None);
     assert_eq!(dispatches[0].2, None);
     assert_eq!(dispatches[0].3, "user_mention");
@@ -5900,16 +5904,16 @@ async fn legacy_bounded_mentions_are_display_only() {
     .fetch_all(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(senders, vec![Some(alice)]);
+    assert_eq!(senders, vec![Some(alice), Some(bob)]);
 }
 
 #[tokio::test]
-async fn bounded_mentions_display_only_ignores_agent_output_when_free_mentions_are_enabled() {
+async fn zero_hop_budget_disables_peer_mentions() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-display-only@example.com").await;
     let owner = owner_id(&state, "bounded-display-only@example.com").await;
     let workspace = create_workspace(&app, &token).await;
-    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let group = create_group(&app, &token, &workspace, json!({"max_scheduler_hops": 0})).await;
     sqlx::query("UPDATE groups SET allow_agent_free_mention = 1 WHERE id = ?")
         .bind(&group)
         .execute(state.db.pool())
@@ -5957,6 +5961,188 @@ async fn bounded_mentions_display_only_ignores_agent_output_when_free_mentions_a
     .await
     .unwrap();
     assert_eq!(dispatch_count, 1);
+}
+
+#[tokio::test]
+async fn proactive_mesh_revisits_a_silent_peer_and_keeps_user_mentions_first() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "mesh-silent-peer@example.com").await;
+    let owner = owner_id(&state, "mesh-silent-peer@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
+    let (url, requests) = recording_fake_provider_sequence(vec![
+        text_body("<SILENT>"),
+        text_body("@Alice please review this finding. @Alice"),
+        text_body("Cara answers the user's request first."),
+        text_body("Alice responds to Bob's finding."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    for (name, joined_at) in [
+        ("Alice", "2024-01-01T00:00:00Z"),
+        ("Bob", "2024-01-02T00:00:00Z"),
+        ("Cara", "2024-01-03T00:00:00Z"),
+    ] {
+        seed_agent(&state, &owner, &group, &provider, name, joined_at).await;
+    }
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alice @Bob @Cara discuss"}),
+    )
+    .await;
+    assert!(!kinds(&events).iter().any(|kind| kind == "error"));
+    // Alice's first dispatch stayed silent; Bob's mention brings her back after
+    // the pending user mention of Cara runs.
+    assert_eq!(
+        speaker_order(&state, &group).await,
+        ["Alice", "Bob", "Cara", "Alice"]
+    );
+    let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_dispatches")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(dispatches, 4);
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 4);
+    let last = requests[3]["messages"].to_string();
+    assert!(last.contains("please review this finding"));
+    assert!(last.contains("requests their next response after you finish"));
+    assert!(!last.contains("Any @mention you write is display-only"));
+}
+
+#[tokio::test]
+async fn proactive_mesh_user_mention_does_not_exclude_other_members() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "mesh-proactive-roster@example.com").await;
+    let owner = owner_id(&state, "mesh-proactive-roster@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
+    let (url, requests) = recording_fake_provider_sequence(vec![
+        text_body("Bob starts the discussion."),
+        text_body("Alice contributes."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    for (name, joined_at) in [
+        ("Alice", "2024-01-01T00:00:00Z"),
+        ("Bob", "2024-01-02T00:00:00Z"),
+    ] {
+        seed_agent(&state, &owner, &group, &provider, name, joined_at).await;
+    }
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Bob start the discussion"}),
+    )
+    .await;
+    assert_eq!(speaker_order(&state, &group).await, ["Bob", "Alice"]);
+    assert!(requests.lock().await[1]["messages"]
+        .to_string()
+        .contains("Bob starts the discussion."));
+}
+
+#[tokio::test]
+async fn mesh_peer_mention_cycles_respect_hop_and_per_agent_limits() {
+    for (limits, expected) in [
+        (json!({"max_scheduler_hops": 1}), vec!["Alice", "Bob"]),
+        (json!({"max_steps_per_agent": 1}), vec!["Alice", "Bob"]),
+        (
+            json!({"max_steps_per_agent": 2}),
+            vec!["Alice", "Bob", "Alice", "Bob"],
+        ),
+    ] {
+        let (app, state) = router_with_state_for_tests().await;
+        let token = register_and_login(&app, "mesh-cycle@example.com").await;
+        let owner = owner_id(&state, "mesh-cycle@example.com").await;
+        let workspace = create_workspace(&app, &token).await;
+        let group = create_group(&app, &token, &workspace, limits).await;
+        let provider = seed_provider(
+            &state,
+            &owner,
+            &fake_provider_sequence(vec![
+                text_body("@Bob your thoughts?"),
+                text_body("@Alice please respond"),
+                text_body("@Bob follow up"),
+                text_body("@Alice continue"),
+            ])
+            .await,
+        )
+        .await;
+        for (name, joined_at) in [
+            ("Alice", "2024-01-01T00:00:00Z"),
+            ("Bob", "2024-01-02T00:00:00Z"),
+        ] {
+            seed_agent(&state, &owner, &group, &provider, name, joined_at).await;
+        }
+        stream_events(
+            &app,
+            &format!("/api/v2/groups/{group}/messages/stream"),
+            &token,
+            json!({"content": "@Alice start"}),
+        )
+        .await;
+        assert_eq!(speaker_order(&state, &group).await, expected);
+    }
+}
+
+#[tokio::test]
+async fn mesh_peer_mentions_respect_member_response_modes() {
+    for (response_mode, expected) in [
+        ("muted", vec!["Alice"]),
+        ("manual_only", vec!["Alice"]),
+        ("explicit_only", vec!["Alice", "Bob"]),
+    ] {
+        let (app, state) = router_with_state_for_tests().await;
+        let token = register_and_login(&app, "mesh-member-mode@example.com").await;
+        let owner = owner_id(&state, "mesh-member-mode@example.com").await;
+        let workspace = create_workspace(&app, &token).await;
+        let group = create_group(&app, &token, &workspace, json!({})).await;
+        let provider = seed_provider(
+            &state,
+            &owner,
+            &fake_provider_sequence(vec![
+                text_body("@Bob please respond"),
+                text_body("Bob replies"),
+            ])
+            .await,
+        )
+        .await;
+        seed_agent(
+            &state,
+            &owner,
+            &group,
+            &provider,
+            "Alice",
+            "2024-01-01T00:00:00Z",
+        )
+        .await;
+        let bob = seed_agent(
+            &state,
+            &owner,
+            &group,
+            &provider,
+            "Bob",
+            "2024-01-02T00:00:00Z",
+        )
+        .await;
+        sqlx::query("UPDATE group_agents SET response_mode = ? WHERE agent_id = ?")
+            .bind(response_mode)
+            .bind(bob)
+            .execute(state.db.pool())
+            .await
+            .unwrap();
+        stream_events(
+            &app,
+            &format!("/api/v2/groups/{group}/messages/stream"),
+            &token,
+            json!({"content": "@Alice start"}),
+        )
+        .await;
+        assert_eq!(speaker_order(&state, &group).await, expected);
+    }
 }
 
 #[tokio::test]
@@ -6032,7 +6218,7 @@ async fn agent_prose_mentions_do_not_bypass_topology() {
 }
 
 #[tokio::test]
-async fn display_only_agent_mentions_do_not_consume_dispatch_budget() {
+async fn peer_mentions_do_not_exceed_dispatch_budget() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "bounded-budget@example.com").await;
     let owner = owner_id(&state, "bounded-budget@example.com").await;
@@ -8953,7 +9139,7 @@ async fn hierarchical_mode_without_a_leader_promotes_a_stand_in() {
 }
 
 #[tokio::test]
-async fn legacy_followup_cap_cannot_enable_agent_text_dispatch() {
+async fn legacy_followup_cap_does_not_override_mesh_scheduling() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "mention-cap@example.com").await;
     let owner = owner_id(&state, "mention-cap@example.com").await;
@@ -8996,12 +9182,12 @@ async fn legacy_followup_cap_cannot_enable_agent_text_dispatch() {
     .await;
 
     assert!(!kinds(&events).iter().any(|kind| kind == "error"));
-    // Legacy follow-up settings cannot re-enable prose dispatch.
-    assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
+    // Removed legacy settings do not control the current mesh scheduler.
+    assert_eq!(speaker_order(&state, &group).await, ["Alpha", "Bravo"]);
 }
 
 #[tokio::test]
-async fn legacy_followup_switch_stays_disabled() {
+async fn legacy_followup_switch_does_not_override_mesh_scheduling() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "mention-disabled@example.com").await;
     let owner = owner_id(&state, "mention-disabled@example.com").await;
@@ -9044,7 +9230,7 @@ async fn legacy_followup_switch_stays_disabled() {
     .await;
 
     assert!(!kinds(&events).iter().any(|kind| kind == "error"));
-    assert_eq!(speaker_order(&state, &group).await, ["Alpha"]);
+    assert_eq!(speaker_order(&state, &group).await, ["Alpha", "Bravo"]);
 }
 
 /// `AskUser` pauses and resumes through the same scheduled path as every chat.
