@@ -6500,6 +6500,9 @@ async fn build_agent_system_prompt(
                 .to_string(),
         );
     }
+    if executor.has_group_notes() || agent.is_system {
+        sections.push(crate::group_notes::AUTHORING_GUIDE.to_string());
+    }
     if group.proactive_mode {
         sections.push(format!(
             "Proactive mode is enabled. Decide whether you can contribute based on the latest conversation, including peer replies and requests addressed to you; a user addressing another member does not exclude you. Reply with exactly {SILENT_MARKER} only when you have nothing useful to add, without persisting a message."
@@ -7146,7 +7149,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
         let mut definition = tool_definition("Edit")?;
         definition.name = name.to_string();
         definition.description =
-            "Edit one existing shared group note using the path returned from ReadGroupNotes unchanged; do not prefix Notes/."
+            "Edit one existing shared group note in place using the path returned from ReadGroupNotes unchanged; do not prefix Notes/. Follow the shared group note method from the system prompt."
                 .to_string();
         return Some(definition);
     }

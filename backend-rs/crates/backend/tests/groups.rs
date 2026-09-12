@@ -1354,6 +1354,58 @@ async fn group_notes_create_writes_markdown_file() {
 }
 
 #[tokio::test]
+async fn group_notes_blank_creation_uses_built_in_method() {
+    let app = app().await;
+    let token = register_and_login(&app, "group-notes-template@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token, "Notes WS").await;
+    let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;
+    let group_id = group["id"].as_str().unwrap();
+
+    for body in [
+        json!({"title": "Decision"}),
+        json!({"title": "Decision", "content": " \n"}),
+        json!({"title": "Decision\nStatus: implemented"}),
+    ] {
+        let (status, note) = send(
+            &app,
+            authed_json(
+                "POST",
+                &format!("/api/v2/groups/{group_id}/notes"),
+                &token,
+                body,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let content = note["content"].as_str().unwrap();
+        let date = &note["created_at"].as_str().unwrap()[..10];
+        let title = note["title"].as_str().unwrap();
+        assert!(!title.contains(['\r', '\n']));
+        assert!(content.starts_with(&format!(
+            "# {title}\nStatus: proposed\nSince: {date}\nCategory: 决策\n"
+        )));
+        for heading in [
+            "Problem",
+            "Decision",
+            "Alternatives considered",
+            "Consequences",
+        ] {
+            assert!(content.contains(&format!("## {heading}\n")));
+        }
+        assert!(content.contains("Do nothing / reuse"));
+        assert_eq!(
+            std::fs::read_to_string(group_note_file(root.path(), note["id"].as_str().unwrap()))
+                .unwrap(),
+            content
+        );
+    }
+    // The method reaches Agents through the system prompt only; the index stays a plain list.
+    let index = std::fs::read_to_string(root.path().join("Notes/index.md")).unwrap();
+    assert!(index.starts_with("# Group notes\n"));
+    assert!(!index.contains("group consensus"));
+}
+
+#[tokio::test]
 async fn group_notes_list_is_lightweight_and_get_reads_file_content() {
     let (app, state) = app_with_state().await;
     let token = register_and_login(&app, "group-notes-list@example.com").await;

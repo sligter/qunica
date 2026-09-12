@@ -2904,9 +2904,12 @@ pub(crate) async fn create_group_note_inner(
     let group = load_active_note_group(state.db.pool(), &group_id, owner_id).await?;
     let root = group_notes_workspace_root(state.db.pool(), &group, &group.owner_id).await?;
     let title = validate_note_title(&body.title)?;
-    let content = body.content.unwrap_or_default();
     let note_id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
+    let content = body
+        .content
+        .filter(|content| !content.trim().is_empty())
+        .unwrap_or_else(|| crate::group_notes::default_content(&title, &now[..10]));
 
     let mut tx = crate::db::begin_write(state.db.pool())
         .await
@@ -5236,7 +5239,8 @@ async fn validate_default_speaking_order(
 }
 
 pub(crate) fn validate_note_title(raw: &str) -> Result<String, ApiError> {
-    let title = raw.trim().to_string();
+    // A title is the first Markdown header line of the note, so it must stay single-line.
+    let title = raw.replace(['\r', '\n'], " ").trim().to_string();
     let len = title.chars().count();
     if !(1..=200).contains(&len) {
         return Err(ApiError::invalid_input(

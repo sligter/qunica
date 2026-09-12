@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod docs;
 pub mod git;
+mod group_notes;
 pub mod llm;
 pub mod mcp;
 mod process;

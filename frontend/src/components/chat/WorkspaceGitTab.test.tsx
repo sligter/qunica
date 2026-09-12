@@ -169,6 +169,29 @@ describe('WorkspaceGitTab i18n', () => {
     expect(committed).toHaveAttribute('aria-expanded', 'false')
   })
 
+  it('shows one status letter per section instead of the raw porcelain code', () => {
+    const untrackedPath = 'frontend/src/lib/groupNoteMethod.ts'
+    const deletedPath = 'old.ts'
+    renderTab({
+      ...status,
+      dirty_counts: { staged: 2, unstaged: 1, untracked: 1, conflicted: 0 },
+      files: [
+        { ...status.files[0], status: 'MM' },
+        { path: untrackedPath, old_path: null, status: '??', staged: false, unstaged: true, untracked: true, conflicted: false },
+        { path: deletedPath, old_path: null, status: 'D ', staged: true, unstaged: false, untracked: false, conflicted: false },
+      ],
+    })
+
+    expect(screen.queryByText('??')).not.toBeInTheDocument()
+    expect(screen.queryByText('MM')).not.toBeInTheDocument()
+    expect(within(screen.getByTitle(untrackedPath)).getByText('U')).toBeVisible()
+    expect(within(screen.getByTitle(deletedPath)).getByText('D')).toBeVisible()
+    // Committed, staged and worktree sections each list the same path with a single letter.
+    const rows = screen.getAllByTitle(rawPath)
+    expect(rows).toHaveLength(3)
+    for (const row of rows) expect(within(row).getByText('M')).toBeVisible()
+  })
+
   it('uses Push as the primary action for a clean branch with outgoing commits', () => {
     const { container } = renderTab({
       ...status,

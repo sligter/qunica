@@ -3,7 +3,7 @@ node_modules/
 dist/
 build/
 target/
-Notes/
+/Notes/
 *.log
 .pnpm-debug.log*
 *.tsbuildinfo

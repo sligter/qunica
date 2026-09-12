@@ -60,7 +60,13 @@ See [the scheduler design](../../../../../../docs/GROUP_SCHEDULER.md) for the ru
 
 ## Shared notes
 
-Group notes are an app-managed scratchpad backed by Markdown files under the local group's `Notes` directory. `index.md` lists the active notes. Every Agent in the group can use `ReadGroupNotes` and `EditGroupNote`, even when its normal workspace scope is set to its own workspace.
+Group notes store durable decisions, conventions and lessons as Markdown files under the local group's `Notes` directory. `index.md` lists the active notes. Every Agent in the group receives the built-in authoring method once, in its system prompt, and can use `ReadGroupNotes` and `EditGroupNote`, even when its normal workspace scope is set to its own workspace.
+
+New notes start with the [write-notes-like-deepseek](https://github.com/czm15053/write-notes-like-deepseek) four-section template: Problem, Decision, Alternatives considered and Consequences. The editor offers status and category controls. The Markdown header stores the title, `Status`, initial `Since` date and `Category` (决策 / 约定 / 踩坑); filenames remain host-generated. Creating a note through the API with omitted or blank content also supplies a template.
+
+Keep one topic per note, about 200 words. Start at `proposed`; `implemented` describes verified present facts, `rejected` includes a reason, and `archived` retires superseded guidance. Agreement does not establish implementation, and one Agent's suggestion does not establish group consensus. State the strongest argument for alternatives, including doing nothing or reusing the current solution. Record benefits, costs and a concrete trigger for reconsideration. Update facts in place and preserve the initial date; link to repository decision records when those already hold the authoritative explanation.
+
+Existing free-form notes remain editable without automatic conversion. The template and runtime guidance assist authors; they do not mechanically verify consensus or implementation. The app maintains the index.
 
 The built-in Assistant can list and read these notes and can propose creating or updating one. Like its other writes, the note changes only after approval.
 

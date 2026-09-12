@@ -195,6 +195,16 @@ function statusTone(file: GroupWorkspaceGitFileStatus) {
   return 'text-amber-500'
 }
 
+// The backend keeps the raw two-column porcelain code ("??", " M", "MM"). Show one
+// letter for the column that belongs to this section, VS Code style.
+function statusBadge(file: GroupWorkspaceGitFileStatus, mode: NonNullable<ChangeSelection>['mode']) {
+  if (file.untracked) return 'U'
+  if (file.conflicted) return 'C'
+  const code = mode === 'staged' ? file.status[0] : mode === 'worktree' ? file.status[1] : file.status.trim()
+  const letter = (code ?? '').trim()
+  return letter && letter !== '?' ? letter : 'M'
+}
+
 function committedFiles(patch: string): GroupWorkspaceGitFileStatus[] {
   const files: GroupWorkspaceGitFileStatus[] = []
   let current: GroupWorkspaceGitFileStatus | undefined
@@ -328,7 +338,7 @@ function ChangeSection({
                     {path.directory ? <span className="ml-1 text-[10px] text-muted-foreground">{path.directory}</span> : null}
                   </span>
                   <span className={cn('shrink-0 font-mono text-[10px] font-semibold', statusTone(file))}>
-                    {file.status.trim() || 'M'}
+                    {statusBadge(file, diffMode)}
                   </span>
                 </button>
                 {action ? (

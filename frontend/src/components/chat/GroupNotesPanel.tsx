@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { newGroupNoteContent, noteCategories, noteMetadata, noteStatuses, setNoteMetadata, setNoteTitle } from '@/lib/groupNoteMethod'
 import {
   useCreateGroupNote,
   useDeleteGroupNote,
@@ -41,7 +43,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
     setEditing(null)
     setCreating(true)
     setTitle('')
-    setNoteContent('')
+    setNoteContent(newGroupNoteContent('', t))
   }
 
   const openEdit = (note: GroupNoteRead) => {
@@ -52,12 +54,13 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
   }
 
   const onSave = async () => {
+    const content = setNoteTitle(noteContent, title)
     if (creating) {
-      await create.mutateAsync({ title, content: noteContent })
+      await create.mutateAsync({ title, content })
     } else if (editing) {
       await update.mutateAsync({
         noteId: editing.id,
-        data: { title, content: noteContent },
+        data: { title, content },
       })
     }
     setCreating(false)
@@ -70,6 +73,8 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
     && (note.isLoading || note.isError || note.data?.id !== editing.id)
   const mutationError = create.error ?? update.error ?? del.error
   const displayError = (error: unknown) => error instanceof Error ? error.message : String(error)
+  const metadata = noteMetadata(noteContent)
+  const needsRejectionReason = metadata?.status === 'rejected' && !metadata.reason.trim()
 
   return (
     <div className="space-y-4">
@@ -93,7 +98,10 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
             <Input
               id="note-title"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitle(e.target.value)
+                setNoteContent((content) => setNoteTitle(content, e.target.value))
+              }}
               placeholder={t('chat:workspace.notesPanel.titlePlaceholder')}
             />
           </div>
@@ -108,6 +116,40 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
               disabled={noteUnavailable}
             />
           </div>
+          {metadata && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="note-status">{t('chat:workspace.notesPanel.statusLabel')}</Label>
+                  <Select value={metadata.status} disabled={noteUnavailable || isPending} onValueChange={(value) => {
+                    setNoteContent((content) => setNoteMetadata(content, 'Status', value === 'rejected' && metadata.reason ? `${value} — ${metadata.reason}` : value))
+                  }}>
+                    <SelectTrigger id="note-status"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {noteStatuses.map((status) => <SelectItem key={status} value={status}>{t(`chat:workspace.notesPanel.statuses.${status}`)}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="note-category">{t('chat:workspace.notesPanel.categoryLabel')}</Label>
+                  <Select value={metadata.category} disabled={noteUnavailable || isPending} onValueChange={(value) => setNoteContent((content) => setNoteMetadata(content, 'Category', value))}>
+                    <SelectTrigger id="note-category"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {noteCategories.map((category) => <SelectItem key={category} value={category}>{t(`chat:workspace.notesPanel.categories.${category}`)}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {metadata.status === 'rejected' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="note-rejection-reason">{t('chat:workspace.notesPanel.reasonLabel')}</Label>
+                  <Input id="note-rejection-reason" value={metadata.reason} disabled={noteUnavailable || isPending} aria-required="true" onChange={(e) => setNoteContent((content) => setNoteMetadata(content, 'Status', `rejected — ${e.target.value}`))} />
+                </div>
+              )}
+            </>
+          )}
+          <p className="text-xs text-muted-foreground">{t('chat:workspace.notesPanel.methodHint')}</p>
+          {metadata?.status === 'implemented' && <p className="text-xs text-muted-foreground">{t('chat:workspace.notesPanel.implementedHint')}</p>}
           {note.error ? (
             <p className="text-sm text-destructive" role="alert">
               {t('chat:workspace.notesPanel.loadError', { message: displayError(note.error) })}
@@ -123,7 +165,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
             >
               {t('common:actions.cancel')}
             </Button>
-            <Button onClick={() => void onSave()} disabled={isPending || noteUnavailable || !title.trim()}>
+            <Button onClick={() => void onSave()} disabled={isPending || noteUnavailable || needsRejectionReason || !title.trim()}>
               {isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           </div>

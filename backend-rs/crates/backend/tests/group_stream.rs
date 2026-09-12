@@ -3328,6 +3328,10 @@ async fn every_group_agent_can_read_and_edit_shared_notes_on_demand() {
         .as_str()
         .unwrap()
         .contains("do not prefix it with Notes/"));
+    let prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(prompt.contains("## Alternatives considered"));
+    assert!(prompt.contains("agreement is not implementation"));
+    assert!(prompt.contains("Preserve Since when editing"));
 }
 
 /// A checklist is only useful if the client can find it. It has to leave the
