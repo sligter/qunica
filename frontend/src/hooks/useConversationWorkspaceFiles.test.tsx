@@ -15,6 +15,7 @@ import {
   conversationWorkspaceFilesQueryKey,
   createWorkspaceFileObjectUrl,
   fetchConversationWorkspaceFileBlob,
+  getConversationWorkspaceFile,
   getConversationWorkspaceFileMetadata,
   useConversationWorkspaceFilePreview,
   useConversationWorkspaceFileText,
@@ -148,6 +149,38 @@ describe('conversation workspace file client', () => {
     )
     expect(mockedFetchJson).toHaveBeenCalledWith(
       '/groups/group-1/workspace-files?path=&search=README%20guide',
+      { token: 'owner-token' },
+    )
+  })
+
+  it.each([
+    ['groups', '.claude', true],
+    ['direct-chats', '.claude', true],
+    ['groups', '.gitignore', false],
+    ['direct-chats', '.gitignore', false],
+    ['groups', '.claude/.settings', true],
+    ['groups', '.claude/settings.json', false],
+    ['groups', 'docs', true],
+  ] as const)('resolves explicitly selected %s workspace item %s including hidden entries', async (scope, path, isDir) => {
+    const selected = {
+      ...fileFixture,
+      path,
+      name: path.split('/').at(-1)!,
+      is_dir: isDir,
+    }
+    // Model the server's default hidden-entry filtering, not just a canned response.
+    mockedFetchJson.mockImplementation(async (url) => {
+      const showHidden = new URL(String(url), 'http://localhost').searchParams.get('show_hidden') === 'true'
+      return [fileFixture, selected].filter((file) => showHidden || !file.name.startsWith('.'))
+    })
+
+    await expect(getConversationWorkspaceFile(scope, 'conversation-1', path, 'owner-token'))
+      .resolves.toEqual(selected)
+    await expect(getConversationWorkspaceFile(scope, 'conversation-1', '.missing', 'owner-token'))
+      .resolves.toBeNull()
+    const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+    expect(mockedFetchJson).toHaveBeenCalledWith(
+      `/${scope}/conversation-1/workspace-files?path=${encodeURIComponent(parent)}&show_hidden=true`,
       { token: 'owner-token' },
     )
   })

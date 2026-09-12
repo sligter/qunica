@@ -259,8 +259,9 @@ export async function getConversationWorkspaceFile(
 ): Promise<ConversationWorkspaceFileRead | null> {
   const normalized = requireWorkspaceFilePath(path).replaceAll('\\', '/')
   const parent = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : ''
+  // Note: Explicit path checks must include hidden entries; visibility is only a browsing preference.
   const files = await fetchJson<ConversationWorkspaceFileRead[]>(
-    conversationWorkspaceFileEndpoint(scope, conversationId, '', parent),
+    conversationWorkspaceFileEndpoint(scope, conversationId, '', parent, null, true),
     { token },
   )
   return files.find((file) => file.path === normalized) ?? null

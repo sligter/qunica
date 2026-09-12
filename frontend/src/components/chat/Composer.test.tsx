@@ -344,6 +344,44 @@ describe('Composer', () => {
     },
   )
 
+  it.each([
+    ['structured', '.claude', true],
+    ['text/plain', '.claude', true],
+    ['structured', '.gitignore', false],
+    ['text/plain', '.gitignore', false],
+  ] as const)('sends a hidden workspace item from a %s drop: %s', async (format, path, isDir) => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    mocks.getFile.mockResolvedValue(workspaceFile(path, isDir))
+    mocks.getMetadata.mockResolvedValue(workspaceMetadata(path))
+    render(
+      <Composer
+        conversationId="group-1"
+        workspaceId="workspace-1"
+        scope="groups"
+        onSend={onSend}
+      />,
+    )
+
+    fireEvent.drop(screen.getByRole('group', { name: 'Message composer file drop area' }), {
+      dataTransfer: format === 'structured'
+        ? workspaceDataTransfer([{ path, kind: isDir ? 'directory' : 'file' }])
+        : webViewWorkspaceDataTransfer([path]),
+    })
+
+    if (isDir) {
+      await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(path))
+      expect(mocks.getMetadata).not.toHaveBeenCalled()
+    } else {
+      expect(await screen.findByText(path)).toBeVisible()
+    }
+    expect(screen.queryByText('Unable to read that workspace item.')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(onSend).toHaveBeenCalledWith(isDir
+      ? { content: path, attachments: [] }
+      : { content: '', attachments: [{ path }] })
+  })
+
   it('deduplicates repeated workspace file drops by server-confirmed path', async () => {
     mocks.getMetadata.mockResolvedValue(workspaceMetadata('docs/guide.md'))
     render(
