@@ -29,9 +29,8 @@
 </p>
 
 <p align="center">
-  <img src="assets/qunica-app-preview.png" alt="Qunica 官网工作台演示：示例会话、Agent 与项目文件" width="920">
+  <img src="assets/qunica-app-preview.png" alt="Qunica 工作台：群聊、Agent 与项目文件" width="920">
 </p>
-<p align="center"><sub>取自<a href="https://qunica.cc/#preview">官网</a>的工作台演示，使用示例内容。</sub></p>
 
 ---
 

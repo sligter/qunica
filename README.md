@@ -29,9 +29,8 @@
 </p>
 
 <p align="center">
-  <img src="assets/qunica-app-preview.png" alt="Qunica official website workspace demo with sample conversations, agents, and project files" width="920">
+  <img src="assets/qunica-app-preview.png" alt="Qunica workspace: group conversations, agents, and project files" width="920">
 </p>
-<p align="center"><sub>Workspace demo from the <a href="https://qunica.cc/#preview">official website</a>, using sample content.</sub></p>
 
 ---
 
