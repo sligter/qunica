@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -89,6 +89,7 @@ describe('AppSidebar terminal cleanup', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   async function confirmDelete() {
@@ -200,6 +201,49 @@ describe('AppSidebar terminal cleanup', () => {
     expect(screen.queryByText('Chat 01')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Groups' }))
     expect(screen.queryByText('Group one')).not.toBeInTheDocument()
+  })
+
+  it('loads each list against its own scroll root and reconnects after sidebar expansion', async () => {
+    const user = userEvent.setup()
+    const observers: Array<{
+      callback: IntersectionObserverCallback
+      root: Element | Document | null | undefined
+      disconnect: ReturnType<typeof vi.fn>
+    }> = []
+    vi.stubGlobal('IntersectionObserver', class {
+      disconnect = vi.fn()
+      observe = vi.fn()
+      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        observers.push({ callback, root: options?.root, disconnect: this.disconnect })
+      }
+    })
+    mocks.directChats = Array.from({ length: 45 }, (_, index) => ({
+      id: `chat-${index}`, title: `Chat ${index + 1}`, agent_name: 'Solo',
+      updated_at: '2026-07-22T00:00:00Z',
+    }))
+    mocks.groups = Array.from({ length: 45 }, (_, index) => ({
+      id: `group-${index}`, name: `Group ${index + 1}`, created_at: '2026-07-22T00:00:00Z',
+    }))
+    renderSidebar()
+    const directRoot = document.getElementById('sidebar-direct-chats')!
+    const groupRoot = document.getElementById('sidebar-groups')!
+    expect(observers.map((observer) => observer.root)).toEqual([directRoot, groupRoot])
+
+    act(() => observers[0].callback(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver,
+    ))
+    expect(within(directRoot).getByText('Chat 40')).toBeVisible()
+    expect(within(groupRoot).queryByText('Group 21')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(observers.every((observer) => observer.disconnect.mock.calls.length > 0)).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+    expect(observers.slice(-2).map((observer) => observer.root)).toEqual([
+      document.getElementById('sidebar-direct-chats'),
+      document.getElementById('sidebar-groups'),
+    ])
+    expect(observers.at(-1)?.root).not.toBe(groupRoot)
   })
 
   it('opens the library straight into the panel, over the current chat', async () => {

@@ -61,6 +61,7 @@ const LIST_BATCH_SIZE = 20
 
 function useLazyList(total: number, active: boolean, resetKey: string) {
   const [limit, setLimit] = useState(LIST_BATCH_SIZE)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLLIElement>(null)
 
   useEffect(() => setLimit(LIST_BATCH_SIZE), [resetKey])
@@ -73,7 +74,7 @@ function useLazyList(total: number, active: boolean, resetKey: string) {
       if (entry?.isIntersecting) {
         setLimit((current) => Math.min(total, current + LIST_BATCH_SIZE))
       }
-    }, { rootMargin: '160px' })
+    }, { root: scrollRef.current, rootMargin: '160px' })
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [active, limit, total])
@@ -82,6 +83,7 @@ function useLazyList(total: number, active: boolean, resetKey: string) {
     hasMore: limit < total,
     limit: Math.min(limit, total),
     loadMore: () => setLimit((current) => Math.min(total, current + LIST_BATCH_SIZE)),
+    scrollRef,
     sentinelRef,
   }
 }
@@ -100,7 +102,7 @@ function SidebarSectionHeader({
   onToggle: () => void
 }) {
   return (
-    <div className="flex h-7 items-center justify-between px-1">
+    <div className="flex min-h-7 shrink-0 items-center justify-between px-1">
       <button
         type="button"
         className="flex min-w-0 flex-1 items-center gap-1 rounded-sm text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -213,8 +215,8 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
       chat.title.toLowerCase().includes(q) ||
       (chat.agent_name ?? '').toLowerCase().includes(q),
   )
-  const directLazy = useLazyList(filteredDirectChats.length, directChatsExpanded, q)
-  const groupLazy = useLazyList(filteredGroups.length, groupsExpanded, q)
+  const directLazy = useLazyList(filteredDirectChats.length, !collapsed && directChatsExpanded, q)
+  const groupLazy = useLazyList(filteredGroups.length, !collapsed && groupsExpanded, q)
   const visibleDirectChats = filteredDirectChats.slice(0, directLazy.limit)
   const visibleGroups = filteredGroups.slice(0, groupLazy.limit)
   const closeSearch = () => {
@@ -453,7 +455,8 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
               </div>
             </div>
           ) : null}
-          <div className="chat-message-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
+          {/* Note: Only the lists scroll so both category headers stay reachable; collapsing one frees its space. */}
+          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden px-2 py-2">
             <SidebarSectionHeader
               controls="sidebar-direct-chats"
               expanded={directChatsExpanded}
@@ -482,7 +485,12 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
                 </Tooltip>
               ) : undefined}
             />
-            <div id="sidebar-direct-chats">
+            <div
+              id="sidebar-direct-chats"
+              ref={directLazy.scrollRef}
+              hidden={!directChatsExpanded}
+              className="chat-message-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            >
               {directChatsExpanded ? (
                 <>
                   {directChats.isLoading ? (
@@ -491,7 +499,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
                   {directChats.error ? (
                     <p className="px-2 pb-2 text-xs text-destructive">{String(directChats.error)}</p>
                   ) : null}
-                  <ul className="mb-3 space-y-0.5">
+                  <ul className="space-y-0.5">
                     {visibleDirectChats.map((chat) => (
                       <li key={chat.id}>
                         <NavLink
@@ -569,7 +577,12 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
               label={t('navigation:groups')}
               onToggle={() => setGroupsExpanded((current) => !current)}
             />
-            <div id="sidebar-groups">
+            <div
+              id="sidebar-groups"
+              ref={groupLazy.scrollRef}
+              hidden={!groupsExpanded}
+              className="chat-message-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            >
               {groupsExpanded ? (
                 <>
                   {groups.isLoading ? (
