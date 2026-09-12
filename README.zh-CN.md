@@ -29,8 +29,9 @@
 </p>
 
 <p align="center">
-  <img src="assets/qunica-app-preview.png" alt="Qunica 桌面端：左侧是多个 Agent 参与的群聊，右侧是绑定工作区的文件树与 Git 面板" width="920">
+  <img src="assets/qunica-app-preview.png" alt="Qunica 官网工作台演示：示例会话、Agent 与项目文件" width="920">
 </p>
+<p align="center"><sub>取自<a href="https://qunica.cc/#preview">官网</a>的工作台演示，使用示例内容。</sub></p>
 
 ---
 
