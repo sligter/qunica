@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" font-family="-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b6259"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="460" rx="18" fill="#faf6f0"/>
+
+  <!-- Local machine boundary -->
+  <rect x="22" y="22" width="1156" height="416" rx="14" fill="none" stroke="#c65d3b" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <rect x="40" y="10" width="292" height="24" rx="12" fill="#c65d3b"/>
+  <text x="186" y="27" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">YOUR MACHINE · local backend · SQLite</text>
+
+  <!-- ===== Members (left) ===== -->
+  <g transform="translate(50,64)">
+    <text x="0" y="0" font-size="12" font-weight="700" fill="#6b6259" letter-spacing="1.5">MEMBERS</text>
+
+    <rect x="0" y="14" width="250" height="64" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <circle cx="30" cy="46" r="15" fill="#c65d3b"/>
+    <text x="30" y="51" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">U</text>
+    <text x="56" y="42" font-size="14" font-weight="600" fill="#2b2622">People</text>
+    <text x="56" y="61" font-size="11.5" fill="#6b6259">join, mention, approve, review</text>
+
+    <rect x="0" y="90" width="250" height="90" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <circle cx="30" cy="122" r="15" fill="#3f6f91"/>
+    <text x="30" y="127" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">AI</text>
+    <text x="56" y="118" font-size="14" font-weight="600" fill="#2b2622">Built-in agents</text>
+    <text x="56" y="137" font-size="11.5" fill="#6b6259">own prompt, model, tools, skills</text>
+    <text x="56" y="154" font-size="11.5" fill="#6b6259">OpenAI-compatible · Responses</text>
+    <text x="56" y="170" font-size="11.5" fill="#6b6259">Anthropic · Gemini · local gateways</text>
+
+    <rect x="0" y="192" width="250" height="90" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <circle cx="30" cy="224" r="15" fill="#4f7651"/>
+    <text x="30" y="229" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">CLI</text>
+    <text x="56" y="220" font-size="14" font-weight="600" fill="#2b2622">External CLI agents</text>
+    <text x="56" y="239" font-size="11.5" fill="#6b6259">via Agent Client Protocol (stdio)</text>
+    <text x="56" y="256" font-size="11.5" fill="#6b6259">Claude Code · Codex · Pi</text>
+    <text x="56" y="272" font-size="11.5" fill="#6b6259">OpenCode · DeepSeek Harness · custom</text>
+  </g>
+
+  <!-- arrows members -> room -->
+  <g stroke="#6b6259" stroke-width="1.6" marker-end="url(#arr)">
+    <line x1="302" y1="110" x2="352" y2="150"/>
+    <line x1="302" y1="200" x2="352" y2="200"/>
+    <line x1="302" y1="300" x2="352" y2="250"/>
+  </g>
+
+  <!-- ===== The room (center) ===== -->
+  <g transform="translate(356,64)">
+    <text x="0" y="0" font-size="12" font-weight="700" fill="#6b6259" letter-spacing="1.5">ONE GROUP · ONE ROOM</text>
+    <rect x="0" y="14" width="470" height="268" rx="12" fill="#fff" stroke="#c65d3b" stroke-width="1.8"/>
+
+    <g transform="translate(18,30)">
+      <rect width="206" height="58" rx="8" fill="#fbf2ec"/>
+      <text x="12" y="24" font-size="13" font-weight="600" fill="#2b2622">Shared conversation</text>
+      <text x="12" y="43" font-size="11" fill="#6b6259">streaming, mentions, approvals, traces</text>
+    </g>
+    <g transform="translate(246,30)">
+      <rect width="206" height="58" rx="8" fill="#eef3f7"/>
+      <text x="12" y="24" font-size="13" font-weight="600" fill="#2b2622">Shared notes</text>
+      <text x="12" y="43" font-size="11" fill="#6b6259">status · decision · alternatives</text>
+    </g>
+    <g transform="translate(18,100)">
+      <rect width="206" height="58" rx="8" fill="#eef4ee"/>
+      <text x="12" y="24" font-size="13" font-weight="600" fill="#2b2622">Workspace &amp; Git</text>
+      <text x="12" y="43" font-size="11" fill="#6b6259">files, diffs, stage, commit, terminal</text>
+    </g>
+    <g transform="translate(246,100)">
+      <rect width="206" height="58" rx="8" fill="#f3eef6"/>
+      <text x="12" y="24" font-size="13" font-weight="600" fill="#2b2622">Execution trail</text>
+      <text x="12" y="43" font-size="11" fill="#6b6259">tool calls, tokens, errors, dispatch</text>
+    </g>
+
+    <!-- scheduler bar -->
+    <g transform="translate(18,176)">
+      <rect width="434" height="88" rx="8" fill="#2b2622"/>
+      <text x="14" y="24" font-size="12" font-weight="700" fill="#f2c4b3" letter-spacing="1.2">SCHEDULER</text>
+      <text x="14" y="46" font-size="11.5" fill="#f5efe6">topology: mesh · star · hierarchical · ring</text>
+      <text x="14" y="63" font-size="11.5" fill="#f5efe6">mode: bounded (deterministic) · automatic (moderator picks)</text>
+      <text x="14" y="80" font-size="11.5" fill="#cfc4b6">budgets: steps · per-agent · hops · moderator calls · tokens · failures</text>
+    </g>
+  </g>
+
+  <!-- arrows room -> tools -->
+  <g stroke="#6b6259" stroke-width="1.6" marker-end="url(#arr)">
+    <line x1="830" y1="150" x2="880" y2="110"/>
+    <line x1="830" y1="200" x2="880" y2="200"/>
+    <line x1="830" y1="250" x2="880" y2="300"/>
+  </g>
+
+  <!-- ===== Tools (right) ===== -->
+  <g transform="translate(884,64)">
+    <text x="0" y="0" font-size="12" font-weight="700" fill="#6b6259" letter-spacing="1.5">WHAT AGENTS CAN REACH</text>
+
+    <rect x="0" y="14" width="266" height="64" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <text x="14" y="40" font-size="14" font-weight="600" fill="#2b2622">Files &amp; guarded shell</text>
+    <text x="14" y="60" font-size="11.5" fill="#6b6259">destructive actions need approval</text>
+
+    <rect x="0" y="90" width="266" height="64" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <text x="14" y="116" font-size="14" font-weight="600" fill="#2b2622">MCP servers &amp; skills</text>
+    <text x="14" y="136" font-size="11.5" fill="#6b6259">databases, search, private services</text>
+
+    <rect x="0" y="166" width="266" height="64" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <text x="14" y="192" font-size="14" font-weight="600" fill="#2b2622">Web search &amp; fetch</text>
+    <text x="14" y="212" font-size="11.5" fill="#6b6259">bring outside context into the room</text>
+
+    <rect x="0" y="242" width="266" height="40" rx="10" fill="#fff" stroke="#e8e0d5"/>
+    <text x="14" y="267" font-size="14" font-weight="600" fill="#2b2622">Other members · call / handoff</text>
+  </g>
+
+  <!-- ===== Clients (bottom) ===== -->
+  <g transform="translate(50,372)">
+    <text x="0" y="0" font-size="12" font-weight="700" fill="#6b6259" letter-spacing="1.5">CLIENTS</text>
+    <g transform="translate(0,12)">
+      <rect width="230" height="40" rx="10" fill="#fff" stroke="#e8e0d5"/>
+      <text x="115" y="25" text-anchor="middle" font-size="12.5" fill="#2b2622">Desktop · Windows / macOS / Linux</text>
+    </g>
+    <g transform="translate(244,12)">
+      <rect width="230" height="40" rx="10" fill="#fff" stroke="#e8e0d5"/>
+      <text x="115" y="25" text-anchor="middle" font-size="12.5" fill="#2b2622">Browser UI · Docker / headless server</text>
+    </g>
+    <g transform="translate(488,12)">
+      <rect width="300" height="40" rx="10" fill="#fff" stroke="#e8e0d5"/>
+      <text x="150" y="25" text-anchor="middle" font-size="12.5" fill="#2b2622">Android · QR pairing, Noise end-to-end encryption</text>
+    </g>
+    <g transform="translate(802,12)">
+      <rect width="298" height="40" rx="10" fill="#fdf3ee" stroke="#e9c9bb"/>
+      <text x="149" y="25" text-anchor="middle" font-size="12.5" fill="#8c3f27">Only model requests leave the machine</text>
+    </g>
+  </g>
+</svg>

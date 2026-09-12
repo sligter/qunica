@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Github } from 'lucide-react'
 
 import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { DetailShell } from '@/components/layout/DetailShell'
@@ -49,6 +50,7 @@ import { ServerFolderPicker } from '@/components/workspace/ServerFolderPicker'
 import { MobileConnection } from '@/components/settings/MobileConnection'
 
 const PICKER_SCOPE = 'group-workspace-root'
+const PROJECT_GITHUB_URL = 'https://github.com/sligter/qunica'
 const APPEARANCE_OPTIONS: Appearance[] = ['light', 'dark', 'system']
 const LANGUAGE_OPTIONS: Language[] = ['zh-CN', 'en-US']
 const WINDOWS_SHELL_OPTIONS: ShellPreference[] = ['auto', 'powershell', 'cmd', 'bash']
@@ -97,6 +99,7 @@ export function SystemSettingsPage() {
   const [profileName, setProfileName] = useState('')
   const [profileError, setProfileError] = useState<string | null>(null)
   const [about, setAbout] = useState<AboutInfo | null>(null)
+  const [githubError, setGithubError] = useState<string | null>(null)
   const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [installingUpdate, setInstallingUpdate] = useState(false)
@@ -922,6 +925,28 @@ export function SystemSettingsPage() {
             ) : undefined
           }
         >
+          <SettingsRow label="GitHub">
+            <Button asChild variant="outline" size="sm">
+              <a
+                href={PROJECT_GITHUB_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(event) => {
+                  setGithubError(null)
+                  if (!desktop) return
+                  // Note: Desktop external links use the system browser instead of navigating the settings WebView.
+                  event.preventDefault()
+                  void import('@tauri-apps/plugin-shell')
+                    .then(({ open }) => open(PROJECT_GITHUB_URL))
+                    .catch(() => setGithubError(t('about.openRepositoryFailed')))
+                }}
+              >
+                <Github className="mr-2 h-4 w-4" aria-hidden="true" />
+                sligter/qunica
+              </a>
+            </Button>
+          </SettingsRow>
+          {githubError ? <p className="py-2 text-sm text-destructive" role="alert">{githubError}</p> : null}
           {about ? (
             <>
               <SettingsRow label={t('about.version')} description={about.name}>

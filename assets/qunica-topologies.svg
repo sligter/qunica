@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" font-family="-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b6259"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c65d3b"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="380" rx="18" fill="#faf6f0"/>
+
+  <!-- ===== Mesh ===== -->
+  <g transform="translate(20,20)">
+    <rect width="275" height="340" rx="14" fill="#ffffff" stroke="#e8e0d5"/>
+    <text x="137" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#2b2622">mesh</text>
+    <text x="137" y="56" text-anchor="middle" font-size="12" fill="#6b6259">peers · no fixed order</text>
+    <g stroke="#6b6259" stroke-width="1.6" stroke-opacity="0.75">
+      <line x1="137" y1="120" x2="70" y2="200"/>
+      <line x1="137" y1="120" x2="204" y2="200"/>
+      <line x1="137" y1="120" x2="137" y2="280"/>
+      <line x1="70" y1="200" x2="204" y2="200"/>
+      <line x1="70" y1="200" x2="137" y2="280"/>
+      <line x1="204" y1="200" x2="137" y2="280"/>
+    </g>
+    <g>
+      <circle cx="137" cy="120" r="22" fill="#c65d3b"/>
+      <text x="137" y="125" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">A</text>
+      <circle cx="70" cy="200" r="22" fill="#3f6f91"/>
+      <text x="70" y="205" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">B</text>
+      <circle cx="204" cy="200" r="22" fill="#4f7651"/>
+      <text x="204" y="205" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">C</text>
+      <circle cx="137" cy="280" r="22" fill="#8a6d9c"/>
+      <text x="137" y="285" text-anchor="middle" font-size="13" font-weight="600" fill="#fff">D</text>
+    </g>
+    <text x="137" y="325" text-anchor="middle" font-size="12" fill="#6b6259">brainstorming · cross-review</text>
+  </g>
+
+  <!-- ===== Star ===== -->
+  <g transform="translate(315,20)">
+    <rect width="275" height="340" rx="14" fill="#ffffff" stroke="#e8e0d5"/>
+    <text x="137" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#2b2622">star</text>
+    <text x="137" y="56" text-anchor="middle" font-size="12" fill="#6b6259">hub speaks first, then dispatches</text>
+    <g stroke="#c65d3b" stroke-width="1.8" marker-end="url(#arrowAccent)">
+      <line x1="137" y1="200" x2="137" y2="128"/>
+      <line x1="137" y1="200" x2="72" y2="242"/>
+      <line x1="137" y1="200" x2="202" y2="242"/>
+      <line x1="137" y1="200" x2="137" y2="272"/>
+    </g>
+    <g>
+      <circle cx="137" cy="200" r="26" fill="#c65d3b"/>
+      <text x="137" y="205" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">HUB</text>
+      <circle cx="137" cy="108" r="20" fill="#3f6f91"/>
+      <text x="137" y="113" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">B</text>
+      <circle cx="58" cy="252" r="20" fill="#4f7651"/>
+      <text x="58" y="257" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">C</text>
+      <circle cx="216" cy="252" r="20" fill="#8a6d9c"/>
+      <text x="216" y="257" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">D</text>
+      <circle cx="137" cy="292" r="20" fill="#b58a3c"/>
+      <text x="137" y="297" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">E</text>
+    </g>
+    <text x="137" y="325" text-anchor="middle" font-size="12" fill="#6b6259">a coordinator keeps order</text>
+  </g>
+
+  <!-- ===== Hierarchical ===== -->
+  <g transform="translate(610,20)">
+    <rect width="275" height="340" rx="14" fill="#ffffff" stroke="#e8e0d5"/>
+    <text x="137" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#2b2622">hierarchical</text>
+    <text x="137" y="56" text-anchor="middle" font-size="12" fill="#6b6259">leaders first, then their teams</text>
+    <g stroke="#6b6259" stroke-width="1.6" marker-end="url(#arrow)">
+      <line x1="137" y1="126" x2="75" y2="182"/>
+      <line x1="137" y1="126" x2="199" y2="182"/>
+      <line x1="75" y1="222" x2="48" y2="262"/>
+      <line x1="75" y1="222" x2="102" y2="262"/>
+      <line x1="199" y1="222" x2="172" y2="262"/>
+      <line x1="199" y1="222" x2="226" y2="262"/>
+    </g>
+    <g>
+      <circle cx="137" cy="104" r="24" fill="#c65d3b"/>
+      <text x="137" y="109" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">LEAD</text>
+      <circle cx="75" cy="202" r="20" fill="#3f6f91"/>
+      <text x="75" y="207" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">FE</text>
+      <circle cx="199" cy="202" r="20" fill="#4f7651"/>
+      <text x="199" y="207" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">BE</text>
+      <circle cx="44" cy="276" r="16" fill="#9fb3c4"/>
+      <circle cx="106" cy="276" r="16" fill="#9fb3c4"/>
+      <circle cx="168" cy="276" r="16" fill="#a9bfa9"/>
+      <circle cx="230" cy="276" r="16" fill="#a9bfa9"/>
+    </g>
+    <text x="137" y="325" text-anchor="middle" font-size="12" fill="#6b6259">break down · delegate · verify</text>
+  </g>
+
+  <!-- ===== Ring ===== -->
+  <g transform="translate(905,20)">
+    <rect width="275" height="340" rx="14" fill="#ffffff" stroke="#e8e0d5"/>
+    <text x="137" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#2b2622">ring</text>
+    <text x="137" y="56" text-anchor="middle" font-size="12" fill="#6b6259">fixed rotation by speaking_order</text>
+    <g fill="none" stroke="#c65d3b" stroke-width="1.8" marker-end="url(#arrowAccent)">
+      <path d="M 158 118 A 70 70 0 0 1 208 178"/>
+      <path d="M 208 222 A 70 70 0 0 1 158 282"/>
+      <path d="M 116 282 A 70 70 0 0 1 66 222"/>
+      <path d="M 66 178 A 70 70 0 0 1 116 118"/>
+    </g>
+    <g>
+      <circle cx="137" cy="110" r="20" fill="#c65d3b"/>
+      <text x="137" y="115" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">1</text>
+      <circle cx="227" cy="200" r="20" fill="#3f6f91"/>
+      <text x="227" y="205" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">2</text>
+      <circle cx="137" cy="290" r="20" fill="#4f7651"/>
+      <text x="137" y="295" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">3</text>
+      <circle cx="47" cy="200" r="20" fill="#8a6d9c"/>
+      <text x="47" y="205" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">4</text>
+    </g>
+    <text x="137" y="325" text-anchor="middle" font-size="12" fill="#6b6259">spec → build → review → test</text>
+  </g>
+</svg>

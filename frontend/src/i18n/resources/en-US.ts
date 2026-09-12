@@ -941,6 +941,7 @@ export const enUS = {
     },
     about: {
       title: 'About',
+      openRepositoryFailed: 'Unable to open GitHub. Try again or copy the link into your browser.',
       description: 'Version and updates.',
       version: 'Version',
       identifier: 'Application ID',

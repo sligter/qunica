@@ -842,6 +842,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
     },
     about: {
       title: '关于软件',
+      openRepositoryFailed: '无法打开 GitHub，请重试或复制链接到浏览器。',
       description: '当前版本信息与更新。',
       version: '版本',
       identifier: '应用标识',
