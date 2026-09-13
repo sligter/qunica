@@ -1,6 +1,6 @@
 [package]
 name = "qunica-desktop"
-version = "0.1.2"
+version = "0.1.3"
 description = "Qunica desktop shell"
 authors = ["Qunica"]
 edition = "2021"

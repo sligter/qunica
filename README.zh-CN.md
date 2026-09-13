@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sligter/qunica/releases/latest"><img src="https://img.shields.io/badge/version-0.1.2-c65d3b?style=flat-square" alt="0.1.2 版本"></a>
+  <a href="https://github.com/sligter/qunica/releases/latest"><img src="https://img.shields.io/badge/version-0.1.3-c65d3b?style=flat-square" alt="0.1.3 版本"></a>
   <img src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS%20%7C%20Linux-3f6f91?style=flat-square" alt="Windows | macOS | Linux">
   <img src="https://img.shields.io/badge/mobile-Android-3f6f91?style=flat-square" alt="Android">
   <img src="https://img.shields.io/badge/data-本地优先-4f7651?style=flat-square" alt="本地优先">

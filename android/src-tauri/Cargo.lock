@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-android"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "qunica-mobile-link",
  "serde",
@@ -2561,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-mobile-link"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
