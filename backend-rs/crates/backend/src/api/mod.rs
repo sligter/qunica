@@ -66,7 +66,6 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct AuthSettings {
     pub secret_key: String,
-    pub access_token_expire_minutes: i64,
     pub registration_enabled: bool,
 }
 
@@ -701,7 +700,6 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         db,
         auth: AuthSettings {
             secret_key: "test-secret".to_string(),
-            access_token_expire_minutes: 10080,
             registration_enabled: true,
         },
         write_lock: Arc::new(Mutex::new(())),

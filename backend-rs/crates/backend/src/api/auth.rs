@@ -61,7 +61,6 @@ pub struct PublicAuthConfig {
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     sub: String,
-    exp: usize,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -209,11 +208,7 @@ pub async fn login(
         .filter(|u| verify_password(&body.password, &u.password_hash))
         .ok_or_else(|| ApiError::permission_denied("invalid credentials"))?;
 
-    let access_token = create_access_token(
-        &user.id,
-        &state.auth.secret_key,
-        state.auth.access_token_expire_minutes,
-    )?;
+    let access_token = create_access_token(&user.id, &state.auth.secret_key)?;
     Ok(Json(TokenResponse {
         access_token,
         token_type: "bearer".to_string(),
@@ -325,15 +320,11 @@ fn verify_password(password: &str, hashed: &str) -> bool {
     bcrypt::verify(password, hashed).unwrap_or(false)
 }
 
-fn create_access_token(
-    user_id: &str,
-    secret: &str,
-    expire_minutes: i64,
-) -> Result<String, ApiError> {
-    let exp = OffsetDateTime::now_utc().unix_timestamp() + expire_minutes * 60;
+fn create_access_token(user_id: &str, secret: &str) -> Result<String, ApiError> {
+    // Note: login persists until the user signs out; a large finite expiry
+    // would only postpone automatic logout. See docs/guide/settings.md.
     let claims = Claims {
         sub: user_id.to_string(),
-        exp: exp.max(0) as usize,
     };
     encode(
         &Header::new(Algorithm::HS256),
@@ -344,7 +335,11 @@ fn create_access_token(
 }
 
 fn decode_token(token: &str, secret: &str) -> Option<Claims> {
-    let validation = Validation::new(Algorithm::HS256);
+    let mut validation = Validation::new(Algorithm::HS256);
+    // Note: pre-upgrade logins carry exp. Ignore that legacy deadline too,
+    // while continuing to require the subject and verify the HS256 signature.
+    validation.set_required_spec_claims(&["sub"]);
+    validation.validate_exp = false;
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),

@@ -3,6 +3,8 @@ use axum::{
     http::{Request, StatusCode},
     Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -65,6 +67,14 @@ async fn register_login_and_me_round_trip() {
     assert_eq!(token["token_type"], "bearer");
     let access_token = token["access_token"].as_str().unwrap().to_string();
     assert!(!access_token.is_empty());
+    let claims: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(access_token.split('.').nth(1).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claims["sub"], user_id);
+    assert!(claims.get("exp").is_none(), "login tokens must not expire");
 
     let me_request = Request::builder()
         .method("GET")
@@ -192,6 +202,85 @@ async fn me_requires_bearer_token() {
     let (status, body) = send(&app, request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn legacy_login_stays_valid_after_its_original_expiry() {
+    let (app, state) = qunica_backend::api::router_with_state_for_tests().await;
+    let (status, user) = send(
+        &app,
+        post_json(
+            "/api/v2/auth/register",
+            json!({"email": "persistent@example.com", "password": "supersecret", "name": "Persistent"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // A pre-upgrade token whose original expiry was decades ago still belongs
+    // to this account. Rebuilding the router also preserves that login.
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({"sub": user["id"], "exp": 1}),
+        &EncodingKey::from_secret(state.auth.secret_key.as_bytes()),
+    )
+    .unwrap();
+    let restarted = qunica_backend::api::router(state);
+    let (status, me) = send(
+        &restarted,
+        Request::builder()
+            .uri("/api/v2/auth/me")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["id"], user["id"]);
+}
+
+#[tokio::test]
+async fn persistent_login_still_rejects_invalid_credentials() {
+    let (app, state) = qunica_backend::api::router_with_state_for_tests().await;
+    let (status, user) = send(
+        &app,
+        post_json(
+            "/api/v2/auth/register",
+            json!({"email": "signature@example.com", "password": "supersecret", "name": "Signature"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    for (claims, secret, algorithm) in [
+        (
+            json!({"sub": "unknown-user"}),
+            state.auth.secret_key.as_str(),
+            Algorithm::HS256,
+        ),
+        (json!({"sub": user["id"]}), "wrong-secret", Algorithm::HS256),
+        (json!({}), state.auth.secret_key.as_str(), Algorithm::HS256),
+        (
+            json!({"sub": user["id"]}),
+            state.auth.secret_key.as_str(),
+            Algorithm::HS384,
+        ),
+    ] {
+        let token = encode(
+            &Header::new(algorithm),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let (status, _) = send(
+            &app,
+            Request::builder()
+                .uri("/api/v2/auth/me")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
 }
 
 #[tokio::test]

@@ -142,12 +142,18 @@ Everything has a working default; nothing is required.
 | `QUNICA_DATABASE_URL` | `sqlite:///data/qunica.sqlite3?mode=rwc` | derived from `QUNICA_APP_DATA` |
 | `QUNICA_LOG_LEVEL` | `info` | `tracing` filter string |
 | `SECRET_KEY` | generated into `/data/desktop-secret.key` | set it explicitly to keep sessions valid across a volume reset |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `10080` | access token lifetime |
 | `QUNICA_REGISTRATION_ENABLED` | `true` | set to `false` to reject registration in both the API and web UI |
 | `QUNICA_INITIAL_USER_EMAIL` | unset | one-time account email; requires the password below |
 | `QUNICA_INITIAL_USER_PASSWORD` | unset | one-time account password, 8–128 characters |
 | `QUNICA_INITIAL_USER_NAME` | `Admin` | display name used when the initial account is created |
 | `QUNICA_WORKSPACES_DIR` | `/workspaces` | created by the entrypoint and applied as the workspace root while onboarding is incomplete |
+
+Login tokens have no time limit, including tokens issued before this change.
+The app keeps the login across restarts until the user signs out. Signing out
+clears the saved token and private client state; it does not revoke copies of
+the token on the server. Token signatures and account checks still apply.
+`ACCESS_TOKEN_EXPIRE_MINUTES` is no longer used; remove the old
+`--access-token-expire-minutes` command-line option from launch scripts.
 
 ## Git
 

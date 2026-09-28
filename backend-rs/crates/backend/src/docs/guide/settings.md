@@ -78,6 +78,11 @@ Jev reads instructions literally, does no arithmetic, and is trained mainly on E
 %APPDATA%\qunica.desktop\desktop-secret.key
 ```
 
+Login has no time limit and persists across app restarts until you sign out.
+This also applies to previously issued tokens with an expiry date. Signing out
+clears the saved login and private client state; it does not revoke server-side
+copies of the token. `ACCESS_TOKEN_EXPIRE_MINUTES` no longer controls login.
+
 `desktop-secret.key` signs login tokens. Deleting it invalidates existing sessions; logging in again is enough to recover.
 
 ## Desktop behavior

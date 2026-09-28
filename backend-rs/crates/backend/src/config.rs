@@ -54,8 +54,6 @@ pub struct AppConfig {
         default_value = DEFAULT_SECRET_KEY
     )]
     pub secret_key: String,
-    #[arg(long, env = "ACCESS_TOKEN_EXPIRE_MINUTES", default_value_t = 10080)]
-    pub access_token_expire_minutes: i64,
     #[arg(
         long,
         env = "QUNICA_REGISTRATION_ENABLED",
@@ -124,10 +122,6 @@ impl AppConfig {
                 .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string()),
             secret_key: std::env::var("SECRET_KEY")
                 .unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string()),
-            access_token_expire_minutes: std::env::var("ACCESS_TOKEN_EXPIRE_MINUTES")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(10080),
             registration_enabled: true,
             initial_user_email: None,
             initial_user_password: None,

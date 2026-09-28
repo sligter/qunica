@@ -30,7 +30,6 @@ pub struct ServerConfig {
     pub port: u16,
     pub database_url: String,
     pub secret_key: String,
-    pub access_token_expire_minutes: i64,
     pub registration_enabled: bool,
     pub initial_user: Option<InitialUserConfig>,
     pub app_data_dir: Option<PathBuf>,
@@ -48,7 +47,6 @@ impl From<AppConfig> for ServerConfig {
             port: config.port,
             database_url: config.database_url,
             secret_key: config.secret_key,
-            access_token_expire_minutes: config.access_token_expire_minutes,
             registration_enabled: config.registration_enabled,
             initial_user: config.initial_user,
             app_data_dir: config.app_data_dir,
@@ -106,7 +104,6 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         db,
         auth: AuthSettings {
             secret_key: config.secret_key.clone(),
-            access_token_expire_minutes: config.access_token_expire_minutes,
             registration_enabled: config.registration_enabled,
         },
         write_lock,

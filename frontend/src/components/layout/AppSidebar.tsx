@@ -455,8 +455,18 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
               </div>
             </div>
           ) : null}
-          {/* Note: Only the lists scroll so both category headers stay reachable; collapsing one frees its space. */}
-          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden px-2 py-2">
+          {/* Note: Content-capped rows let short lists give space to long ones while headers stay visible. */}
+          <div
+            className="grid min-h-0 flex-1 content-start gap-1 overflow-hidden px-2 py-2"
+            style={{
+              gridTemplateRows: [
+                'auto',
+                directChatsExpanded && 'minmax(0, max-content)',
+                'auto',
+                groupsExpanded && 'minmax(0, max-content)',
+              ].filter(Boolean).join(' '),
+            }}
+          >
             <SidebarSectionHeader
               controls="sidebar-direct-chats"
               expanded={directChatsExpanded}
@@ -489,7 +499,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
               id="sidebar-direct-chats"
               ref={directLazy.scrollRef}
               hidden={!directChatsExpanded}
-              className="chat-message-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+              className="chat-message-scrollbar min-h-0 overflow-y-auto overscroll-contain"
             >
               {directChatsExpanded ? (
                 <>
@@ -581,7 +591,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
               id="sidebar-groups"
               ref={groupLazy.scrollRef}
               hidden={!groupsExpanded}
-              className="chat-message-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+              className="chat-message-scrollbar min-h-0 overflow-y-auto overscroll-contain"
             >
               {groupsExpanded ? (
                 <>
