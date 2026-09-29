@@ -551,4 +551,47 @@ describe('messageStore scheduler state', () => {
     ])
   })
 
+  it('keeps local-only messages in place when a mid-stream refetch shrinks the window', () => {
+    const store = useMessageStore.getState()
+    const window = Array.from({ length: 30 }, (_, index) => message(`h${index + 1}`))
+    store.setHistory('group-1', window)
+    store.startSend('group-1', async () => undefined)
+    store.appendMessage('group-1', message('n31'))
+    store.appendMessage('group-1', message('n32'))
+    store.appendMessage('group-1', message('n33'))
+
+    // The newest 30 rows: the three oldest fell out of the window.
+    store.setHistory('group-1', [
+      ...Array.from({ length: 27 }, (_, index) => message(`h${index + 4}`)),
+      message('n31'),
+      message('n32'),
+      message('n33'),
+    ])
+
+    const ids = useMessageStore.getState().byGroup['group-1'].map(({ id }) => id)
+    expect(ids).toEqual([
+      ...Array.from({ length: 30 }, (_, index) => `h${index + 1}`),
+      'n31',
+      'n32',
+      'n33',
+    ])
+  })
+
+  it('replaces a message a refetch already placed instead of appending a copy', () => {
+    const store = useMessageStore.getState()
+    store.setHistory('group-1', [message('m1'), message('m2')])
+    store.startSend('group-1', async () => undefined)
+    // The refetch raced ahead of the stream event and already carries the row.
+    store.setHistory('group-1', [message('m1'), message('m2'), message('m3')])
+
+    store.finalizeInFlight('group-1', { ...message('m3'), content: 'streamed' })
+    store.appendMessage('group-1', message('m4'))
+    store.appendMessage('group-1', { ...message('m4'), content: 'replayed' })
+
+    const messages = useMessageStore.getState().byGroup['group-1']
+    expect(messages.map(({ id }) => id)).toEqual(['m1', 'm2', 'm3', 'm4'])
+    expect(messages[2].content).toBe('streamed')
+    expect(messages[3].content).toBe('replayed')
+  })
+
 })

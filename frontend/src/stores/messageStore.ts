@@ -727,6 +727,52 @@ function appendTextSegment(
   return [...base, segment]
 }
 
+/**
+ * Merge a freshly fetched history window with the messages already on screen.
+ *
+ * Note: the window is bounded (the newest `MESSAGE_PAGE_SIZE` rows per loaded
+ * page), so a busy conversation pushes older rows out of it while the client
+ * still holds them locally — and while a send is running that window is fetched
+ * again on every remount. Appending those "history does not know them" rows to
+ * the end teleports the oldest messages of the conversation to the bottom of
+ * the list, so walk the local order instead and slide the fetched rows in
+ * around them: a local-only message keeps the position its neighbours give it,
+ * fetched rows stay in server order, and a row both sides know keeps the local
+ * copy (it may already carry live-updated fields).
+ */
+function mergeHistoryIntoLocal(history: Message[], local: Message[]): Message[] {
+  if (local.length === 0) return history
+  const localById = new Map(local.map((message) => [message.id, message]))
+  const historyIndexById = new Map(history.map((message, index) => [message.id, index]))
+  const merged: Message[] = []
+  let cursor = 0
+  for (const item of local) {
+    const at = historyIndexById.get(item.id)
+    if (at === undefined) {
+      merged.push(item)
+      continue
+    }
+    while (cursor <= at && cursor < history.length) {
+      const row = history[cursor]
+      merged.push(localById.get(row.id) ?? row)
+      cursor += 1
+    }
+  }
+  while (cursor < history.length) {
+    const row = history[cursor]
+    merged.push(localById.get(row.id) ?? row)
+    cursor += 1
+  }
+  return merged
+}
+
+/** Replace a message in place when the list already carries its id. */
+function upsertMessage(messages: Message[], message: Message): Message[] {
+  const index = messages.findIndex((item) => item.id === message.id)
+  if (index === -1) return [...messages, message]
+  return messages.map((item, itemIndex) => (itemIndex === index ? message : item))
+}
+
 function pruneStreamRuns(
   runs: Record<string, StreamRun>,
   order: string[],
@@ -781,15 +827,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
 
       const local = s.byGroup[groupId] ?? []
-      const localById = new Map(local.map((message) => [message.id, message]))
-      const historyIds = new Set(messages.map((message) => message.id))
       return {
         byGroup: {
           ...s.byGroup,
-          [groupId]: [
-            ...messages.map((message) => localById.get(message.id) ?? message),
-            ...local.filter((message) => !historyIds.has(message.id)),
-          ],
+          [groupId]: mergeHistoryIntoLocal(messages, local),
         },
       }
     }),
@@ -858,7 +899,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((s) => ({
       byGroup: {
         ...s.byGroup,
-        [groupId]: [...(s.byGroup[groupId] ?? []), message],
+        // Note: an id already on screen means the row came back from a refetch
+        // or a replayed stream event; appending a second copy would put it at
+        // the bottom of the list and duplicate its React key.
+        [groupId]: upsertMessage(s.byGroup[groupId] ?? [], message),
       },
     })),
 
@@ -960,7 +1004,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return {
         byGroup: {
           ...s.byGroup,
-          [groupId]: [...(s.byGroup[groupId] ?? []), message],
+          // Note: a refetch that raced ahead of this event (or a replayed
+          // `agent_message` after a reconnect) has already placed the row;
+          // replace it there so the reply cannot show up twice.
+          [groupId]: upsertMessage(s.byGroup[groupId] ?? [], message),
         },
         inFlightByGroup: {
           ...s.inFlightByGroup,
