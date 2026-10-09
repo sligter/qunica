@@ -462,7 +462,8 @@ jobs:
             (( (8#${mode} & 0005) == 0005 ))
             printf '%s mode %s\n' "${launcher}" "${mode}"
           done
-          inaccessible="$(find squashfs-root \( \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \) \) -print -quit)"
+          # Note: The runtime makes the extraction container private (0700); its mode is not the packaged root's mode.
+          inaccessible="$(find squashfs-root -mindepth 1 \( \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \) \) -print -quit)"
           if [[ -n "${inaccessible}" ]]; then
             echo "AppImage entry is not readable or traversable by other users: ${inaccessible}" >&2
             exit 1
