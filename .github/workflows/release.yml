@@ -346,6 +346,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Prepare Linux AppImage launcher
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Note: Tauri writes downloaded launchers as 0770; preseed the same upstream binary as 0755 for other users.
+          tools_dir="${XDG_CACHE_HOME:-${HOME}/.cache}/tauri"
+          mkdir -p "${tools_dir}"
+          curl --fail --location --retry 3 \
+            https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64 \
+            --output "${tools_dir}/AppRun-x86_64"
+          chmod 0755 "${tools_dir}/AppRun-x86_64"
+
       # UPDATER_LIMITATION:
       # tauri-action is configured to upload latest.json and .sig updater assets.
       # The current app does not include tauri-plugin-updater or plugins.updater
@@ -442,6 +455,18 @@ jobs:
               printf '%s -> %s\n' "${metadata}" "${link}"
             fi
           done
+          for launcher in AppRun AppRun.wrapped usr/bin/qunica-desktop; do
+            entry="squashfs-root/${launcher}"
+            test -s "${entry}"
+            mode="$(stat -Lc '%a' "${entry}")"
+            (( (8#${mode} & 0005) == 0005 ))
+            printf '%s mode %s\n' "${launcher}" "${mode}"
+          done
+          inaccessible="$(find squashfs-root \( \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \) \) -print -quit)"
+          if [[ -n "${inaccessible}" ]]; then
+            echo "AppImage entry is not readable or traversable by other users: ${inaccessible}" >&2
+            exit 1
+          fi
 
   server:
     name: Server ${{ matrix.target }}
