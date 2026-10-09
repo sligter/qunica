@@ -53,6 +53,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # Note: Google removed the legacy tools package; setup-android already supplies cmdline-tools.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - uses: dtolnay/rust-toolchain@stable
         with:

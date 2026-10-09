@@ -802,8 +802,13 @@ mod error_message_tests {
             typesafe.safe_message(),
             "The decision endpoint returned HTTP 422: body.questions.is_urgent.criteria: extra fields not permitted"
         );
-        let plain = DecisionError::Http { status: 502, body: "<html>bad gateway</html>".to_string() };
-        assert_eq!(plain.safe_message(), "The decision endpoint returned HTTP 502.");
+        let plain = DecisionError::Http {
+            status: 502,
+            body: "<html>bad gateway</html>".to_string(),
+        };
+        assert_eq!(
+            plain.safe_message(),
+            "The decision endpoint returned HTTP 502."
+        );
     }
 }
-

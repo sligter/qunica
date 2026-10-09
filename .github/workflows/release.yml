@@ -415,6 +415,34 @@ jobs:
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
 
+      - name: Validate Linux AppImage metadata
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(frontend/src-tauri/target/${RELEASE_TARGET}/release/bundle/appimage/*.AppImage)
+          test "${#appimages[@]}" -eq 1
+          appimage="$(realpath "${appimages[0]}")"
+          # Note: Check the packaged metadata after relocation; build-machine symlinks can otherwise look valid.
+          validation_dir="$(mktemp -d)"
+          trap 'rm -rf -- "${validation_dir}"' EXIT
+          cd "${validation_dir}"
+          "${appimage}" --appimage-extract >/dev/null
+          for metadata in .DirIcon Qunica.desktop; do
+            entry="squashfs-root/${metadata}"
+            test -s "${entry}"
+            resolved="$(realpath "${entry}")"
+            [[ "${resolved}" == "${PWD}/squashfs-root/"* ]]
+            if [[ -L "${entry}" ]]; then
+              link="$(readlink "${entry}")"
+              [[ "${link}" != /* ]]
+              printf '%s -> %s\n' "${metadata}" "${link}"
+            fi
+          done
+
   server:
     name: Server ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}

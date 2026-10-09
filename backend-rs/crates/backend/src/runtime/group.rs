@@ -4296,16 +4296,17 @@ async fn run_acp_agent_turn(
         run_acp_agent_stream(
             services.pool.clone(),
             AcpRunRequest {
-                notes: (group.conversation_kind == "group" && conversation_workspace_root.is_some())
-                    .then(|| crate::acp::notes_mcp::NotesContext {
-                        pool: services.pool.clone(),
-                        write_lock: services.write_lock.clone(),
-                        owner_id: agent.owner_id.clone(),
-                        group_id: ctx.group_id.clone(),
-                        agent_id: agent.agent_id.clone(),
-                        thread_id: ctx.thread_id.clone(),
-                        decision: ctx.decision.clone(),
-                    }),
+                notes: (group.conversation_kind == "group"
+                    && conversation_workspace_root.is_some())
+                .then(|| crate::acp::notes_mcp::NotesContext {
+                    pool: services.pool.clone(),
+                    write_lock: services.write_lock.clone(),
+                    owner_id: agent.owner_id.clone(),
+                    group_id: ctx.group_id.clone(),
+                    agent_id: agent.agent_id.clone(),
+                    thread_id: ctx.thread_id.clone(),
+                    decision: ctx.decision.clone(),
+                }),
                 owner_id: agent.owner_id.clone(),
                 group_id: Some(ctx.group_id.clone()),
                 agent_id: agent.agent_id.clone(),

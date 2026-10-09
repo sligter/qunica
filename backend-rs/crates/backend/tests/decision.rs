@@ -109,7 +109,12 @@ async fn fake_gateway_endpoint(body: Value) -> (String, Arc<Mutex<Vec<CapturedRe
                     // Content-Type headers as non-JSON, so the count matters.
                     headers.insert(
                         "content-type-count".to_string(),
-                        request.headers().get_all(header::CONTENT_TYPE).iter().count().to_string(),
+                        request
+                            .headers()
+                            .get_all(header::CONTENT_TYPE)
+                            .iter()
+                            .count()
+                            .to_string(),
                     );
                     let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
                         .await
@@ -741,7 +746,10 @@ async fn decision_test_endpoint_speaks_the_ai_sdk_gateway_dialect() {
         request.get("model").is_none(),
         "the model travels in a header: {request}"
     );
-    assert_eq!(request["state"], "Help! My payouts have been failing for 3 days.");
+    assert_eq!(
+        request["state"],
+        "Help! My payouts have been failing for 3 days."
+    );
     assert_eq!(request["questions"]["is_urgent"]["type"], "boolean");
     assert_eq!(
         request["questions"]["is_urgent"]["criteria"]["true"],
@@ -776,8 +784,26 @@ async fn decision_moderator_selection_through_the_gateway_uses_forwarded_confide
         &fake_provider_sequence(vec![text_body("<WAITING_FOR_USER> done")]).await,
     )
     .await;
-    seed_agent(&state, &owner, &group, &agent_provider, "Alice", "Frontend.", "2024-01-01T00:00:00Z").await;
-    seed_agent(&state, &owner, &group, &agent_provider, "Bob", "Backend.", "2024-01-02T00:00:00Z").await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Alice",
+        "Frontend.",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &agent_provider,
+        "Bob",
+        "Backend.",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
 
     // The gateway answer carries no `confidence`; TypeSafe's arrives under
     // provider metadata and must be the value the floor is checked against.
@@ -793,9 +819,22 @@ async fn decision_moderator_selection_through_the_gateway_uses_forwarded_confide
         "usage": { "inputTokens": 40, "outputTokens": 6 }
     }))
     .await;
-    enable_decision(&app, &token, &group, &endpoint, json!({"moderator_selection": true})).await;
+    enable_decision(
+        &app,
+        &token,
+        &group,
+        &endpoint,
+        json!({"moderator_selection": true}),
+    )
+    .await;
 
-    stream_events(&app, &stream_uri(&group), &token, json!({"content": "fix the API"})).await;
+    stream_events(
+        &app,
+        &stream_uri(&group),
+        &token,
+        json!({"content": "fix the API"}),
+    )
+    .await;
 
     let sent = requests.lock().await;
     assert_eq!(sent.len(), 1);
@@ -816,7 +855,10 @@ async fn decision_moderator_selection_through_the_gateway_uses_forwarded_confide
     .fetch_one(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(usage.0, "~typesafe/jev-test", "the gateway names no model, so the configured one is recorded");
+    assert_eq!(
+        usage.0, "~typesafe/jev-test",
+        "the gateway names no model, so the configured one is recorded"
+    );
     assert_eq!(usage.1, 46);
 }
 

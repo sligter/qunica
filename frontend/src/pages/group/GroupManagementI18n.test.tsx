@@ -870,7 +870,7 @@ describe('group management i18n', () => {
     })
 
     expect(screen.queryByRole('switch', { name: 'Allow agent follow-ups' })).not.toBeInTheDocument()
-    expect(screen.getByText(/@mention is text only/)).toBeVisible()
+    expect(screen.getByText(/An @mention only chooses who starts/)).toBeVisible()
   })
 
   it('enables and reorders the default speakers from group settings', async () => {
