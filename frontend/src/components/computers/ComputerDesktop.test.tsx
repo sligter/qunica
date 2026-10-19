@@ -75,3 +75,47 @@ it('never forwards an old account control credential after login changes', async
   socket.authenticate()
   expect(socket.frames[0].credential).toBeNull()
 })
+
+it('opens inline, then disconnects and releases control when its tab unmounts', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const user = userEvent.setup()
+  const view = render(<QueryClientProvider client={client}><ComputerDesktop id="computer-inline" name="Inline computer" generation="4" embedded /></QueryClientProvider>)
+  expect(screen.queryByRole('button', { name: 'Open desktop' })).not.toBeInTheDocument()
+  await user.click(await screen.findByRole('button', { name: 'Take control' }))
+  await waitFor(() => expect(mocks.request.mock.calls.some(([, opts]) => opts.body.action === 'request')).toBe(true))
+  await waitFor(() => expect(Socket.instances.length).toBeGreaterThanOrEqual(1))
+  const socket = Socket.instances.at(-1)!
+  view.unmount()
+  expect(socket.close).toHaveBeenCalled()
+  expect(mocks.request).toHaveBeenCalledWith('/computers/computer-inline/control', expect.objectContaining({ token: 'account-one', body: { action: 'release', expected_generation: '4', credential: 'exclusive-control-secret' } }))
+  expect(mocks.request.mock.calls.some(([, opts]) => opts.body.action === 'resume')).toBe(false)
+})
+
+it('releases a takeover accepted after its view has already unmounted', async () => {
+  const original = mocks.request.getMockImplementation()!
+  let accept: (value: unknown) => void = () => undefined
+  mocks.request.mockImplementation((path: string, opts: { body: { action: string } }) => opts.body.action === 'request' ? new Promise(resolve => { accept = resolve }) : original(path, opts))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const user = userEvent.setup()
+  const view = render(<QueryClientProvider client={client}><ComputerDesktop id="computer-inline" name="Inline computer" generation="4" embedded /></QueryClientProvider>)
+  await user.click(await screen.findByRole('button', { name: 'Take control' }))
+  view.unmount()
+  accept({ state: 'user_controlled', credential: 'late-lease', generation: '4' })
+  await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('/computers/computer-inline/control', expect.objectContaining({ body: { action: 'release', expected_generation: '4', credential: 'late-lease' } })))
+})
+
+it('expands and returns inline with one viewport and the same control lease', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const user = userEvent.setup()
+  render(<QueryClientProvider client={client}><ComputerDesktop id="computer-inline" name="Inline computer" generation="4" embedded /></QueryClientProvider>)
+  await user.click(await screen.findByRole('button', { name: 'Take control' }))
+  await screen.findByRole('button', { name: 'Release control' })
+  await user.click(screen.getByRole('button', { name: 'Expand desktop' }))
+  expect(await screen.findByRole('dialog')).toBeVisible()
+  expect(screen.getAllByLabelText('Computer desktop')).toHaveLength(1)
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(screen.getAllByLabelText('Computer desktop')).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Release control' })).toBeVisible()
+  expect(mocks.request.mock.calls.some(([, opts]) => opts.body.action === 'release')).toBe(false)
+})

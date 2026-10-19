@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Monitor, Plus, RefreshCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DetailShell } from '@/components/layout/DetailShell'
@@ -9,36 +9,19 @@ import { Label } from '@/components/ui/label'
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog'
 import { useAgents } from '@/hooks/useAgents'
 import { useGroups } from '@/hooks/useGroups'
+import { useComputers, useComputerState, useComputerAction } from '@/hooks/useComputers'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import { ComputerDesktop } from '@/components/computers/ComputerDesktop'
 import { ComputerArtifacts } from '@/components/computers/ComputerArtifacts'
-
-interface ComputerItem { id: string; name: string; binding: { kind: 'team' | 'private'; id: string }; selected: boolean }
-interface ComputerState { generation: string; status: string; home_present: boolean; error_code: string | null; capabilities?: { desktop: boolean } }
+import type { ComputerItem } from '@/types/api'
 
 function ComputerCard({ item, targetName }: { item: ComputerItem; targetName: string }) {
   const { t } = useTranslation('computers')
-  const token = useAuthStore((s) => s.token)
-  const queries = useQueryClient()
   const [confirmation, setConfirmation] = useState<'rebuild' | 'destroy' | null>(null)
   const [purge, setPurge] = useState(false)
-  const state = useQuery({ queryKey: ['computers', item.id], queryFn: () => fetchJson<ComputerState>(`/computers/${item.id}`, { token }), refetchInterval: 5_000 })
-  const mutation = useMutation({
-    mutationFn: async (action: 'start' | 'stop' | 'rebuild' | 'destroy' | 'bind' | 'unbind') => {
-      if (action === 'bind' || action === 'unbind') {
-        await fetchJson('/execution-environments/binding', { method: 'PUT', token, body: { scope: item.binding.kind === 'team' ? 'group' : 'agent', target_id: item.binding.id, execution_environment_id: action === 'bind' ? item.id : null } })
-      } else {
-        if (!state.data) throw new Error(t('refreshRequired'))
-        await fetchJson(`/computers/${item.id}/actions`, { method: 'POST', token, body: { action, expected_generation: state.data.generation, confirm: action === 'destroy' ? item.id : null, purge_home: action === 'destroy' && purge } })
-      }
-    },
-    onSettled: () => {
-      void queries.invalidateQueries({ queryKey: ['computers'] })
-      void queries.invalidateQueries({ queryKey: ['groups'] })
-      void queries.invalidateQueries({ queryKey: ['agents'] })
-    },
-  })
+  const state = useComputerState(item.id)
+  const mutation = useComputerAction(item, state.data?.generation, purge)
   const status = state.data?.status
   const busy = mutation.isPending || !state.data || ['starting', 'executing', 'stopping', 'rebuilding', 'destroying'].includes(status ?? '')
   return <article className="rounded-lg border border-border bg-card p-4">
@@ -59,7 +42,7 @@ function ComputerCard({ item, targetName }: { item: ComputerItem; targetName: st
     {state.data?.error_code ? <p className="mt-2 break-words text-xs text-destructive">{state.data.error_code}</p> : null}
     {mutation.isError ? <p role="alert" className="mt-2 break-words text-xs text-destructive">{mutation.error.message}</p> : null}
     <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">
-      {status === 'running' && state.data?.capabilities?.desktop ? <ComputerDesktop id={item.id} name={item.name} generation={state.data.generation} /> : null}
+      {['running', 'executing'].includes(status ?? '') && state.data?.capabilities?.desktop ? <ComputerDesktop id={item.id} name={item.name} generation={state.data.generation} /> : null}
       <Button size="sm" variant="outline" disabled={busy || status === 'destroyed' || (!item.selected && status !== 'running')} onClick={() => mutation.mutate(item.selected ? 'unbind' : 'bind')}>{item.selected ? t('unbind') : t('bind')}</Button>
       {status === 'stopped' ? <Button size="sm" variant="outline" disabled={busy} onClick={() => mutation.mutate('start')}>{t('start')}</Button> : null}
       {status !== 'stopped' && status !== 'destroyed' ? <Button size="sm" variant="outline" disabled={busy} onClick={() => mutation.mutate('stop')}>{t('stop')}</Button> : null}
@@ -84,7 +67,7 @@ export function ComputersPage() {
   const queries = useQueryClient()
   const groups = useGroups()
   const agents = useAgents()
-  const computers = useQuery({ queryKey: ['computers'], queryFn: () => fetchJson<{ configured: boolean; items: ComputerItem[] }>('/computers', { token }), enabled: !!token })
+  const computers = useComputers()
   const [name, setName] = useState('')
   const [kind, setKind] = useState<'team' | 'private'>('team')
   const [target, setTarget] = useState('')

@@ -99,6 +99,11 @@ The owner-scoped application API provides:
 | GET `/api/v2/computer-artifacts/:id` | Authenticated, bounded file download. |
 
 Settings → Computers exposes lifecycle, binding, desktop control and artifacts.
+The conversation's right-hand **Computer** tab shows its Team computer and
+active members' Private computers; a direct chat shows only its Agent's computer.
+It supports an inline desktop, expansion, start/stop, explicit execution binding
+and artifact downloads. Changing tabs or conversations closes that viewer and
+releases its human lease without automatically resuming the Agent.
 Team computers belong to one group; Private computers belong to an Agent. A
 Private Agent used in different groups still cannot reserve its computer for two
 active/unconfirmed turns. Tool calls recheck owner, active turn, binding and

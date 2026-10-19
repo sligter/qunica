@@ -3,6 +3,7 @@
 export function formatAutomationTime(
   value: number | string | null | undefined,
   locale: string,
+  timeZone?: string,
 ): string {
   if (value === null || value === undefined || value === '') return '—'
   const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value)
@@ -10,6 +11,7 @@ export function formatAutomationTime(
   return new Intl.DateTimeFormat(locale, {
     dateStyle: 'medium',
     timeStyle: 'short',
+    timeZone,
   }).format(date)
 }
 

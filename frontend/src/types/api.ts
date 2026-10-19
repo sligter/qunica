@@ -1250,6 +1250,26 @@ export type AutomationRunStatus =
   | 'interrupted'
   | 'skipped'
 
+export interface ComputerItem {
+  id: string
+  name: string
+  binding: { kind: 'team' | 'private'; id: string }
+  selected: boolean
+}
+
+export interface ComputerList {
+  configured: boolean
+  items: ComputerItem[]
+}
+
+export interface ComputerState {
+  generation: string
+  status: string
+  home_present: boolean
+  error_code: string | null
+  capabilities?: { desktop: boolean; browser?: boolean; acp?: boolean }
+}
+
 export interface AutomationLatestRun {
   occurrence_id: string
   job_id: string | null

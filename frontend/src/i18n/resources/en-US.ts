@@ -1,5 +1,14 @@
 export const enUS = {
   computers: {
+    expandDesktop: 'Expand desktop',
+    reconnectDesktop: 'Reconnect desktop',
+    panel: {
+      manage: 'Manage computers', choose: 'Conversation computer', noConversation: 'Choose a conversation',
+      loadError: 'Could not load computers', notConfiguredTitle: 'Connect a computer',
+      emptyTitle: 'No computer connected', emptyBody: 'Connect a Team computer for this group or a Private computer for its Agent.',
+      stoppedTitle: 'Computer is stopped', stoppedBody: 'Start it to observe the desktop and continue working.',
+      noDesktopTitle: 'Desktop unavailable', noDesktopBody: 'This computer is not ready to share its desktop. Refresh its status or open computer settings.',
+    },
     desktopDirectOnly: 'Connect directly to the server to observe or control this desktop.',
     "artifacts": "Task artifacts",
     "download": "Download",
@@ -12,7 +21,7 @@ export const enUS = {
     "desktopDescription": "Observe this computer or take exclusive control. Release it and explicitly return control before continuing a task.",
     "desktopConnected": "Connected",
     "desktopConnecting": "Connecting",
-    "desktopDisconnected": "Desktop disconnected. Reopen it to reconnect; input is never replayed.",
+    "desktopDisconnected": "Desktop disconnected. Reconnect to continue; input is never replayed.",
     "takeControl": "Take control",
     "releaseControl": "Release control",
     "returnToAgent": "Return to agent",
@@ -447,6 +456,7 @@ export const enUS = {
     },
     workspace: {
       rootPicker: { label: 'Workspace to browse', conversation: 'Conversation workspace', agentPrimary: "{{name}}'s workspace", agentMounted: "{{name}}'s workspace (mounted)" },
+      computer: 'Computer', triggers: 'Triggers', panelLoading: 'Loading panel…',
       show: 'Show workspace files', hide: 'Hide workspace files', resize: 'Resize workspace files column', files: 'Files', git: 'Git', notes: 'Notes', workspace: 'Workspace', root: 'Workspace root', back: 'Back', refresh: 'Refresh', upload: 'Upload file', insertSelected: 'Insert selected paths', selected_one: '{{count}} selected', selected_other: '{{count}} selected', loading: 'Loading files…', loadError: 'Failed to load files.', empty: 'This folder is empty.', preview: 'File preview', previewLoading: 'Loading preview…', previewError: 'Failed to load preview.', binaryPreview: 'Preview unavailable for this file.', rename: 'Rename', renameTitle: 'Rename workspace path', newPath: 'New path', delete: 'Delete', deleteTitle: 'Delete {{path}}?', deleteDescription: 'This permanently deletes the selected workspace path.', download: 'Download', downloading: 'Downloading…', reveal: 'Show in file manager', contextMenu: 'File actions', branch: 'Branch', branches: 'Branches', currentBranch: 'Current branch', changeBranch: 'Change branch', createBranch: 'Create branch', branchName: 'Branch name', switchBranch: 'Switch branch', status: 'Status', changes: 'Changes', noChanges: 'No working tree changes.', diff: 'Diff', staged: 'Staged', unstaged: 'Unstaged', untracked: 'Untracked', stage: 'Stage', unstage: 'Unstage', discard: 'Discard', discardTitle: 'Discard changes to {{path}}?', discardDescription: 'This permanently discards the selected working tree changes.', commit: 'Commit', commitMessage: 'Commit message', committing: 'Committing…', noRepository: 'This workspace is not a Git repository.', gitLoadError: 'Failed to load Git status.', notesTitle: 'Group notes', addNote: 'Add note', editNote: 'Edit note', noteContent: 'Note content', noNotes: 'No notes yet.', saveNote: 'Save note', deleteNoteTitle: 'Delete note?', deleteNoteDescription: 'This note will be permanently deleted.',
       mentionPicker: 'Mention an agent',
       notesPanel: {
@@ -1143,6 +1153,12 @@ export const enUS = {
     },
   },
   automations: {
+    panel: {
+      title: 'Triggers', new: 'New', refresh: 'Refresh triggers', active: '{{count}} enabled',
+      description: 'Schedules and events for this group. Tasks run even when you close the app.',
+      groupOnlyTitle: 'Schedules belong to groups', groupOnlyBody: 'Open a group to view and create its scheduled tasks and event triggers.',
+      manage: 'Manage automations',
+    },
     title: 'Automations',
     subtitle: 'Run a group task on a schedule or a signed webhook, even when no client is connected.',
     new: 'New automation',

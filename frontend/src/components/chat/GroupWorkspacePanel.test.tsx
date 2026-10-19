@@ -25,6 +25,8 @@ describe('GroupWorkspacePanel i18n', () => {
     renderPanel()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Git' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Computer' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Triggers' })).toBeVisible()
   })
 
   it('renders the workspace tabs in Chinese', async () => {
@@ -32,5 +34,7 @@ describe('GroupWorkspacePanel i18n', () => {
     renderPanel()
     expect(screen.getByRole('tab', { name: '文件' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Git' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '电脑' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '定时任务' })).toBeVisible()
   })
 })

@@ -10,6 +10,12 @@ inspect history and manage webhook secrets. The same operations remain available
 over HTTP for integrations and tests. The manual `turn.acknowledge_stopped`
 confirmation described below lives in the affected turn's details.
 
+The group's right-hand **Triggers** tab shows only that group's schedules and
+event triggers, their next run in the configured timezone, and the latest result.
+Create/edit, versioned pause/resume, history and webhook secret management reuse
+the same controls as Settings. A new automation defaults to the current group.
+Direct chats explain the group scope rather than loading account-wide schedules.
+
 ## Fields
 
 An automation stores the group, name, prompt, trigger, IANA timezone, missed-run
